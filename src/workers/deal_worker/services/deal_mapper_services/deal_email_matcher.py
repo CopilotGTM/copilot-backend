@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col, select
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -258,13 +259,22 @@ class DealEmailMatcher:
                 else ApprovalStatus.PENDING
             )
 
+            # Link to existing CRMContact if one exists
+            contact_stmt = select(col(CRMContact.contact_id)).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.email) == participant_email,
+            )
+            contact_result = await session.execute(contact_stmt)
+            found_contact_id = contact_result.scalar_one_or_none()
+
             # Create stakeholder
             stakeholder = DealStakeholder(
                 organisation_id=self.organisation_id,
                 integration_id=info.integration_id,
                 deal_id=deal_id,
                 email=participant_email,
-                name=None,  # We don't have display names from email addresses
+                name=None,
+                contact_id=found_contact_id,
                 source=StakeholderSource.EMAIL_DISCOVERY,
                 approval_status=approval_status,
                 stance=StakeholderStance.UNKNOWN,

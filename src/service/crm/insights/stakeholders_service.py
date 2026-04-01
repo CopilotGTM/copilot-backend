@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -33,22 +34,51 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
 
 logger = get_logger("stakeholders_service")
 
+PERSONAL_EMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "aol.com",
+        "icloud.com",
+        "mail.com",
+        "protonmail.com",
+        "live.com",
+        "msn.com",
+        "ymail.com",
+        "googlemail.com",
+    }
+)
+
 
 class StakeholdersServiceError(Exception):
     """Custom exception for stakeholders service errors."""
 
-    def __init__(self, message: str, status_code: int = 500):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        data: dict | None = None,
+    ):
         self.message = message
         self.status_code = status_code
+        self.data = data
         super().__init__(message)
 
 
 class StakeholdersService:
     """Service for managing CRM deal stakeholders."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        user_id: UUID | None = None,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.user_id = user_id
 
     @property
     def session(self) -> AsyncSession:
@@ -85,6 +115,180 @@ class StakeholdersService:
         domain = email.strip().lower().split("@")[-1]
         internal_domains = await self._get_internal_domains()
         return domain in internal_domains
+
+    async def _ensure_contact_for_stakeholder(
+        self,
+        email: str,
+        name: str | None,
+        job_title: str | None,
+        phone_number: str | None,
+    ) -> UUID | None:
+        """Find or create a CRMContact for a manually-added stakeholder.
+
+        Returns the contact_id if found or created, None if no internal
+        CRM integration exists (contact creation skipped).
+        """
+        from src.service.crm.internal.internal_crm_setup_service import (
+            InternalCRMSetupService,
+        )
+
+        email_normalized = email.lower().strip()
+
+        # Skip contact creation for internal team members and common personal email providers
+        if await self._is_internal_email(email_normalized):
+            return None
+        domain = email_normalized.split("@")[-1] if "@" in email_normalized else ""
+        if domain in PERSONAL_EMAIL_DOMAINS:
+            return None
+
+        # Check if a CRMContact already exists by email in this org
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.email) == email_normalized,
+        )
+        result = await self.session.execute(stmt)
+        existing_contact = result.scalars().first()
+        if existing_contact:
+            return existing_contact.contact_id
+
+        # No existing contact — create one under the internal CRM integration
+        if not self.user_id:
+            return None
+        setup_service = InternalCRMSetupService(self.session, self.organisation_id, self.user_id)
+        integration = await setup_service.get_internal_integration()
+        if not integration:
+            return None
+
+        from uuid import uuid4
+
+        now = datetime.now(UTC)
+        contact_id = uuid4()
+        contact = CRMContact(
+            contact_id=contact_id,
+            organisation_id=self.organisation_id,
+            integration_id=integration.integration_id,
+            external_id=str(contact_id),
+            email=email_normalized,
+            full_name=name,
+            job_title=job_title,
+            phone=phone_number,
+            synced_at=now,
+            last_seen_at=now,
+        )
+        self.session.add(contact)
+        await self.session.flush()
+        return contact.contact_id
+
+    async def _ensure_deal_participant(
+        self,
+        deal_id: UUID,
+        contact_id: UUID,
+        email: str,
+        name: str | None,
+    ) -> bool:
+        """Create a CRMDealParticipant if the deal belongs to the internal CRM.
+
+        Returns True if a participant was created, False if skipped.
+        External CRM deals are never modified.
+        """
+        from src.domain.models.organisation_tables.sync.crm.deals import (
+            CRMDeal,
+            CRMDealParticipant,
+            CRMParticipantType,
+        )
+        from src.service.crm.internal.internal_crm_setup_service import (
+            InternalCRMSetupService,
+        )
+
+        if not self.user_id:
+            return False
+
+        setup_service = InternalCRMSetupService(self.session, self.organisation_id, self.user_id)
+        integration = await setup_service.get_internal_integration()
+        if not integration:
+            return False
+
+        # Load the deal to check its integration
+        deal = await self.session.get(CRMDeal, deal_id)
+        if (
+            not deal
+            or deal.organisation_id != self.organisation_id
+            or deal.integration_id != integration.integration_id
+        ):
+            return False
+
+        email_normalized = email.lower().strip()
+
+        # Check if participant already exists
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.related_email) == email_normalized,
+            col(CRMDealParticipant.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        if result.scalars().first():
+            return False
+
+        now = datetime.now(UTC)
+        participant = CRMDealParticipant(
+            organisation_id=self.organisation_id,
+            integration_id=integration.integration_id,
+            external_id=str(contact_id),
+            deal_id=deal_id,
+            participant_type=CRMParticipantType.CONTACT,
+            related_external_id=str(contact_id),
+            related_local_id=contact_id,
+            related_name=name,
+            related_email=email_normalized,
+            synced_at=now,
+            source_modified_at=now,
+            last_seen_at=now,
+            data_payload={"source": "manual_stakeholder"},
+        )
+        self.session.add(participant)
+        return True
+
+    async def _soft_delete_internal_participant(
+        self,
+        deal_id: UUID,
+        email: str,
+    ) -> None:
+        """Soft-delete the CRMDealParticipant for a removed stakeholder.
+
+        Only deletes participants belonging to the internal CRM integration.
+        External CRM participants are never touched.
+        """
+        from src.domain.models.organisation_tables.sync.crm.deals import (
+            CRMDealParticipant,
+        )
+        from src.service.crm.internal.internal_crm_setup_service import (
+            InternalCRMSetupService,
+        )
+
+        actor_id = self.user_id
+        if not actor_id:
+            return
+
+        setup_service = InternalCRMSetupService(self.session, self.organisation_id, actor_id)
+        integration = await setup_service.get_internal_integration()
+        if not integration:
+            return
+
+        email_normalized = email.lower().strip()
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.integration_id) == integration.integration_id,
+            col(CRMDealParticipant.related_email) == email_normalized,
+            col(CRMDealParticipant.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        participant = result.scalars().first()
+        if participant:
+            participant.is_deleted = True
+            now = datetime.now(UTC)
+            participant.source_modified_at = now
+            participant.synced_at = now
+            participant.last_seen_at = now
 
     @staticmethod
     def _serialize_external_links(external_links: list | None) -> list[dict] | None:
@@ -311,6 +515,10 @@ class StakeholdersService:
 
         stakeholder.approval_status = ApprovalStatus.REMOVED
 
+        # Soft-delete matching internal CRM participant
+        if stakeholder.email:
+            await self._soft_delete_internal_participant(deal_id, stakeholder.email)
+
         # Remove any existing STAKEHOLDER_REMOVED timeline event for this stakeholder
         # (handles re-add then re-remove scenario without violating unique constraint)
         # Uses raw DELETE to avoid ORM flush/lazy-load issues (MissingGreenlet)
@@ -374,49 +582,27 @@ class StakeholdersService:
         existing_result = await self.session.execute(existing_stmt)
         existing_stakeholder = existing_result.scalar_one_or_none()
         if existing_stakeholder:
-            if (
-                existing_stakeholder.approval_status
-                in (
-                    ApprovalStatus.REMOVED,
-                    ApprovalStatus.REJECTED,
-                )
-                or existing_stakeholder.is_deleted
-            ):
-                # Reactivate: user explicitly wants this stakeholder back
-                existing_stakeholder.approval_status = ApprovalStatus.APPROVED
-                existing_stakeholder.is_deleted = False
-                existing_stakeholder.name = request.name or existing_stakeholder.name
-                existing_stakeholder.job_title = request.job_title or existing_stakeholder.job_title
-                existing_stakeholder.phone_number = (
-                    request.phone_number or existing_stakeholder.phone_number
-                )
-                existing_stakeholder.department = (
-                    request.department or existing_stakeholder.department
-                )
-                existing_stakeholder.source = StakeholderSource.MANUAL
-                if request.external_links:
-                    existing_stakeholder.external_links = self._serialize_external_links(
-                        request.external_links
-                    )
-                if request.stance:
-                    existing_stakeholder.stance = request.stance
-                if request.decision_power:
-                    existing_stakeholder.decision_power = request.decision_power
-                if request.motivation:
-                    existing_stakeholder.motivation = request.motivation
-                if request.pain_points:
-                    existing_stakeholder.pain_points = request.pain_points
-                # Reset research so it gets re-researched
-                existing_stakeholder.stakeholder_research = None
-                existing_stakeholder.last_researched_at = None
-                await self.session.commit()
-                await self.session.refresh(existing_stakeholder)
+            status = existing_stakeholder.approval_status
+            conflict_data = {
+                "stakeholder_id": str(existing_stakeholder.stakeholder_id),
+                "approval_status": status.value if hasattr(status, "value") else str(status),
+                "is_deleted": existing_stakeholder.is_deleted,
+            }
 
-                return StakeholderDetail.model_validate(existing_stakeholder)
+            if status == ApprovalStatus.APPROVED and not existing_stakeholder.is_deleted:
+                raise StakeholdersServiceError(
+                    "A stakeholder with this email already exists for this deal",
+                    status_code=409,
+                    data=conflict_data,
+                )
 
+            # Stakeholder exists but is REMOVED, REJECTED, or soft-deleted
+            # Let the user decide — they can re-approve via the approve endpoint
             raise StakeholdersServiceError(
-                "A stakeholder with this email already exists for this deal",
+                f"Stakeholder exists but is currently {conflict_data['approval_status']}. "
+                "Use the approve endpoint to reactivate it.",
                 status_code=409,
+                data=conflict_data,
             )
 
         external_links_data = self._serialize_external_links(request.external_links)
@@ -427,11 +613,29 @@ class StakeholdersService:
             request.champion_potential if request.champion_potential is not None else 50.0
         )
 
+        # Link to CRMContact (find existing or create new under internal CRM)
+        contact_id = await self._ensure_contact_for_stakeholder(
+            email=email_normalized,
+            name=request.name,
+            job_title=request.job_title,
+            phone_number=request.phone_number,
+        )
+
+        # Create CRMDealParticipant if internal CRM deal
+        if contact_id:
+            await self._ensure_deal_participant(
+                deal_id=deal_id,
+                contact_id=contact_id,
+                email=email_normalized,
+                name=request.name,
+            )
+
         new_stakeholder = DealStakeholder(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
-            contact_id=None,  # Manual adds have no CRM contact
-            email=request.email.lower().strip(),
+            contact_id=contact_id,
+            created_by_user_id=self.user_id,
+            email=email_normalized,
             name=request.name,
             job_title=request.job_title,
             phone_number=request.phone_number,
@@ -443,7 +647,7 @@ class StakeholdersService:
             motivation=request.motivation,
             pain_points=request.pain_points,
             source=StakeholderSource.MANUAL,
-            approval_status=ApprovalStatus.APPROVED,  # Manual adds are trusted
+            approval_status=ApprovalStatus.APPROVED,
         )
         self.session.add(new_stakeholder)
 

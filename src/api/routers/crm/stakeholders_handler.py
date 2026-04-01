@@ -46,7 +46,7 @@ async def get_stakeholders_service(
     session: AsyncSession = Depends(get_org_async_session),
 ):
     """Dependency that yields a StakeholdersService instance for the current org."""
-    service = StakeholdersService(session, user_ids.organisation_id)
+    service = StakeholdersService(session, user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
     finally:
@@ -264,7 +264,7 @@ async def create_stakeholder(
             },
         )
         return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
+            message=e.message, status_code=e.status_code, data=e.data, response=response
         )
     except Exception:
         logger.exception(
