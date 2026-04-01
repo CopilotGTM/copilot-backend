@@ -308,6 +308,45 @@ class DealMeetingMatcher:
 
         return domains
 
+    async def _discover_from_existing_associations(
+        self,
+        session: AsyncSession,
+        deal: CRMDeal,
+        customer_domains: set[str],
+        team_emails: set[str],
+    ) -> int:
+        """Re-scan already-associated meetings for undiscovered stakeholders.
+
+        Runs every cycle to catch attendees whose domain became known after
+        the meeting was first associated (e.g., new stakeholder added, new
+        CRM contact synced). The per-event discovery method is idempotent —
+        it skips attendees who are already stakeholders.
+        """
+        attendees_rel = cast(Any, CalendarEvent.attendees)
+        stmt = (
+            select(CalendarEvent)
+            .options(selectinload(attendees_rel))
+            .join(
+                CalendarEventDealAssociation,
+                col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
+            )
+            .where(
+                col(CalendarEventDealAssociation.deal_id) == deal.deal_id,
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+            )
+        )
+        result = await session.execute(stmt)
+        events = list(result.scalars().all())
+
+        total_discovered = 0
+        for event in events:
+            discovered = await self._discover_stakeholders_from_event(
+                session, deal, event, customer_domains, team_emails
+            )
+            total_discovered += discovered
+
+        return total_discovered
+
     async def _discover_stakeholders_from_event(
         self,
         session: AsyncSession,
@@ -636,7 +675,16 @@ class DealMeetingMatcher:
         )
         linked_count += attendee_count
 
-        # STEP C: Deactivate associations orphaned by stakeholder cleanup.
+        # STEP C: Discover stakeholders from already-associated meetings.
+        # Handles the case where customer_domains expanded since events were first
+        # associated (e.g., new stakeholder added, new CRM contact synced).
+        discovered = 0
+        if customer_domains:
+            discovered = await self._discover_from_existing_associations(
+                session, deal, customer_domains, team_emails
+            )
+
+        # STEP D: Deactivate associations orphaned by stakeholder cleanup.
         # An association is orphaned if none of the event's attendees match
         # the current (clean) contact_emails set.
         await self._cleanup_orphaned_associations(session, deal, contact_emails)
@@ -644,6 +692,7 @@ class DealMeetingMatcher:
         logger.info(
             f"Linked {linked_count} meetings for deal {deal.deal_id} "
             f"(organizer={organizer_count}, attendee={attendee_count}, "
+            f"discovered={discovered}, "
             f"team_emails={len(team_emails)}, contact_emails={len(contact_emails)})"
         )
 
