@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
+from src.domain.models.organisation_tables.sync import IntegrationType
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.email.gmail_email import (
     FetchMessagesResult,
     _extract_latest_history_id,
@@ -17,13 +21,16 @@ from src.workers.integrations_worker.providers.email.gmail_email import (
 )
 
 
-def _mock_nango_with_token() -> AsyncMock:
-    """Create a NangoClient mock that returns a valid access token."""
-    nango = AsyncMock()
-    nango.get_connection.return_value = {
-        "credentials": {"access_token": "test-token-123"},
-    }
-    return nango
+def _make_token_info() -> IntegrationTokenInfo:
+    """Create a valid IntegrationTokenInfo for testing."""
+    return IntegrationTokenInfo(
+        access_token="test-token-123",
+        refresh_token="test-refresh",
+        access_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        integration_type=IntegrationType.GMAIL,
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
 
 
 def _json_response(data: dict, status_code: int = 200) -> httpx.Response:
@@ -43,7 +50,7 @@ def _json_response(data: dict, status_code: int = 200) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_fetch_labels_returns_system_labels():
     """Labels list + detail calls should return enriched label dicts."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     responses = [
         # labels.list
@@ -85,7 +92,7 @@ async def test_fetch_labels_returns_system_labels():
         mock_client_cls.return_value = mock_client_instance
 
         result = await fetch_labels(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=True,
             last_synced_at=None,
@@ -105,7 +112,7 @@ async def test_fetch_labels_returns_system_labels():
 @pytest.mark.asyncio
 async def test_fetch_messages_initial_batch_get_details():
     """Initial sync lists IDs then batch-gets full messages."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     responses = [
         # messages.list
@@ -138,7 +145,7 @@ async def test_fetch_messages_initial_batch_get_details():
         mock_client_cls.return_value = mock_client_instance
 
         result = await fetch_messages(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=True,
             last_synced_at=None,
@@ -153,7 +160,7 @@ async def test_fetch_messages_initial_batch_get_details():
 @pytest.mark.asyncio
 async def test_fetch_messages_initial_with_date_filter():
     """Initial sync should pass `after:` epoch in query parameter."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     responses = [
         _json_response({"messages": []}),  # no messages
@@ -167,7 +174,7 @@ async def test_fetch_messages_initial_with_date_filter():
         mock_client_cls.return_value = mock_client_instance
 
         await fetch_messages(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=True,
             last_synced_at=None,
@@ -188,7 +195,7 @@ async def test_fetch_messages_initial_with_date_filter():
 @pytest.mark.asyncio
 async def test_fetch_messages_incremental_with_history_id():
     """Incremental sync uses history.list and fetches added messages."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     responses = [
         # history.list
@@ -222,7 +229,7 @@ async def test_fetch_messages_incremental_with_history_id():
         mock_client_cls.return_value = mock_client_instance
 
         result = await fetch_messages(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=False,
             last_synced_at=None,
@@ -238,7 +245,7 @@ async def test_fetch_messages_incremental_with_history_id():
 @pytest.mark.asyncio
 async def test_fetch_messages_incremental_handles_deleted():
     """Deleted messages from history should get _sync_metadata marker."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     responses = [
         _json_response(
@@ -262,7 +269,7 @@ async def test_fetch_messages_incremental_handles_deleted():
         mock_client_cls.return_value = mock_client_instance
 
         result = await fetch_messages(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=False,
             last_synced_at=None,
@@ -280,7 +287,7 @@ async def test_fetch_messages_incremental_handles_deleted():
 @pytest.mark.asyncio
 async def test_fetch_messages_history_id_expired_fallback():
     """404 on history.list should fallback to full sync."""
-    nango = _mock_nango_with_token()
+    token_info = _make_token_info()
 
     # 404 response for history.list
     not_found_resp = httpx.Response(
@@ -321,7 +328,7 @@ async def test_fetch_messages_history_id_expired_fallback():
         mock_client_cls.return_value = mock_client_instance
 
         result = await fetch_messages(
-            nango=nango,
+            token_info=token_info,
             connection_id="conn-1",
             is_initial=False,
             last_synced_at=None,

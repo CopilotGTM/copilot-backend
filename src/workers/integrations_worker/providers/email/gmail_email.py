@@ -1,8 +1,7 @@
 """Gmail email fetcher via Google Gmail API (direct calls).
 
 Fetches Gmail labels and messages using direct Google API calls.
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are read from local credentials (custom OAuth).
 
 Uses Gmail history.list for efficient incremental sync:
 - Initial sync: messages.list with label + date filter, then messages.get per ID
@@ -24,12 +23,12 @@ from typing import Any
 
 import httpx
 
-from src.domain.models.organisation_tables.sync import IntegrationType
-from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
+    call_with_token_retry,
+)
 from src.workers.integrations_worker.providers._google_api import (
-    get_access_token,
     gmail_api_request,
 )
 
@@ -82,7 +81,7 @@ def _is_history_expired_status(exc: httpx.HTTPStatusError) -> bool:
 
 async def fetch_labels(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -93,41 +92,42 @@ async def fetch_labels(
     Fetch Gmail labels via direct Google API.
 
     Returns list of label dicts with id, name, type, messagesTotal, messagesUnread.
+    Uses call_with_token_retry for automatic 401 recovery.
     """
     _ = data_type
     _ = is_initial
     _ = last_synced_at
+    _ = provider_config_key
 
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.GMAIL)
+    async def _do_fetch(token: str) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            resp = await gmail_api_request(client, "/gmail/v1/users/me/labels")
+            labels = resp.get("labels", [])
 
-    token = await get_access_token(nango, connection_id, provider)
+            # Labels list endpoint returns minimal info; fetch details for each to get counts
+            detailed_labels: list[dict[str, Any]] = []
+            for label in labels:
+                label_id = label.get("id", "")
+                detail = await gmail_api_request(client, f"/gmail/v1/users/me/labels/{label_id}")
+                detailed_labels.append(detail)
 
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30.0,
-    ) as client:
-        resp = await gmail_api_request(client, "/gmail/v1/users/me/labels")
+        logger.info(
+            "Gmail labels fetched: count=%d connection=%s",
+            len(detailed_labels),
+            connection_id,
+        )
+        return detailed_labels
 
-        labels = resp.get("labels", [])
-
-        # Labels list endpoint returns minimal info; fetch details for each to get counts
-        detailed_labels: list[dict[str, Any]] = []
-        for label in labels:
-            label_id = label.get("id", "")
-            detail = await gmail_api_request(client, f"/gmail/v1/users/me/labels/{label_id}")
-            detailed_labels.append(detail)
-
-    logger.info(
-        "Gmail labels fetched: count=%d connection=%s",
-        len(detailed_labels),
-        connection_id,
-    )
-    return detailed_labels
+    result: list[dict[str, Any]] = await call_with_token_retry(token_info, _do_fetch)
+    return result
 
 
 async def fetch_messages(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -144,13 +144,11 @@ async def fetch_messages(
     - Incremental (history_id present): history.list for changes since that point
 
     If historyId is expired (404), falls back to full sync automatically.
+    Uses call_with_token_retry for automatic 401 recovery.
     """
     _ = data_type
     _ = last_synced_at  # retained in signature for call-site compatibility
-
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.GMAIL)
-
-    token = await get_access_token(nango, connection_id, provider)
+    _ = provider_config_key
 
     # Force full sync on initial even if a stale history_id was passed
     if is_initial and history_id:
@@ -160,23 +158,26 @@ async def fetch_messages(
         )
         history_id = None
 
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30.0,
-    ) as client:
-        if history_id:
-            return await _fetch_incremental(
+    async def _do_fetch(token: str) -> FetchMessagesResult:
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            if history_id:
+                return await _fetch_incremental(
+                    client=client,
+                    connection_id=connection_id,
+                    history_id=history_id,
+                    label_id=label_id,
+                )
+            return await _fetch_full(
                 client=client,
                 connection_id=connection_id,
-                history_id=history_id,
                 label_id=label_id,
             )
 
-        return await _fetch_full(
-            client=client,
-            connection_id=connection_id,
-            label_id=label_id,
-        )
+    result: FetchMessagesResult = await call_with_token_retry(token_info, _do_fetch)
+    return result
 
 
 # ---------------------------------------------------------------------------

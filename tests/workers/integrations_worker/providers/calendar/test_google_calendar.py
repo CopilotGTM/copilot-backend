@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
-from src.infra.config.nango_provider_mapping import (
-    to_nango_connect_integration_key,
-    to_nango_provider_key,
-)
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     FetchEventsResult,
     fetch_events,
@@ -19,13 +17,16 @@ from src.workers.integrations_worker.providers.calendar.google_calendar import (
 )
 
 
-def _mock_nango_with_token() -> AsyncMock:
-    """Create a NangoClient mock that returns a valid access token."""
-    nango = AsyncMock()
-    nango.get_connection.return_value = {
-        "credentials": {"access_token": "test-token-123"},
-    }
-    return nango
+def _make_token_info() -> IntegrationTokenInfo:
+    """Create a valid IntegrationTokenInfo for testing."""
+    return IntegrationTokenInfo(
+        access_token="test-token-123",
+        refresh_token="test-refresh",
+        access_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        integration_type=IntegrationType.GOOGLE_CALENDAR,
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
 
 
 def _json_response(data: dict, status_code: int = 200) -> httpx.Response:
@@ -37,24 +38,12 @@ def _json_response(data: dict, status_code: int = 200) -> httpx.Response:
     )
 
 
-class TestGoogleCalendarMapping:
-    """Validate expected Nango mapping keys for Google Calendar."""
-
-    def test_connect_key_for_oauth_session(self) -> None:
-        assert (
-            to_nango_connect_integration_key(IntegrationType.GOOGLE_CALENDAR) == "google-calendar"
-        )
-
-    def test_provider_key_for_proxy_requests(self) -> None:
-        assert to_nango_provider_key(IntegrationType.GOOGLE_CALENDAR) == "google-calendar"
-
-
 @pytest.mark.asyncio
 class TestGoogleCalendarFetcher:
     """Validate query mode behavior and cursor handling."""
 
     async def test_initial_sync_uses_time_window_query(self) -> None:
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         responses = [
             _json_response({"items": [], "nextSyncToken": "tok-1"}),
@@ -68,7 +57,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             result = await fetch_events_with_cursor(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=True,
                 last_synced_at=None,
@@ -85,7 +74,7 @@ class TestGoogleCalendarFetcher:
         assert "syncToken" not in params
 
     async def test_incremental_sync_uses_sync_token_query(self) -> None:
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         responses = [
             _json_response({"items": [{"id": "e1"}], "nextSyncToken": "tok-2"}),
@@ -99,7 +88,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             result = await fetch_events_with_cursor(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=False,
                 last_synced_at=datetime.utcnow(),
@@ -118,7 +107,7 @@ class TestGoogleCalendarFetcher:
 
     async def test_sync_token_invalid_payload_falls_back_to_full_sync(self) -> None:
         """410 HTTP status on first request should fallback to full sync."""
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         gone_resp = httpx.Response(
             status_code=410,
@@ -145,7 +134,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             result = await fetch_events_with_cursor(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=False,
                 last_synced_at=datetime.utcnow(),
@@ -157,7 +146,7 @@ class TestGoogleCalendarFetcher:
 
     async def test_sync_token_invalid_exception_falls_back_to_full_sync(self) -> None:
         """Non-HTTP exceptions with 410 message should also fallback."""
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         call_count = 0
 
@@ -176,7 +165,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             result = await fetch_events_with_cursor(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=False,
                 last_synced_at=datetime.utcnow(),
@@ -187,7 +176,7 @@ class TestGoogleCalendarFetcher:
         assert result.sync_token == "tok-new"
 
     async def test_pagination_aggregates_items_and_uses_page_token(self) -> None:
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         responses = [
             _json_response({"items": [{"id": "e1"}], "nextPageToken": "p2"}),
@@ -202,7 +191,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             result = await fetch_events_with_cursor(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=True,
                 last_synced_at=None,
@@ -214,37 +203,8 @@ class TestGoogleCalendarFetcher:
         second_params = mock_client_instance.get.call_args_list[1].kwargs["params"]
         assert second_params["pageToken"] == "p2"
 
-    async def test_custom_provider_config_key_is_used(self) -> None:
-        nango = _mock_nango_with_token()
-
-        responses = [
-            _json_response({"items": []}),
-        ]
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client_instance = AsyncMock()
-            mock_client_instance.get.side_effect = responses
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
-            mock_client_instance.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client_instance
-
-            await fetch_events_with_cursor(
-                nango=nango,
-                connection_id="conn-1",
-                is_initial=True,
-                last_synced_at=None,
-                provider_config_key="custom-google-provider",
-            )
-
-        # Token retrieval should use the custom provider key
-        nango.get_connection.assert_called_once_with(
-            provider="custom-google-provider",
-            connection_id="conn-1",
-            force_refresh=True,
-        )
-
     async def test_backward_compatible_fetch_events_returns_list_only(self) -> None:
-        nango = _mock_nango_with_token()
+        token_info = _make_token_info()
 
         responses = [
             _json_response({"items": [{"id": "e1"}], "nextSyncToken": "tok-2"}),
@@ -258,7 +218,7 @@ class TestGoogleCalendarFetcher:
             mock_client_cls.return_value = mock_client_instance
 
             events = await fetch_events(
-                nango=nango,
+                token_info=token_info,
                 connection_id="conn-1",
                 is_initial=True,
                 last_synced_at=None,

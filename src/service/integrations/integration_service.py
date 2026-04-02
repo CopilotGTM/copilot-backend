@@ -188,6 +188,46 @@ class IntegrationService:
             )
         return True
 
+    async def revoke_custom_oauth_token(
+        self,
+        integration: KnowledgeIntegration,
+    ) -> bool:
+        """Revoke tokens at the provider for custom OAuth integrations.
+
+        Prefers revoking refresh_token (invalidates both tokens at Google).
+        Falls back to access_token if no refresh_token. Logs but does not
+        raise on failure — we still want to deactivate locally even if
+        revocation fails (e.g., token already expired at provider).
+        """
+        from src.service.integrations.providers.provider_factory import ProviderFactory
+
+        credentials = integration.credentials or {}
+        refresh_token = credentials.get("refresh_token")
+        access_token = credentials.get("access_token")
+        token_to_revoke = refresh_token or access_token
+        if not token_to_revoke:
+            logger.warning("No token to revoke for integration %s", integration.integration_id)
+            return False
+
+        integration_type = integration.integration_type
+        if isinstance(integration_type, str):
+            integration_type = IntegrationType(integration_type)
+
+        try:
+            provider = ProviderFactory.get_provider(integration_type)
+            await provider.revoke_token(str(token_to_revoke))
+            logger.info(
+                "Revoked custom OAuth token for integration %s",
+                integration.integration_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to revoke custom OAuth token for %s: %s. Proceeding with deactivation.",
+                integration.integration_id,
+                str(e),
+            )
+        return True
+
     async def list_integration_channels(
         self, integration_id: UUID, deal_id: UUID | None = None
     ) -> list[dict[str, Any]]:

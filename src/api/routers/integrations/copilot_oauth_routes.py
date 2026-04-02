@@ -18,8 +18,8 @@ from src.service.integrations.copilot_callback_service import (
     copilot_callback_service,
 )
 from src.service.integrations.copilot_oauth_service import (
-    CopilotOAuthService,
     CopilotOAuthIntegrationUnavailableError,
+    CopilotOAuthService,
     copilot_oauth_service,
 )
 

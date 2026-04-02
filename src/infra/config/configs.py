@@ -445,23 +445,108 @@ class NangoIntegrationConfig:
 
 
 class GoogleIntegrationConfig:
-    """Configuration for custom Google OAuth flows."""
+    """Configuration for custom Google OAuth flows.
 
-    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
-    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    REDIRECT_URI: str = os.getenv("REDIRECT_URI", "")
+    Credentials are loaded from env vars (local dev) or Azure Key Vault
+    (production) with a configurable TTL cache. The first call to
+    get_credentials() fetches from Key Vault; subsequent calls return
+    from memory until the TTL expires.
+    """
+
+    # Key Vault secret names
+    SECRET_NAME_CLIENT_ID: str = "google-integration-client-id"
+    SECRET_NAME_CLIENT_SECRET: str = "google-integration-client-secret"
+
+    # Non-secret config — always from env
+    REDIRECT_URI: str = os.getenv("GOOGLE_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
     GOOGLE_HTTP_TIMEOUT_SEC: float = float(os.getenv("GOOGLE_HTTP_TIMEOUT_SEC", "10"))
 
+    # Cached credentials (populated from env or Key Vault)
+    _client_id: str | None = os.getenv("GOOGLE_CLIENT_ID")
+    _client_secret: str | None = os.getenv("GOOGLE_CLIENT_SECRET")
+    _credentials_from_env: bool = bool(
+        os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET")
+    )
+    _credentials_ttl_hours: float = float(os.getenv("GOOGLE_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    @property
+    def google_client_id(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_id or ""
+
+    @property
+    def google_client_secret(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_secret or ""
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return (client_id, client_secret), loading from Key Vault if needed.
+
+        Env vars take precedence — when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+        are set, Key Vault is skipped entirely (for local development).
+        """
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+
+        if not self._is_expired():
+            return self._client_id or "", self._client_secret or ""
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._client_id or "", self._client_secret or ""
+            await self._load_from_vault()
+
+        return self._client_id or "", self._client_secret or ""
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Google OAuth credentials from Key Vault (TTL refresh)")
+        self._client_id = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_ID)
+        self._client_secret = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self._client_id and self._client_secret:
+            logger.info(
+                "Google OAuth credentials cached (TTL=%.1fh)",
+                self._credentials_ttl_hours,
+            )
+        else:
+            logger.error(
+                "Google OAuth credentials missing from Key Vault (client_id=%s, client_secret=%s)",
+                bool(self._client_id),
+                bool(self._client_secret),
+            )
+
     def validate(self, *, enabled: bool = True) -> None:
-        """Fail fast when Google custom OAuth is enabled without core credentials."""
+        """Fail fast when Google custom OAuth is enabled without core credentials.
+
+        Only checks sync-available values (env vars or already-cached).
+        For async validation, use get_credentials() which loads from Key Vault.
+        """
         if not enabled:
             return
 
         missing = [
             name
             for name, value in {
-                "GOOGLE_CLIENT_ID": self.GOOGLE_CLIENT_ID,
-                "GOOGLE_CLIENT_SECRET": self.GOOGLE_CLIENT_SECRET,
+                "GOOGLE_CLIENT_ID": self._client_id,
+                "GOOGLE_CLIENT_SECRET": self._client_secret,
                 "REDIRECT_URI": self.REDIRECT_URI,
             }.items()
             if not value

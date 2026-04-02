@@ -1,3 +1,5 @@
+import asyncio
+import random
 import urllib.parse
 from typing import Any
 
@@ -9,11 +11,22 @@ from src.service.integrations.providers.base_provider import BaseIntegrationProv
 
 logger = get_logger()
 
+# 429 retry — Google OAuth endpoints share the same quota pool as data APIs.
+# Token refresh during a sync can be rate-limited under heavy concurrent load.
+_MAX_RETRIES = 3
+_BASE_BACKOFF_SEC = 1.0
+_MAX_BACKOFF_SEC = 30.0
+
 
 class GoogleProvider(BaseIntegrationProvider):
     """
     Google-specific implementation of the Integration Provider pattern.
     Handles scopes dynamically based on whether it is Google Mail or Google Calendar.
+
+    Credentials (client_id, client_secret) are loaded lazily on the first
+    async call — from env vars for local dev, or Key Vault for production.
+
+    All HTTP calls include 429 rate-limit retry with exponential backoff.
     """
 
     AUTHORIZATION_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -23,11 +36,25 @@ class GoogleProvider(BaseIntegrationProvider):
 
     def __init__(self, integration_type: IntegrationType):
         super().__init__(integration_type)
-        google_integration_config.validate()
-        self.client_id = google_integration_config.GOOGLE_CLIENT_ID
-        self.client_secret = google_integration_config.GOOGLE_CLIENT_SECRET
         self.redirect_uri = google_integration_config.REDIRECT_URI
         self.timeout = google_integration_config.GOOGLE_HTTP_TIMEOUT_SEC
+        # Lazy-loaded on first async call via _ensure_credentials()
+        self._client_id: str | None = None
+        self._client_secret: str | None = None
+
+    async def _ensure_credentials(self) -> None:
+        """Load client_id and client_secret from env or Key Vault on first use."""
+        if self._client_id and self._client_secret:
+            return
+        client_id, client_secret = await google_integration_config.get_credentials()
+        if not client_id or not client_secret:
+            raise RuntimeError(
+                "Google OAuth credentials not available — "
+                "set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET env vars "
+                "or store in Key Vault"
+            )
+        self._client_id = client_id
+        self._client_secret = client_secret
 
     @property
     def provider_key(self) -> str:
@@ -46,10 +73,64 @@ class GoogleProvider(BaseIntegrationProvider):
 
         return base_scopes
 
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        data: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """HTTP request to a Google endpoint with 429 rate-limit retry.
+
+        Handles transient rate-limiting on OAuth token endpoints (refresh,
+        exchange, revoke) which share quota with data APIs. Respects
+        Retry-After header when provided by Google.
+
+        Returns the raw httpx.Response — caller is responsible for
+        raise_for_status() and parsing.
+        """
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for attempt in range(_MAX_RETRIES + 1):
+                if method == "POST":
+                    response = await client.post(url, data=data, headers=headers)
+                else:
+                    response = await client.get(url, headers=headers)
+
+                if response.status_code != 429 or attempt >= _MAX_RETRIES:
+                    return response
+
+                # Rate-limited — back off and retry
+                retry_after = response.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        wait = min(float(retry_after), _MAX_BACKOFF_SEC)
+                    except (ValueError, TypeError):
+                        wait = min(_BASE_BACKOFF_SEC * (2**attempt), _MAX_BACKOFF_SEC)
+                else:
+                    wait = min(_BASE_BACKOFF_SEC * (2**attempt), _MAX_BACKOFF_SEC)
+
+                jitter = random.uniform(0, wait * 0.5)  # noqa: S311  # nosec B311
+                total_wait = wait + jitter
+
+                logger.warning(
+                    "Google OAuth 429 rate-limited on %s — retry %d/%d after %.1fs",
+                    url,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    total_wait,
+                )
+                await asyncio.sleep(total_wait)
+
+        # Unreachable — the loop always returns on the last attempt.
+        # Satisfies type checker.
+        raise RuntimeError("Exhausted retries without response")
+
     async def get_authorization_url(self, state: str) -> str:
+        await self._ensure_credentials()
         scopes = self._get_scopes()
         params = {
-            "client_id": self.client_id,
+            "client_id": self._client_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
             "scope": " ".join(scopes),
@@ -62,71 +143,70 @@ class GoogleProvider(BaseIntegrationProvider):
         return url
 
     async def exchange_code(self, code: str, redirect_uri: str | None = None) -> dict[str, Any]:
+        await self._ensure_credentials()
         data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
             "code": code,
             "grant_type": "authorization_code",
             "redirect_uri": redirect_uri or self.redirect_uri,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(self.TOKEN_URL, data=data)
-                response.raise_for_status()
-                json_response = response.json()
-                if isinstance(json_response, dict):
-                    return json_response
-                return {}
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Google HTTP Error: {e.response.text}")
-                raise Exception(f"Failed to exchange Google OAuth code: {e}") from e
-            except Exception as e:
-                logger.error(f"Google OAuth exchange error: {e}")
-                raise
+        try:
+            response = await self._request_with_retry("POST", self.TOKEN_URL, data=data)
+            response.raise_for_status()
+            json_response = response.json()
+            if isinstance(json_response, dict):
+                return json_response
+            return {}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Google HTTP Error: {e.response.text}")
+            raise Exception(f"Failed to exchange Google OAuth code: {e}") from e
+        except Exception as e:
+            logger.error(f"Google OAuth exchange error: {e}")
+            raise
 
     async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+        await self._ensure_credentials()
         data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(self.TOKEN_URL, data=data)
-                response.raise_for_status()
-                json_response = response.json()
-                if isinstance(json_response, dict):
-                    return json_response
-                return {}
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Google HTTP refresh error: {e.response.text}")
-                raise Exception(f"Failed to refresh Google OAuth token: {e}") from e
-            except Exception as e:
-                logger.error(f"Google OAuth refresh error: {e}")
-                raise
+        try:
+            response = await self._request_with_retry("POST", self.TOKEN_URL, data=data)
+            response.raise_for_status()
+            json_response = response.json()
+            if isinstance(json_response, dict):
+                return json_response
+            return {}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Google HTTP refresh error: {e.response.text}")
+            raise Exception(f"Failed to refresh Google OAuth token: {e}") from e
+        except Exception as e:
+            logger.error(f"Google OAuth refresh error: {e}")
+            raise
 
     async def revoke_token(self, token: str) -> None:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.REVOKE_URL,
-                data={"token": token},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            response.raise_for_status()
+        response = await self._request_with_retry(
+            "POST",
+            self.REVOKE_URL,
+            data={"token": token},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response.raise_for_status()
 
     async def get_user_info(self, access_token: str) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {access_token}"}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.get(self.USER_INFO_URL, headers=headers)
-                response.raise_for_status()
-                json_response = response.json()
-                if isinstance(json_response, dict):
-                    return json_response
-                return {}
-            except Exception as e:
-                logger.error(f"Failed to fetch Google user info: {e}")
-                raise
+        try:
+            response = await self._request_with_retry("GET", self.USER_INFO_URL, headers=headers)
+            response.raise_for_status()
+            json_response = response.json()
+            if isinstance(json_response, dict):
+                return json_response
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to fetch Google user info: {e}")
+            raise

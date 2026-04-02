@@ -47,6 +47,12 @@ from src.service.integrations.email_delta_sync_service import (
     EMAIL_INTEGRATION_TYPES,
     EmailDeltaSyncService,
 )
+from src.service.integrations.sync_health import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    classify_sync_error,
+    record_sync_failure,
+    record_sync_success,
+)
 from src.workers.integrations_worker.celery_app import app
 
 logger = get_logger(__name__)
@@ -125,6 +131,9 @@ def sync_email_org_task(
                 col(KnowledgeIntegration.integration_type).in_(EMAIL_INTEGRATION_TYPES),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
+                # Circuit breaker: skip integrations with too many consecutive
+                # transient failures. Counter resets on success automatically.
+                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             rows = result.all()
@@ -183,19 +192,28 @@ def sync_email_org_task(
             )
 
             try:
-                # Call service to sync this integration
                 # Service manages its own database sessions
                 sync_result = await service.sync_integration(
                     organisation_id=org_id,
                     integration_id=info.integration_id,
                 )
 
-                # Track results
                 if sync_result.get("status") == "success":
+                    await record_sync_success(
+                        organisation_id=org_id,
+                        integration_id=info.integration_id,
+                    )
                     successful += 1
                     total_folders += sync_result.get("folders_synced", 0)
                     total_messages += sync_result.get("messages_synced", 0)
                 else:
+                    # Service returned failure in result dict (didn't raise)
+                    error_str = sync_result.get("error", "Unknown error")
+                    await record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=info.integration_id,
+                        error=Exception(error_str),
+                    )
                     failed += 1
 
                 integration_results.append(
@@ -206,17 +224,29 @@ def sync_email_org_task(
                         "folders_synced": sync_result.get("folders_synced", 0),
                         "messages_synced": sync_result.get("messages_synced", 0),
                         "error": sync_result.get("error"),
+                        "failure_type": sync_result.get("error_type"),
                     }
                 )
 
             except Exception as e:
+                failure_type = classify_sync_error(e)
                 logger.error(
-                    "Failed to sync email integration: org=%s integration=%s error=%s",
+                    "Failed to sync email integration: org=%s integration=%s"
+                    " error=%s failure_type=%s",
                     org_id,
                     info.integration_id,
                     str(e),
+                    failure_type.value,
                     exc_info=True,
                 )
+
+                await record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=info.integration_id,
+                    error=e,
+                    failure_type=failure_type,
+                )
+
                 failed += 1
                 integration_results.append(
                     {
@@ -224,6 +254,7 @@ def sync_email_org_task(
                         "integration_type": info.integration_type,
                         "status": "failed",
                         "error": str(e),
+                        "failure_type": failure_type.value,
                     }
                 )
 

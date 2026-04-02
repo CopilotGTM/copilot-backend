@@ -7,8 +7,7 @@ that doesn't fit the generic dispatch pattern.
 
 Uses the fresh-session pattern: extract integration metadata → release DB
 connection → call external APIs → acquire fresh session to persist. This
-avoids holding a connection during potentially slow provider calls (Google
-Calendar / Outlook Graph can take 5-30s per page).
+avoids holding a connection during potentially slow provider calls.
 """
 
 from __future__ import annotations
@@ -23,18 +22,20 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.infra.config.nango_provider_mapping import (
-    to_nango_connect_integration_key,
-    to_nango_provider_key,
-)
 from src.infra.config.provider_categories import categorize_integration_type
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations import NangoClient
 from src.service.integrations.calendar_cursor_metadata import (
     get_calendar_delta_link,
     set_calendar_delta_link,
+)
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.sync_health import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    apply_sync_success,
+    classify_sync_error,
+    record_sync_failure,
 )
 from src.workers.integrations_worker.adapters.calendar_adapter import upsert_calendar_incremental
 from src.workers.integrations_worker.celery_app import app
@@ -43,12 +44,6 @@ from src.workers.integrations_worker.providers.calendar.google_calendar import (
 )
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     fetch_events_with_cursor as google_fetch_events,
-)
-from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
-    FetchEventsResult as OutlookFetchEventsResult,
-)
-from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
-    fetch_events as outlook_fetch_events,
 )
 
 logger = get_logger(__name__)
@@ -68,42 +63,17 @@ class IntegrationFetchData:
     integration_type: IntegrationType
     integration_type_value: str
     provider: str
-    provider_config_key: str
     is_initial: bool
     last_synced_at: datetime | None
-    calendar_delta_link: str | None  # Outlook deltaLink or Google syncToken
+    calendar_delta_link: str | None  # Google syncToken
+    credentials: dict[str, Any]
+    access_token_expires_at: datetime | None
 
 
 CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
 )
-
-
-def _resolve_provider_config_key(
-    *,
-    integration_type: IntegrationType,
-    connection_metadata: dict[str, Any] | None,
-) -> str:
-    """Resolve Nango provider config key, preferring metadata over defaults.
-
-    Nango provider keys differ across environments (e.g. Google Calendar uses
-    `google-calendar` in some envs). Metadata-first lets per-connection
-    overrides win without environment-specific branching.
-    """
-    metadata = connection_metadata or {}
-    metadata_key = metadata.get("provider_config_key")
-
-    if integration_type == IntegrationType.GOOGLE_CALENDAR:
-        normalized_metadata_key = metadata_key.strip() if isinstance(metadata_key, str) else ""
-        if normalized_metadata_key in {"google-calendar", "google_calendar"}:
-            return "google-calendar"
-        return to_nango_connect_integration_key(integration_type)
-
-    if isinstance(metadata_key, str) and metadata_key.strip():
-        return metadata_key.strip()
-
-    return to_nango_provider_key(integration_type)
 
 
 @app.task(
@@ -148,6 +118,10 @@ def sync_calendar_org_task(
                 col(KnowledgeIntegration.integration_type).in_(CALENDAR_INTEGRATION_TYPES),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
+                # Circuit breaker: skip integrations with too many consecutive
+                # transient failures. Counter resets on success, so recovery
+                # is automatic when the provider comes back.
+                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -193,12 +167,7 @@ def sync_calendar_org_task(
                     else integration_row.integration_type
                 )
 
-                # Get Integration type from providers
                 _, provider = categorize_integration_type(int_type)
-                provider_config_key = _resolve_provider_config_key(
-                    integration_type=int_type,
-                    connection_metadata=integration_row.connection_metadata,
-                )
 
                 # Only fetch cursor on incremental syncs — initial syncs use time-bounded window
                 connection_metadata = integration_row.connection_metadata or {}
@@ -213,12 +182,15 @@ def sync_calendar_org_task(
                         integration_type=int_type,
                         integration_type_value=int_type.value,
                         provider=provider,
-                        provider_config_key=provider_config_key,
                         is_initial=integration_row.last_synced_at is None,
                         last_synced_at=integration_row.last_synced_at,
                         calendar_delta_link=calendar_delta_link,
+                        credentials=dict(integration_row.credentials or {}),
+                        access_token_expires_at=integration_row.access_token_expires_at,
                     )
                 )
+        # Session released
+
         if not integration_fetch_list:
             return {
                 "status": "completed",
@@ -239,143 +211,160 @@ def sync_calendar_org_task(
         failed = 0
         total_events = 0
 
-        nango = NangoClient()
-        try:
-            for fetch_data in integration_fetch_list:
-                logger.info(
-                    "Syncing calendar integration: org=%s integration=%s type=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    fetch_data.integration_type_value,
-                )
+        for fetch_data in integration_fetch_list:
+            logger.info(
+                "Syncing calendar integration: org=%s integration=%s type=%s",
+                org_id,
+                fetch_data.integration_id,
+                fetch_data.integration_type_value,
+            )
 
-                try:
-                    # exhaustion when Google/Outlook APIs are slow.
-                    events: list[dict[str, Any]]
-                    new_calendar_delta_link: str | None = None
+            try:
+                events: list[dict[str, Any]]
+                new_calendar_delta_link: str | None = None
 
-                    if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
-                        google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
-                            nango=nango,
-                            connection_id=fetch_data.connection_id,
-                            is_initial=fetch_data.is_initial,
-                            last_synced_at=fetch_data.last_synced_at,
-                            sync_token=fetch_data.calendar_delta_link,
-                            provider_config_key=fetch_data.provider_config_key,
-                        )
-                        events = google_fetch_result.events
-                        new_calendar_delta_link = google_fetch_result.sync_token
-                    elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-                        outlook_fetch_result: OutlookFetchEventsResult = await outlook_fetch_events(
-                            nango=nango,
-                            connection_id=fetch_data.connection_id,
-                            is_initial=fetch_data.is_initial,
-                            last_synced_at=fetch_data.last_synced_at,
-                            provider_config_key=fetch_data.provider_config_key,
-                            delta_link=fetch_data.calendar_delta_link,
-                        )
-                        events = outlook_fetch_result.events
-                        new_calendar_delta_link = outlook_fetch_result.delta_link
-                    else:
-                        logger.warning(
-                            "Unknown calendar provider: %s",
-                            fetch_data.integration_type,
-                        )
-                        continue
-
-                    logger.info(
-                        "Fetched %d events for integration %s",
-                        len(events),
-                        fetch_data.integration_id,
+                if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
+                    token_info = IntegrationTokenInfo(
+                        access_token=fetch_data.credentials.get("access_token"),
+                        refresh_token=fetch_data.credentials.get("refresh_token"),
+                        access_token_expires_at=fetch_data.access_token_expires_at,
+                        integration_type=fetch_data.integration_type,
+                        organisation_id=org_id,
+                        integration_id=fetch_data.integration_id,
                     )
 
-                    # Fresh session for persist — re-query integration because
-                    # the Phase 1 instance is detached from any session.
-                    async for session in acquire_org_async_session(org_id):
-                        stmt = select(KnowledgeIntegration).where(
-                            col(KnowledgeIntegration.integration_id) == fetch_data.integration_id,
+                    google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
+                        token_info=token_info,
+                        connection_id=fetch_data.connection_id,
+                        is_initial=fetch_data.is_initial,
+                        last_synced_at=fetch_data.last_synced_at,
+                        sync_token=fetch_data.calendar_delta_link,
+                    )
+                    events = google_fetch_result.events
+                    new_calendar_delta_link = google_fetch_result.sync_token
+
+                elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+                    # Outlook sync not supported on custom-oauth branch —
+                    # will be enabled when MicrosoftProvider is implemented
+                    logger.warning(
+                        "Outlook calendar sync not supported on custom-oauth branch, "
+                        "skipping: integration=%s",
+                        fetch_data.integration_id,
+                    )
+                    continue
+                else:
+                    logger.warning(
+                        "Unknown calendar provider: %s",
+                        fetch_data.integration_type,
+                    )
+                    continue
+
+                logger.info(
+                    "Fetched %d events for integration %s",
+                    len(events),
+                    fetch_data.integration_id,
+                )
+
+                # Fresh session for persist — re-query integration because
+                # the Phase 1 instance is detached from any session.
+                async for session in acquire_org_async_session(org_id):
+                    stmt = select(KnowledgeIntegration).where(
+                        col(KnowledgeIntegration.integration_id) == fetch_data.integration_id,
+                    )
+                    result = await session.execute(stmt)
+                    integration_db = result.scalar_one_or_none()
+
+                    if integration_db is None:
+                        logger.warning(
+                            "Integration no longer exists: %s",
+                            fetch_data.integration_id,
                         )
-                        result = await session.execute(stmt)
-                        integration_db = result.scalar_one_or_none()
-
-                        if integration_db is None:
-                            logger.warning(
-                                "Integration no longer exists: %s",
-                                fetch_data.integration_id,
-                            )
-                            failed += 1
-                            integration_results.append(
-                                {
-                                    "integration_id": str(fetch_data.integration_id),
-                                    "integration_type": fetch_data.integration_type_value,
-                                    "status": "failed",
-                                    "error": "Integration no longer exists",
-                                }
-                            )
-                            continue
-
-                        sync_result = await upsert_calendar_incremental(
-                            session=session,
-                            organisation_id=org_id,
-                            integration=integration_db,
-                            provider=fetch_data.provider,
-                            events=events,
-                        )
-                        records_synced = sync_result.get("records_processed", 0)
-
-                        # Save cursor only after successful persist — if we crash
-                        # before commit, the next sync re-fetches from the old cursor.
-                        updated_metadata = dict(integration_db.connection_metadata or {})
-                        if new_calendar_delta_link:
-                            updated_metadata = set_calendar_delta_link(
-                                updated_metadata,
-                                fetch_data.integration_type,
-                                new_calendar_delta_link,
-                            )
-                            logger.info(
-                                "Calendar cursor saved (integration=%s provider=%s)",
-                                fetch_data.integration_id,
-                                fetch_data.integration_type_value,
-                            )
-                        integration_db.connection_metadata = updated_metadata
-
-                        # Strip tzinfo — column is `timestamp without time zone`; asyncpg
-                        # rejects tz-aware datetimes for tz-naive columns.
-                        integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                        session.add(integration_db)
-                        await session.commit()
-
-                        successful += 1
-                        total_events += records_synced
-
+                        failed += 1
                         integration_results.append(
                             {
                                 "integration_id": str(fetch_data.integration_id),
                                 "integration_type": fetch_data.integration_type_value,
-                                "status": "success",
-                                "events_synced": records_synced,
-                                "sync_breakdown": sync_result,
+                                "status": "failed",
+                                "error": "Integration no longer exists",
                             }
                         )
-                except Exception as e:
-                    logger.error(
-                        "Failed to sync calendar integration: org=%s integration=%s error=%s",
-                        org_id,
-                        fetch_data.integration_id,
-                        str(e),
-                        exc_info=True,
+                        continue
+
+                    sync_result = await upsert_calendar_incremental(
+                        session=session,
+                        organisation_id=org_id,
+                        integration=integration_db,
+                        provider=fetch_data.provider,
+                        events=events,
                     )
-                    failed += 1
+                    records_synced = sync_result.get("records_processed", 0)
+
+                    # Save cursor only after successful persist — if we crash
+                    # before commit, the next sync re-fetches from the old cursor.
+                    updated_metadata = dict(integration_db.connection_metadata or {})
+                    if new_calendar_delta_link:
+                        updated_metadata = set_calendar_delta_link(
+                            updated_metadata,
+                            fetch_data.integration_type,
+                            new_calendar_delta_link,
+                        )
+                        logger.info(
+                            "Calendar cursor saved (integration=%s provider=%s)",
+                            fetch_data.integration_id,
+                            fetch_data.integration_type_value,
+                        )
+                    integration_db.connection_metadata = updated_metadata
+
+                    # Strip tzinfo — column is `timestamp without time zone`; asyncpg
+                    # rejects tz-aware datetimes for tz-naive columns.
+                    integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                    # Update sync health in the same commit as the persist —
+                    # avoids a second DB round-trip per successful sync.
+                    apply_sync_success(integration_db)
+                    session.add(integration_db)
+                    await session.commit()
+
+                    successful += 1
+                    total_events += records_synced
+
                     integration_results.append(
                         {
                             "integration_id": str(fetch_data.integration_id),
                             "integration_type": fetch_data.integration_type_value,
-                            "status": "failed",
-                            "error": str(e),
+                            "status": "success",
+                            "events_synced": records_synced,
+                            "sync_breakdown": sync_result,
                         }
                     )
-        finally:
-            await nango.close()
+            except Exception as e:
+                failure_type = classify_sync_error(e)
+                logger.error(
+                    "Failed to sync calendar integration: org=%s integration=%s"
+                    " error=%s failure_type=%s",
+                    org_id,
+                    fetch_data.integration_id,
+                    str(e),
+                    failure_type.value,
+                    exc_info=True,
+                )
+
+                await record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=fetch_data.integration_id,
+                    error=e,
+                    failure_type=failure_type,
+                )
+
+                failed += 1
+                integration_results.append(
+                    {
+                        "integration_id": str(fetch_data.integration_id),
+                        "integration_type": fetch_data.integration_type_value,
+                        "status": "failed",
+                        "error": str(e),
+                        "failure_type": failure_type.value,
+                    }
+                )
 
         completed_at = datetime.now(UTC).isoformat()
 

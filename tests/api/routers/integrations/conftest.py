@@ -9,12 +9,12 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.responses import JSONResponse
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
-from src.api.routers.integrations.deal_integration_routes import (
-    get_integration_service as get_deal_integration_service,
-)
 from src.api.routers.integrations.copilot_oauth_routes import (
     get_copilot_callback_service,
     get_copilot_oauth_service,
+)
+from src.api.routers.integrations.deal_integration_routes import (
+    get_integration_service as get_deal_integration_service,
 )
 from src.api.routers.integrations.integration_routes import (
     get_integration_service as get_list_integration_service,
@@ -120,8 +120,11 @@ class FakeIntegrationService:
         self, connection_id: str, integration_type: str
     ) -> None:
         """Delete integration from Nango."""
-        # Simulate successful deletion
         pass
+
+    async def revoke_custom_oauth_token(self, integration: Any) -> bool:
+        """Revoke custom OAuth token (fake)."""
+        return True
 
     async def get_deal_linked_channels(self, deal_id: UUID) -> list[dict[str, Any]]:
         """Get channels linked to a deal."""

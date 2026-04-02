@@ -217,11 +217,15 @@ async def disconnect_integration(
                 message="Integration has no connection ID", response=response
             )
 
-        # Delete integration (includes Nango cleanup)
-        await service.delete_integration_from_nango(
-            connection_id=integration.connection_id,
-            integration_type=integration.integration_type,
-        )
+        # Route to correct revocation path based on auth backend
+        auth_backend = (integration.connection_metadata or {}).get("auth_backend")
+        if auth_backend == "custom":
+            await service.revoke_custom_oauth_token(integration)
+        else:
+            await service.delete_integration_from_nango(
+                connection_id=integration.connection_id,
+                integration_type=integration.integration_type,
+            )
 
         # Soft delete: mark as inactive
         integration.is_active = False

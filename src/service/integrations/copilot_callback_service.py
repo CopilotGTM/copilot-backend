@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.sync import (
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
+from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
 
 logger = get_logger(__name__)
@@ -73,7 +74,8 @@ class CopilotCallbackService:
             credentials.get("expires_at") or credentials.get("expires_in")
         )
         integration.refresh_token_expires_at = self._parse_token_expiry(
-            credentials.get("refresh_token_expires_at") or credentials.get("refresh_token_expires_in")
+            credentials.get("refresh_token_expires_at")
+            or credentials.get("refresh_token_expires_in")
         )
         integration.scopes = self._parse_scopes(credentials, integration.scopes)
 
@@ -194,8 +196,15 @@ class CopilotCallbackService:
         await self._save_connection_mapping(
             connection_id,
             integration,
-            integration.connection_metadata.get("provider_config_key", f"custom-{integration_type.value}"),
+            integration.connection_metadata.get(
+                "provider_config_key", f"custom-{integration_type.value}"
+            ),
         )
+
+        # Trigger initial sync so data starts flowing immediately — without this,
+        # users would wait up to 30 min for the next Celery Beat cycle
+        self._trigger_initial_sync(integration)
+
         return self._build_success_response(integration, reactivated=True)
 
     async def _create_new_integration(
@@ -242,6 +251,10 @@ class CopilotCallbackService:
                 integration,
                 integration.connection_metadata.get("provider_config_key", f"custom-{type_key}"),
             )
+
+            # Trigger initial sync so data starts flowing immediately
+            self._trigger_initial_sync(integration)
+
             return self._build_success_response(integration, reactivated=False)
 
         raise RuntimeError("Failed to acquire organisation session")
@@ -256,6 +269,30 @@ class CopilotCallbackService:
         )
         result = await session.execute(stmt)
         return result.scalars().first()
+
+    def _trigger_initial_sync(self, integration: KnowledgeIntegration) -> None:
+        """Dispatch initial sync task so data flows immediately after connect.
+
+        Errors are caught and logged — a failed sync trigger should not
+        prevent the OAuth callback from returning success to the user.
+        """
+        try:
+            InitialSyncService().trigger_initial_sync(
+                organisation_id=integration.organisation_id,
+                integration=integration,
+            )
+            logger.info(
+                "Triggered initial sync: integration=%s type=%s",
+                integration.integration_id,
+                integration.integration_type,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to trigger initial sync: integration=%s error=%s",
+                integration.integration_id,
+                str(e),
+                exc_info=True,
+            )
 
     def _build_success_response(
         self,
