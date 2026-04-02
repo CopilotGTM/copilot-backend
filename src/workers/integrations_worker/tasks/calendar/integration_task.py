@@ -1,7 +1,7 @@
-"""
-Tier 3: Integration-level calendar sync task.
+"""Tier 3: Integration-level calendar sync task.
 
 Syncs a specific calendar integration for manual/user-level triggers.
+Uses custom OAuth token management (not Nango) via IntegrationTokenInfo.
 
 This task is used for:
 - Frontend "Refresh" button on integrations page
@@ -10,13 +10,6 @@ This task is used for:
 
 NOTE: This task is NOT used by the scheduled sync (Celery Beat).
 The scheduler uses Tier 1 -> Tier 2, which handles integrations inline.
-
-Architecture:
-    Frontend/API (manual trigger)
-        |
-    sync_calendar_integration_task [Tier 3 - this file]
-        |
-    CalendarSyncService (direct call, same pattern as CRM/Email)
 
 Session Management:
     This task follows the "fresh session" pattern to avoid holding database
@@ -38,19 +31,15 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.infra.config.nango_provider_mapping import (
-    to_nango_connect_integration_key,
-    to_nango_provider_key,
-)
 from src.infra.config.provider_categories import categorize_integration_type
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations import NangoClient
 from src.service.integrations.calendar_cursor_metadata import (
     get_calendar_delta_link,
     set_calendar_delta_link,
 )
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.adapters.calendar_adapter import upsert_calendar_incremental
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
@@ -58,12 +47,6 @@ from src.workers.integrations_worker.providers.calendar.google_calendar import (
 )
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     fetch_events_with_cursor as google_fetch_events,
-)
-from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
-    FetchEventsResult as OutlookFetchEventsResult,
-)
-from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
-    fetch_events as outlook_fetch_events,
 )
 
 logger = get_logger(__name__)
@@ -83,10 +66,11 @@ class IntegrationFetchData:
     integration_type: IntegrationType
     integration_type_value: str
     provider: str
-    provider_config_key: str
     is_initial: bool
     last_synced_at: datetime | None
     calendar_delta_link: str | None  # Outlook deltaLink or Google syncToken
+    credentials: dict[str, Any]
+    access_token_expires_at: datetime | None
 
 
 # Calendar integration types
@@ -94,33 +78,6 @@ CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
 )
-
-
-def _resolve_provider_config_key(
-    *,
-    integration_type: IntegrationType,
-    connection_metadata: dict[str, Any] | None,
-) -> str:
-    """Resolve provider config key with metadata-first strategy.
-
-    Why this exists:
-    - Nango provider config keys can differ across environments.
-    - For Google Calendar, some environments use
-      `google-calendar` as the provider key used by proxy calls.
-    """
-    metadata = connection_metadata or {}
-    metadata_key = metadata.get("provider_config_key")
-
-    if integration_type == IntegrationType.GOOGLE_CALENDAR:
-        normalized_metadata_key = metadata_key.strip() if isinstance(metadata_key, str) else ""
-        if normalized_metadata_key in {"google-calendar", "google_calendar"}:
-            return "google-calendar"
-        return to_nango_connect_integration_key(integration_type)
-
-    if isinstance(metadata_key, str) and metadata_key.strip():
-        return metadata_key.strip()
-
-    return to_nango_provider_key(integration_type)
 
 
 @app.task(
@@ -228,10 +185,6 @@ def sync_calendar_integration_task(
                 else integration_row.integration_type
             )
             _, provider = categorize_integration_type(int_type)
-            provider_config_key = _resolve_provider_config_key(
-                integration_type=int_type,
-                connection_metadata=integration_row.connection_metadata,
-            )
 
             # Single shared calendar cursor key per integration row.
             connection_metadata = integration_row.connection_metadata or {}
@@ -245,10 +198,11 @@ def sync_calendar_integration_task(
                 integration_type=int_type,
                 integration_type_value=int_type.value,
                 provider=provider,
-                provider_config_key=provider_config_key,
                 is_initial=integration_row.last_synced_at is None,
                 last_synced_at=integration_row.last_synced_at,
                 calendar_delta_link=calendar_delta_link,
+                credentials=dict(integration_row.credentials or {}),
+                access_token_expires_at=integration_row.access_token_expires_at,
             )
         # Session is now released
 
@@ -273,41 +227,51 @@ def sync_calendar_integration_task(
         events: list[dict[str, Any]]
         new_calendar_delta_link: str | None = None
 
-        nango = NangoClient()
-        try:
-            if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
-                google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
-                    nango=nango,
-                    connection_id=fetch_data.connection_id,
-                    is_initial=fetch_data.is_initial,
-                    last_synced_at=fetch_data.last_synced_at,
-                    sync_token=fetch_data.calendar_delta_link,
-                    provider_config_key=fetch_data.provider_config_key,
-                )
-                events = google_fetch_result.events
-                new_calendar_delta_link = google_fetch_result.sync_token
-            elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-                outlook_fetch_result: OutlookFetchEventsResult = await outlook_fetch_events(
-                    nango=nango,
-                    connection_id=fetch_data.connection_id,
-                    is_initial=fetch_data.is_initial,
-                    last_synced_at=fetch_data.last_synced_at,
-                    provider_config_key=fetch_data.provider_config_key,
-                    delta_link=fetch_data.calendar_delta_link,
-                )
-                events = outlook_fetch_result.events
-                new_calendar_delta_link = outlook_fetch_result.delta_link
-            else:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": f"Unknown calendar provider: {fetch_data.integration_type}",
-                }
-        finally:
-            await nango.close()
+        if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
+            token_info = IntegrationTokenInfo(
+                access_token=fetch_data.credentials.get("access_token"),
+                refresh_token=fetch_data.credentials.get("refresh_token"),
+                access_token_expires_at=fetch_data.access_token_expires_at,
+                integration_type=fetch_data.integration_type,
+                organisation_id=org_id,
+                integration_id=fetch_data.integration_id,
+            )
+
+            google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
+                token_info=token_info,
+                connection_id=fetch_data.connection_id,
+                is_initial=fetch_data.is_initial,
+                last_synced_at=fetch_data.last_synced_at,
+                sync_token=fetch_data.calendar_delta_link,
+            )
+            events = google_fetch_result.events
+            new_calendar_delta_link = google_fetch_result.sync_token
+
+        elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+            # Outlook sync not supported on custom-oauth branch —
+            # will be enabled when MicrosoftProvider is implemented
+            logger.warning(
+                "Outlook calendar sync not supported on custom-oauth branch, "
+                "skipping: integration=%s",
+                fetch_data.integration_id,
+            )
+            return {
+                "status": "skipped",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": "Outlook calendar sync not yet supported on custom-oauth branch",
+            }
+        else:
+            return {
+                "status": "failed",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": f"Unknown calendar provider: {fetch_data.integration_type}",
+            }
 
         logger.info(
             "Fetched %d events for integration %s",

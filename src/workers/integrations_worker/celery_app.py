@@ -53,10 +53,10 @@ def worker_shutdown_handler(sender=None, **kwargs):
 
 
 # Explicitly import task modules to ensure registration
-# Three-tier architecture: calendar, email, messaging, and CRM sync tasks
+# Three-tier architecture: calendar, email, and messaging sync tasks
+# CRM sync (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
 from .tasks import (
     calendar,  # noqa: F401, E402 - three-tier calendar sync
-    crm,  # noqa: F401, E402 - three-tier CRM sync
     email,  # noqa: F401, E402 - three-tier email sync
     messaging,  # noqa: F401, E402 - three-tier messaging sync
     token_refresh,  # noqa: F401, E402

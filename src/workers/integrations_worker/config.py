@@ -109,133 +109,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
             },
-            # CRM Deals sync tasks (three-tier architecture)
-            "integrations.sync_crm_deals_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_deals_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_deals_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
-            # CRM Pipelines sync tasks (three-tier architecture)
-            "integrations.sync_crm_pipelines_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_pipelines_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_pipelines_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
-            # CRM Contacts sync tasks (three-tier architecture)
-            "integrations.sync_crm_contacts_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_contacts_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_contacts_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
-            # CRM Companies sync tasks (three-tier architecture)
-            "integrations.sync_crm_companies_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_companies_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_companies_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
-            # CRM Users sync tasks (three-tier architecture)
-            "integrations.sync_crm_users_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_users_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_users_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
-            # CRM Activities sync tasks (three-tier architecture)
-            "integrations.sync_crm_activities_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_activities_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_crm_activities_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
-                "routing_key": "integrations_priority",
-            },
+            # CRM sync tasks (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
         }
 
         # Celery Beat schedule for periodic tasks.
         # Organization:
-        #   1. CRM sync (business critical data pipelines)
-        #   2. Maintenance (token refresh, shared housekeeping)
-        #   3. Communication/messaging workloads (US business-hour focus)
-
-        _crm_schedule = {
-            # Reference data — once daily
-            "sync-crm-users-all-orgs": {
-                "task": "integrations.sync_crm_users_all_orgs",
-                "schedule": crontab(minute=0, hour=0),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            "sync-crm-pipelines-all-orgs": {
-                "task": "integrations.sync_crm_pipelines_all_orgs",
-                "schedule": crontab(minute=30, hour=0),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            # Medium churn — every hour
-            "sync-crm-companies-all-orgs": {
-                "task": "integrations.sync_crm_companies_all_orgs",
-                "schedule": crontab(minute=25, hour="*"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            "sync-crm-activities-all-orgs": {
-                "task": "integrations.sync_crm_activities_all_orgs",
-                "schedule": crontab(minute=30, hour="*"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            # High churn — every 15 minutes
-            "sync-crm-contacts-all-orgs": {
-                "task": "integrations.sync_crm_contacts_all_orgs",
-                "schedule": crontab(minute="1,16,31,46"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            "sync-crm-deals-all-orgs": {
-                "task": "integrations.sync_crm_deals_all_orgs",
-                "schedule": crontab(minute="8,23,38,53"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-        }
+        #   1. Maintenance (token refresh, shared housekeeping)
+        #   2. Communication/messaging workloads (US business-hour focus)
+        # Note: CRM sync (HubSpot, Salesforce) deprecated — schedule removed
 
         _maintenance_schedule = {
             "refresh-tokens": {
@@ -283,7 +164,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         }
 
         self.beat_schedule = {
-            **_crm_schedule,
             **_maintenance_schedule,
             **_communication_schedule,
         }
