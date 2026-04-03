@@ -1,7 +1,7 @@
 """Shared helpers for direct Microsoft Graph API calls.
 
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are managed by custom OAuth (token storage + refresh via
+token_resolution module). API calls go directly to Microsoft Graph.
 """
 
 from __future__ import annotations
@@ -11,32 +11,23 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
+    call_with_token_retry,
+    get_access_token,
+)
 
 logger = get_logger(__name__)
 
 GRAPH_BASE_URL = "https://graph.microsoft.com"
 
-
-async def get_access_token(
-    nango: NangoClient,
-    connection_id: str,
-    provider_config_key: str,
-) -> str:
-    """Retrieve a fresh OAuth access token from Nango.
-
-    Uses Nango's connection API (not proxy) to get/refresh the token.
-    """
-    connection = await nango.get_connection(
-        provider=provider_config_key,
-        connection_id=connection_id,
-        force_refresh=True,
-    )
-    credentials = connection.get("credentials", {})
-    token = credentials.get("access_token")
-    if not token:
-        raise RuntimeError(f"No access_token in Nango connection for {connection_id}")
-    return str(token)
+__all__ = [
+    "IntegrationTokenInfo",
+    "call_with_token_retry",
+    "get_access_token",
+    "graph_api_request",
+    "graph_api_request_url",
+]
 
 
 async def graph_api_request(

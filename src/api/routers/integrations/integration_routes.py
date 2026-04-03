@@ -31,7 +31,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import get_all_integration_metadata
 from src.infra.utils.logger import get_logger
-from src.service.integrations import IntegrationService, NangoClient
+from src.service.integrations import IntegrationService
 from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
@@ -43,14 +43,7 @@ async def get_integration_service(
     session: AsyncSession = Depends(get_org_async_session),
 ):
     """Dependency to create IntegrationService instance."""
-    nango = NangoClient()
-    service = IntegrationService(db_session=session, user_ids=user_ids, nango_client=nango)
-    try:
-        yield service
-    finally:
-        await nango.close()
-        if hasattr(service, "close") and callable(service.close):
-            await service.close()
+    yield IntegrationService(db_session=session, user_ids=user_ids)
 
 
 @router.get(

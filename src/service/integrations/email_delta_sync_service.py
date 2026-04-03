@@ -49,7 +49,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
-from src.workers.integrations_worker.providers.email import gmail_email
+from src.workers.integrations_worker.providers.email import gmail_email, outlook_email
 
 logger = get_logger(__name__)
 
@@ -181,10 +181,17 @@ async def _fetch_folders_for_provider(
             last_synced_at=sync_data.last_synced_at,
             provider_config_key=sync_data.provider_key,
         )
-    # Outlook not supported on custom-oauth branch
+    if sync_data.provider == "outlook":
+        return await outlook_email.fetch_folders(
+            token_info=token_info,
+            connection_id=sync_data.connection_id,
+            is_initial=False,
+            last_synced_at=sync_data.last_synced_at,
+            provider_config_key=sync_data.provider_key,
+        )
     logger.warning(
-        "Outlook email folder fetch not supported on custom-oauth branch, "
-        "returning empty: integration=%s",
+        "Unsupported email provider for folder fetch: provider=%s integration=%s",
+        sync_data.provider,
         sync_data.integration_id,
     )
     return []
@@ -214,10 +221,21 @@ async def _fetch_messages_for_provider(
         )
         return result.messages, result.history_id
 
-    # Outlook not supported on custom-oauth branch
+    if sync_data.provider == "outlook":
+        result = await outlook_email.fetch_messages(
+            token_info=token_info,
+            connection_id=sync_data.connection_id,
+            is_initial=is_initial,
+            last_synced_at=folder_data.last_synced_at,
+            delta_link=folder_data.delta_link,
+            provider_config_key=sync_data.provider_key,
+            folder_id=folder_data.external_folder_id,
+        )
+        return result.messages, result.delta_link
+
     logger.warning(
-        "Outlook email message fetch not supported on custom-oauth branch, "
-        "returning empty: integration=%s",
+        "Unsupported email provider for message fetch: provider=%s integration=%s",
+        sync_data.provider,
         sync_data.integration_id,
     )
     return [], None

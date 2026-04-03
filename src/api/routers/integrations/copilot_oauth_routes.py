@@ -1,9 +1,15 @@
 from urllib.parse import urlencode
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import RedirectResponse
-from src.api.dependencies.organisation_dependencies import UserIDs
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    get_current_user,
+    get_org_async_session,
+)
 from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import OAuthInitiateRequest
@@ -13,6 +19,7 @@ from src.infra.auth.user_auth import user_auth
 from src.infra.config.configs import app_config
 from src.infra.config.constant import IntegrationErrors
 from src.infra.utils.logger import get_logger
+from src.service.integrations import IntegrationService
 from src.service.integrations.copilot_callback_service import (
     CopilotCallbackService,
     copilot_callback_service,
@@ -138,4 +145,76 @@ async def handle_oauth_callback(
                 "message": IntegrationErrors.OAUTH_CALLBACK_FAILED,
             },
             status_code=303,
+        )
+
+
+async def get_integration_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency to create IntegrationService instance."""
+    yield IntegrationService(db_session=session, user_ids=user_ids)
+
+
+@router.delete(
+    "/disconnect/{integration_id}",
+    response_model=GenericResponse[None],
+    summary="Disconnect and deactivate an integration",
+    description="Revokes OAuth tokens and marks the integration as inactive.",
+)
+async def disconnect_integration(
+    integration_id: UUID,
+    response: FastAPIResponse,
+    service: IntegrationService = Depends(get_integration_service),
+    _rl: None = Depends(rate_limit_user_write),
+) -> GenericResponse[None]:
+    """Revoke OAuth tokens at the provider and mark the integration as inactive."""
+    try:
+        integration = await service.get_integration(integration_id=integration_id)
+
+        if not integration:
+            return Response.not_found_error_response(
+                message=IntegrationErrors.INTEGRATION_NOT_FOUND, response=response
+            )
+
+        if integration.is_active is False:
+            return Response.bad_request_error_response(
+                message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE, response=response
+            )
+
+        if not integration.connection_id:
+            return Response.bad_request_error_response(
+                message="Integration has no connection ID", response=response
+            )
+
+        await service.revoke_custom_oauth_token(integration)
+
+        integration.is_active = False
+        integration.last_sync_error = "Integration disconnected by user"
+        service.db.add(integration)
+        await service.db.commit()
+
+        logger.info(
+            "Disconnected integration %s for org %s",
+            integration_id,
+            service.user_ids.organisation_id,
+        )
+        return Response.success_response(
+            message="Integration disconnected and marked as inactive successfully", data=None
+        )
+
+    except ValueError as e:
+        logger.warning("Integration %s not found: %s", integration_id, str(e))
+        return Response.not_found_error_response(
+            message=IntegrationErrors.INTEGRATION_NOT_FOUND, response=response
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to disconnect integration %s: %s",
+            integration_id,
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(
+            message=IntegrationErrors.INTEGRATION_DISCONNECTION_FAILED, response=response
         )

@@ -455,8 +455,6 @@ ignore = [
 "src/service/chat/chat_message_sse_service.py" = ["E402"]
 # Stub methods in interfaces
 "src/infra/storage/generate_presigned_url.py" = ["ARG002"]
-"src/service/integrations/nango_client.py" = ["ARG002"]
-"src/service/integrations/token_refresh_service.py" = ["ARG002"]
 # Type alias using Union for clarity with many types
 "src/api/schemas/chat_stream_models.py" = ["UP007"]
 # Redis cleanup in error handler

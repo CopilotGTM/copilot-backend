@@ -1,8 +1,8 @@
 """Outlook Calendar fetcher via Microsoft Graph API (direct calls).
 
 Fetches calendar events from Outlook/Office 365 calendars.
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are managed by custom OAuth via token_resolution module.
+API calls go directly to Microsoft Graph.
 
 Uses Microsoft Graph calendarView/delta for efficient incremental sync:
 - Initial sync: calendarView/delta with startDateTime/endDateTime (90 days past to 365 days future)
@@ -21,12 +21,12 @@ from typing import Any
 
 import httpx
 
-from src.domain.models.organisation_tables.sync import IntegrationType
-from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
-from src.workers.integrations_worker.providers._microsoft_graph import (
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
     get_access_token,
+)
+from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_request,
     graph_api_request_url,
 )
@@ -233,7 +233,7 @@ def _filter_old_events(
 
 async def fetch_events(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -258,6 +258,7 @@ async def fetch_events(
     - A new deltaLink to use for the next sync
 
     Args:
+        token_info: OAuth token info for this integration.
         delta_link: Optional stored deltaLink from previous sync. If provided,
                     only events changed since that deltaLink are returned.
 
@@ -265,9 +266,7 @@ async def fetch_events(
         FetchEventsResult with events and new deltaLink
     """
     _ = data_type  # intentionally unused; signature kept for registry compatibility
-    provider = provider_config_key or to_nango_connect_integration_key(
-        IntegrationType.OUTLOOK_CALENDAR
-    )
+    _ = provider_config_key  # no longer needed — tokens come from local credentials
     now = datetime.now(UTC)
 
     # Track if we're using a stored deltaLink for true incremental sync
@@ -297,7 +296,7 @@ async def fetch_events(
             end_dt,
         )
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     all_items: list[dict[str, Any]] = []
     next_link: str | None = None
@@ -326,13 +325,11 @@ async def fetch_events(
                         "Outlook Calendar: stored deltaLink expired (410), retrying with fresh delta query"
                     )
                     return await fetch_events(
-                        nango=nango,
+                        token_info=token_info,
                         connection_id=connection_id,
                         is_initial=False,
                         last_synced_at=last_synced_at,
                         delta_link=None,
-                        data_type=data_type,
-                        provider_config_key=provider_config_key,
                     )
                 raise
             except Exception as e:
@@ -345,13 +342,11 @@ async def fetch_events(
                             "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
                         )
                         return await fetch_events(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=False,
                             last_synced_at=last_synced_at,
                             delta_link=None,
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
                         )
                 raise
 
@@ -365,13 +360,11 @@ async def fetch_events(
                             error_code,
                         )
                         return await fetch_events(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=False,
                             last_synced_at=last_synced_at,
                             delta_link=None,
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
                         )
 
                 if "value" in resp and isinstance(resp["value"], list):

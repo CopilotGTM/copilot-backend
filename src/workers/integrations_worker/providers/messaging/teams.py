@@ -1,8 +1,8 @@
 """Microsoft Teams fetcher via Microsoft Graph API (direct calls).
 
 Fetches Teams channels and messages using direct Microsoft Graph API calls.
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are managed by custom OAuth via token_resolution module.
+API calls go directly to Microsoft Graph.
 
 Uses Microsoft Graph Delta Query for efficient incremental sync of messages:
 - Initial sync: /messages/delta with createdDateTime filter (last 90 days)
@@ -23,12 +23,12 @@ from typing import Any
 
 import httpx
 
-from src.domain.models.organisation_tables.sync import IntegrationType
-from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
-from src.workers.integrations_worker.providers._microsoft_graph import (
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
     get_access_token,
+)
+from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_request,
     graph_api_request_url,
 )
@@ -121,7 +121,7 @@ def _extract_collection_page(response: Any) -> tuple[list[dict[str, Any]], str |
 
 async def fetch_channels(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -132,26 +132,14 @@ async def fetch_channels(
     Fetch all Teams channels (across all teams user has access to).
 
     Uses Microsoft Graph API: GET /v1.0/me/joinedTeams and GET /v1.0/teams/{teamId}/channels
-
-    Returns:
-        List of channel dictionaries with structure:
-        {
-            "id": "19:abc123...",
-            "displayName": "Sales - Acme Corp",
-            "description": "Channel for Acme Corp deal",
-            "email": "sales-acme@company.onmicrosoft.com",
-            "webUrl": "https://teams.microsoft.com/...",
-            "membershipType": "standard",
-            "teamId": "team-uuid",
-            "teamName": "Sales Team"
-        }
     """
     _ = data_type
+    _ = connection_id  # kept for registry interface compatibility
     _ = is_initial
     _ = last_synced_at
+    _ = provider_config_key
 
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     # Step 1: Get all teams user is part of (with pagination)
     teams: list[dict[str, Any]] = []
@@ -215,7 +203,7 @@ async def fetch_channels(
 
 async def fetch_messages(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -273,11 +261,10 @@ async def fetch_messages(
         }
     """
     _ = data_type
+    _ = provider_config_key
 
     if not team_id or not channel_id:
         raise ValueError("Both team_id and channel_id are required for fetching Teams messages")
-
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
     using_stored_delta_link = False
     stored_delta_url: str | None = None
@@ -307,7 +294,7 @@ async def fetch_messages(
     new_delta_link: str | None = None
     max_pages = 500  # Safety limit
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     async with httpx.AsyncClient(
         headers={
@@ -333,13 +320,11 @@ async def fetch_messages(
                         "retrying with fresh delta query"
                     )
                     return await fetch_messages(
-                        nango=nango,
+                        token_info=token_info,
                         connection_id=connection_id,
                         is_initial=True,
                         last_synced_at=last_synced_at,
-                        delta_link=None,  # Force fresh delta query
-                        data_type=data_type,
-                        provider_config_key=provider_config_key,
+                        delta_link=None,
                         team_id=team_id,
                         channel_id=channel_id,
                     )
@@ -354,13 +339,11 @@ async def fetch_messages(
                             "retrying with fresh delta query"
                         )
                         return await fetch_messages(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=True,
                             last_synced_at=last_synced_at,
-                            delta_link=None,  # Force fresh delta query
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
+                            delta_link=None,
                             team_id=team_id,
                             channel_id=channel_id,
                         )
@@ -380,13 +363,11 @@ async def fetch_messages(
                             error_code,
                         )
                         return await fetch_messages(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=True,
                             last_synced_at=last_synced_at,
                             delta_link=None,
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
                             team_id=team_id,
                             channel_id=channel_id,
                         )
@@ -453,7 +434,7 @@ def _resolve_chats_lookback_days(
 
 async def fetch_chats(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -496,9 +477,9 @@ async def fetch_chats(
         }
     """
     _ = data_type
+    _ = connection_id  # kept for registry interface compatibility
     _ = delta_link  # Delta not supported for /me/chats in v1.0 API
-
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
+    _ = provider_config_key
 
     resolved_max_age_days, sync_phase = _resolve_chats_lookback_days(
         is_initial=is_initial,
@@ -531,7 +512,7 @@ async def fetch_chats(
     max_pages = 500  # Safety limit
     reached_cutoff = False
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     async with httpx.AsyncClient(
         headers={
@@ -655,7 +636,7 @@ async def fetch_chats(
 
 async def fetch_chat_messages(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -681,12 +662,12 @@ async def fetch_chat_messages(
         FetchMessagesResult with messages (delta_link is always None for chats).
     """
     _ = data_type
+    _ = connection_id  # kept for registry interface compatibility
     _ = delta_link  # Ignored - delta not supported for chat messages
+    _ = provider_config_key
 
     if not chat_id:
         raise ValueError("chat_id is required for fetching Teams chat messages")
-
-    provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
     # Use standard messages endpoint (NOT delta - delta is not supported for chat messages)
     # NOTE: $filter on createdDateTime is also NOT supported for chat messages.
@@ -717,7 +698,7 @@ async def fetch_chat_messages(
     max_pages = 500  # Safety limit
     reached_cutoff = False
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     async with httpx.AsyncClient(
         headers={

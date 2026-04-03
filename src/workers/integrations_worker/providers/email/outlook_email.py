@@ -1,8 +1,8 @@
 """Outlook Email fetcher via Microsoft Graph API (direct calls).
 
 Fetches email folders and messages from Outlook/Office 365 mailboxes.
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are managed by custom OAuth via token_resolution module.
+API calls go directly to Microsoft Graph.
 
 Uses Microsoft Graph Delta Query for efficient incremental sync:
 - Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
@@ -22,12 +22,12 @@ from typing import Any
 
 import httpx
 
-from src.domain.models.organisation_tables.sync import IntegrationType
-from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
-from src.workers.integrations_worker.providers._microsoft_graph import (
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
     get_access_token,
+)
+from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_request,
     graph_api_request_url,
 )
@@ -167,7 +167,7 @@ async def _backfill_bodies(
 
 async def fetch_folders(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -192,22 +192,19 @@ async def fetch_folders(
         }
     """
     _ = data_type  # intentionally unused
+    _ = connection_id  # kept for registry interface compatibility
     _ = is_initial  # folders are fetched in full each time
     _ = last_synced_at  # not used for folder sync
-
-    provider = provider_config_key or to_nango_connect_integration_key(
-        IntegrationType.OUTLOOK_EMAIL
-    )
+    _ = provider_config_key  # no longer needed — tokens come from local credentials
 
     # Microsoft Graph endpoint for mail folders
-    # Using $top to get more folders if needed
     endpoint = "/v1.0/me/mailFolders"
     params = {
-        "$top": "250",  # Get up to 250 folders
+        "$top": "250",
         "$select": "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount,isHidden",
     }
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {token}"}, timeout=30.0
@@ -223,7 +220,7 @@ async def fetch_folders(
 
 async def fetch_messages(
     *,
-    nango: NangoClient,
+    token_info: IntegrationTokenInfo,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
@@ -240,40 +237,16 @@ async def fetch_messages(
     - Incremental sync: Use stored deltaLink (returns ONLY changes)
 
     Args:
+        token_info: OAuth token info for this integration.
         delta_link: Optional stored deltaLink from previous sync. If provided,
                     only messages changed since that deltaLink are returned.
         folder_id: Folder ID to fetch messages from (required for delta query)
 
     Returns:
         FetchMessagesResult with messages and new deltaLink for next sync.
-
-        Message structure:
-        {
-            "id": "AAMkAGI...",
-            "conversationId": "AAQkAGI...",
-            "subject": "Meeting notes",
-            "bodyPreview": "Here are the notes...",
-            "from": {"emailAddress": {"name": "John Doe", "address": "john@example.com"}},
-            "toRecipients": [...],
-            "sentDateTime": "2025-11-12T10:30:00Z",
-            "receivedDateTime": "2025-11-12T10:30:05Z",
-            "hasAttachments": true,
-            "importance": "normal",
-            "isRead": false,
-            ...
-        }
-
-        Deleted messages appear with @removed annotation:
-        {
-            "id": "AAMkAGI...",
-            "@removed": {"reason": "deleted"}
-        }
     """
     _ = data_type  # intentionally unused
-
-    provider = provider_config_key or to_nango_connect_integration_key(
-        IntegrationType.OUTLOOK_EMAIL
-    )
+    _ = provider_config_key  # no longer needed — tokens come from local credentials
 
     if not folder_id:
         raise ValueError("folder_id is required for delta query")
@@ -319,7 +292,7 @@ async def fetch_messages(
     new_delta_link: str | None = None
     max_pages = 500  # Safety limit (500 pages * 50 items = 25,000 messages max)
 
-    token = await get_access_token(nango, connection_id, provider)
+    token = await get_access_token(token_info)
 
     async with httpx.AsyncClient(
         headers={
@@ -345,13 +318,11 @@ async def fetch_messages(
                         "retrying with fresh delta query"
                     )
                     return await fetch_messages(
-                        nango=nango,
+                        token_info=token_info,
                         connection_id=connection_id,
                         is_initial=True,
                         last_synced_at=last_synced_at,
-                        delta_link=None,  # Force fresh delta query
-                        data_type=data_type,
-                        provider_config_key=provider_config_key,
+                        delta_link=None,
                         folder_id=folder_id,
                     )
                 raise
@@ -365,13 +336,11 @@ async def fetch_messages(
                             "retrying with fresh delta query"
                         )
                         return await fetch_messages(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=True,
                             last_synced_at=last_synced_at,
-                            delta_link=None,  # Force fresh delta query
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
+                            delta_link=None,
                             folder_id=folder_id,
                         )
                 raise
@@ -390,13 +359,11 @@ async def fetch_messages(
                             error_code,
                         )
                         return await fetch_messages(
-                            nango=nango,
+                            token_info=token_info,
                             connection_id=connection_id,
                             is_initial=True,
                             last_synced_at=last_synced_at,
                             delta_link=None,
-                            data_type=data_type,
-                            provider_config_key=provider_config_key,
                             folder_id=folder_id,
                         )
 

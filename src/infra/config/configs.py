@@ -423,25 +423,11 @@ class TeamsConfig:
     TEAMS_AUTH_CALLBACK_URL: str = os.getenv("TEAMS_AUTH_CALLBACK_URL", "")
 
 
-class NangoIntegrationConfig:
-    """Configuration for Nango OAuth integration management
+class IntegrationSyncConfig:
+    """Configuration for integration sync behavior."""
 
-    Note: As of July 31, 2025, Nango deprecated public keys in favor of Connect Sessions.
-    The new flow uses session tokens for authorization.
-    """
-
-    NANGO_SECRET_KEY: str = os.getenv("NANGO_SECRET_KEY", "")
-    NANGO_BASE_URL: str = os.getenv("NANGO_BASE_URL", "https://api.nango.dev")
-
-    # Integration behavior settings
-    INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES: int = int(
-        os.getenv("INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES", "30")
-    )
     INTEGRATION_SYNC_RETRY_ATTEMPTS: int = int(os.getenv("INTEGRATION_SYNC_RETRY_ATTEMPTS", "3"))
     INTEGRATION_MAX_CONCURRENT_SYNCS: int = int(os.getenv("INTEGRATION_MAX_CONCURRENT_SYNCS", "5"))
-
-    # OAuth callback URL base (for frontend redirects after connection)
-    OAUTH_CALLBACK_BASE_URL: str | None = os.getenv("APP_URL")
 
 
 class GoogleIntegrationConfig:
@@ -554,6 +540,115 @@ class GoogleIntegrationConfig:
         if missing:
             raise RuntimeError(
                 "Missing Google custom OAuth configuration: " + ", ".join(sorted(missing))
+            )
+
+
+class MicrosoftIntegrationConfig:
+    """Configuration for custom Microsoft OAuth flows.
+
+    Credentials are loaded from env vars (local dev) or Azure Key Vault
+    (production) with a configurable TTL cache — same pattern as
+    GoogleIntegrationConfig.
+    """
+
+    # Key Vault secret names
+    SECRET_NAME_CLIENT_ID: str = "microsoft-integration-client-id"
+    SECRET_NAME_CLIENT_SECRET: str = "microsoft-integration-client-secret"
+
+    # Non-secret config — always from env
+    REDIRECT_URI: str = os.getenv("MICROSOFT_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
+    MICROSOFT_HTTP_TIMEOUT_SEC: float = float(os.getenv("MICROSOFT_HTTP_TIMEOUT_SEC", "10"))
+
+    # Cached credentials (populated from env or Key Vault)
+    _client_id: str | None = os.getenv("MICROSOFT_CLIENT_ID")
+    _client_secret: str | None = os.getenv("MICROSOFT_CLIENT_SECRET")
+    _credentials_from_env: bool = bool(
+        os.getenv("MICROSOFT_CLIENT_ID") and os.getenv("MICROSOFT_CLIENT_SECRET")
+    )
+    _credentials_ttl_hours: float = float(os.getenv("MICROSOFT_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    @property
+    def microsoft_client_id(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_id or ""
+
+    @property
+    def microsoft_client_secret(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_secret or ""
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return (client_id, client_secret), loading from Key Vault if needed.
+
+        Env vars take precedence — when MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET
+        are set, Key Vault is skipped entirely (for local development).
+        """
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+
+        if not self._is_expired():
+            return self._client_id or "", self._client_secret or ""
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._client_id or "", self._client_secret or ""
+            await self._load_from_vault()
+
+        return self._client_id or "", self._client_secret or ""
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Microsoft OAuth credentials from Key Vault (TTL refresh)")
+        self._client_id = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_ID)
+        self._client_secret = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self._client_id and self._client_secret:
+            logger.info(
+                "Microsoft OAuth credentials cached (TTL=%.1fh)",
+                self._credentials_ttl_hours,
+            )
+        else:
+            logger.error(
+                "Microsoft OAuth credentials missing from Key Vault "
+                "(client_id=%s, client_secret=%s)",
+                bool(self._client_id),
+                bool(self._client_secret),
+            )
+
+    def validate(self, *, enabled: bool = True) -> None:
+        """Fail fast when Microsoft custom OAuth is enabled without core credentials."""
+        if not enabled:
+            return
+
+        missing = [
+            name
+            for name, value in {
+                "MICROSOFT_CLIENT_ID": self._client_id,
+                "MICROSOFT_CLIENT_SECRET": self._client_secret,
+                "REDIRECT_URI": self.REDIRECT_URI,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Missing Microsoft custom OAuth configuration: " + ", ".join(sorted(missing))
             )
 
 
@@ -804,8 +899,9 @@ chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
 # NOTE: thumbnail_config now sourced from thumbnail_config.py for modularity.
 rate_limit_config = RateLimitConfig()
-nango_integration_config = NangoIntegrationConfig()
+integration_sync_config = IntegrationSyncConfig()
 google_integration_config = GoogleIntegrationConfig()
+microsoft_integration_config = MicrosoftIntegrationConfig()
 apollo_config = ApolloConfig()
 teams_config = TeamsConfig()
 

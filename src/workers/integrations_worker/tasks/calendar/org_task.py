@@ -45,6 +45,12 @@ from src.workers.integrations_worker.providers.calendar.google_calendar import (
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     fetch_events_with_cursor as google_fetch_events,
 )
+from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
+    FetchEventsResult as OutlookFetchEventsResult,
+)
+from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
+    fetch_events as outlook_fetch_events,
+)
 
 logger = get_logger(__name__)
 
@@ -244,14 +250,24 @@ def sync_calendar_org_task(
                     new_calendar_delta_link = google_fetch_result.sync_token
 
                 elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-                    # Outlook sync not supported on custom-oauth branch —
-                    # will be enabled when MicrosoftProvider is implemented
-                    logger.warning(
-                        "Outlook calendar sync not supported on custom-oauth branch, "
-                        "skipping: integration=%s",
-                        fetch_data.integration_id,
+                    token_info = IntegrationTokenInfo(
+                        access_token=fetch_data.credentials.get("access_token"),
+                        refresh_token=fetch_data.credentials.get("refresh_token"),
+                        access_token_expires_at=fetch_data.access_token_expires_at,
+                        integration_type=fetch_data.integration_type,
+                        organisation_id=org_id,
+                        integration_id=fetch_data.integration_id,
                     )
-                    continue
+
+                    outlook_fetch_result: OutlookFetchEventsResult = await outlook_fetch_events(
+                        token_info=token_info,
+                        connection_id=fetch_data.connection_id,
+                        is_initial=fetch_data.is_initial,
+                        last_synced_at=fetch_data.last_synced_at,
+                        delta_link=fetch_data.calendar_delta_link,
+                    )
+                    events = outlook_fetch_result.events
+                    new_calendar_delta_link = outlook_fetch_result.delta_link
                 else:
                     logger.warning(
                         "Unknown calendar provider: %s",

@@ -2,8 +2,7 @@
 Teams Transcript Provider.
 
 Fetches meeting transcripts from Microsoft Teams via direct Microsoft Graph API calls.
-OAuth tokens are managed by Nango (token storage + refresh) but API calls
-bypass the Nango proxy to avoid proxy request quota limits.
+OAuth tokens are managed by custom OAuth via token_resolution module.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from src.domain.models.organisation_tables.sync.conversation_intelligence import
     CISpeakerRole,
     TranscriptContentFormat,
 )
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers._microsoft_graph import (
     get_access_token,
     graph_api_request,
@@ -32,16 +31,16 @@ from src.workers.integrations_worker.providers._microsoft_graph import (
 class TeamsTranscriptProvider:
     """Fetches and parses Teams meeting transcripts."""
 
-    def __init__(self, nango: NangoClient):
-        self.nango = nango
+    def __init__(self, token_info: IntegrationTokenInfo):
+        self.token_info = token_info
 
     async def fetch_transcript(
         self,
-        connection_id: str,
+        connection_id: str,  # noqa: ARG002
         online_meeting_id: str,
         organisation_id: UUID,
         integration_id: UUID,
-        provider_config_key: str = "microsoft-teams",
+        provider_config_key: str = "microsoft-teams",  # noqa: ARG002
     ) -> tuple[CICall, list[CICallTranscriptSegment], list[CICallSpeaker]] | None:
         """
         Fetch transcript for a meeting and return CICall structure.
@@ -50,7 +49,7 @@ class TeamsTranscriptProvider:
         """
         endpoint = f"/v1.0/me/onlineMeetings/{online_meeting_id}/transcripts"
 
-        token = await get_access_token(self.nango, connection_id, provider_config_key)
+        token = await get_access_token(self.token_info)
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,

@@ -24,9 +24,9 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoConnectionError
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
-from .google_meet_provider import GoogleMeetTranscriptProvider
+from .google_meet_provider import GoogleMeetTranscriptProvider, TranscriptAuthError
 from .teams_provider import TeamsTranscriptProvider
 
 logger = get_logger(__name__)
@@ -67,6 +67,9 @@ class TranscriptService:
         self.organisation_id = organisation_id
         self._teams = TeamsTranscriptProvider()
         self._google_meet = GoogleMeetTranscriptProvider()
+
+    def _build_token_info(self, integration: KnowledgeIntegration) -> IntegrationTokenInfo:
+        return IntegrationTokenInfo.from_integration(integration, self.organisation_id)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -302,8 +305,8 @@ class TranscriptService:
 
         try:
             # Step 2: External API calls (NO session held here)
-            # connection_id is guaranteed non-None by try_fetch_with_integration guard
             connection_id: str = integration.connection_id  # type: ignore[assignment]
+            self._teams.with_token_info(self._build_token_info(integration))
             actual_meeting_id = await self._teams.resolve_meeting_id(
                 connection_id,
                 event.conference_link,  # type: ignore[arg-type]
@@ -351,7 +354,7 @@ class TranscriptService:
             )
             return TranscriptFetchResult(success=True, meeting=meeting)
 
-        except NangoConnectionError as e:
+        except TranscriptAuthError as e:
             logger.warning("Connection error with %s: %s", integration.integration_email, e)
             return TranscriptFetchResult(
                 success=False, meeting=meeting, error=str(e)[:500], should_retry=True
@@ -378,6 +381,7 @@ class TranscriptService:
             # Step 1: Resolve conference record (no session held)
             meeting_code = event.online_meeting_id
             conn_id: str = integration.connection_id  # type: ignore[assignment]
+            self._google_meet.with_token_info(self._build_token_info(integration))
             if not meeting_code:
                 return TranscriptFetchResult(
                     success=False,
@@ -440,7 +444,7 @@ class TranscriptService:
             )
             return TranscriptFetchResult(success=True, meeting=meeting)
 
-        except NangoConnectionError as e:
+        except TranscriptAuthError as e:
             logger.warning("Connection error with %s: %s", integration.integration_email, e)
             return TranscriptFetchResult(
                 success=False,

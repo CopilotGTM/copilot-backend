@@ -51,7 +51,7 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.messaging.teams import (
     FetchMessagesResult,
     fetch_chat_messages,
@@ -126,7 +126,6 @@ class DealChannelMessagesService:
         """
         self.db = session
         self.organisation_id = organisation_id
-        self.nango = NangoClient()
 
     async def sync_all_deal_channels_fresh(
         self,
@@ -519,6 +518,7 @@ class DealChannelMessagesService:
             # Phase 1: Get integration connection_id (fresh session, quick read)
             # ─────────────────────────────────────────────────────────────────
             connection_id: str | None = None
+            token_info: IntegrationTokenInfo | None = None
             async for session in acquire_org_async_session(self.organisation_id):
                 stmt = select(KnowledgeIntegration).where(
                     col(KnowledgeIntegration.integration_id) == channel_info.integration_id
@@ -527,9 +527,12 @@ class DealChannelMessagesService:
                 integration = result.scalar_one_or_none()
                 if integration:
                     connection_id = integration.connection_id
+                    token_info = IntegrationTokenInfo.from_integration(
+                        integration, self.organisation_id
+                    )
             # Session is now released
 
-            if not connection_id:
+            if not connection_id or not token_info:
                 logger.warning(
                     "Integration %s not found or has no connection for channel %s",
                     channel_info.integration_id,
@@ -551,6 +554,7 @@ class DealChannelMessagesService:
             fetch_result = await self._fetch_messages_with_connection_id(
                 channel_info=channel_info,
                 connection_id=connection_id,
+                token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
             )
 
@@ -665,8 +669,9 @@ class DealChannelMessagesService:
                     error="Integration not found or has no connection",
                 )
 
-            # Extract connection_id for API call (session can be released after this)
+            # Extract connection_id and credentials for API call
             connection_id = integration.connection_id
+            token_info = IntegrationTokenInfo.from_integration(integration, self.organisation_id)
 
             # ─────────────────────────────────────────────────────────────────
             # Phase 2: Fetch messages from API (NO session held)
@@ -675,6 +680,7 @@ class DealChannelMessagesService:
             fetch_result = await self._fetch_messages_with_connection_id(
                 channel_info=channel_info,
                 connection_id=connection_id,
+                token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
             )
 
@@ -782,6 +788,7 @@ class DealChannelMessagesService:
         self,
         channel_info: DealLinkedChannelInfo,
         connection_id: str,
+        token_info: IntegrationTokenInfo,
         delta_link: str | None = None,
     ) -> FetchMessagesResult:
         """
@@ -810,7 +817,7 @@ class DealChannelMessagesService:
                 )
 
             return await fetch_messages(
-                nango=self.nango,
+                token_info=token_info,
                 connection_id=connection_id,
                 team_id=team_id,
                 channel_id=channel_info.external_channel_id,
@@ -823,7 +830,7 @@ class DealChannelMessagesService:
             # Chat - use chat_id directly
             is_initial = channel_info.last_synced_at is None
             return await fetch_chat_messages(
-                nango=self.nango,
+                token_info=token_info,
                 connection_id=connection_id,
                 chat_id=channel_info.external_channel_id,
                 is_initial=is_initial,
@@ -852,21 +859,19 @@ class DealChannelMessagesService:
         """
         Fetch messages from Teams API via provider layer using Delta Query.
 
-        Uses Microsoft Graph Delta Query for efficient incremental sync:
-        - Initial sync: /messages/delta (fetches all, returns deltaLink)
-        - Incremental sync: Use stored deltaLink (returns ONLY changes)
-
         Args:
             channel_info: Channel information
-            integration: Integration with Nango connection
+            integration: Integration with credentials
             delta_link: Optional stored deltaLink from previous sync
 
         Returns:
             FetchMessagesResult with messages and new deltaLink for next sync
         """
+        token_info = IntegrationTokenInfo.from_integration(integration, self.organisation_id)
         return await self._fetch_messages_with_connection_id(
             channel_info=channel_info,
             connection_id=integration.connection_id,  # type: ignore
+            token_info=token_info,
             delta_link=delta_link,
         )
 

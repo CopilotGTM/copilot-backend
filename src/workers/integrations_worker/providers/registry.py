@@ -3,7 +3,7 @@
 Maps (category, provider) -> fetch callable
 
 Fetch signature:
-    async fetch(nango, connection_id: str, is_initial: bool, last_synced_at, data_type: str | None, **kw) -> list[dict]
+    async fetch(token_info, connection_id: str, is_initial: bool, last_synced_at, data_type: str | None, **kw) -> list[dict]
 """
 
 from __future__ import annotations

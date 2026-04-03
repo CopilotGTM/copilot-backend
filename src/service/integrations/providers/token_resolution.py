@@ -46,6 +46,25 @@ class IntegrationTokenInfo:
     organisation_id: UUID | None = None
     integration_id: UUID | None = None
 
+    @classmethod
+    def from_integration(cls, integration: Any, organisation_id: UUID) -> IntegrationTokenInfo:
+        """Build from a KnowledgeIntegration row.
+
+        Accepts Any to avoid importing KnowledgeIntegration (circular import).
+        """
+        credentials = dict(integration.credentials or {})
+        int_type = integration.integration_type
+        if isinstance(int_type, str):
+            int_type = IntegrationType(int_type)
+        return cls(
+            access_token=credentials.get("access_token"),
+            refresh_token=credentials.get("refresh_token"),
+            access_token_expires_at=integration.access_token_expires_at,
+            integration_type=int_type,
+            organisation_id=organisation_id,
+            integration_id=integration.integration_id,
+        )
+
 
 def _is_token_expiring_soon(token_info: IntegrationTokenInfo) -> bool:
     """Check if the token needs a proactive refresh."""
