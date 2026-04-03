@@ -28,6 +28,11 @@ from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     get_access_token,
 )
+from src.workers.integrations_worker.providers._delta_sync import (
+    DeltaExpiredError,
+    extract_collection_page,
+    paginate_delta,
+)
 from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_request,
     graph_api_request_url,
@@ -88,37 +93,6 @@ class FetchChatsResult:
     delta_link: str | None = None
 
 
-def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
-    """
-    Mark a message as deleted for proper handling downstream.
-
-    Microsoft Graph delta sync returns deleted items with @removed annotation.
-    We translate this to _sync_metadata for consistent handling in sync services.
-    """
-    message["_sync_metadata"] = {
-        "sync_action": "DELETED",
-        "sync_type": "INCREMENTAL",
-        "inferred": True,
-        "source": "delta_removed",
-    }
-    return message
-
-
-def _extract_collection_page(response: Any) -> tuple[list[dict[str, Any]], str | None]:
-    """Extract list payload and optional @odata.nextLink from Graph collection responses."""
-    if not isinstance(response, dict):
-        return [], None
-
-    value = response.get("value")
-    items = value if isinstance(value, list) else []
-
-    next_link = response.get("@odata.nextLink")
-    if not isinstance(next_link, str) or not next_link:
-        next_link = None
-
-    return items, next_link
-
-
 async def fetch_channels(
     *,
     token_info: IntegrationTokenInfo,
@@ -160,7 +134,7 @@ async def fetch_channels(
                 teams_resp = await graph_api_request_url(client, next_link)
             else:
                 teams_resp = await graph_api_request(client, teams_endpoint, params=teams_params)
-            page_teams, next_link = _extract_collection_page(teams_resp)
+            page_teams, next_link = extract_collection_page(teams_resp)
             teams.extend(page_teams)
             if not next_link:
                 break
@@ -187,7 +161,7 @@ async def fetch_channels(
                     channels_resp = await graph_api_request(
                         client, channels_endpoint, params=channels_params
                     )
-                channels, next_link = _extract_collection_page(channels_resp)
+                channels, next_link = extract_collection_page(channels_resp)
 
                 # Enrich each channel with team context
                 for channel in channels:
@@ -266,18 +240,13 @@ async def fetch_messages(
     if not team_id or not channel_id:
         raise ValueError("Both team_id and channel_id are required for fetching Teams messages")
 
-    using_stored_delta_link = False
     stored_delta_url: str | None = None
-
     if delta_link:
-        # True incremental sync: use stored deltaLink URL directly
         stored_delta_url = delta_link
-        using_stored_delta_link = True
         logger.info(
             "Teams Messages: using stored deltaLink for channel (true incremental)",
         )
 
-    # Fresh delta query params (used when no delta_link and no next_link)
     initial_endpoint = f"/v1.0/teams/{team_id}/channels/{channel_id}/messages/delta"
     initial_params: dict[str, Any] = {
         "$top": "50",
@@ -289,10 +258,9 @@ async def fetch_messages(
             channel_id,
         )
 
-    all_messages: list[dict[str, Any]] = []
-    next_link: str | None = None
-    new_delta_link: str | None = None
-    max_pages = 500  # Safety limit
+    def _enrich(item: dict[str, Any]) -> None:
+        item["teamId"] = team_id
+        item["channelId"] = channel_id
 
     token = await get_access_token(token_info)
 
@@ -303,117 +271,40 @@ async def fetch_messages(
         },
         timeout=30.0,
     ) as client:
-        for page_num in range(max_pages):  # noqa: B007
-            try:
-                if next_link:
-                    resp = await graph_api_request_url(client, next_link)
-                elif stored_delta_url:
-                    resp = await graph_api_request_url(client, stored_delta_url)
-                    stored_delta_url = None  # only used for the first request
-                else:
-                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
-            except httpx.HTTPStatusError as exc:
-                # Handle expired deltaLink (Microsoft returns 410 Gone)
-                if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
-                    logger.warning(
-                        "Teams Messages: stored deltaLink expired (HTTP 410), "
-                        "retrying with fresh delta query"
-                    )
-                    return await fetch_messages(
-                        token_info=token_info,
-                        connection_id=connection_id,
-                        is_initial=True,
-                        last_synced_at=last_synced_at,
-                        delta_link=None,
-                        team_id=team_id,
-                        channel_id=channel_id,
-                    )
-                raise
-            except Exception as e:
-                # Handle expired deltaLink via string-based detection
-                if using_stored_delta_link and page_num == 0:
-                    error_msg = str(e).lower()
-                    if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
-                        logger.warning(
-                            "Teams Messages: stored deltaLink expired, "
-                            "retrying with fresh delta query"
-                        )
-                        return await fetch_messages(
-                            token_info=token_info,
-                            connection_id=connection_id,
-                            is_initial=True,
-                            last_synced_at=last_synced_at,
-                            delta_link=None,
-                            team_id=team_id,
-                            channel_id=channel_id,
-                        )
-                raise
-
-            if isinstance(resp, dict):
-                # Check for error response (deltaLink might be expired)
-                if "error" in resp and using_stored_delta_link and page_num == 0:
-                    error_code = resp.get("error", {}).get("code", "").lower()
-                    if error_code in (
-                        "syncstatenotfound",
-                        "resyncresquired",
-                        "invalidrequest",
-                    ):
-                        logger.warning(
-                            "Teams Messages: deltaLink invalid (error=%s), retrying fresh",
-                            error_code,
-                        )
-                        return await fetch_messages(
-                            token_info=token_info,
-                            connection_id=connection_id,
-                            is_initial=True,
-                            last_synced_at=last_synced_at,
-                            delta_link=None,
-                            team_id=team_id,
-                            channel_id=channel_id,
-                        )
-
-                # Extract messages from response
-                if "value" in resp and isinstance(resp["value"], list):
-                    for item in resp["value"]:
-                        # Check for deleted items (delta sync returns @removed annotation)
-                        if "@removed" in item:
-                            logger.debug(
-                                "Delta sync: detected deleted message id=%s reason=%s",
-                                item.get("id"),
-                                item.get("@removed", {}).get("reason"),
-                            )
-                            # Mark for downstream handling with proper sync metadata
-                            _mark_as_deleted(item)
-
-                        # Enrich with team/channel context
-                        item["teamId"] = team_id
-                        item["channelId"] = channel_id
-                        all_messages.append(item)
-
-                # Check for next page or deltaLink
-                next_link = resp.get("@odata.nextLink")
-                if not next_link:
-                    # Capture deltaLink for next sync (only on last page)
-                    new_delta_link = resp.get("@odata.deltaLink")
-                    if new_delta_link:
-                        logger.info(
-                            "Teams Messages delta sync complete after %d pages, new deltaLink received",
-                            page_num + 1,
-                        )
-                    break
-            else:
-                break
+        try:
+            delta_result = await paginate_delta(
+                client,
+                initial_endpoint=initial_endpoint,
+                initial_params=initial_params,
+                stored_delta_url=stored_delta_url,
+                enrich_item=_enrich,
+                label="Teams Messages",
+            )
+        except DeltaExpiredError:
+            logger.warning(
+                "Teams Messages: stored deltaLink expired, retrying with fresh delta query"
+            )
+            return await fetch_messages(
+                token_info=token_info,
+                connection_id=connection_id,
+                is_initial=True,
+                last_synced_at=last_synced_at,
+                delta_link=None,
+                team_id=team_id,
+                channel_id=channel_id,
+            )
 
     logger.info(
-        "Teams Messages fetch complete: %d messages (initial=%s, used_delta_link=%s, team=%s, channel=%s)",
-        len(all_messages),
+        "Teams Messages fetch complete: %d messages"
+        " (initial=%s, used_delta_link=%s, team=%s, channel=%s)",
+        len(delta_result.items),
         is_initial,
-        using_stored_delta_link,
+        bool(delta_link),
         team_id,
         channel_id,
     )
 
-    return FetchMessagesResult(messages=all_messages, delta_link=new_delta_link)
+    return FetchMessagesResult(messages=delta_result.items, delta_link=delta_result.delta_link)
 
 
 def _resolve_chats_lookback_days(

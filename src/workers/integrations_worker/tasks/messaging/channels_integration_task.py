@@ -256,14 +256,7 @@ def sync_messaging_channels_integration_task(
         chats_synced = 0
         errors: list[str] = []
 
-        token_info = IntegrationTokenInfo(
-            access_token=fetch_data.credentials.get("access_token"),
-            refresh_token=fetch_data.credentials.get("refresh_token"),
-            access_token_expires_at=fetch_data.access_token_expires_at,
-            integration_type=fetch_data.integration_type,
-            organisation_id=org_id,
-            integration_id=fetch_data.integration_id,
-        )
+        token_info = IntegrationTokenInfo.from_integration(fetch_data, org_id)
 
         # ─────────────────────────────────────────────────────────────────
         # Phase 2: Fetch channels from API (NO session held)

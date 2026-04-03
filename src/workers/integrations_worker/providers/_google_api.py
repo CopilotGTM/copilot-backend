@@ -114,14 +114,15 @@ async def _request_with_rate_limit_retry(
     raise last_exc or RuntimeError("Exhausted retries without exception")
 
 
-async def gmail_api_request(
+async def _google_api_request(
     client: httpx.AsyncClient,
+    base_url: str,
     endpoint: str,
     *,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Make a GET request to the Gmail API with 429 rate-limit retry."""
-    url = f"{GMAIL_BASE_URL}{endpoint}"
+    """Make a GET request to a Google API with 429 rate-limit retry."""
+    url = f"{base_url}{endpoint}"
 
     async def _do() -> dict[str, Any]:
         response = await client.get(url, params=params)
@@ -130,6 +131,16 @@ async def gmail_api_request(
 
     result: dict[str, Any] = await _request_with_rate_limit_retry(_do)
     return result
+
+
+async def gmail_api_request(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make a GET request to the Gmail API with 429 rate-limit retry."""
+    return await _google_api_request(client, GMAIL_BASE_URL, endpoint, params=params)
 
 
 async def calendar_api_request(
@@ -139,12 +150,4 @@ async def calendar_api_request(
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Make a GET request to the Google Calendar API with 429 rate-limit retry."""
-    url = f"{GOOGLE_CALENDAR_BASE_URL}{endpoint}"
-
-    async def _do() -> dict[str, Any]:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()  # type: ignore[no-any-return]
-
-    result: dict[str, Any] = await _request_with_rate_limit_retry(_do)
-    return result
+    return await _google_api_request(client, GOOGLE_CALENDAR_BASE_URL, endpoint, params=params)

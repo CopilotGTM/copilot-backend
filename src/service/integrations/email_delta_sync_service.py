@@ -403,14 +403,7 @@ class EmailDeltaSyncService:
             sync_data.integration_type_value,
         )
 
-        token_info = IntegrationTokenInfo(
-            access_token=sync_data.credentials.get("access_token"),
-            refresh_token=sync_data.credentials.get("refresh_token"),
-            access_token_expires_at=sync_data.access_token_expires_at,
-            integration_type=sync_data.integration_type,
-            organisation_id=org_id,
-            integration_id=sync_data.integration_id,
-        )
+        token_info = IntegrationTokenInfo.from_integration(sync_data, org_id)
 
         # ─────────────────────────────────────────────────────────────────
         # Phase 2: Fetch folders from external API (NO session held)

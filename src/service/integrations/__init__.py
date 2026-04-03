@@ -8,10 +8,8 @@ This module provides services for:
 - Data synchronization from external platforms
 """
 
-from .calendar_sync_service import CalendarSyncService
 from .integration_service import IntegrationService
 
 __all__ = [
     "IntegrationService",
-    "CalendarSyncService",
 ]

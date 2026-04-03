@@ -26,6 +26,7 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+
 # from src.service.integrations.token_refresh_service import TokenRefreshService
 from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.workers.integrations_worker.celery_app import app

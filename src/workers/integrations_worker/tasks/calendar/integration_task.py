@@ -39,8 +39,8 @@ from src.service.integrations.calendar_cursor_metadata import (
     get_calendar_delta_link,
     set_calendar_delta_link,
 )
+from src.service.integrations.calendar_sync_service import CalendarSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
-from src.workers.integrations_worker.adapters.calendar_adapter import upsert_calendar_incremental
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     FetchEventsResult as GoogleFetchEventsResult,
@@ -233,16 +233,9 @@ def sync_calendar_integration_task(
         events: list[dict[str, Any]]
         new_calendar_delta_link: str | None = None
 
-        if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
-            token_info = IntegrationTokenInfo(
-                access_token=fetch_data.credentials.get("access_token"),
-                refresh_token=fetch_data.credentials.get("refresh_token"),
-                access_token_expires_at=fetch_data.access_token_expires_at,
-                integration_type=fetch_data.integration_type,
-                organisation_id=org_id,
-                integration_id=fetch_data.integration_id,
-            )
+        token_info = IntegrationTokenInfo.from_integration(fetch_data, org_id)
 
+        if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
             google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
                 token_info=token_info,
                 connection_id=fetch_data.connection_id,
@@ -254,15 +247,6 @@ def sync_calendar_integration_task(
             new_calendar_delta_link = google_fetch_result.sync_token
 
         elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-            token_info = IntegrationTokenInfo(
-                access_token=fetch_data.credentials.get("access_token"),
-                refresh_token=fetch_data.credentials.get("refresh_token"),
-                access_token_expires_at=fetch_data.access_token_expires_at,
-                integration_type=fetch_data.integration_type,
-                organisation_id=org_id,
-                integration_id=fetch_data.integration_id,
-            )
-
             outlook_fetch_result: OutlookFetchEventsResult = await outlook_fetch_events(
                 token_info=token_info,
                 connection_id=fetch_data.connection_id,
@@ -310,9 +294,8 @@ def sync_calendar_integration_task(
                 }
 
             # Sync events to database
-            sync_result = await upsert_calendar_incremental(
-                session=session,
-                organisation_id=org_id,
+            service = CalendarSyncService(session, org_id)
+            sync_result = await service.sync_calendar_events_incremental(
                 integration=integration_db,
                 provider=fetch_data.provider,
                 events=events,

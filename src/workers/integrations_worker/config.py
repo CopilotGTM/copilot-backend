@@ -3,6 +3,109 @@ from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
 
+# ── Task execution limits ──────────────────────────────────────────────
+# Single source of truth for all integrations worker task parameters.
+#
+# Rules:
+#   1. hard = soft + 60  (gives the soft handler time to log and exit)
+#   2. Tier 1 (coordinators): short — just query orgs and dispatch
+#   3. Tier 2 (per-org): scaled to workload
+#   4. Tier 3 (manual/single): 5-min cap — user is waiting
+#   5. Coordinators never retry; per-org retries 2-3x; manual retries 3x
+#
+# To tune a limit: change it HERE, not in the task file.
+
+TASK_LIMITS: dict[str, dict] = {
+    # ── Tier 1: coordinators (query approved orgs → fan out) ──
+    "integrations.sync_calendar_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.sync_email_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.sync_messaging_channels_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.sync_deal_messages_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.refresh_tokens": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    # ── Tier 2: per-org (external API calls, pagination, persistence) ──
+    "integrations.sync_calendar_org": {
+        "soft": 600,
+        "hard": 660,
+        "retries": 2,
+        "retry_delay": 120,
+    },
+    "integrations.sync_email_org": {
+        "soft": 1800,
+        "hard": 1860,
+        "retries": 2,
+        "retry_delay": 120,
+    },
+    "integrations.sync_messaging_channels_org": {
+        "soft": 900,
+        "hard": 960,
+        "retries": 2,
+        "retry_delay": 120,
+    },
+    "integrations.sync_deal_messages_org": {
+        "soft": 600,
+        "hard": 660,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.refresh_tokens_org": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 2,
+        "retry_delay": 120,
+    },
+    # ── Tier 3: single integration (user-triggered, fast feedback) ──
+    "integrations.sync_calendar_integration": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_email_integration": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_messaging_channels_integration": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_deal_messages_integration": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.refresh_token": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+}
+
 CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
 
 

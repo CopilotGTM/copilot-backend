@@ -26,9 +26,12 @@ from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     get_access_token,
 )
+from src.workers.integrations_worker.providers._delta_sync import (
+    DeltaExpiredError,
+    paginate_delta,
+)
 from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_request,
-    graph_api_request_url,
 )
 
 logger = get_logger(__name__)
@@ -40,18 +43,6 @@ class FetchEventsResult:
 
     events: list[dict[str, Any]]
     delta_link: str | None = None
-
-
-def _mark_as_deleted(event: dict[str, Any]) -> dict[str, Any]:
-    """Mark a delta-removed event as a mailbox-level deletion, not a global cancel."""
-    event["_sync_metadata"] = {
-        "sync_action": "DELETED",
-        "sync_type": "INCREMENTAL",
-        "scope": "USER_STATE",
-        "inferred": True,
-        "source": "delta_removed",
-    }
-    return event
 
 
 def _parse_event_datetime(event: dict[str, Any]) -> datetime | None:
@@ -269,19 +260,13 @@ async def fetch_events(
     _ = provider_config_key  # no longer needed — tokens come from local credentials
     now = datetime.now(UTC)
 
-    # Track if we're using a stored deltaLink for true incremental sync
-    using_stored_delta_link = False
     stored_delta_url: str | None = None
-
     if delta_link:
-        # True incremental sync: use stored deltaLink URL directly
         stored_delta_url = delta_link
-        using_stored_delta_link = True
         logger.info(
             "Outlook Calendar: using stored deltaLink (true incremental - only changed events)",
         )
 
-    # Fresh delta query params (used when no delta_link and no next_link)
     start_dt = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
     end_dt = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
     initial_endpoint = "/v1.0/me/calendarView/delta"
@@ -298,11 +283,6 @@ async def fetch_events(
 
     token = await get_access_token(token_info)
 
-    all_items: list[dict[str, Any]] = []
-    next_link: str | None = None
-    new_delta_link: str | None = None
-    max_pages = 500  # Safety limit
-
     async with httpx.AsyncClient(
         headers={
             "Authorization": f"Bearer {token}",
@@ -310,92 +290,29 @@ async def fetch_events(
         },
         timeout=30.0,
     ) as client:
-        for page_num in range(max_pages):
-            try:
-                if next_link:
-                    resp = await graph_api_request_url(client, next_link)
-                elif stored_delta_url:
-                    resp = await graph_api_request_url(client, stored_delta_url)
-                    stored_delta_url = None  # only used for the first request
-                else:
-                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
-            except httpx.HTTPStatusError as exc:
-                if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
-                    logger.warning(
-                        "Outlook Calendar: stored deltaLink expired (410), retrying with fresh delta query"
-                    )
-                    return await fetch_events(
-                        token_info=token_info,
-                        connection_id=connection_id,
-                        is_initial=False,
-                        last_synced_at=last_synced_at,
-                        delta_link=None,
-                    )
-                raise
-            except Exception as e:
-                # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
-                # If using stored deltaLink and get an error, retry with fresh delta query
-                if using_stored_delta_link and page_num == 0:
-                    error_msg = str(e).lower()
-                    if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
-                        logger.warning(
-                            "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
-                        )
-                        return await fetch_events(
-                            token_info=token_info,
-                            connection_id=connection_id,
-                            is_initial=False,
-                            last_synced_at=last_synced_at,
-                            delta_link=None,
-                        )
-                raise
+        try:
+            delta_result = await paginate_delta(
+                client,
+                initial_endpoint=initial_endpoint,
+                initial_params=initial_params,
+                stored_delta_url=stored_delta_url,
+                label="Outlook Calendar",
+            )
+        except DeltaExpiredError:
+            logger.warning(
+                "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
+            )
+            return await fetch_events(
+                token_info=token_info,
+                connection_id=connection_id,
+                is_initial=False,
+                last_synced_at=last_synced_at,
+                delta_link=None,
+            )
 
-            if isinstance(resp, dict):
-                # Check for error response (deltaLink might be expired)
-                if "error" in resp and using_stored_delta_link and page_num == 0:
-                    error_code = resp.get("error", {}).get("code", "").lower()
-                    if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
-                        logger.warning(
-                            "Outlook Calendar: deltaLink invalid (error=%s), retrying with fresh delta query",
-                            error_code,
-                        )
-                        return await fetch_events(
-                            token_info=token_info,
-                            connection_id=connection_id,
-                            is_initial=False,
-                            last_synced_at=last_synced_at,
-                            delta_link=None,
-                        )
+        all_items = delta_result.items
 
-                if "value" in resp and isinstance(resp["value"], list):
-                    for item in resp["value"]:
-                        # Check for deleted items (delta sync returns @removed annotation)
-                        if "@removed" in item:
-                            # Mark as deleted for downstream handling
-                            logger.debug(
-                                "Delta sync: detected deleted event id=%s reason=%s",
-                                item.get("id"),
-                                item.get("@removed", {}).get("reason"),
-                            )
-                            all_items.append(_mark_as_deleted(item))
-                        else:
-                            all_items.append(item)
-
-                # Check for next page - Microsoft Graph uses @odata.nextLink
-                # For delta sync, @odata.deltaLink indicates sync is complete (no more pages)
-                next_link = resp.get("@odata.nextLink")
-                if not next_link:
-                    # Capture deltaLink for next sync (only present on last page of delta responses)
-                    new_delta_link = resp.get("@odata.deltaLink")
-                    if new_delta_link:
-                        logger.info(
-                            "Delta sync complete after %d pages, new deltaLink received",
-                            page_num + 1,
-                        )
-                    break
-            else:
-                break
-
+        # Hydrate events missing iCalUId (needed for cross-provider matching)
         hydrated_count = 0
         unresolved_hydration_count = 0
         if all_items:
@@ -403,10 +320,7 @@ async def fetch_events(
                 all_items,
                 hydrated_count,
                 unresolved_hydration_count,
-            ) = await _hydrate_missing_identity_events(
-                client,
-                all_items,
-            )
+            ) = await _hydrate_missing_identity_events(client, all_items)
             if hydrated_count > 0 or unresolved_hydration_count > 0:
                 logger.info(
                     "Outlook Calendar: hydrated %d event(s) missing iCalUId; %d still unresolved",
@@ -414,8 +328,8 @@ async def fetch_events(
                     unresolved_hydration_count,
                 )
 
-    # For incremental syncs using unbounded delta, filter out very old events
-    # to avoid processing events from years ago that were modified
+    # For incremental syncs, filter out very old events to avoid processing
+    # events from years ago that were modified
     if not is_initial and all_items:
         cutoff = now - timedelta(days=90)
         all_items, excluded = _filter_old_events(all_items, cutoff)
@@ -429,6 +343,6 @@ async def fetch_events(
         "Outlook Calendar fetch complete: %d events (initial=%s, used_delta_link=%s)",
         len(all_items),
         is_initial,
-        using_stored_delta_link,
+        bool(delta_link),
     )
-    return FetchEventsResult(events=all_items, delta_link=new_delta_link)
+    return FetchEventsResult(events=all_items, delta_link=delta_result.delta_link)
