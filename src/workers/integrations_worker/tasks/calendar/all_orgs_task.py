@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -32,15 +33,21 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
 
+_TASK_NAME = "integrations.sync_calendar_all_orgs"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_calendar_all_orgs",
+    name=_TASK_NAME,
     bind=False,
-    max_retries=0,
+    max_retries=_L["retries"],
     acks_late=True,
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_calendar_all_orgs_task() -> dict[str, Any]:
     """
@@ -168,6 +175,17 @@ def sync_calendar_all_orgs_task() -> dict[str, Any]:
 
     try:
         return run_async(_dispatch_all_orgs())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Calendar all-orgs sync timed out after %ds",
+            _L["soft"],
+        )
+        return {
+            "status": "timed_out",
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Calendar all-orgs sync failed: error=%s",

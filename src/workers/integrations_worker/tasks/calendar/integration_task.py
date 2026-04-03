@@ -27,6 +27,7 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -42,6 +43,7 @@ from src.service.integrations.calendar_cursor_metadata import (
 from src.service.integrations.calendar_sync_service import CalendarSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     FetchEventsResult as GoogleFetchEventsResult,
 )
@@ -85,15 +87,18 @@ CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_CALENDAR,
 )
 
+_TASK_NAME = "integrations.sync_calendar_integration"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_calendar_integration",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 60),
     acks_late=True,
-    soft_time_limit=300,  # 5 minutes soft limit for single integration
-    time_limit=360,  # 6 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_calendar_integration_task(
     self: Task,
@@ -382,6 +387,21 @@ def sync_calendar_integration_task(
 
         return result
 
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Manual calendar sync timed out: org=%s integration=%s soft_limit=%ds",
+            organisation_id,
+            integration_id,
+            _L["soft"],
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Manual calendar sync exception: org=%s integration=%s error=%s",

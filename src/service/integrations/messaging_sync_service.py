@@ -19,9 +19,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationSyncHistory,
     SyncStatus,
 )
 from src.domain.models.organisation_tables.sync.messaging_models import (
@@ -36,17 +36,16 @@ from src.domain.models.organisation_tables.sync.participant_models import (
     IntegrationParticipantIdentity,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.sync_history_manager import (
+    SyncHistoryManager,
+    datetime_now_naive,
+)
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncActionCounts,
     extract_sync_action,
 )
 
 logger = get_logger(__name__)
-
-
-def datetime_now_naive() -> datetime:
-    """Return current UTC timestamp without timezone info for naive columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class MessagingSyncService:
@@ -65,6 +64,7 @@ class MessagingSyncService:
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
         self.db = session
         self.organisation_id = organisation_id
+        self._sync_history = SyncHistoryManager(session)
         # Cache external_channel_id -> channel primary key
         self._channel_cache: dict[str, UUID] = {}
 
@@ -91,7 +91,7 @@ class MessagingSyncService:
         Returns:
             Dictionary with sync statistics
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        sync_history = await self._sync_history.start(integration.integration_id)
 
         try:
             channel_list = list(channels)
@@ -160,7 +160,7 @@ class MessagingSyncService:
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
@@ -202,7 +202,7 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -246,7 +246,7 @@ class MessagingSyncService:
         Returns:
             Dictionary with sync statistics including action counts
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        sync_history = await self._sync_history.start(integration.integration_id)
         action_counts = SyncActionCounts()
 
         try:
@@ -259,7 +259,7 @@ class MessagingSyncService:
             )
 
             if not channel_list:
-                await self._complete_sync_history(
+                await self._sync_history.complete(
                     sync_history,
                     status=SyncStatus.SUCCESS,
                     records_processed=0,
@@ -377,7 +377,7 @@ class MessagingSyncService:
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
@@ -425,7 +425,7 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -467,7 +467,7 @@ class MessagingSyncService:
         Returns:
             Dictionary with sync statistics
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        sync_history = await self._sync_history.start(integration.integration_id)
 
         try:
             message_list = list(messages)
@@ -541,7 +541,7 @@ class MessagingSyncService:
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
@@ -584,7 +584,7 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -603,65 +603,19 @@ class MessagingSyncService:
     async def get_monitored_channels(self, integration_id: UUID) -> list[MessagingChannel]:
         """Get all channels that should be actively synced (is_monitored=true)."""
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,  # type: ignore[arg-type]
-            MessagingChannel.is_monitored == "true",  # type: ignore[arg-type]
+            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.is_monitored) == "true",
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
-
-    async def _create_sync_history(self, integration_id: UUID) -> IntegrationSyncHistory:
-        """Create a new sync history record."""
-        sync_history = IntegrationSyncHistory(
-            integration_id=integration_id,
-            started_at=datetime_now_naive(),
-            status=SyncStatus.IN_PROGRESS,
-        )
-        self.db.add(sync_history)
-        await self.db.commit()
-        await self.db.refresh(sync_history)
-
-        logger.info("Created sync history: sync_id=%s", sync_history.sync_id)
-        return sync_history
-
-    async def _complete_sync_history(
-        self,
-        sync_history: IntegrationSyncHistory,
-        status: SyncStatus,
-        records_processed: int,
-        records_failed: int,
-        metadata: dict[str, Any] | None = None,
-        error_details: dict[str, Any] | None = None,
-    ) -> None:
-        """Update sync history with completion details."""
-        sync_history.completed_at = datetime_now_naive()
-        sync_history.status = status
-        sync_history.records_processed = records_processed
-        sync_history.records_failed = records_failed
-
-        if metadata:
-            sync_history.sync_metadata = metadata
-
-        if error_details:
-            sync_history.error_details = error_details
-
-        self.db.add(sync_history)
-        await self.db.commit()
-
-        logger.info(
-            "Updated sync history: sync_id=%s status=%s processed=%d failed=%d",
-            sync_history.sync_id,
-            status.value,
-            records_processed,
-            records_failed,
-        )
 
     async def _get_channel_by_external_id(
         self, integration_id: UUID, external_id: str
     ) -> MessagingChannel | None:
         """Get existing messaging channel by external_id."""
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,  # type: ignore[arg-type]
-            MessagingChannel.external_channel_id == external_id,  # type: ignore[arg-type]
+            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.external_channel_id) == external_id,
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
@@ -674,8 +628,8 @@ class MessagingSyncService:
             return {}
 
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,  # type: ignore[arg-type]
-            MessagingChannel.external_channel_id.in_(external_ids),  # type: ignore[union-attr]
+            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.external_channel_id).in_(external_ids),
         )
         result = await self.db.execute(stmt)
         channels = result.scalars().all()
@@ -966,10 +920,10 @@ class MessagingSyncService:
         stmt = (
             select(MessagingChannelMember)
             .where(
-                MessagingChannelMember.channel_id == channel_id,
-                MessagingChannelMember.participant_id == participant_id,
+                col(MessagingChannelMember.channel_id) == channel_id,
+                col(MessagingChannelMember.participant_id) == participant_id,
             )
-            .order_by(MessagingChannelMember.joined_at.desc())
+            .order_by(col(MessagingChannelMember.joined_at).desc())
             .limit(1)
         )
         result = await self.db.execute(stmt)
@@ -992,10 +946,10 @@ class MessagingSyncService:
 
         # Find active members from this integration who are no longer in the member list
         stmt = select(MessagingChannelMember).where(
-            MessagingChannelMember.channel_id == channel_id,
-            MessagingChannelMember.integration_id == integration_id,
-            MessagingChannelMember.left_at.is_(None),
-            MessagingChannelMember.participant_id.notin_(current_participant_ids),
+            col(MessagingChannelMember.channel_id) == channel_id,
+            col(MessagingChannelMember.integration_id) == integration_id,
+            col(MessagingChannelMember.left_at).is_(None),
+            col(MessagingChannelMember.participant_id).notin_(current_participant_ids),
         )
         result = await self.db.execute(stmt)
         removed_members = result.scalars().all()
@@ -1034,8 +988,8 @@ class MessagingSyncService:
             select(IntegrationParticipant)
             .join(IntegrationParticipantIdentity)
             .where(
-                IntegrationParticipantIdentity.integration_id == integration.integration_id,
-                IntegrationParticipantIdentity.provider_participant_id == external_user_id,
+                col(IntegrationParticipantIdentity.integration_id) == integration.integration_id,
+                col(IntegrationParticipantIdentity.provider_participant_id) == external_user_id,
             )
         )
         result = await self.db.execute(stmt)
@@ -1051,8 +1005,8 @@ class MessagingSyncService:
         # Try to find by email if we have one
         if email_normalized:
             stmt = select(IntegrationParticipant).where(
-                IntegrationParticipant.organisation_id == self.organisation_id,
-                IntegrationParticipant.canonical_email_normalized == email_normalized,
+                col(IntegrationParticipant.organisation_id) == self.organisation_id,
+                col(IntegrationParticipant.canonical_email_normalized) == email_normalized,
             )
             result = await self.db.execute(stmt)
             participant = result.scalars().first()
@@ -1119,8 +1073,8 @@ class MessagingSyncService:
 
         # Check if identity already exists
         stmt = select(IntegrationParticipantIdentity).where(
-            IntegrationParticipantIdentity.integration_id == integration.integration_id,
-            IntegrationParticipantIdentity.provider_participant_id == external_user_id,
+            col(IntegrationParticipantIdentity.integration_id) == integration.integration_id,
+            col(IntegrationParticipantIdentity.provider_participant_id) == external_user_id,
         )
         result = await self.db.execute(stmt)
         existing = result.scalars().first()
@@ -1159,8 +1113,8 @@ class MessagingSyncService:
     ) -> MessagingMessage | None:
         """Get existing messaging message by external_id."""
         stmt = select(MessagingMessage).where(
-            MessagingMessage.integration_id == integration_id,  # type: ignore[arg-type]
-            MessagingMessage.external_message_id == external_id,  # type: ignore[arg-type]
+            col(MessagingMessage.integration_id) == integration_id,
+            col(MessagingMessage.external_message_id) == external_id,
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
@@ -1464,9 +1418,9 @@ class MessagingSyncService:
         try:
             # Check if link already exists
             stmt = select(MessagingDealLink).where(
-                MessagingDealLink.channel_id == channel_id,  # type: ignore[arg-type]
-                MessagingDealLink.deal_id == deal_id,  # type: ignore[arg-type]
-                MessagingDealLink.is_deleted == False,  # noqa: E712
+                col(MessagingDealLink.channel_id) == channel_id,
+                col(MessagingDealLink.deal_id) == deal_id,
+                col(MessagingDealLink.is_deleted) == False,  # noqa: E712
             )
             result = await self.db.execute(stmt)
             existing_link = result.scalars().first()
@@ -1504,9 +1458,7 @@ class MessagingSyncService:
             self.db.add(new_link)
 
             # Enable monitoring on the channel
-            stmt = select(MessagingChannel).where(
-                MessagingChannel.channel_id == channel_id  # type: ignore[arg-type]
-            )
+            stmt = select(MessagingChannel).where(col(MessagingChannel.channel_id) == channel_id)
             result = await self.db.execute(stmt)
             channel = result.scalars().first()
 
@@ -1561,13 +1513,13 @@ class MessagingSyncService:
             select(MessagingChannel, MessagingDealLink)
             .join(
                 MessagingDealLink,
-                MessagingChannel.channel_id == MessagingDealLink.channel_id,
+                col(MessagingChannel.channel_id) == col(MessagingDealLink.channel_id),
             )
             .where(
-                MessagingDealLink.deal_id == deal_id,  # type: ignore[arg-type]
-                MessagingDealLink.integration_id == integration_id,  # type: ignore[arg-type]
-                MessagingDealLink.is_deleted == False,  # noqa: E712
-                MessagingChannel.is_deleted == False,  # noqa: E712
+                col(MessagingDealLink.deal_id) == deal_id,
+                col(MessagingDealLink.integration_id) == integration_id,
+                col(MessagingDealLink.is_deleted) == False,  # noqa: E712
+                col(MessagingChannel.is_deleted) == False,  # noqa: E712
             )
         )
 
@@ -1612,14 +1564,12 @@ class MessagingSyncService:
             List of all channel dictionaries
         """
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,  # type: ignore[arg-type]
-            MessagingChannel.is_deleted == False,  # noqa: E712
+            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.is_deleted) == False,  # noqa: E712
         )
 
         if not include_archived:
-            stmt = stmt.where(
-                MessagingChannel.is_archived == "false"  # type: ignore[arg-type]
-            )
+            stmt = stmt.where(col(MessagingChannel.is_archived) == "false")
 
         result = await self.db.execute(stmt)
         channels = result.scalars().all()

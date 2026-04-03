@@ -18,6 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -39,6 +40,7 @@ from src.service.integrations.sync_health import (
     record_sync_failure,
 )
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     FetchEventsResult as GoogleFetchEventsResult,
 )
@@ -81,17 +83,18 @@ CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_CALENDAR,
 )
 
+_TASK_NAME = "integrations.sync_calendar_org"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_calendar_org",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=2,
-    default_retry_delay=120,
-    # acks_late: if the worker crashes mid-sync, the message returns to the queue
-    # and another worker retries — prevents silent data loss on OOM or deploy.
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 120),
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=660,
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_calendar_org_task(
     self: Task,
@@ -408,6 +411,19 @@ def sync_calendar_org_task(
 
     try:
         return run_async(_sync_org())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Calendar org sync timed out: org=%s soft_limit=%ds",
+            organisation_id,
+            _L["soft"],
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Calendar org sync failed: org=%s error=%s",

@@ -118,7 +118,7 @@ class DealChannelMessagesService:
     - Sessions are released before external API calls
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(self, session: AsyncSession | None, organisation_id: UUID) -> None:
         """Initialize with session for backward compatibility.
 
         Note: The session is stored but fresh sessions are acquired for each
@@ -368,9 +368,9 @@ class DealChannelMessagesService:
                 col(KnowledgeIntegration.connection_id).isnot(None),
                 col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
             )
-            .distinct(MessagingChannel.external_channel_id)
+            .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
-                MessagingChannel.external_channel_id,
+                col(MessagingChannel.external_channel_id),
                 col(MessagingChannel.last_synced_at).desc().nulls_last(),
             )
         )
@@ -460,9 +460,9 @@ class DealChannelMessagesService:
                 col(KnowledgeIntegration.connection_id).isnot(None),
                 col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
             )
-            .distinct(MessagingChannel.external_channel_id)
+            .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
-                MessagingChannel.external_channel_id,
+                col(MessagingChannel.external_channel_id),
                 col(MessagingChannel.last_synced_at).desc().nulls_last(),
             )
         )

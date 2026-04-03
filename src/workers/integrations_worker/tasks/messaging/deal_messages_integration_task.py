@@ -33,7 +33,9 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
@@ -43,6 +45,7 @@ from src.service.integrations.deal_channel_messages_service import (
     DealChannelMessagesService,
 )
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
 
@@ -59,15 +62,18 @@ class IntegrationValidationData:
 # Messaging integration types
 MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS,)
 
+_TASK_NAME = "integrations.sync_deal_messages_integration"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_deal_messages_integration",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 60),
     acks_late=True,
-    soft_time_limit=300,  # 5 minutes soft limit
-    time_limit=360,  # 6 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_deal_messages_integration_task(
     self: Task,
@@ -127,8 +133,8 @@ def sync_deal_messages_integration_task(
 
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_id == int_id,
-                KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_id) == int_id,
+                col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
             )
             result = await session.execute(stmt)
             integration = result.scalar_one_or_none()
@@ -243,6 +249,21 @@ def sync_deal_messages_integration_task(
 
         return result
 
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Manual deal messages sync timed out: org=%s integration=%s after %ds",
+            organisation_id,
+            integration_id,
+            _L["soft"],
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Manual deal messages sync exception: org=%s integration=%s error=%s",

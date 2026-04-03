@@ -36,20 +36,20 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationSyncHistory,
-    SyncStatus,
-)
+from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.messaging_sync_service import MessagingSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.sync_history_manager import SyncHistoryManager
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.messaging.teams import (
     fetch_channels as teams_fetch_channels,
 )
@@ -79,15 +79,18 @@ class IntegrationFetchData:
 # Messaging integration types
 MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS,)
 
+_TASK_NAME = "integrations.sync_messaging_channels_integration"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_messaging_channels_integration",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 60),
     acks_late=True,
-    soft_time_limit=300,  # 5 minutes soft limit for single integration
-    time_limit=360,  # 6 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_messaging_channels_integration_task(
     self: Task,
@@ -149,7 +152,7 @@ def sync_messaging_channels_integration_task(
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.integration_id) == int_id,
-                KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
             )
             result = await session.execute(stmt)
             integration = result.scalar_one_or_none()
@@ -231,18 +234,12 @@ def sync_messaging_channels_integration_task(
         # Create IntegrationSyncHistory record (fresh session)
         # ─────────────────────────────────────────────────────────────────────
         sync_history_id: UUID | None = None
-        sync_start = datetime.now(UTC).replace(tzinfo=None)
         try:
             async for session in acquire_org_async_session(org_id):
-                sync_history = IntegrationSyncHistory(
-                    integration_id=int_id,
-                    started_at=sync_start,
-                    status=SyncStatus.IN_PROGRESS,
+                sync_history_id = await SyncHistoryManager.start_fresh(
+                    session,
+                    int_id,
                 )
-                session.add(sync_history)
-                await session.commit()
-                await session.refresh(sync_history)
-                sync_history_id = sync_history.sync_id
         except Exception as e:
             logger.warning(
                 "Failed to create sync history record: org=%s integration=%s error=%s",
@@ -407,30 +404,19 @@ def sync_messaging_channels_integration_task(
         if sync_history_id:
             try:
                 async for session in acquire_org_async_session(org_id):
-                    history_stmt = select(IntegrationSyncHistory).where(
-                        col(IntegrationSyncHistory.sync_id) == sync_history_id,
-                    )
-                    history_result = await session.execute(history_stmt)
-                    sync_history = history_result.scalar_one_or_none()
-
-                    if sync_history:
-                        sync_history.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                        sync_history.records_processed = channels_synced + chats_synced
-
-                        if errors:
-                            sync_history.status = SyncStatus.FAILED
-                            sync_history.error_details = {"errors": errors[:5]}
-                        else:
-                            sync_history.status = SyncStatus.SUCCESS
-
-                        sync_history.sync_metadata = {
+                    await SyncHistoryManager.complete_fresh(
+                        session,
+                        sync_history_id,
+                        status=SyncStatus.FAILED if errors else SyncStatus.SUCCESS,
+                        records_processed=channels_synced + chats_synced,
+                        metadata={
                             "entity": "messaging_channels",
                             "provider": fetch_data.provider,
                             "channels_synced": channels_synced,
                             "chats_synced": chats_synced,
-                        }
-                        session.add(sync_history)
-                        await session.commit()
+                        },
+                        error_details={"errors": errors[:5]} if errors else None,
+                    )
             except Exception as e:
                 logger.warning(
                     "Failed to update sync history: org=%s sync_id=%s error=%s",
@@ -477,6 +463,21 @@ def sync_messaging_channels_integration_task(
 
         return result
 
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Manual messaging channels sync timed out: org=%s integration=%s after %ds",
+            organisation_id,
+            integration_id,
+            _L["soft"],
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Manual messaging channels sync exception: org=%s integration=%s error=%s",
