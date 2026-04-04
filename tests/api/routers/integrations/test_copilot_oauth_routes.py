@@ -1,13 +1,10 @@
 """Tests for custom OAuth routes in the integrations API."""
 
 from fastapi.testclient import TestClient
-
 from src.infra.config.constant import IntegrationErrors
 
 
-def test_copilot_authorize_success(
-    client: TestClient, integrations_dependency_overrides
-) -> None:
+def test_copilot_authorize_success(client: TestClient, integrations_dependency_overrides) -> None:
     """Custom OAuth authorize returns an auth URL for supported integrations."""
     payload = {"integration_type": "gmail"}
     resp = client.post("/users/integrations/copilot-oauth/authorize", json=payload)
@@ -70,9 +67,7 @@ def test_copilot_callback_error_returns_popup_completion_html(
     client: TestClient, integrations_dependency_overrides
 ) -> None:
     """Custom OAuth callback should redirect popup to the frontend bridge page on errors too."""
-    integrations_dependency_overrides[
-        "copilot_callback_service"
-    ].should_raise_value_error = True
+    integrations_dependency_overrides["copilot_callback_service"].should_raise_value_error = True
 
     resp = client.get(
         "/users/integrations/copilot-oauth/callback?code=abc&state=xyz",
