@@ -1,5 +1,7 @@
 """CRM routers package."""
 
+from .accounts_handler import accounts_router
+from .contacts_handler import contacts_router
 from .custom_fields_handler import custom_fields_router
 from .deal_assets_handler import deal_assets_router
 from .deal_import_handler import deal_import_router
@@ -18,6 +20,8 @@ from .tasks_handler import tasks_router
 from .users_handler import crm_users_router
 
 __all__ = [
+    "accounts_router",
+    "contacts_router",
     "deal_assets_router",
     "deal_memory_router",
     "deal_notes_router",

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -164,3 +164,10 @@ class CRMContact(SyncedRecordMixin, table=True):
         sa_column=Column(JSONB),
         description="Raw provider payload useful for debugging.",
     )
+
+    # Research / enrichment
+    contact_research: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    last_researched_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    research_status: str | None = Field(default=None, sa_column=Column(String(20), nullable=True))

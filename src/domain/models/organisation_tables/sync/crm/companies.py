@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -147,3 +148,10 @@ class CRMCompany(SyncedRecordMixin, table=True):
         sa_column=Column(JSONB),
         description="Raw provider payload useful for debugging.",
     )
+
+    # Research / enrichment
+    company_research: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    last_researched_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    research_status: str | None = Field(default=None, sa_column=Column(String(20), nullable=True))
