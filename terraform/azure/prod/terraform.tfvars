@@ -181,6 +181,13 @@ resend_email      = "noreply@team.copilotgtm.com" # Override from default
 # (e.g., ngrok for local dev, or deployed API endpoint)
 
 # -----------------------------------------------------------------
+# OAuth App Registration — redirect URIs for prod environment
+# -----------------------------------------------------------------
+oauth_redirect_uris = [
+  "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback",
+]
+
+# -----------------------------------------------------------------
 # Secrets (provided via TF_VAR_* environment variables)
 # -----------------------------------------------------------------
 # TF_VAR_azuredevops_pat           - Azure DevOps Personal Access Token

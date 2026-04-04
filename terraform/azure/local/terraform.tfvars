@@ -32,3 +32,10 @@ allowed_public_ips    = []
 # -----------------------------------------------------------------------------
 teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/teams/messages"
 
+# -----------------------------------------------------------------------------
+# OAuth App Registration — redirect URIs for local development
+# -----------------------------------------------------------------------------
+oauth_redirect_uris = [
+  "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/integrations/copilot-oauth/callback",
+]
+
