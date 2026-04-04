@@ -118,11 +118,11 @@ class IntegrationMetadata:
 INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.HUBSPOT: IntegrationMetadata(
         name="HubSpot",
-        description="Sync contacts, deals, and sales activities from HubSpot CRM",
+        description="HubSpot CRM sync — deprecated, pending migration to internal CRM",
         logo_url="https://api.nango.dev/images/template-logos/hubspot.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
-        availability_status=AvailabilityStatus.AVAILABLE,
+        availability_status=AvailabilityStatus.DEPRECATED,
         oauth_scopes=[
             "crm.objects.contacts.read",
             "crm.objects.deals.read",
@@ -292,11 +292,11 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     ),
     IntegrationType.SALESFORCE: IntegrationMetadata(
         name="Salesforce",
-        description="Sync leads, opportunities, and sales data from Salesforce CRM",
+        description="Salesforce CRM sync — deprecated, pending migration to internal CRM",
         logo_url="https://api.nango.dev/images/template-logos/salesforce.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
-        availability_status=AvailabilityStatus.BETA,
+        availability_status=AvailabilityStatus.DEPRECATED,
         documentation_url="https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/",
         default_sync_frequency="daily",
         # Access Control - Organization wide CRM

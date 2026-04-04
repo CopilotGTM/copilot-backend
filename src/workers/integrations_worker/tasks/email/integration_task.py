@@ -26,23 +26,29 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_delta_sync_service import EmailDeltaSyncService
+from src.service.integrations.sync_health import record_sync_failure
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
 
+_TASK_NAME = "integrations.sync_email_integration"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_email_integration",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 60),
     acks_late=True,
-    soft_time_limit=300,  # 5 minutes soft limit for single integration
-    time_limit=360,  # 6 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_email_integration_task(
     self: Task,
@@ -122,6 +128,31 @@ def sync_email_integration_task(
 
         return result
 
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Manual email sync timed out after %ds: org=%s integration=%s",
+            _L["soft"],
+            organisation_id,
+            integration_id,
+        )
+        try:
+            run_async(
+                record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to record timeout failure for %s", integration_id)
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Manual email sync exception: org=%s integration=%s error=%s",

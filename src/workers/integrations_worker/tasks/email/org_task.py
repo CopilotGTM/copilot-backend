@@ -36,6 +36,7 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -47,9 +48,19 @@ from src.service.integrations.email_delta_sync_service import (
     EMAIL_INTEGRATION_TYPES,
     EmailDeltaSyncService,
 )
+from src.service.integrations.sync_health import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    classify_sync_error,
+    record_sync_failure,
+    record_sync_success,
+)
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
+
+_TASK_NAME = "integrations.sync_email_org"
+_L = TASK_LIMITS[_TASK_NAME]
 
 
 @dataclass
@@ -61,13 +72,13 @@ class IntegrationInfo:
 
 
 @app.task(
-    name="integrations.sync_email_org",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=2,
-    default_retry_delay=120,  # 2 minutes between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 120),
     acks_late=True,
-    soft_time_limit=1800,  # 30 minutes soft limit (may have multiple integrations with full body)
-    time_limit=1860,  # 31 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_email_org_task(
     self: Task,
@@ -103,6 +114,9 @@ def sync_email_org_task(
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
+    # Track which integration is being synced so the timeout handler can
+    # record a failure against the right integration.
+    current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
         """Sync all email integrations for the organization.
@@ -125,6 +139,9 @@ def sync_email_org_task(
                 col(KnowledgeIntegration.integration_type).in_(EMAIL_INTEGRATION_TYPES),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
+                # Circuit breaker: skip integrations with too many consecutive
+                # transient failures. Counter resets on success automatically.
+                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             rows = result.all()
@@ -175,6 +192,7 @@ def sync_email_org_task(
         total_messages = 0
 
         for info in integration_list:
+            current_integration_id[0] = info.integration_id
             logger.info(
                 "Syncing email integration: org=%s integration=%s type=%s",
                 org_id,
@@ -183,19 +201,28 @@ def sync_email_org_task(
             )
 
             try:
-                # Call service to sync this integration
                 # Service manages its own database sessions
                 sync_result = await service.sync_integration(
                     organisation_id=org_id,
                     integration_id=info.integration_id,
                 )
 
-                # Track results
                 if sync_result.get("status") == "success":
+                    await record_sync_success(
+                        organisation_id=org_id,
+                        integration_id=info.integration_id,
+                    )
                     successful += 1
                     total_folders += sync_result.get("folders_synced", 0)
                     total_messages += sync_result.get("messages_synced", 0)
                 else:
+                    # Service returned failure in result dict (didn't raise)
+                    error_str = sync_result.get("error", "Unknown error")
+                    await record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=info.integration_id,
+                        error=Exception(error_str),
+                    )
                     failed += 1
 
                 integration_results.append(
@@ -206,17 +233,29 @@ def sync_email_org_task(
                         "folders_synced": sync_result.get("folders_synced", 0),
                         "messages_synced": sync_result.get("messages_synced", 0),
                         "error": sync_result.get("error"),
+                        "failure_type": sync_result.get("error_type"),
                     }
                 )
 
             except Exception as e:
+                failure_type = classify_sync_error(e)
                 logger.error(
-                    "Failed to sync email integration: org=%s integration=%s error=%s",
+                    "Failed to sync email integration: org=%s integration=%s"
+                    " error=%s failure_type=%s",
                     org_id,
                     info.integration_id,
                     str(e),
+                    failure_type.value,
                     exc_info=True,
                 )
+
+                await record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=info.integration_id,
+                    error=e,
+                    failure_type=failure_type,
+                )
+
                 failed += 1
                 integration_results.append(
                     {
@@ -224,6 +263,7 @@ def sync_email_org_task(
                         "integration_type": info.integration_type,
                         "status": "failed",
                         "error": str(e),
+                        "failure_type": failure_type.value,
                     }
                 )
 
@@ -272,6 +312,32 @@ def sync_email_org_task(
 
     try:
         return run_async(_sync_org())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Email org sync timed out after %ds: org=%s",
+            _L["soft"],
+            organisation_id,
+        )
+        # Record failure for the integration that was being synced when timeout hit
+        int_id = current_integration_id[0]
+        if int_id:
+            try:
+                run_async(
+                    record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to record timeout failure for %s", int_id)
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Email org sync failed: org=%s error=%s",

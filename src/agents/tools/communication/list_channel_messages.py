@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.sql.functions import count
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
@@ -22,9 +22,6 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingChannel,
     MessagingDealLink,
     MessagingMessage,
-)
-from src.domain.models.organisation_tables.sync.participant_models import (
-    IntegrationParticipant,
 )
 
 if TYPE_CHECKING:
@@ -97,7 +94,6 @@ async def list_deal_channel_messages(
         link_c = cast(Any, MessagingDealLink).__table__.c
         channel_c = cast(Any, MessagingChannel).__table__.c
         message_c = cast(Any, MessagingMessage).__table__.c
-        participant_c = cast(Any, IntegrationParticipant).__table__.c
 
         # Step 1: Find channels linked to this deal with metadata
         channel_stmt = (
@@ -170,14 +166,8 @@ async def list_deal_channel_messages(
         message_stmt = (
             select(
                 MessagingMessage,
-                participant_c.display_name,
-                participant_c.given_name,
-                participant_c.family_name,
-                participant_c.canonical_email,
-            )
-            .outerjoin(
-                IntegrationParticipant,
-                message_c.participant_id == participant_c.participant_id,
+                message_c.author_display_name,
+                message_c.author_email,
             )
             .where(
                 message_c.organisation_id == organisation_id,
@@ -194,10 +184,12 @@ async def list_deal_channel_messages(
         # Filter by sender email or name (uses participant table already joined)
         if sender_email:
             message_stmt = message_stmt.where(
-                func.lower(participant_c.canonical_email) == sender_email.lower()
+                message_c.author_email_normalized == sender_email.lower()
             )
         if sender_name:
-            message_stmt = message_stmt.where(participant_c.display_name.ilike(f"%{sender_name}%"))
+            message_stmt = message_stmt.where(
+                message_c.author_display_name.ilike(f"%{sender_name}%")
+            )
 
         try:
             result = await session.execute(message_stmt)
@@ -212,10 +204,8 @@ async def list_deal_channel_messages(
 
     for row in message_rows:
         message = row[0]
-        display_name = row[1]
-        given_name = row[2]
-        family_name = row[3]
-        canonical_email = row[4]
+        author_display_name = row[1]
+        author_email = row[2]
 
         channel_uuid = message.channel_id
 
@@ -223,13 +213,12 @@ async def list_deal_channel_messages(
         if channel_msg_counts[channel_uuid] >= messages_per_channel:
             continue
 
-        # Build sender name
-        sender_name = _build_sender_name(display_name, given_name, family_name, canonical_email)
+        sender_display = author_display_name or author_email or "Unknown"
 
         message_data: dict[str, Any] = {
             "message_id": str(message.message_id),
-            "sender_name": sender_name,
-            "sender_email": canonical_email,
+            "sender_name": sender_display,
+            "sender_email": author_email,
             "content": message.content,
             "sent_at": message.sent_at.isoformat() if message.sent_at else None,
             "message_type": message.message_type.value
@@ -265,24 +254,6 @@ async def list_deal_channel_messages(
         "total_messages": total_messages,
         "total_channels": len(channels_list),
     }
-
-
-def _build_sender_name(
-    display_name: str | None,
-    given_name: str | None,
-    family_name: str | None,
-    email: str | None,
-) -> str:
-    """Build a sender name from available participant fields."""
-    if display_name:
-        return display_name
-    if given_name or family_name:
-        parts = [p for p in [given_name, family_name] if p]
-        return " ".join(parts)
-    if email:
-        # Extract name from email (before @)
-        return email.split("@")[0]
-    return "Unknown"
 
 
 def create_list_deal_channel_messages(

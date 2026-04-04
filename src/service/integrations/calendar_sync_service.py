@@ -29,10 +29,13 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventUserState,
 )
 from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationSyncHistory,
     SyncStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.sync_history_manager import (
+    SyncHistoryManager,
+    datetime_now_naive,
+)
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,
     SyncActionCounts,
@@ -45,11 +48,6 @@ logger = get_logger(__name__)
 ISO_UTC_SUFFIX = "+00:00"
 DEFAULT_EVENT_TITLE = "(No title)"
 SAMPLE_LOG_LIMIT = 5
-
-
-def datetime_now_naive() -> datetime:
-    """Return current UTC timestamp without timezone info for naive columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class CalendarSyncService:
@@ -70,6 +68,7 @@ class CalendarSyncService:
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
         self.db = session
         self.organisation_id = organisation_id
+        self._sync_history = SyncHistoryManager(session)
 
     @staticmethod
     def _build_event_debug_sample(
@@ -113,7 +112,7 @@ class CalendarSyncService:
         - integration_sync_history (tracking)
         - knowledge_integrations (last_synced_at update only)
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        sync_history = await self._sync_history.start(integration.integration_id)
 
         try:
             event_list = list(events)
@@ -204,7 +203,7 @@ class CalendarSyncService:
                     missing_identity_samples,
                 )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
@@ -237,7 +236,7 @@ class CalendarSyncService:
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -251,52 +250,6 @@ class CalendarSyncService:
             await self.db.commit()
 
             raise
-
-    async def _create_sync_history(self, integration_id: UUID) -> IntegrationSyncHistory:
-        """Create a new sync history record."""
-        sync_history = IntegrationSyncHistory(
-            integration_id=integration_id,
-            started_at=datetime_now_naive(),
-            status=SyncStatus.IN_PROGRESS,
-        )
-        self.db.add(sync_history)
-        await self.db.commit()
-        await self.db.refresh(sync_history)
-
-        logger.debug("Created sync history: sync_id=%s", sync_history.sync_id)
-        return sync_history
-
-    async def _complete_sync_history(
-        self,
-        sync_history: IntegrationSyncHistory,
-        status: SyncStatus,
-        records_processed: int,
-        records_failed: int,
-        metadata: dict[str, Any] | None = None,
-        error_details: dict[str, Any] | None = None,
-    ) -> None:
-        """Update sync history with completion details."""
-        sync_history.completed_at = datetime_now_naive()
-        sync_history.status = status
-        sync_history.records_processed = records_processed
-        sync_history.records_failed = records_failed
-
-        if metadata:
-            sync_history.sync_metadata = metadata
-
-        if error_details:
-            sync_history.error_details = error_details
-
-        self.db.add(sync_history)
-        await self.db.commit()
-
-        logger.debug(
-            "Updated sync history: sync_id=%s status=%s processed=%d failed=%d",
-            sync_history.sync_id,
-            status.value,
-            records_processed,
-            records_failed,
-        )
 
     async def _upsert_event(
         self,
@@ -315,16 +268,8 @@ class CalendarSyncService:
         """
         fields = self._extract_event_fields(event_data, provider)
 
-        organiser_email = fields.get("organiser_email")
-        is_organizer = (
-            organiser_email
-            and integration.integration_email
-            and organiser_email.lower() == integration.integration_email.lower()
-        )
-
         values = {
             "organisation_id": self.organisation_id,
-            "integration_id": integration.integration_id,
             "external_id": external_id,
             "provider": provider,
             "occurrence_anchor": occurrence_anchor,
@@ -350,9 +295,6 @@ class CalendarSyncService:
                 "created_at",
             )
         }
-
-        if not is_organizer:
-            update_dict.pop("integration_id")
 
         stmt = stmt.on_conflict_do_update(
             index_elements=["external_id", "occurrence_anchor"],
@@ -416,7 +358,7 @@ class CalendarSyncService:
         from sqlalchemy import delete
 
         await self.db.execute(
-            delete(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)  # type: ignore[arg-type]
+            delete(CalendarAttendee).where(col(CalendarAttendee.event_id) == event.event_id)
         )
 
         # Get organizer email to identify who is the organizer in attendees
@@ -835,7 +777,7 @@ class CalendarSyncService:
         provider: str,
     ) -> dict[str, Any]:
         """Sync calendar events using incremental optimization."""
-        sync_history = await self._create_sync_history(integration.integration_id)
+        sync_history = await self._sync_history.start(integration.integration_id)
 
         try:
             event_list = list(events)
@@ -847,7 +789,7 @@ class CalendarSyncService:
             )
 
             if not event_list:
-                await self._complete_sync_history(
+                await self._sync_history.complete(
                     sync_history,
                     status=SyncStatus.SUCCESS,
                     records_processed=0,
@@ -1093,7 +1035,7 @@ class CalendarSyncService:
                     unchanged_samples,
                 )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
@@ -1138,7 +1080,7 @@ class CalendarSyncService:
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -1212,8 +1154,10 @@ class CalendarSyncService:
             return {}
 
         stmt = select(CalendarEvent).where(
-            CalendarEvent.organisation_id == self.organisation_id,
-            tuple_(CalendarEvent.external_id, CalendarEvent.occurrence_anchor).in_(identity_pairs),
+            col(CalendarEvent.organisation_id) == self.organisation_id,
+            tuple_(col(CalendarEvent.external_id), col(CalendarEvent.occurrence_anchor)).in_(
+                identity_pairs
+            ),
         )
         result = await self.db.execute(stmt)
         events = result.scalars().all()

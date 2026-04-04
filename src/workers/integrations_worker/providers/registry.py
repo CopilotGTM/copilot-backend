@@ -3,7 +3,7 @@
 Maps (category, provider) -> fetch callable
 
 Fetch signature:
-    async fetch(nango, connection_id: str, is_initial: bool, last_synced_at, data_type: str | None, **kw) -> list[dict]
+    async fetch(token_info, connection_id: str, is_initial: bool, last_synced_at, data_type: str | None, **kw) -> list[dict]
 """
 
 from __future__ import annotations
@@ -12,57 +12,9 @@ from collections.abc import Awaitable, Callable
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
 from .calendar.outlook_calendar import fetch_events as outlook_calendar_fetch
-from .crm.hubspot import (
-    fetch_companies as hubspot_companies_fetch,
-)
-from .crm.hubspot import (
-    fetch_contacts as hubspot_contacts_fetch,
-)
-from .crm.hubspot import (
-    fetch_deal_tasks as hubspot_deal_tasks_fetch,
-)
-from .crm.hubspot import (
-    fetch_deals as hubspot_deals_fetch,
-)
-from .crm.hubspot import (
-    fetch_notes as hubspot_notes_fetch,
-)
-from .crm.hubspot import (
-    fetch_owners as hubspot_owners_fetch,
-)
-from .crm.hubspot import (
-    fetch_pipelines as hubspot_pipelines_fetch,
-)
-from .crm.hubspot import (
-    fetch_users as hubspot_users_fetch,
-)
-from .crm.salesforce import (
-    fetch_accounts as salesforce_accounts_fetch,
-)
-from .crm.salesforce import (
-    fetch_contacts as salesforce_contacts_fetch,
-)
-from .crm.salesforce import (
-    fetch_deals as salesforce_deals_fetch,
-)
-from .crm.salesforce import (
-    fetch_leads as salesforce_leads_fetch,
-)
-from .crm.salesforce import (
-    fetch_notes as salesforce_notes_fetch,
-)
-from .crm.salesforce import (
-    fetch_pipelines as salesforce_pipelines_fetch,
-)
-from .crm.salesforce import (
-    fetch_tasks as salesforce_tasks_fetch,
-)
-from .crm.salesforce import (
-    fetch_tickets as salesforce_tickets_fetch,
-)
-from .crm.salesforce import (
-    fetch_users as salesforce_users_fetch,
-)
+
+# CRM providers (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
+# Will be restored for one-time data migration in the future.
 from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
 from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
 from .messaging.teams import fetch_channels as teams_fetch_channels
@@ -86,32 +38,7 @@ def _init_defaults() -> None:
         "events": outlook_calendar_fetch,
         "calendars": outlook_calendar_fetch,
     }
-    # CRM: HubSpot
-    _REGISTRY[("crm", "hubspot")] = {
-        "pipelines": hubspot_pipelines_fetch,
-        "deals": hubspot_deals_fetch,
-        "deal_tasks": hubspot_deal_tasks_fetch,
-        "notes": hubspot_notes_fetch,
-        "contacts": hubspot_contacts_fetch,
-        "users": hubspot_users_fetch,
-        "companies": hubspot_companies_fetch,
-        "owners": hubspot_owners_fetch,
-    }
-    # CRM: Salesforce (Phase 1 scaffold)
-    _REGISTRY[("crm", "salesforce")] = {
-        "pipelines": salesforce_pipelines_fetch,
-        "deals": salesforce_deals_fetch,
-        "opportunities": salesforce_deals_fetch,  # Alias
-        "deal_tasks": salesforce_tasks_fetch,
-        "notes": salesforce_notes_fetch,
-        "tickets": salesforce_tickets_fetch,  # Alias to Salesforce Task (Activities)
-        "contacts": salesforce_contacts_fetch,
-        "users": salesforce_users_fetch,
-        "owners": salesforce_users_fetch,  # Alias
-        "accounts": salesforce_accounts_fetch,
-        "companies": salesforce_accounts_fetch,  # Alias
-        "leads": salesforce_leads_fetch,
-    }
+    # CRM providers (HubSpot, Salesforce) deprecated — sync removed, migration TBD
     # Email: Outlook
     _REGISTRY[("email", "outlook")] = {
         "folders": outlook_email_fetch_folders,
@@ -138,11 +65,6 @@ def get_fetcher(category: str, provider: str, data_type: str) -> FetchFn | None:
     fetcher = entry.get(data_type)
     if fetcher:
         return fetcher
-
-    # Handle aliases for backward compatibility
-    # Map 'tasks' to 'deal_tasks' for CRM providers
-    if category == "crm" and data_type == "tasks":
-        return entry.get("deal_tasks")
 
     return None
 

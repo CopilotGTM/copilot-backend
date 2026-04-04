@@ -37,19 +37,25 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationSyncHistory,
-    SyncStatus,
-)
+from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations import NangoClient
 from src.service.integrations.messaging_sync_service import MessagingSyncService
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.sync_health import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    record_sync_failure,
+    record_sync_success,
+)
+from src.service.integrations.sync_history_manager import SyncHistoryManager
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.messaging.teams import (
     fetch_channels as teams_fetch_channels,
 )
@@ -65,27 +71,32 @@ class IntegrationFetchData:
     """Data extracted from integration needed for fetching channels/chats."""
 
     integration_id: UUID
-    connection_id: str
+    connection_id: str | None
     integration_type: IntegrationType
     integration_type_value: str
     provider: str
     provider_config_key: str
     is_initial: bool
     last_synced_at: datetime | None
+    credentials: dict[str, Any]
+    access_token_expires_at: datetime | None
 
 
 # Messaging integration types to sync
 MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS,)
 
+_TASK_NAME = "integrations.sync_messaging_channels_org"
+_L = TASK_LIMITS[_TASK_NAME]
+
 
 @app.task(
-    name="integrations.sync_messaging_channels_org",
+    name=_TASK_NAME,
     bind=True,
-    max_retries=2,
-    default_retry_delay=120,  # 2 minutes between retries
+    max_retries=_L["retries"],
+    default_retry_delay=_L.get("retry_delay", 120),
     acks_late=True,
-    soft_time_limit=900,  # 15 minutes soft limit (may have many channels)
-    time_limit=960,  # 16 minutes hard limit
+    soft_time_limit=_L["soft"],
+    time_limit=_L["hard"],
 )
 def sync_messaging_channels_org_task(
     self: Task,
@@ -121,6 +132,7 @@ def sync_messaging_channels_org_task(
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
+    current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
         """Sync all messaging channels for the organization.
@@ -143,9 +155,10 @@ def sync_messaging_channels_org_task(
 
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
-                KnowledgeIntegration.is_active == True,  # noqa: E712
-                KnowledgeIntegration.connection_id.isnot(None),
+                col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                col(KnowledgeIntegration.connection_id).isnot(None),
+                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -199,6 +212,8 @@ def sync_messaging_channels_org_task(
                         provider_config_key=provider_config_key,
                         is_initial=integration.last_synced_at is None,
                         last_synced_at=integration.last_synced_at,
+                        credentials=dict(integration.credentials or {}),
+                        access_token_expires_at=integration.access_token_expires_at,
                     )
                 )
         # Session is now released
@@ -226,265 +241,274 @@ def sync_messaging_channels_org_task(
         integration_results = []
         successful = 0
         failed = 0
+        partial = 0
         total_channels = 0
         total_chats = 0
 
-        nango = NangoClient()
-        try:
-            for fetch_data in integration_fetch_list:
-                logger.info(
-                    "Syncing messaging integration: org=%s integration=%s type=%s",
+        for fetch_data in integration_fetch_list:
+            current_integration_id[0] = fetch_data.integration_id
+            logger.info(
+                "Syncing messaging integration: org=%s integration=%s type=%s",
+                org_id,
+                fetch_data.integration_id,
+                fetch_data.integration_type_value,
+            )
+
+            integration_sync_result: dict[str, Any] = {
+                "integration_id": str(fetch_data.integration_id),
+                "integration_type": fetch_data.integration_type_value,
+                "channels_synced": 0,
+                "chats_synced": 0,
+                "errors": [],
+            }
+            # Preserve the first real exception for proper failure classification
+            first_exception: Exception | None = None
+
+            # ─────────────────────────────────────────────────────────────
+            # Create IntegrationSyncHistory record (fresh session)
+            # ─────────────────────────────────────────────────────────────
+            sync_history_id: UUID | None = None
+            try:
+                async for session in acquire_org_async_session(org_id):
+                    sync_history_id = await SyncHistoryManager.start_fresh(
+                        session,
+                        fetch_data.integration_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to create sync history record: org=%s integration=%s error=%s",
                     org_id,
                     fetch_data.integration_id,
-                    fetch_data.integration_type_value,
+                    str(e),
                 )
 
-                integration_sync_result: dict[str, Any] = {
-                    "integration_id": str(fetch_data.integration_id),
-                    "integration_type": fetch_data.integration_type_value,
-                    "channels_synced": 0,
-                    "chats_synced": 0,
-                    "errors": [],
-                }
+            token_info = IntegrationTokenInfo.from_integration(fetch_data, org_id)
 
-                # ─────────────────────────────────────────────────────────────
-                # Create IntegrationSyncHistory record (fresh session)
-                # ─────────────────────────────────────────────────────────────
-                sync_history_id: UUID | None = None
-                sync_start = datetime.now(UTC).replace(tzinfo=None)
+            # ─────────────────────────────────────────────────────────────
+            # Phase 2a: Fetch channels from API (NO session held)
+            # ─────────────────────────────────────────────────────────────
+            channels: list[dict[str, Any]] = []
+            try:
+                channels = await teams_fetch_channels(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id or "",
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
+                logger.info(
+                    "Fetched %d channels for integration %s",
+                    len(channels),
+                    fetch_data.integration_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to fetch channels: org=%s integration=%s error=%s",
+                    org_id,
+                    fetch_data.integration_id,
+                    str(e),
+                    exc_info=True,
+                )
+                integration_sync_result["errors"].append(f"channels_fetch: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
+
+            # ─────────────────────────────────────────────────────────────
+            # Phase 2b: Write channels to DB (fresh session)
+            # ─────────────────────────────────────────────────────────────
+            if channels:
                 try:
                     async for session in acquire_org_async_session(org_id):
-                        sync_history = IntegrationSyncHistory(
-                            integration_id=fetch_data.integration_id,
-                            started_at=sync_start,
-                            status=SyncStatus.IN_PROGRESS,
-                        )
-                        session.add(sync_history)
-                        await session.commit()
-                        await session.refresh(sync_history)
-                        sync_history_id = sync_history.sync_id
-                except Exception as e:
-                    logger.warning(
-                        "Failed to create sync history record: org=%s integration=%s error=%s",
-                        org_id,
-                        fetch_data.integration_id,
-                        str(e),
-                    )
-                    # Continue with sync even if history record fails
-
-                # ─────────────────────────────────────────────────────────────
-                # Phase 2a: Fetch channels from API (NO session held)
-                # ─────────────────────────────────────────────────────────────
-                channels: list[dict[str, Any]] = []
-                try:
-                    channels = await teams_fetch_channels(
-                        nango=nango,
-                        connection_id=fetch_data.connection_id,
-                        is_initial=fetch_data.is_initial,
-                        last_synced_at=fetch_data.last_synced_at,
-                        provider_config_key=fetch_data.provider_config_key,
-                    )
-                    logger.info(
-                        "Fetched %d channels for integration %s",
-                        len(channels),
-                        fetch_data.integration_id,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Failed to fetch channels: org=%s integration=%s error=%s",
-                        org_id,
-                        fetch_data.integration_id,
-                        str(e),
-                        exc_info=True,
-                    )
-                    integration_sync_result["errors"].append(f"channels_fetch: {str(e)}")
-
-                # ─────────────────────────────────────────────────────────────
-                # Phase 2b: Write channels to DB (fresh session)
-                # ─────────────────────────────────────────────────────────────
-                if channels:
-                    try:
-                        async for session in acquire_org_async_session(org_id):
-                            # Reload integration for the service
-                            stmt = select(KnowledgeIntegration).where(
-                                KnowledgeIntegration.integration_id == fetch_data.integration_id,
-                            )
-                            result = await session.execute(stmt)
-                            integration = result.scalar_one_or_none()
-
-                            if integration:
-                                messaging_service = MessagingSyncService(session, org_id)
-                                channels_metrics = (
-                                    await messaging_service.sync_channels_incremental(
-                                        integration=integration,
-                                        channels=channels,
-                                        provider=fetch_data.provider,
-                                    )
-                                )
-                                channels_synced = channels_metrics.get(
-                                    "records_processed",
-                                    channels_metrics.get("channels_processed", 0),
-                                )
-                                integration_sync_result["channels_synced"] = channels_synced
-                                total_channels += channels_synced
-                        # Session released
-                    except Exception as e:
-                        logger.error(
-                            "Failed to sync channels: org=%s integration=%s error=%s",
-                            org_id,
-                            fetch_data.integration_id,
-                            str(e),
-                            exc_info=True,
-                        )
-                        integration_sync_result["errors"].append(f"channels_sync: {str(e)}")
-
-                # ─────────────────────────────────────────────────────────────
-                # Phase 3a: Fetch chats from API (NO session held)
-                # ─────────────────────────────────────────────────────────────
-                chats: list[dict[str, Any]] = []
-                try:
-                    chats_result = await teams_fetch_chats(
-                        nango=nango,
-                        connection_id=fetch_data.connection_id,
-                        is_initial=fetch_data.is_initial,
-                        last_synced_at=fetch_data.last_synced_at,
-                        provider_config_key=fetch_data.provider_config_key,
-                    )
-                    chats = chats_result.chats
-                    logger.info(
-                        "Fetched %d chats for integration %s",
-                        len(chats),
-                        fetch_data.integration_id,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Failed to fetch chats: org=%s integration=%s error=%s",
-                        org_id,
-                        fetch_data.integration_id,
-                        str(e),
-                        exc_info=True,
-                    )
-                    integration_sync_result["errors"].append(f"chats_fetch: {str(e)}")
-
-                # ─────────────────────────────────────────────────────────────
-                # Phase 3b: Write chats to DB + update integration (fresh session)
-                # ─────────────────────────────────────────────────────────────
-                try:
-                    async for session in acquire_org_async_session(org_id):
-                        # Reload integration
+                        # Reload integration for the service
                         stmt = select(KnowledgeIntegration).where(
-                            KnowledgeIntegration.integration_id == fetch_data.integration_id,
+                            col(KnowledgeIntegration.integration_id) == fetch_data.integration_id,
                         )
                         result = await session.execute(stmt)
-                        integration = result.scalar_one_or_none()
+                        integration_db = result.scalar_one_or_none()
 
-                        if integration:
-                            # Write chats if we have any
-                            if chats:
-                                messaging_service = MessagingSyncService(session, org_id)
-                                chats_metrics = await messaging_service.sync_channels_incremental(
-                                    integration=integration,
-                                    channels=chats,
-                                    provider=fetch_data.provider,
-                                )
-                                chats_synced = chats_metrics.get(
-                                    "records_processed",
-                                    chats_metrics.get("channels_processed", 0),
-                                )
-                                integration_sync_result["chats_synced"] = chats_synced
-                                total_chats += chats_synced
-
-                            # Update last_synced_at
-                            integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                            session.add(integration)
-                            await session.commit()
+                        if integration_db:
+                            messaging_service = MessagingSyncService(session, org_id)
+                            channels_metrics = await messaging_service.sync_channels_incremental(
+                                integration=integration_db,
+                                channels=channels,
+                                provider=fetch_data.provider,
+                            )
+                            channels_synced = channels_metrics.get(
+                                "records_processed",
+                                channels_metrics.get("channels_processed", 0),
+                            )
+                            integration_sync_result["channels_synced"] = channels_synced
+                            total_channels += channels_synced
                     # Session released
                 except Exception as e:
                     logger.error(
-                        "Failed to sync chats/update integration: org=%s integration=%s error=%s",
+                        "Failed to sync channels: org=%s integration=%s error=%s",
                         org_id,
                         fetch_data.integration_id,
                         str(e),
                         exc_info=True,
                     )
-                    integration_sync_result["errors"].append(f"chats_sync: {str(e)}")
+                    integration_sync_result["errors"].append(f"channels_sync: {str(e)}")
+                    if first_exception is None:
+                        first_exception = e
 
-                # Determine integration status
-                if integration_sync_result["errors"]:
-                    if (
-                        integration_sync_result["channels_synced"] > 0
-                        or integration_sync_result["chats_synced"] > 0
-                    ):
-                        integration_sync_result["status"] = "partial"
-                    else:
-                        integration_sync_result["status"] = "failed"
-                        failed += 1
-                else:
-                    integration_sync_result["status"] = "success"
-                    successful += 1
+            # ─────────────────────────────────────────────────────────────
+            # Phase 3a: Fetch chats from API (NO session held)
+            # ─────────────────────────────────────────────────────────────
+            chats: list[dict[str, Any]] = []
+            try:
+                chats_result = await teams_fetch_chats(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id or "",
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
+                chats = chats_result.chats
+                logger.info(
+                    "Fetched %d chats for integration %s",
+                    len(chats),
+                    fetch_data.integration_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to fetch chats: org=%s integration=%s error=%s",
+                    org_id,
+                    fetch_data.integration_id,
+                    str(e),
+                    exc_info=True,
+                )
+                integration_sync_result["errors"].append(f"chats_fetch: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
 
-                # ─────────────────────────────────────────────────────────────
-                # Update IntegrationSyncHistory record (fresh session)
-                # ─────────────────────────────────────────────────────────────
-                if sync_history_id:
-                    try:
-                        async for session in acquire_org_async_session(org_id):
-                            history_stmt = select(IntegrationSyncHistory).where(
-                                IntegrationSyncHistory.sync_id == sync_history_id,
+            # ─────────────────────────────────────────────────────────────
+            # Phase 3b: Write chats to DB + update integration (fresh session)
+            # ─────────────────────────────────────────────────────────────
+            try:
+                async for session in acquire_org_async_session(org_id):
+                    # Reload integration
+                    stmt = select(KnowledgeIntegration).where(
+                        col(KnowledgeIntegration.integration_id) == fetch_data.integration_id,
+                    )
+                    result = await session.execute(stmt)
+                    integration_db = result.scalar_one_or_none()
+
+                    if integration_db:
+                        # Write chats if we have any
+                        if chats:
+                            messaging_service = MessagingSyncService(session, org_id)
+                            chats_metrics = await messaging_service.sync_channels_incremental(
+                                integration=integration_db,
+                                channels=chats,
+                                provider=fetch_data.provider,
                             )
-                            history_result = await session.execute(history_stmt)
-                            sync_history = history_result.scalar_one_or_none()
+                            chats_synced = chats_metrics.get(
+                                "records_processed",
+                                chats_metrics.get("channels_processed", 0),
+                            )
+                            integration_sync_result["chats_synced"] = chats_synced
+                            total_chats += chats_synced
 
-                            if sync_history:
-                                sync_history.completed_at = datetime.now(UTC).replace(tzinfo=None)
-                                sync_history.records_processed = (
-                                    integration_sync_result["channels_synced"]
-                                    + integration_sync_result["chats_synced"]
-                                )
+                        # Update last_synced_at
+                        integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                        session.add(integration_db)
+                        await session.commit()
+                # Session released
+            except Exception as e:
+                logger.error(
+                    "Failed to sync chats/update integration: org=%s integration=%s error=%s",
+                    org_id,
+                    fetch_data.integration_id,
+                    str(e),
+                    exc_info=True,
+                )
+                integration_sync_result["errors"].append(f"chats_sync: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
 
-                                if integration_sync_result["errors"]:
-                                    sync_history.status = SyncStatus.FAILED
-                                    sync_history.error_details = {
-                                        "errors": integration_sync_result["errors"][:5]
-                                    }
-                                else:
-                                    sync_history.status = SyncStatus.SUCCESS
+            # Determine integration status and record health.
+            # Partial failures still record a failure — the real exception
+            # is preserved so classify_sync_error() can detect auth vs transient.
+            if integration_sync_result["errors"]:
+                has_partial = (
+                    integration_sync_result["channels_synced"] > 0
+                    or integration_sync_result["chats_synced"] > 0
+                )
+                integration_sync_result["status"] = "partial" if has_partial else "failed"
+                if has_partial:
+                    partial += 1
+                else:
+                    failed += 1
+                await record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=fetch_data.integration_id,
+                    error=first_exception or Exception(integration_sync_result["errors"][0]),
+                )
+            else:
+                integration_sync_result["status"] = "success"
+                successful += 1
+                await record_sync_success(
+                    organisation_id=org_id,
+                    integration_id=fetch_data.integration_id,
+                )
 
-                                sync_history.sync_metadata = {
-                                    "entity": "messaging_channels",
-                                    "provider": fetch_data.provider,
-                                    "channels_synced": integration_sync_result["channels_synced"],
-                                    "chats_synced": integration_sync_result["chats_synced"],
-                                }
-                                session.add(sync_history)
-                                await session.commit()
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to update sync history: org=%s sync_id=%s error=%s",
-                            org_id,
+            # ─────────────────────────────────────────────────────────────
+            # Update IntegrationSyncHistory record (fresh session)
+            # ─────────────────────────────────────────────────────────────
+            if sync_history_id:
+                errors = integration_sync_result["errors"]
+                try:
+                    async for session in acquire_org_async_session(org_id):
+                        await SyncHistoryManager.complete_fresh(
+                            session,
                             sync_history_id,
-                            str(e),
+                            status=(
+                                SyncStatus.SUCCESS
+                                if not errors
+                                else (
+                                    SyncStatus.PARTIAL
+                                    if integration_sync_result["status"] == "partial"
+                                    else SyncStatus.FAILED
+                                )
+                            ),
+                            records_processed=(
+                                integration_sync_result["channels_synced"]
+                                + integration_sync_result["chats_synced"]
+                            ),
+                            metadata={
+                                "entity": "messaging_channels",
+                                "provider": fetch_data.provider,
+                                "channels_synced": integration_sync_result["channels_synced"],
+                                "chats_synced": integration_sync_result["chats_synced"],
+                            },
+                            error_details={"errors": errors[:5]} if errors else None,
                         )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to update sync history: org=%s sync_id=%s error=%s",
+                        org_id,
+                        sync_history_id,
+                        str(e),
+                    )
 
-                integration_results.append(integration_sync_result)
-
-        finally:
-            await nango.close()
+            integration_results.append(integration_sync_result)
 
         completed_at = datetime.now(UTC).isoformat()
 
         # Determine overall status
-        if failed == 0:
+        if failed == 0 and partial == 0:
             status = "completed"
-        elif successful == 0:
+        elif successful == 0 and partial == 0:
             status = "failed"
         else:
             status = "partial"
 
         logger.info(
-            "Messaging channels sync complete for org %s: successful=%d failed=%d channels=%d chats=%d",
+            "Messaging channels sync complete for org %s: successful=%d partial=%d failed=%d channels=%d chats=%d",
             org_id,
             successful,
+            partial,
             failed,
             total_channels,
             total_chats,
@@ -498,6 +522,7 @@ def sync_messaging_channels_org_task(
             "summary": {
                 "total_integrations": len(integration_fetch_list),
                 "successful": successful,
+                "partial": partial,
                 "failed": failed,
                 "total_channels_synced": total_channels,
                 "total_chats_synced": total_chats,
@@ -507,6 +532,31 @@ def sync_messaging_channels_org_task(
 
     try:
         return run_async(_sync_org())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Messaging channels org sync timed out: org=%s after %ds",
+            organisation_id,
+            _L["soft"],
+        )
+        int_id = current_integration_id[0]
+        if int_id:
+            try:
+                run_async(
+                    record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to record timeout failure for %s", int_id)
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded soft time limit of {_L['soft']}s",
+        }
     except Exception as e:
         logger.error(
             "Messaging channels org sync failed: org=%s error=%s",

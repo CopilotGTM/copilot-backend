@@ -1,8 +1,7 @@
 """
-Core integration service for managing third-party OAuth integrations.
+Core integration service for managing OAuth integrations.
 
-This service provides CRUD operations for integrations and coordinates
-between the database and Nango client.
+This service provides CRUD operations for integrations.
 """
 
 import logging
@@ -11,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import Boolean, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
@@ -18,14 +18,11 @@ from src.domain.models.organisation_tables.sync import (
     MessagingChannel,
     MessagingDealLink,
 )
-from src.domain.models.organisation_tables.sync.messaging_models import MessagingChannelMember
-from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
-from src.infra.auth.user_context import UserIDs
-from src.infra.config.nango_provider_mapping import (
-    to_nango_connect_integration_key,
+from src.domain.models.organisation_tables.sync.messaging_models import (
+    MessagingChannelIntegrationState,
+    MessagingChannelMember,
 )
-
-from .nango_client import NangoClient, NangoConnectionError
+from src.infra.auth.user_context import UserIDs
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +58,6 @@ class IntegrationService:
         self,
         db_session: AsyncSession,
         user_ids: UserIDs,
-        nango_client: NangoClient | None = None,
     ):
         """
         Initialize the integration service.
@@ -69,11 +65,9 @@ class IntegrationService:
         Args:
             db_session: Async SQLAlchemy database session
             user_ids: UserIDs instance for scoping queries
-            nango_client: Nango client instance (creates new one if not provided)
         """
         self.db = db_session
         self.user_ids = user_ids
-        self.nango = nango_client or NangoClient()
 
     async def close(self) -> None:
         """Close the database session."""
@@ -93,8 +87,8 @@ class IntegrationService:
             KnowledgeIntegration if found, None otherwise
         """
         statement = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.integration_id == integration_id,  # type: ignore
-            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,  # type: ignore
+            col(KnowledgeIntegration.integration_id) == integration_id,
+            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
         )
 
         result = await self.db.execute(statement)
@@ -117,74 +111,63 @@ class IntegrationService:
             List of active KnowledgeIntegration instances, ordered by created_at DESC
         """
         statement = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,  # type: ignore
-            cast(KnowledgeIntegration.is_active, Boolean).is_(True),
+            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
+            cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
         )
 
         if user_id:
             statement = statement.where(
                 or_(
-                    KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION,  # type: ignore
+                    col(KnowledgeIntegration.integration_scope) == IntegrationScope.ORGANIZATION,
                     and_(
-                        KnowledgeIntegration.integration_scope == IntegrationScope.USER,  # type: ignore
-                        KnowledgeIntegration.created_by_user_id == user_id,  # type: ignore
+                        col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        col(KnowledgeIntegration.created_by_user_id) == user_id,
                     ),
                 )
             )
 
-        statement = statement.order_by(KnowledgeIntegration.created_at.desc())  # type: ignore[attr-defined]
+        statement = statement.order_by(col(KnowledgeIntegration.created_at).desc())
 
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
-    @staticmethod
-    def _provider_from_type(integration_type: IntegrationType | str) -> str:
+    async def revoke_custom_oauth_token(
+        self,
+        integration: KnowledgeIntegration,
+    ) -> bool:
+        """Revoke tokens at the provider for custom OAuth integrations.
+
+        Prefers revoking refresh_token (invalidates both tokens at Google).
+        Falls back to access_token if no refresh_token. Logs but does not
+        raise on failure — we still want to deactivate locally even if
+        revocation fails (e.g., token already expired at provider).
         """
-        Convert IntegrationType enum or string to Nango provider key for connection operations.
+        from src.service.integrations.providers.provider_factory import ProviderFactory
 
-        For delete operations, we use the Connect integration key (not the provider key)
-        because that's what was used during connection creation.
+        credentials = integration.credentials or {}
+        refresh_token = credentials.get("refresh_token")
+        access_token = credentials.get("access_token")
+        token_to_revoke = refresh_token or access_token
+        if not token_to_revoke:
+            logger.warning("No token to revoke for integration %s", integration.integration_id)
+            return False
 
-        Args:
-            integration_type: The integration type enum or string
-
-        Returns:
-            Nango provider config key string (e.g., 'google-calendar', 'hubspot')
-        """
-        # Convert string to enum if needed
+        integration_type = integration.integration_type
         if isinstance(integration_type, str):
             integration_type = IntegrationType(integration_type)
-        # Use Connect integration key for connection operations (create/delete)
-        return to_nango_connect_integration_key(integration_type)
-
-    async def delete_integration_from_nango(
-        self,
-        connection_id: str,
-        integration_type: IntegrationType,
-    ) -> bool:
-        """
-        Delete an integration connection from Nango.
-
-        Args:
-            connection_id: The Nango connection ID string (e.g., UUID string)
-            integration_type: IntegrationType enum for the integration
-        Returns:
-            True if deletion was successful or connection doesn't exist
-        """
 
         try:
-            provider = self._provider_from_type(integration_type)
+            provider = ProviderFactory.get_provider(integration_type)
+            await provider.revoke_token(str(token_to_revoke))
             logger.info(
-                f"Revoking Nango connection for (provider={provider}, connection_id={connection_id})"
+                "Revoked custom OAuth token for integration %s",
+                integration.integration_id,
             )
-            await self.nango.delete_connection(
-                provider=provider,
-                connection_id=str(connection_id),  # Ensure it's a string
-            )
-            logger.info(f"Successfully revoked Nango connection for connection_id {connection_id}")
-        except NangoConnectionError as e:
+        except Exception as e:
             logger.warning(
-                f"Failed to delete Nango connection: {str(e)}. Proceeding with soft deletion."
+                "Failed to revoke custom OAuth token for %s: %s. Proceeding with deactivation.",
+                integration.integration_id,
+                str(e),
             )
         return True
 
@@ -206,18 +189,27 @@ class IntegrationService:
         if not integration:
             raise ValueError("Integration not found")
 
-        # Query MessagingChannel table
-        stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,  # type: ignore
-            MessagingChannel.is_archived == "false",  # Only active channels # type: ignore
+        # Query MessagingChannel table via integration state for visibility
+        stmt = (
+            select(MessagingChannel)
+            .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id,
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
+                col(MessagingChannel.is_archived) == "false",
+            )
         )
 
         if deal_id:
             # Exclude channels already linked to this deal
-            subquery = select(MessagingDealLink.channel_id).where(  # type: ignore
-                MessagingDealLink.deal_id == deal_id
+            subquery = select(col(MessagingDealLink.channel_id)).where(
+                col(MessagingDealLink.deal_id) == deal_id
             )
-            stmt = stmt.where(MessagingChannel.channel_id.not_in(subquery))  # type: ignore
+            stmt = stmt.where(col(MessagingChannel.channel_id).not_in(subquery))
 
         result = await self.db.execute(stmt)
         db_channels = result.scalars().all()
@@ -230,22 +222,18 @@ class IntegrationService:
         if channel_ids:
             members_stmt = (
                 select(
-                    MessagingChannelMember.channel_id,  # type: ignore
-                    IntegrationParticipant.display_name,  # type: ignore
-                    IntegrationParticipant.canonical_email,  # type: ignore
-                    MessagingChannelMember.member_role,  # type: ignore
-                )
-                .join(
-                    IntegrationParticipant,
-                    IntegrationParticipant.participant_id == MessagingChannelMember.participant_id,
+                    col(MessagingChannelMember.channel_id),
+                    col(MessagingChannelMember.display_name),
+                    col(MessagingChannelMember.email),
+                    col(MessagingChannelMember.member_role),
                 )
                 .where(
-                    MessagingChannelMember.channel_id.in_(channel_ids),  # type: ignore
-                    MessagingChannelMember.left_at.is_(None),  # Only active members # type: ignore
+                    col(MessagingChannelMember.channel_id).in_(channel_ids),
+                    col(MessagingChannelMember.left_at).is_(None),
                 )
                 .order_by(
-                    MessagingChannelMember.channel_id,  # type: ignore
-                    MessagingChannelMember.member_role,  # type: ignore  # Owners/admins first
+                    col(MessagingChannelMember.channel_id),
+                    col(MessagingChannelMember.member_role),
                 )
             )
             members_result = await self.db.execute(members_stmt)
@@ -260,7 +248,7 @@ class IntegrationService:
                     channel_members_map[channel_id_str].append(
                         {
                             "name": row.display_name,
-                            "email": row.canonical_email,
+                            "email": row.email,
                             "role": row.member_role,
                         }
                     )
@@ -310,21 +298,24 @@ class IntegrationService:
         """
         stmt = (
             select(
-                MessagingChannel.channel_id,  # type: ignore
-                MessagingChannel.external_channel_id,  # type: ignore
-                MessagingChannel.channel_name,  # type: ignore
-                MessagingChannel.channel_type,  # type: ignore
-                MessagingChannel.integration_id,  # type: ignore
-                KnowledgeIntegration.name.label("integration_name"),  # type: ignore
-                KnowledgeIntegration.integration_type,  # type: ignore
-                MessagingChannel.channel_metadata,  # type: ignore
-            )  # type: ignore
-            .join(MessagingDealLink, MessagingDealLink.channel_id == MessagingChannel.channel_id)
+                col(MessagingChannel.channel_id),
+                col(MessagingChannel.external_channel_id),
+                col(MessagingChannel.channel_name),
+                col(MessagingChannel.channel_type),
+                col(MessagingChannel.integration_id),
+                col(KnowledgeIntegration.name).label("integration_name"),
+                col(KnowledgeIntegration.integration_type),
+                col(MessagingChannel.channel_metadata),
+            )
+            .join(
+                MessagingDealLink,
+                col(MessagingDealLink.channel_id) == col(MessagingChannel.channel_id),
+            )
             .join(
                 KnowledgeIntegration,
-                KnowledgeIntegration.integration_id == MessagingChannel.integration_id,
+                col(KnowledgeIntegration.integration_id) == col(MessagingChannel.integration_id),
             )
-            .where(MessagingDealLink.deal_id == deal_id)
+            .where(col(MessagingDealLink.deal_id) == deal_id)
         )
 
         result = await self.db.execute(stmt)
@@ -360,8 +351,8 @@ class IntegrationService:
         sets is_monitored=false to stop message syncing.
         """
         stmt = select(MessagingDealLink).where(
-            MessagingDealLink.deal_id == deal_id,  # type: ignore
-            MessagingDealLink.channel_id == channel_id,  # type: ignore
+            col(MessagingDealLink.deal_id) == deal_id,
+            col(MessagingDealLink.channel_id) == channel_id,
         )
         result = await self.db.execute(stmt)
         link = result.scalars().first()
@@ -373,15 +364,17 @@ class IntegrationService:
 
         # Check if channel is still linked to other deals
         other_links_stmt = select(MessagingDealLink).where(
-            MessagingDealLink.channel_id == channel_id,  # type: ignore
-            MessagingDealLink.deal_id != deal_id,  # type: ignore
+            col(MessagingDealLink.channel_id) == channel_id,
+            col(MessagingDealLink.deal_id) != deal_id,
         )
         other_links_result = await self.db.execute(other_links_stmt)
         has_other_links = other_links_result.scalars().first() is not None
 
         # If no other deals linked, stop monitoring this channel
         if not has_other_links:
-            channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)  # type: ignore
+            channel_stmt = select(MessagingChannel).where(
+                col(MessagingChannel.channel_id) == channel_id
+            )
             channel_result = await self.db.execute(channel_stmt)
             channel = channel_result.scalars().first()
             if channel and channel.is_monitored == "true":
@@ -415,8 +408,8 @@ class IntegrationService:
 
         # 2. Find MessagingChannel (must already exist from Teams sync)
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,
-            MessagingChannel.external_channel_id == external_channel_id,
+            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.external_channel_id) == external_channel_id,
         )
         result = await self.db.execute(stmt)
         channel = result.scalars().first()
@@ -433,8 +426,8 @@ class IntegrationService:
 
         # 4. Create Link if not exists
         link_stmt = select(MessagingDealLink).where(
-            MessagingDealLink.deal_id == deal_id,  # type: ignore
-            MessagingDealLink.channel_id == channel.channel_id,  # type: ignore
+            col(MessagingDealLink.deal_id) == deal_id,
+            col(MessagingDealLink.channel_id) == channel.channel_id,
         )
         link_result = await self.db.execute(link_stmt)
         link = link_result.scalars().first()

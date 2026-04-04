@@ -46,12 +46,13 @@ from src.domain.models.organisation_tables.sync import (
 from src.domain.models.organisation_tables.sync.messaging_models import (
     ChannelType,
     MessageType,
+    MessagingChannelIntegrationState,
     MessagingDealLink,
     MessagingMessage,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.messaging.teams import (
     FetchMessagesResult,
     fetch_chat_messages,
@@ -118,7 +119,7 @@ class DealChannelMessagesService:
     - Sessions are released before external API calls
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(self, session: AsyncSession | None, organisation_id: UUID) -> None:
         """Initialize with session for backward compatibility.
 
         Note: The session is stored but fresh sessions are acquired for each
@@ -126,7 +127,6 @@ class DealChannelMessagesService:
         """
         self.db = session
         self.organisation_id = organisation_id
-        self.nango = NangoClient()
 
     async def sync_all_deal_channels_fresh(
         self,
@@ -339,12 +339,12 @@ class DealChannelMessagesService:
         Returns:
             List of DealLinkedChannelInfo for channels to sync
         """
-        # Build base query
+        # Build base query — join through integration state (org-scoped channels)
         stmt = (
             select(
                 col(MessagingChannel.channel_id),
                 col(MessagingChannel.external_channel_id),
-                col(MessagingChannel.integration_id),
+                col(MessagingChannelIntegrationState.integration_id),
                 col(MessagingChannel.channel_metadata),
                 col(MessagingChannel.channel_name),
                 col(MessagingChannel.channel_type),
@@ -357,28 +357,37 @@ class DealChannelMessagesService:
                 col(MessagingDealLink.channel_id) == col(MessagingChannel.channel_id),
             )
             .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .join(
                 KnowledgeIntegration,
-                col(MessagingChannel.integration_id) == col(KnowledgeIntegration.integration_id),
+                col(MessagingChannelIntegrationState.integration_id)
+                == col(KnowledgeIntegration.integration_id),
             )
             .where(
                 col(MessagingDealLink.organisation_id) == self.organisation_id,
                 col(MessagingDealLink.channel_id).isnot(None),  # Channel-level links only
                 col(MessagingDealLink.is_deleted).is_(False),
                 col(MessagingChannel.is_deleted).is_(False),
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
                 col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
             )
-            .distinct(MessagingChannel.external_channel_id)
+            .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
-                MessagingChannel.external_channel_id,
+                col(MessagingChannel.external_channel_id),
                 col(MessagingChannel.last_synced_at).desc().nulls_last(),
             )
         )
 
         # Add integration filter if specified
         if integration_id:
-            stmt = stmt.where(col(MessagingChannel.integration_id) == integration_id)
+            stmt = stmt.where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id
+            )
 
         result = await self.db.execute(stmt)
         rows = result.all()
@@ -431,12 +440,12 @@ class DealChannelMessagesService:
         Returns:
             List of DealLinkedChannelInfo for channels to sync
         """
-        # Build base query
+        # Build base query — join through integration state (org-scoped channels)
         stmt = (
             select(
                 col(MessagingChannel.channel_id),
                 col(MessagingChannel.external_channel_id),
-                col(MessagingChannel.integration_id),
+                col(MessagingChannelIntegrationState.integration_id),
                 col(MessagingChannel.channel_metadata),
                 col(MessagingChannel.channel_name),
                 col(MessagingChannel.channel_type),
@@ -449,28 +458,37 @@ class DealChannelMessagesService:
                 col(MessagingDealLink.channel_id) == col(MessagingChannel.channel_id),
             )
             .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .join(
                 KnowledgeIntegration,
-                col(MessagingChannel.integration_id) == col(KnowledgeIntegration.integration_id),
+                col(MessagingChannelIntegrationState.integration_id)
+                == col(KnowledgeIntegration.integration_id),
             )
             .where(
                 col(MessagingDealLink.organisation_id) == self.organisation_id,
                 col(MessagingDealLink.channel_id).isnot(None),  # Channel-level links only
                 col(MessagingDealLink.is_deleted).is_(False),
                 col(MessagingChannel.is_deleted).is_(False),
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
                 col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
             )
-            .distinct(MessagingChannel.external_channel_id)
+            .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
-                MessagingChannel.external_channel_id,
+                col(MessagingChannel.external_channel_id),
                 col(MessagingChannel.last_synced_at).desc().nulls_last(),
             )
         )
 
         # Add integration filter if specified
         if integration_id:
-            stmt = stmt.where(col(MessagingChannel.integration_id) == integration_id)
+            stmt = stmt.where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id
+            )
 
         result = await session.execute(stmt)
         rows = result.all()
@@ -519,6 +537,7 @@ class DealChannelMessagesService:
             # Phase 1: Get integration connection_id (fresh session, quick read)
             # ─────────────────────────────────────────────────────────────────
             connection_id: str | None = None
+            token_info: IntegrationTokenInfo | None = None
             async for session in acquire_org_async_session(self.organisation_id):
                 stmt = select(KnowledgeIntegration).where(
                     col(KnowledgeIntegration.integration_id) == channel_info.integration_id
@@ -527,9 +546,12 @@ class DealChannelMessagesService:
                 integration = result.scalar_one_or_none()
                 if integration:
                     connection_id = integration.connection_id
+                    token_info = IntegrationTokenInfo.from_integration(
+                        integration, self.organisation_id
+                    )
             # Session is now released
 
-            if not connection_id:
+            if not connection_id or not token_info:
                 logger.warning(
                     "Integration %s not found or has no connection for channel %s",
                     channel_info.integration_id,
@@ -551,6 +573,7 @@ class DealChannelMessagesService:
             fetch_result = await self._fetch_messages_with_connection_id(
                 channel_info=channel_info,
                 connection_id=connection_id,
+                token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
             )
 
@@ -582,7 +605,6 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             messages_stored = await self._store_messages_fresh_session(
                 channel_id=channel_info.channel_id,
-                integration_id=channel_info.integration_id,
                 messages=messages,
             )
 
@@ -634,7 +656,7 @@ class DealChannelMessagesService:
         Sync messages for a single deal-linked channel using fresh session pattern.
 
         Flow:
-        1. Get integration connection_id (quick DB read using existing session)
+        1. Fresh session: Get integration connection_id, extract token info, release
         2. Fetch messages from API (NO session held)
         3. Write messages to DB with fresh session
         4. Update channel sync state with fresh session
@@ -647,10 +669,25 @@ class DealChannelMessagesService:
         """
         try:
             # ─────────────────────────────────────────────────────────────────
-            # Phase 1: Get integration connection_id (quick read, use existing session)
+            # Phase 1: Get integration connection_id (fresh session, release before API)
             # ─────────────────────────────────────────────────────────────────
-            integration = await self._get_integration(channel_info.integration_id)
-            if not integration or not integration.connection_id:
+            connection_id: str | None = None
+            token_info: IntegrationTokenInfo | None = None
+
+            async for session in acquire_org_async_session(self.organisation_id):
+                stmt = select(KnowledgeIntegration).where(
+                    col(KnowledgeIntegration.integration_id) == channel_info.integration_id
+                )
+                result = await session.execute(stmt)
+                integration = result.scalar_one_or_none()
+                if integration and integration.connection_id:
+                    connection_id = integration.connection_id
+                    token_info = IntegrationTokenInfo.from_integration(
+                        integration, self.organisation_id
+                    )
+            # Session released
+
+            if not connection_id or not token_info:
                 logger.warning(
                     "Integration %s not found or has no connection for channel %s",
                     channel_info.integration_id,
@@ -665,9 +702,6 @@ class DealChannelMessagesService:
                     error="Integration not found or has no connection",
                 )
 
-            # Extract connection_id for API call (session can be released after this)
-            connection_id = integration.connection_id
-
             # ─────────────────────────────────────────────────────────────────
             # Phase 2: Fetch messages from API (NO session held)
             # ─────────────────────────────────────────────────────────────────
@@ -675,6 +709,7 @@ class DealChannelMessagesService:
             fetch_result = await self._fetch_messages_with_connection_id(
                 channel_info=channel_info,
                 connection_id=connection_id,
+                token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
             )
 
@@ -706,7 +741,6 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             messages_stored = await self._store_messages_fresh_session(
                 channel_id=channel_info.channel_id,
-                integration_id=channel_info.integration_id,
                 messages=messages,
             )
 
@@ -782,6 +816,7 @@ class DealChannelMessagesService:
         self,
         channel_info: DealLinkedChannelInfo,
         connection_id: str,
+        token_info: IntegrationTokenInfo,
         delta_link: str | None = None,
     ) -> FetchMessagesResult:
         """
@@ -810,7 +845,7 @@ class DealChannelMessagesService:
                 )
 
             return await fetch_messages(
-                nango=self.nango,
+                token_info=token_info,
                 connection_id=connection_id,
                 team_id=team_id,
                 channel_id=channel_info.external_channel_id,
@@ -823,7 +858,7 @@ class DealChannelMessagesService:
             # Chat - use chat_id directly
             is_initial = channel_info.last_synced_at is None
             return await fetch_chat_messages(
-                nango=self.nango,
+                token_info=token_info,
                 connection_id=connection_id,
                 chat_id=channel_info.external_channel_id,
                 is_initial=is_initial,
@@ -852,28 +887,25 @@ class DealChannelMessagesService:
         """
         Fetch messages from Teams API via provider layer using Delta Query.
 
-        Uses Microsoft Graph Delta Query for efficient incremental sync:
-        - Initial sync: /messages/delta (fetches all, returns deltaLink)
-        - Incremental sync: Use stored deltaLink (returns ONLY changes)
-
         Args:
             channel_info: Channel information
-            integration: Integration with Nango connection
+            integration: Integration with credentials
             delta_link: Optional stored deltaLink from previous sync
 
         Returns:
             FetchMessagesResult with messages and new deltaLink for next sync
         """
+        token_info = IntegrationTokenInfo.from_integration(integration, self.organisation_id)
         return await self._fetch_messages_with_connection_id(
             channel_info=channel_info,
             connection_id=integration.connection_id,  # type: ignore
+            token_info=token_info,
             delta_link=delta_link,
         )
 
     async def _store_messages_fresh_session(
         self,
         channel_id: UUID,
-        integration_id: UUID,
         messages: list[dict[str, Any]],
     ) -> int:
         """
@@ -884,22 +916,18 @@ class DealChannelMessagesService:
 
         Args:
             channel_id: Channel UUID (our internal ID)
-            integration_id: Integration UUID
             messages: List of message dicts from Teams API
 
         Returns:
             Number of new messages stored
         """
         async for session in acquire_org_async_session(self.organisation_id):
-            return await self._store_messages_internal(
-                session, channel_id, integration_id, messages
-            )
+            return await self._store_messages_internal(session, channel_id, messages)
         return 0
 
     async def _store_messages(
         self,
         channel_id: UUID,
-        integration_id: UUID,
         messages: list[dict[str, Any]],
     ) -> int:
         """
@@ -909,30 +937,27 @@ class DealChannelMessagesService:
 
         Args:
             channel_id: Channel UUID (our internal ID)
-            integration_id: Integration UUID
             messages: List of message dicts from Teams API
 
         Returns:
             Number of new messages stored
         """
-        return await self._store_messages_internal(self.db, channel_id, integration_id, messages)
+        return await self._store_messages_internal(self.db, channel_id, messages)
 
     async def _store_messages_internal(
         self,
         session: AsyncSession,
         channel_id: UUID,
-        integration_id: UUID,
         messages: list[dict[str, Any]],
     ) -> int:
         """
         Internal: Store fetched messages in the database.
 
-        Uses upsert logic to avoid duplicates (based on external_message_id).
+        Uses upsert logic to avoid duplicates (based on channel_id + external_message_id).
 
         Args:
             session: Database session to use
             channel_id: Channel UUID (our internal ID)
-            integration_id: Integration UUID
             messages: List of message dicts from Teams API
 
         Returns:
@@ -957,7 +982,7 @@ class DealChannelMessagesService:
                 if is_deleted_from_delta:
                     # Mark existing message as deleted
                     existing_stmt = select(MessagingMessage).where(
-                        col(MessagingMessage.integration_id) == integration_id,
+                        col(MessagingMessage.channel_id) == channel_id,
                         col(MessagingMessage.external_message_id) == external_message_id,
                     )
                     existing_result = await session.execute(existing_stmt)
@@ -988,9 +1013,9 @@ class DealChannelMessagesService:
                     or raw_content.strip() == "<systemEventMessage/>"
                 )
 
-                # Check if message already exists
+                # Check if message already exists (unique by channel + external ID)
                 existing_stmt = select(MessagingMessage).where(
-                    col(MessagingMessage.integration_id) == integration_id,
+                    col(MessagingMessage.channel_id) == channel_id,
                     col(MessagingMessage.external_message_id) == external_message_id,
                 )
                 existing_result = await session.execute(existing_stmt)
@@ -1065,9 +1090,13 @@ class DealChannelMessagesService:
                         )
                         metadata["event_detail"] = event_detail
 
+                    # Extract sender email from Teams user info if available
+                    sender_email = (
+                        sender_user.get("email") if isinstance(sender_user, dict) else None
+                    )
+
                     new_message = MessagingMessage(
                         organisation_id=self.organisation_id,
-                        integration_id=integration_id,
                         channel_id=channel_id,
                         external_message_id=external_message_id,
                         content=content,
@@ -1075,6 +1104,11 @@ class DealChannelMessagesService:
                         message_type=message_type,
                         sent_at=sent_at,
                         external_user_id=sender_id,
+                        author_display_name=sender_name,
+                        author_email=sender_email,
+                        author_email_normalized=(
+                            sender_email.lower().strip() if sender_email else None
+                        ),
                         attachments=msg.get("attachments", []),
                         mentions=[m.get("id") for m in msg.get("mentions", []) if m.get("id")],
                         reactions={"items": msg.get("reactions", [])},

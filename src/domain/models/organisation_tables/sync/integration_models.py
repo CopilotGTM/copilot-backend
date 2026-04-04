@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, Column, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
@@ -135,6 +136,23 @@ class KnowledgeIntegration(TimestampMixin, table=True):
     )
     last_sync_status: str | None = Field(default=None, sa_column=Column(String(20)))
     last_sync_error: str | None = Field(default=None)
+    consecutive_sync_failures: int = Field(
+        default=0,
+        sa_column=Column(
+            sa.Integer,
+            server_default=text("0"),
+            nullable=False,
+        ),
+    )
+    requires_reauth: bool = Field(
+        default=False,
+        sa_column=Column(
+            Boolean,
+            server_default=text("false"),
+            nullable=False,
+            index=True,
+        ),
+    )
     auto_sync_enabled: bool = Field(
         default=True,
         sa_column=Column(Boolean, server_default=text("true"), nullable=False),

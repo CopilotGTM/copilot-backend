@@ -16,19 +16,21 @@ import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.email_models import Email, EmailFolder
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationSyncHistory,
-    SyncStatus,
-)
+from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.utils.logger import get_logger
+from src.service.integrations.sync_history_manager import (
+    SyncHistoryManager,
+    datetime_now_naive,
+)
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,
     SyncActionCounts,
@@ -36,11 +38,6 @@ from src.workers.integrations_worker.utils.sync_metadata import (
 )
 
 logger = get_logger(__name__)
-
-
-def datetime_now_naive() -> datetime:
-    """Return current UTC timestamp without timezone info for naive columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class EmailSyncService:
@@ -61,6 +58,7 @@ class EmailSyncService:
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
         self.db = session
         self.organisation_id = organisation_id
+        self._sync_history = SyncHistoryManager(session)
         # In-memory cache of external_folder_id -> folder primary key for faster lookups
         self._folder_cache: dict[str, UUID] = {}
 
@@ -90,15 +88,18 @@ class EmailSyncService:
         # Cache integration_id to avoid lazy-loading after commits expire the object
         integration_id = integration.integration_id
 
-        sync_history = await self._create_sync_history(integration_id)
+        sync_history = await self._sync_history.start(integration_id)
 
         try:
             folder_list = list(folders)
             logger.debug(
-                "sync_folders started: integration=%s provider=%s folder_count=%d",
-                integration_id,
-                provider,
-                len(folder_list),
+                "Folder sync started",
+                extra={
+                    "event": "email_folder_sync_started",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "folder_count": len(folder_list),
+                },
             )
 
             records_processed = 0
@@ -121,83 +122,79 @@ class EmailSyncService:
 
                     if folder.created_at == folder.updated_at:
                         created_count += 1
-                        logger.debug(
-                            "Created folder: external_id=%s name=%s",
-                            external_id,
-                            folder_data.get("displayName"),
-                        )
                     else:
                         updated_count += 1
-                        logger.debug(
-                            "Updated folder: external_id=%s name=%s",
-                            external_id,
-                            folder_data.get("displayName"),
-                        )
 
                     records_processed += 1
 
-                    # Commit in batches of 50
                     if records_processed % 50 == 0:
                         await self.db.commit()
-                        logger.debug("Batch commit: %d folders processed", records_processed)
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync folder %d (external_id=%s): %s",
-                        idx,
-                        folder_data.get("id"),
-                        str(e),
+                        "Failed to sync email folder",
+                        extra={
+                            "event": "email_folder_sync_item_failed",
+                            "folder_index": idx,
+                            "external_id": folder_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     records_failed += 1
 
-            # Final commit
             await self.db.commit()
 
-            # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "provider": provider,
                 },
             )
 
-            # Update integration last_synced_at
             integration.last_synced_at = datetime_now_naive()
             integration.last_sync_status = SyncStatus.SUCCESS.value
             self.db.add(integration)
             await self.db.commit()
 
-            logger.debug(
-                "Folder sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration_id,
-                created_count,
-                updated_count,
-                records_failed,
+            logger.info(
+                "Folder sync completed",
+                extra={
+                    "event": "email_folder_sync_completed",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "created_count": created_count,
+                    "updated": updated_count,
+                    "failed": records_failed,
+                },
             )
 
             return {
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
             }
 
         except Exception as e:
             logger.error(
-                "Folder sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Folder sync failed",
+                extra={
+                    "event": "email_folder_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -241,16 +238,19 @@ class EmailSyncService:
         # Cache integration_id to avoid lazy-loading after commits expire the object
         integration_id = integration.integration_id
 
-        sync_history = await self._create_sync_history(integration_id)
+        sync_history = await self._sync_history.start(integration_id)
 
         try:
             message_list = list(messages)
             logger.debug(
-                "sync_messages started: integration=%s provider=%s message_count=%d folder_id=%s",
-                integration_id,
-                provider,
-                len(message_list),
-                folder_id,
+                "Message sync started",
+                extra={
+                    "event": "email_message_sync_started",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "message_count": len(message_list),
+                    "folder_id": str(folder_id) if folder_id else None,
+                },
             )
 
             records_processed = 0
@@ -273,46 +273,40 @@ class EmailSyncService:
 
                     if message.created_at == message.updated_at:
                         created_count += 1
-                        logger.debug(
-                            "Created message: external_id=%s subject=%s",
-                            external_id,
-                            message_data.get("subject"),
-                        )
                     else:
                         updated_count += 1
-                        logger.debug(
-                            "Updated message: external_id=%s subject=%s",
-                            external_id,
-                            message_data.get("subject"),
-                        )
 
                     records_processed += 1
 
-                    await self.db.commit()
+                    if records_processed % 50 == 0:
+                        await self.db.commit()
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync message %d (external_id=%s): %s",
-                        idx,
-                        message_data.get("id"),
-                        str(e),
+                        "Failed to sync email message",
+                        extra={
+                            "event": "email_message_sync_item_failed",
+                            "message_index": idx,
+                            "external_id": message_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
                         await self.db.rollback()
                     records_failed += 1
 
-            # Final commit (no-op if already committed per message)
+            # Final commit
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "provider": provider,
                     "folder_id": str(folder_id) if folder_id else None,
@@ -325,31 +319,40 @@ class EmailSyncService:
             self.db.add(integration)
             await self.db.commit()
 
-            logger.debug(
-                "Message sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration_id,
-                created_count,
-                updated_count,
-                records_failed,
+            logger.info(
+                "Message sync completed",
+                extra={
+                    "event": "email_message_sync_completed",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "created_count": created_count,
+                    "updated": updated_count,
+                    "failed": records_failed,
+                    "folder_id": str(folder_id) if folder_id else None,
+                },
             )
 
             return {
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
             }
 
         except Exception as e:
             logger.error(
-                "Message sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Email message sync failed",
+                extra={
+                    "event": "email_message_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -364,52 +367,6 @@ class EmailSyncService:
             await self.db.commit()
 
             raise
-
-    async def _create_sync_history(self, integration_id: UUID) -> IntegrationSyncHistory:
-        """Create a new sync history record."""
-        sync_history = IntegrationSyncHistory(
-            integration_id=integration_id,
-            started_at=datetime_now_naive(),
-            status=SyncStatus.IN_PROGRESS,
-        )
-        self.db.add(sync_history)
-        await self.db.commit()
-        await self.db.refresh(sync_history)
-
-        logger.debug("Created sync history: sync_id=%s", sync_history.sync_id)
-        return sync_history
-
-    async def _complete_sync_history(
-        self,
-        sync_history: IntegrationSyncHistory,
-        status: SyncStatus,
-        records_processed: int,
-        records_failed: int,
-        metadata: dict[str, Any] | None = None,
-        error_details: dict[str, Any] | None = None,
-    ) -> None:
-        """Update sync history with completion details."""
-        sync_history.completed_at = datetime_now_naive()
-        sync_history.status = status
-        sync_history.records_processed = records_processed
-        sync_history.records_failed = records_failed
-
-        if metadata:
-            sync_history.sync_metadata = metadata
-
-        if error_details:
-            sync_history.error_details = error_details
-
-        self.db.add(sync_history)
-        await self.db.commit()
-
-        logger.debug(
-            "Updated sync history: sync_id=%s status=%s processed=%d failed=%d",
-            sync_history.sync_id,
-            status.value,
-            records_processed,
-            records_failed,
-        )
 
     async def _upsert_folder(
         self,
@@ -435,9 +392,6 @@ class EmailSyncService:
             **fields,
         }
 
-        stmt = insert(EmailFolder).values(**values)
-
-        # Prepare update values (exclude primary key and immutable fields)
         update_dict = {
             k: v
             for k, v in values.items()
@@ -451,15 +405,19 @@ class EmailSyncService:
             )
         }
 
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["integration_id", "external_folder_id"],
-            set_=update_dict,
-        ).returning(EmailFolder)
+        stmt = (
+            insert(EmailFolder)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["integration_id", "external_folder_id"],
+                set_=update_dict,
+            )
+            .returning(EmailFolder)
+        )
 
         result = await self.db.execute(stmt)
-        folder = result.scalars().one()
+        folder = cast(EmailFolder, result.scalars().one())
 
-        # Update cache
         self._folder_cache[external_id] = folder.folder_id
 
         return folder
@@ -499,9 +457,6 @@ class EmailSyncService:
             **fields,
         }
 
-        stmt = insert(Email).values(**values)
-
-        # Prepare update values (exclude primary key and immutable fields)
         update_dict = {
             k: v
             for k, v in values.items()
@@ -515,21 +470,26 @@ class EmailSyncService:
             )
         }
 
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["integration_id", "external_message_id"],
-            set_=update_dict,
-        ).returning(Email)
+        stmt = (
+            insert(Email)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["integration_id", "external_message_id"],
+                set_=update_dict,
+            )
+            .returning(Email)
+        )
 
         result = await self.db.execute(stmt)
-        return result.scalars().one()
+        return cast(Email, result.scalars().one())
 
     async def _get_folder_by_external_id(
         self, integration_id: UUID, external_id: str
     ) -> EmailFolder | None:
         """Get existing email folder by external_id."""
         stmt = select(EmailFolder).where(
-            EmailFolder.integration_id == integration_id,  # type: ignore[arg-type]
-            EmailFolder.external_folder_id == external_id,  # type: ignore[arg-type]
+            col(EmailFolder.integration_id) == integration_id,
+            col(EmailFolder.external_folder_id) == external_id,
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
@@ -938,19 +898,22 @@ class EmailSyncService:
             Dictionary with sync statistics including skipped count
         """
         integration_id = integration.integration_id
-        sync_history = await self._create_sync_history(integration_id)
+        sync_history = await self._sync_history.start(integration_id)
 
         try:
             folder_list = list(folders)
             logger.debug(
-                "sync_folders_incremental started: integration=%s provider=%s folder_count=%d",
-                integration_id,
-                provider,
-                len(folder_list),
+                "Incremental folder sync started",
+                extra={
+                    "event": "email_folder_incremental_sync_started",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "folder_count": len(folder_list),
+                },
             )
 
             if not folder_list:
-                await self._complete_sync_history(
+                await self._sync_history.complete(
                     sync_history,
                     status=SyncStatus.SUCCESS,
                     records_processed=0,
@@ -961,7 +924,7 @@ class EmailSyncService:
                     "status": "success",
                     "records_processed": 0,
                     "records_failed": 0,
-                    "created": 0,
+                    "created_count": 0,
                     "updated": 0,
                     "skipped": 0,
                 }
@@ -969,11 +932,11 @@ class EmailSyncService:
             # Track action counts for logging (observability only)
             action_counts = SyncActionCounts()
 
-            # Load existing folders for change detection
             folder_external_ids = [
-                self._extract_folder_id(f, provider)
+                eid
                 for f in folder_list
-                if self._extract_folder_id(f, provider)
+                for eid in [self._extract_folder_id(f, provider)]
+                if eid is not None
             ]
             existing = await self._load_existing_folders_by_external_ids(
                 integration_id, folder_external_ids
@@ -989,71 +952,49 @@ class EmailSyncService:
                 try:
                     external_id = self._extract_folder_id(folder_data, provider)
                     if not external_id:
-                        logger.debug("Folder %d: skipping (no external_id)", idx)
                         records_failed += 1
                         continue
 
-                    # Extract sync action for logging and deletion handling
                     sync_action = extract_sync_action(folder_data)
                     if sync_action:
                         action_counts.increment(sync_action)
 
-                    # Check database state - this is the source of truth
                     record = existing.get(external_id)
                     is_new = record is None
 
-                    # Handle deleted folders
                     if sync_action == SyncAction.DELETED:
-                        # Folders don't have a soft-delete flag, skip deleted ones
-                        logger.debug("Skipping deleted folder: external_id=%s", external_id)
                         continue
 
-                    # Handle new records
-                    if is_new:
-                        folder = await self._upsert_folder(
+                    if is_new or record is None:
+                        await self._upsert_folder(
                             integration_id, folder_data, provider, external_id
                         )
                         records_processed += 1
                         created_count += 1
-                        logger.debug(
-                            "Created folder: external_id=%s name=%s",
-                            external_id,
-                            folder.folder_name,
-                        )
                     else:
-                        # Existing record - check for meaningful changes
                         if self._has_meaningful_folder_changes(record, folder_data, provider):
-                            folder = await self._upsert_folder(
+                            await self._upsert_folder(
                                 integration_id, folder_data, provider, external_id
                             )
                             records_processed += 1
                             updated_count += 1
-                            logger.debug(
-                                "Updated folder: external_id=%s name=%s",
-                                external_id,
-                                folder.folder_name,
-                            )
                         else:
-                            # No meaningful changes - skip database write
                             skipped_count += 1
                             action_counts.unchanged += 1
-                            logger.debug(
-                                "Skipping unchanged folder: external_id=%s",
-                                external_id,
-                            )
                             continue
 
-                    # Commit in batches of 50
                     if records_processed % 50 == 0:
                         await self.db.commit()
-                        logger.debug("Batch commit: %d folders processed", records_processed)
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync folder %d (external_id=%s): %s",
-                        idx,
-                        folder_data.get("id"),
-                        str(e),
+                        "Failed to sync email folder",
+                        extra={
+                            "event": "email_folder_sync_item_failed",
+                            "folder_index": idx,
+                            "external_id": folder_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     records_failed += 1
@@ -1062,13 +1003,13 @@ class EmailSyncService:
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "skipped": skipped_count,
                     "provider": provider,
@@ -1082,20 +1023,24 @@ class EmailSyncService:
             self.db.add(integration)
             await self.db.commit()
 
-            logger.debug(
-                "Folder incremental sync completed: integration=%s created=%d updated=%d skipped=%d failed=%d",
-                integration_id,
-                created_count,
-                updated_count,
-                skipped_count,
-                records_failed,
+            logger.info(
+                "Incremental folder sync completed",
+                extra={
+                    "event": "email_folder_incremental_sync_completed",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "created_count": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "failed": records_failed,
+                },
             )
 
             return {
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
                 "skipped": skipped_count,
                 "action_counts": action_counts.to_dict(),
@@ -1103,13 +1048,17 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Folder incremental sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Folder incremental sync failed",
+                extra={
+                    "event": "email_folder_incremental_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -1150,20 +1099,23 @@ class EmailSyncService:
             Dictionary with sync statistics including skipped count
         """
         integration_id = integration.integration_id
-        sync_history = await self._create_sync_history(integration_id)
+        sync_history = await self._sync_history.start(integration_id)
 
         try:
             message_list = list(messages)
             logger.debug(
-                "sync_messages_incremental started: integration=%s provider=%s message_count=%d folder_id=%s",
-                integration_id,
-                provider,
-                len(message_list),
-                folder_id,
+                "Incremental message sync started",
+                extra={
+                    "event": "email_message_incremental_sync_started",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "message_count": len(message_list),
+                    "folder_id": str(folder_id) if folder_id else None,
+                },
             )
 
             if not message_list:
-                await self._complete_sync_history(
+                await self._sync_history.complete(
                     sync_history,
                     status=SyncStatus.SUCCESS,
                     records_processed=0,
@@ -1178,7 +1130,7 @@ class EmailSyncService:
                     "status": "success",
                     "records_processed": 0,
                     "records_failed": 0,
-                    "created": 0,
+                    "created_count": 0,
                     "updated": 0,
                     "skipped": 0,
                 }
@@ -1186,11 +1138,11 @@ class EmailSyncService:
             # Track action counts for logging (observability only)
             action_counts = SyncActionCounts()
 
-            # Load existing messages for change detection
             message_external_ids = [
-                self._extract_message_id(m, provider)
+                eid
                 for m in message_list
-                if self._extract_message_id(m, provider)
+                for eid in [self._extract_message_id(m, provider)]
+                if eid is not None
             ]
             existing = await self._load_existing_messages_by_external_ids(
                 integration_id, message_external_ids
@@ -1206,85 +1158,67 @@ class EmailSyncService:
                 try:
                     external_id = self._extract_message_id(message_data, provider)
                     if not external_id:
-                        logger.debug("Message %d: skipping (no external_id)", idx)
                         records_failed += 1
                         continue
 
-                    # Extract sync action for logging and deletion handling
                     sync_action = extract_sync_action(message_data)
                     if sync_action:
                         action_counts.increment(sync_action)
 
-                    # Check database state - this is the source of truth
                     record = existing.get(external_id)
                     is_new = record is None
 
-                    # Handle deleted messages
                     if sync_action == SyncAction.DELETED:
-                        # Skip deleted messages (we don't store them)
-                        logger.debug("Skipping deleted message: external_id=%s", external_id)
                         continue
 
-                    # Handle new records
-                    if is_new:
-                        message = await self._upsert_message(
+                    if is_new or record is None:
+                        await self._upsert_message(
                             integration_id, message_data, provider, external_id, folder_id
                         )
                         records_processed += 1
                         created_count += 1
-                        logger.debug(
-                            "Created message: external_id=%s subject=%s",
-                            external_id,
-                            message.subject,
-                        )
                     else:
-                        # Existing record - check for meaningful changes
                         if self._has_meaningful_message_changes(record, message_data, provider):
-                            message = await self._upsert_message(
+                            await self._upsert_message(
                                 integration_id, message_data, provider, external_id, folder_id
                             )
                             records_processed += 1
                             updated_count += 1
-                            logger.debug(
-                                "Updated message: external_id=%s subject=%s",
-                                external_id,
-                                message.subject,
-                            )
                         else:
-                            # No meaningful changes - skip database write
                             skipped_count += 1
                             action_counts.unchanged += 1
-                            logger.debug(
-                                "Skipping unchanged message: external_id=%s",
-                                external_id,
-                            )
                             continue
 
-                    await self.db.commit()
+                    # Commit in batches of 50
+                    if records_processed % 50 == 0:
+                        await self.db.commit()
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync message %d (external_id=%s): %s",
-                        idx,
-                        message_data.get("id"),
-                        str(e),
+                        "Failed to sync email message (incremental)",
+                        extra={
+                            "event": "email_message_incremental_sync_item_failed",
+                            "message_index": idx,
+                            "external_id": message_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
                         await self.db.rollback()
                     records_failed += 1
 
-            # Final commit (no-op if already committed per message)
+            # Final commit
             await self.db.commit()
 
             # Update sync history
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.SUCCESS,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "skipped": skipped_count,
                     "provider": provider,
@@ -1299,20 +1233,25 @@ class EmailSyncService:
             self.db.add(integration)
             await self.db.commit()
 
-            logger.debug(
-                "Message incremental sync completed: integration=%s created=%d updated=%d skipped=%d failed=%d",
-                integration_id,
-                created_count,
-                updated_count,
-                skipped_count,
-                records_failed,
+            logger.info(
+                "Incremental message sync completed",
+                extra={
+                    "event": "email_message_incremental_sync_completed",
+                    "integration_id": str(integration_id),
+                    "provider": provider,
+                    "created_count": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "failed": records_failed,
+                    "folder_id": str(folder_id) if folder_id else None,
+                },
             )
 
             return {
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
                 "skipped": skipped_count,
                 "action_counts": action_counts.to_dict(),
@@ -1320,13 +1259,17 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Message incremental sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Email message incremental sync failed",
+                extra={
+                    "event": "email_message_incremental_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
-            await self._complete_sync_history(
+            await self._sync_history.complete(
                 sync_history,
                 status=SyncStatus.FAILED,
                 records_processed=0,
@@ -1359,8 +1302,8 @@ class EmailSyncService:
             return {}
 
         stmt = select(EmailFolder).where(
-            EmailFolder.integration_id == integration_id,
-            EmailFolder.external_folder_id.in_(external_ids),
+            col(EmailFolder.integration_id) == integration_id,
+            col(EmailFolder.external_folder_id).in_(external_ids),
         )
         result = await self.db.execute(stmt)
         folders = result.scalars().all()
@@ -1385,8 +1328,8 @@ class EmailSyncService:
             return {}
 
         stmt = select(Email).where(
-            Email.integration_id == integration_id,
-            Email.external_message_id.in_(external_ids),
+            col(Email.integration_id) == integration_id,
+            col(Email.external_message_id).in_(external_ids),
         )
         result = await self.db.execute(stmt)
         messages = result.scalars().all()
@@ -1429,7 +1372,7 @@ class EmailSyncService:
 
         if existing.total_count != incoming_total:
             return True
-        return existing.unread_count != incoming_unread
+        return bool(existing.unread_count != incoming_unread)
 
     def _has_meaningful_message_changes(
         self,

@@ -18,6 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -26,23 +27,31 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations.token_refresh_service import TokenRefreshService
+
+# from src.service.integrations.token_refresh_service import TokenRefreshService
+from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
 
+_TASK_NAME_ALL = "integrations.refresh_tokens"
+_L_ALL = TASK_LIMITS[_TASK_NAME_ALL]
+
 
 @app.task(
-    name="integrations.refresh_tokens",
+    name=_TASK_NAME_ALL,
     bind=False,
-    max_retries=0,
+    max_retries=_L_ALL["retries"],
     acks_late=True,
+    soft_time_limit=_L_ALL["soft"],
+    time_limit=_L_ALL["hard"],
 )
 def refresh_tokens_task(buffer_hours: int = 2) -> dict[str, Any]:
     """
     Tier 1: Dispatch token refresh for all approved organizations.
 
-    Triggered by: Celery Beat (scheduled every 30 minutes)
+    Triggered by: Celery Beat (scheduled every 4 hours)
     Dispatches: refresh_tokens_org_task for each approved organization
     """
     started_at = datetime.now(UTC).isoformat()
@@ -104,6 +113,9 @@ def refresh_tokens_task(buffer_hours: int = 2) -> dict[str, Any]:
 
     try:
         return run_async(_dispatch_all_orgs())
+    except SoftTimeLimitExceeded:
+        logger.error("Token refresh coordinator timed out (soft_limit=%ds)", _L_ALL["soft"])
+        return {"status": "timed_out", "error": f"Task exceeded {_L_ALL['soft']}s soft limit"}
     except Exception as e:
         logger.error("Token refresh all-orgs task failed: error=%s", str(e), exc_info=True)
         return {
@@ -115,14 +127,18 @@ def refresh_tokens_task(buffer_hours: int = 2) -> dict[str, Any]:
         }
 
 
+_TASK_NAME_ORG = "integrations.refresh_tokens_org"
+_L_ORG = TASK_LIMITS[_TASK_NAME_ORG]
+
+
 @app.task(
-    name="integrations.refresh_tokens_org",
+    name=_TASK_NAME_ORG,
     bind=True,
-    max_retries=2,
-    default_retry_delay=120,
+    max_retries=_L_ORG["retries"],
+    default_retry_delay=_L_ORG["retry_delay"],
     acks_late=True,
-    soft_time_limit=300,
-    time_limit=330,
+    soft_time_limit=_L_ORG["soft"],
+    time_limit=_L_ORG["hard"],
 )
 def refresh_tokens_org_task(
     self: Task,
@@ -135,7 +151,7 @@ def refresh_tokens_org_task(
     Refreshes tokens that have no expiry set (NULL) or are expiring soon.
 
     Triggered by: refresh_tokens_task (Tier 1)
-    Calls: TokenRefreshService which manages its own sessions (fresh session pattern)
+    Calls: CustomTokenRefreshService which manages its own sessions (fresh session pattern)
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
@@ -145,8 +161,9 @@ def refresh_tokens_org_task(
             "Starting token refresh for organization (Tier 2): %s, buffer=%dh", org_id, buffer_hours
         )
 
-        # Org-level: TokenRefreshService manages its own sessions (fresh session pattern)
-        service = TokenRefreshService(organisation_id=org_id)
+        # Org-level: CustomTokenRefreshService manages its own sessions (fresh session pattern)
+        # service = TokenRefreshService(organisation_id=org_id)
+        service = CustomTokenRefreshService(organisation_id=org_id)
         result = await service.refresh_org_tokens_async(buffer_hours=buffer_hours)
 
         return {
@@ -159,6 +176,19 @@ def refresh_tokens_org_task(
 
     try:
         return run_async(_refresh_org())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Token refresh org task timed out (soft_limit=%ds): org=%s",
+            _L_ORG["soft"],
+            organisation_id,
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded {_L_ORG['soft']}s soft limit",
+        }
     except Exception as e:
         logger.error(
             "Token refresh org task failed: org=%s error=%s", organisation_id, str(e), exc_info=True
@@ -175,14 +205,18 @@ def refresh_tokens_org_task(
         }
 
 
+_TASK_NAME_SINGLE = "integrations.refresh_token"
+_L_SINGLE = TASK_LIMITS[_TASK_NAME_SINGLE]
+
+
 @app.task(
-    name="integrations.refresh_token",
+    name=_TASK_NAME_SINGLE,
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,
+    max_retries=_L_SINGLE["retries"],
+    default_retry_delay=_L_SINGLE["retry_delay"],
     acks_late=True,
-    soft_time_limit=120,
-    time_limit=150,
+    soft_time_limit=_L_SINGLE["soft"],
+    time_limit=_L_SINGLE["hard"],
 )
 def refresh_token_task(
     self: Task,
@@ -204,7 +238,8 @@ def refresh_token_task(
         logger.info("Starting manual token refresh (Tier 3): org=%s integration=%s", org_id, int_id)
 
         # Service manages its own session (fresh session pattern)
-        service = TokenRefreshService(organisation_id=org_id)
+        # service = TokenRefreshService(organisation_id=org_id)
+        service = CustomTokenRefreshService(organisation_id=org_id)
         result = await service.refresh_single_token_async(integration_id=int_id)
 
         return {
@@ -218,6 +253,21 @@ def refresh_token_task(
 
     try:
         return run_async(_refresh_integration())
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "Token refresh task timed out (soft_limit=%ds): org=%s integration=%s",
+            _L_SINGLE["soft"],
+            organisation_id,
+            integration_id,
+        )
+        return {
+            "status": "timed_out",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": f"Task exceeded {_L_SINGLE['soft']}s soft limit",
+        }
     except Exception as e:
         logger.error(
             "Token refresh failed: org=%s integration=%s error=%s",
