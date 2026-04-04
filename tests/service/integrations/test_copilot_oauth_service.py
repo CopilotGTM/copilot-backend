@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.auth.user_context import UserIDs
 from src.service.integrations.copilot_oauth_service import (
