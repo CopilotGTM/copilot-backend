@@ -144,9 +144,8 @@ def sync_calendar_integration_task(
         3. Session 2: Re-query integration, upsert events, update metadata
         """
         logger.info(
-            "Starting manual calendar sync (Tier 3): org=%s integration=%s",
-            org_id,
-            int_id,
+            "Manual calendar sync starting (Tier 3)",
+            extra={"organisation_id": organisation_id, "integration_id": integration_id},
         )
 
         # Phase 1: Query integration and extract data needed for fetching
@@ -229,10 +228,12 @@ def sync_calendar_integration_task(
             }
 
         logger.info(
-            "Syncing calendar integration: org=%s integration=%s type=%s",
-            org_id,
-            int_id,
-            fetch_data.integration_type_value,
+            "Syncing calendar integration",
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "integration_type": fetch_data.integration_type_value,
+            },
         )
 
         # Phase 2: Fetch events from external API (NO session held)
@@ -273,9 +274,11 @@ def sync_calendar_integration_task(
             }
 
         logger.info(
-            "Fetched %d events for integration %s",
-            len(events),
-            int_id,
+            "Calendar events fetched",
+            extra={
+                "integration_id": integration_id,
+                "events_fetched": len(events),
+            },
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -317,9 +320,11 @@ def sync_calendar_integration_task(
                     new_calendar_delta_link,
                 )
                 logger.info(
-                    "Calendar cursor saved (integration=%s provider=%s)",
-                    int_id,
-                    fetch_data.integration_type_value,
+                    "Calendar cursor saved",
+                    extra={
+                        "integration_id": integration_id,
+                        "integration_type": fetch_data.integration_type_value,
+                    },
                 )
             integration_db.connection_metadata = updated_metadata
 
@@ -330,20 +335,20 @@ def sync_calendar_integration_task(
             await session.commit()
 
             logger.info(
-                "Manual calendar sync complete: org=%s integration=%s "
-                "events_synced=%d created=%d updated=%d unchanged=%d "
-                "cancelled=%d/%d deleted=%d/%d failed=%d",
-                org_id,
-                int_id,
-                records_synced,
-                sync_result.get("created", 0),
-                sync_result.get("updated", 0),
-                sync_result.get("skipped", 0),
-                sync_result.get("cancelled_existing", 0),
-                sync_result.get("cancelled_no_record", 0),
-                sync_result.get("deleted_processed", 0),
-                sync_result.get("deleted_no_state", 0),
-                sync_result.get("records_failed", 0),
+                "Manual calendar sync complete",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "events_synced": records_synced,
+                    "created": sync_result.get("created", 0),
+                    "updated": sync_result.get("updated", 0),
+                    "skipped": sync_result.get("skipped", 0),
+                    "cancelled_existing": sync_result.get("cancelled_existing", 0),
+                    "cancelled_no_record": sync_result.get("cancelled_no_record", 0),
+                    "deleted_processed": sync_result.get("deleted_processed", 0),
+                    "deleted_no_state": sync_result.get("deleted_no_state", 0),
+                    "records_failed": sync_result.get("records_failed", 0),
+                },
             )
 
             return {
@@ -373,27 +378,33 @@ def sync_calendar_integration_task(
         # Log based on status
         if result.get("status") == "success":
             logger.info(
-                "Manual calendar sync succeeded: org=%s integration=%s events=%d",
-                organisation_id,
-                integration_id,
-                result.get("events_synced", 0),
+                "Manual calendar sync succeeded",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "events_synced": result.get("events_synced", 0),
+                },
             )
         else:
             logger.warning(
-                "Manual calendar sync failed: org=%s integration=%s error=%s",
-                organisation_id,
-                integration_id,
-                result.get("error"),
+                "Manual calendar sync failed",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "error": result.get("error"),
+                },
             )
 
         return result
 
     except SoftTimeLimitExceeded:
         logger.error(
-            "Manual calendar sync timed out: org=%s integration=%s soft_limit=%ds",
-            organisation_id,
-            integration_id,
-            _L["soft"],
+            "Manual calendar sync timed out",
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "soft_limit_seconds": _L["soft"],
+            },
         )
         try:
             run_async(
@@ -404,7 +415,10 @@ def sync_calendar_integration_task(
                 )
             )
         except Exception:
-            logger.warning("Failed to record timeout failure for %s", integration_id)
+            logger.warning(
+                "Failed to record timeout failure",
+                extra={"integration_id": integration_id},
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -415,21 +429,25 @@ def sync_calendar_integration_task(
         }
     except Exception as e:
         logger.error(
-            "Manual calendar sync exception: org=%s integration=%s error=%s",
-            organisation_id,
-            integration_id,
-            str(e),
+            "Manual calendar sync exception",
             exc_info=True,
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "error": str(e),
+            },
         )
 
         # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying manual calendar sync: org=%s integration=%s attempt=%d/%d",
-                organisation_id,
-                integration_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying manual calendar sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

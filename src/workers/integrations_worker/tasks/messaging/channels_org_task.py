@@ -145,7 +145,10 @@ def sync_messaging_channels_org_task(
            c. Fetch chats from API (NO session held)
            d. Session 3: Write chats to DB + update integration, release session
         """
-        logger.info("Starting messaging channels sync for organization (Tier 2): %s", org_id)
+        logger.info(
+            "Messaging channels sync starting for org (Tier 2)",
+            extra={"organisation_id": organisation_id},
+        )
 
         # ─────────────────────────────────────────────────────────────────────
         # Phase 1: Query integrations and extract data needed for fetching
@@ -164,7 +167,10 @@ def sync_messaging_channels_org_task(
             integrations = result.scalars().all()
 
             if not integrations:
-                logger.info("No active messaging integrations for org (channels sync): %s", org_id)
+                logger.info(
+                    "No active messaging integrations for org (channels sync)",
+                    extra={"organisation_id": organisation_id},
+                )
                 return {
                     "status": "completed",
                     "organisation_id": organisation_id,
@@ -181,9 +187,11 @@ def sync_messaging_channels_org_task(
                 }
 
             logger.info(
-                "Found %d active messaging integration(s) for org (channels sync): %s",
-                len(integrations),
-                org_id,
+                "Messaging channels sync found integrations for org",
+                extra={
+                    "organisation_id": organisation_id,
+                    "total_integrations": len(integrations),
+                },
             )
 
             # Extract data needed for fetching
@@ -248,10 +256,12 @@ def sync_messaging_channels_org_task(
         for fetch_data in integration_fetch_list:
             current_integration_id[0] = fetch_data.integration_id
             logger.info(
-                "Syncing messaging integration: org=%s integration=%s type=%s",
-                org_id,
-                fetch_data.integration_id,
-                fetch_data.integration_type_value,
+                "Syncing messaging integration",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": str(fetch_data.integration_id),
+                    "integration_type": fetch_data.integration_type_value,
+                },
             )
 
             integration_sync_result: dict[str, Any] = {
@@ -276,10 +286,12 @@ def sync_messaging_channels_org_task(
                     )
             except Exception as e:
                 logger.warning(
-                    "Failed to create sync history record: org=%s integration=%s error=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    str(e),
+                    "Failed to create sync history record",
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(fetch_data.integration_id),
+                        "error": str(e),
+                    },
                 )
 
             token_info = IntegrationTokenInfo.from_integration(fetch_data, org_id)
@@ -297,17 +309,21 @@ def sync_messaging_channels_org_task(
                     provider_config_key=fetch_data.provider_config_key,
                 )
                 logger.info(
-                    "Fetched %d channels for integration %s",
-                    len(channels),
-                    fetch_data.integration_id,
+                    "Channels fetched for integration",
+                    extra={
+                        "integration_id": str(fetch_data.integration_id),
+                        "channels_fetched": len(channels),
+                    },
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to fetch channels: org=%s integration=%s error=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    str(e),
+                    "Failed to fetch channels",
                     exc_info=True,
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(fetch_data.integration_id),
+                        "error": str(e),
+                    },
                 )
                 integration_sync_result["errors"].append(f"channels_fetch: {str(e)}")
                 if first_exception is None:
@@ -342,11 +358,13 @@ def sync_messaging_channels_org_task(
                     # Session released
                 except Exception as e:
                     logger.error(
-                        "Failed to sync channels: org=%s integration=%s error=%s",
-                        org_id,
-                        fetch_data.integration_id,
-                        str(e),
+                        "Failed to sync channels",
                         exc_info=True,
+                        extra={
+                            "organisation_id": organisation_id,
+                            "integration_id": str(fetch_data.integration_id),
+                            "error": str(e),
+                        },
                     )
                     integration_sync_result["errors"].append(f"channels_sync: {str(e)}")
                     if first_exception is None:
@@ -366,17 +384,21 @@ def sync_messaging_channels_org_task(
                 )
                 chats = chats_result.chats
                 logger.info(
-                    "Fetched %d chats for integration %s",
-                    len(chats),
-                    fetch_data.integration_id,
+                    "Chats fetched for integration",
+                    extra={
+                        "integration_id": str(fetch_data.integration_id),
+                        "chats_fetched": len(chats),
+                    },
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to fetch chats: org=%s integration=%s error=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    str(e),
+                    "Failed to fetch chats",
                     exc_info=True,
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(fetch_data.integration_id),
+                        "error": str(e),
+                    },
                 )
                 integration_sync_result["errors"].append(f"chats_fetch: {str(e)}")
                 if first_exception is None:
@@ -417,11 +439,13 @@ def sync_messaging_channels_org_task(
                 # Session released
             except Exception as e:
                 logger.error(
-                    "Failed to sync chats/update integration: org=%s integration=%s error=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    str(e),
+                    "Failed to sync chats/update integration",
                     exc_info=True,
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(fetch_data.integration_id),
+                        "error": str(e),
+                    },
                 )
                 integration_sync_result["errors"].append(f"chats_sync: {str(e)}")
                 if first_exception is None:
@@ -486,10 +510,12 @@ def sync_messaging_channels_org_task(
                         )
                 except Exception as e:
                     logger.warning(
-                        "Failed to update sync history: org=%s sync_id=%s error=%s",
-                        org_id,
-                        sync_history_id,
-                        str(e),
+                        "Failed to update sync history",
+                        extra={
+                            "organisation_id": organisation_id,
+                            "sync_history_id": str(sync_history_id),
+                            "error": str(e),
+                        },
                     )
 
             integration_results.append(integration_sync_result)
@@ -505,13 +531,15 @@ def sync_messaging_channels_org_task(
             status = "partial"
 
         logger.info(
-            "Messaging channels sync complete for org %s: successful=%d partial=%d failed=%d channels=%d chats=%d",
-            org_id,
-            successful,
-            partial,
-            failed,
-            total_channels,
-            total_chats,
+            "Messaging channels sync complete for org",
+            extra={
+                "organisation_id": organisation_id,
+                "successful": successful,
+                "partial": partial,
+                "failed": failed,
+                "total_channels_synced": total_channels,
+                "total_chats_synced": total_chats,
+            },
         )
 
         return {
@@ -534,9 +562,8 @@ def sync_messaging_channels_org_task(
         return run_async(_sync_org())
     except SoftTimeLimitExceeded:
         logger.error(
-            "Messaging channels org sync timed out: org=%s after %ds",
-            organisation_id,
-            _L["soft"],
+            "Messaging channels org sync timed out",
+            extra={"organisation_id": organisation_id, "soft_limit_seconds": _L["soft"]},
         )
         int_id = current_integration_id[0]
         if int_id:
@@ -549,7 +576,10 @@ def sync_messaging_channels_org_task(
                     )
                 )
             except Exception:
-                logger.warning("Failed to record timeout failure for %s", int_id)
+                logger.warning(
+                    "Failed to record timeout failure",
+                    extra={"integration_id": str(int_id)},
+                )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -559,19 +589,20 @@ def sync_messaging_channels_org_task(
         }
     except Exception as e:
         logger.error(
-            "Messaging channels org sync failed: org=%s error=%s",
-            organisation_id,
-            str(e),
+            "Messaging channels org sync failed",
             exc_info=True,
+            extra={"organisation_id": organisation_id, "error": str(e)},
         )
 
         # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying messaging channels org sync: org=%s attempt=%d/%d",
-                organisation_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying messaging channels org sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

@@ -224,16 +224,17 @@ def log_sync_action_distribution(
         sync_type: Type of sync operation
     """
     logger.info(
-        "Sync action distribution for %s: added=%d updated=%d deleted=%d unchanged=%d total=%d "
-        "(provider=%s sync_type=%s)",
-        entity_type,
-        counts.added,
-        counts.updated,
-        counts.deleted,
-        counts.unchanged,
-        counts.total,
-        provider or "unknown",
-        sync_type or "unknown",
+        "Sync action distribution",
+        extra={
+            "entity_type": entity_type,
+            "added": counts.added,
+            "updated": counts.updated,
+            "deleted": counts.deleted,
+            "unchanged": counts.unchanged,
+            "total": counts.total,
+            "provider": provider or "unknown",
+            "sync_type": sync_type or "unknown",
+        },
     )
 
 

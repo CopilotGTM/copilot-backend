@@ -25,31 +25,24 @@ tasks_module = "src.workers.integrations_worker.tasks"
 # Create the Celery app for the Integrations Worker
 app = create_celery_app("integrations_worker", config, tasks_module)
 
-# Add debug configuration
-app.conf.update(
-    worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
-    worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
-)
 
-
-# Add signal handlers for debugging and resource management
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
-    logger.info("Integrations worker starting. Initializing Redis connection pool...")
+    logger.info("Integrations worker starting, initializing Redis connection pool")
     initialize_redis_pool()
-    logger.info("Integrations worker is ready. Redis connection pool initialized.")
+    logger.info("Integrations worker ready", extra={"event": "worker_ready"})
 
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
-    logger.info("Integrations worker shutting down. Closing Redis connection pool.")
+    logger.info("Integrations worker shutting down", extra={"event": "worker_shutdown"})
     try:
         close_redis_pool()
-        logger.info("Redis connection pool closed successfully")
+        logger.info("Redis connection pool closed", extra={"event": "redis_pool_closed"})
     except Exception as e:
-        logger.error(f"Error closing Redis connection pool: {e}")
+        logger.error("Error closing Redis connection pool", extra={"error": str(e)})
 
 
 # Explicitly import task modules to ensure registration

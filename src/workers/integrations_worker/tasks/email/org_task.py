@@ -125,7 +125,10 @@ def sync_email_org_task(
         1. Session 1: Query integration IDs, release session
         2. For each integration: call EmailDeltaSyncService (manages own sessions)
         """
-        logger.info("Starting email sync for organization (Tier 2): %s", org_id)
+        logger.info(
+            "Email sync starting for org (Tier 2)",
+            extra={"organisation_id": organisation_id},
+        )
 
         # Phase 1: Query integration IDs only, then release session
         # EmailDeltaSyncService manages its own sessions for the actual sync
@@ -159,7 +162,10 @@ def sync_email_org_task(
         # Session is now released
 
         if not integration_list:
-            logger.info("No active email integrations for org: %s", org_id)
+            logger.info(
+                "No active email integrations for org",
+                extra={"organisation_id": organisation_id},
+            )
             return {
                 "status": "completed",
                 "organisation_id": organisation_id,
@@ -176,9 +182,11 @@ def sync_email_org_task(
             }
 
         logger.info(
-            "Found %d active email integration(s) for org: %s",
-            len(integration_list),
-            org_id,
+            "Email sync found integrations for org",
+            extra={
+                "organisation_id": organisation_id,
+                "total_integrations": len(integration_list),
+            },
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -194,10 +202,12 @@ def sync_email_org_task(
         for info in integration_list:
             current_integration_id[0] = info.integration_id
             logger.info(
-                "Syncing email integration: org=%s integration=%s type=%s",
-                org_id,
-                info.integration_id,
-                info.integration_type,
+                "Syncing email integration",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": str(info.integration_id),
+                    "integration_type": info.integration_type,
+                },
             )
 
             try:
@@ -240,13 +250,14 @@ def sync_email_org_task(
             except Exception as e:
                 failure_type = classify_sync_error(e)
                 logger.error(
-                    "Failed to sync email integration: org=%s integration=%s"
-                    " error=%s failure_type=%s",
-                    org_id,
-                    info.integration_id,
-                    str(e),
-                    failure_type.value,
+                    "Failed to sync email integration",
                     exc_info=True,
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(info.integration_id),
+                        "error": str(e),
+                        "failure_type": failure_type.value,
+                    },
                 )
 
                 await record_sync_failure(
@@ -278,12 +289,14 @@ def sync_email_org_task(
             status = "partial"
 
         logger.info(
-            "Email sync complete for org %s: successful=%d failed=%d folders=%d messages=%d",
-            org_id,
-            successful,
-            failed,
-            total_folders,
-            total_messages,
+            "Email sync complete for org",
+            extra={
+                "organisation_id": organisation_id,
+                "successful": successful,
+                "failed": failed,
+                "total_folders_synced": total_folders,
+                "total_messages_synced": total_messages,
+            },
         )
 
         # Dispatch Task 3: Match emails to deals
@@ -293,7 +306,10 @@ def sync_email_org_task(
                 args=[organisation_id],
                 queue="deal",
             )
-            logger.info("Dispatched email matching task for org %s", org_id)
+            logger.info(
+                "Dispatched email matching task for org",
+                extra={"organisation_id": organisation_id},
+            )
 
         return {
             "status": status,
@@ -314,9 +330,8 @@ def sync_email_org_task(
         return run_async(_sync_org())
     except SoftTimeLimitExceeded:
         logger.error(
-            "Email org sync timed out after %ds: org=%s",
-            _L["soft"],
-            organisation_id,
+            "Email org sync timed out",
+            extra={"organisation_id": organisation_id, "soft_limit_seconds": _L["soft"]},
         )
         # Record failure for the integration that was being synced when timeout hit
         int_id = current_integration_id[0]
@@ -330,7 +345,10 @@ def sync_email_org_task(
                     )
                 )
             except Exception:
-                logger.warning("Failed to record timeout failure for %s", int_id)
+                logger.warning(
+                    "Failed to record timeout failure",
+                    extra={"integration_id": str(int_id)},
+                )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -340,19 +358,20 @@ def sync_email_org_task(
         }
     except Exception as e:
         logger.error(
-            "Email org sync failed: org=%s error=%s",
-            organisation_id,
-            str(e),
+            "Email org sync failed",
             exc_info=True,
+            extra={"organisation_id": organisation_id, "error": str(e)},
         )
 
         # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying email org sync: org=%s attempt=%d/%d",
-                organisation_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying email org sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

@@ -87,7 +87,7 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
         # Import here to avoid circular imports
         from .deal_messages_org_task import sync_deal_messages_org_task
 
-        logger.info("Starting deal messages sync for all organizations (Tier 1)")
+        logger.info("Deal messages sync starting (Tier 1)")
 
         # Query all approved organizations
         org_ids: list[UUID] = []
@@ -112,7 +112,10 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
                 "org_tasks": [],
             }
 
-        logger.info("Found %d approved organization(s) for deal messages sync", len(org_ids))
+        logger.info(
+            "Deal messages sync dispatching orgs",
+            extra={"total_orgs": len(org_ids)},
+        )
 
         # Dispatch Tier 2 task for each organization
         org_tasks = []
@@ -134,16 +137,14 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
                 )
                 orgs_triggered += 1
                 logger.debug(
-                    "Dispatched deal messages sync for org: %s (task_id=%s)",
-                    org_id,
-                    task.id,
+                    "Dispatched deal messages sync for org",
+                    extra={"organisation_id": str(org_id), "task_id": task.id},
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch deal messages sync for org %s: %s",
-                    org_id,
-                    str(e),
+                    "Failed to dispatch deal messages sync for org",
                     exc_info=True,
+                    extra={"organisation_id": str(org_id), "error": str(e)},
                 )
                 org_tasks.append(
                     {
@@ -157,10 +158,12 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Deal messages sync dispatch complete: triggered=%d skipped=%d total=%d",
-            orgs_triggered,
-            orgs_skipped,
-            len(org_ids),
+            "Deal messages sync dispatch complete",
+            extra={
+                "orgs_triggered": orgs_triggered,
+                "orgs_skipped": orgs_skipped,
+                "total_orgs": len(org_ids),
+            },
         )
 
         return {
@@ -179,8 +182,8 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
         return run_async(_dispatch_all_orgs())
     except SoftTimeLimitExceeded:
         logger.error(
-            "Deal messages all-orgs sync timed out after %ds",
-            _L["soft"],
+            "Deal messages all-orgs sync timed out",
+            extra={"soft_limit_seconds": _L["soft"]},
         )
         return {
             "status": "timed_out",
@@ -190,9 +193,9 @@ def sync_deal_messages_all_orgs_task() -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(
-            "Deal messages all-orgs sync failed: error=%s",
-            str(e),
+            "Deal messages all-orgs sync failed",
             exc_info=True,
+            extra={"error": str(e)},
         )
         return {
             "status": "failed",
