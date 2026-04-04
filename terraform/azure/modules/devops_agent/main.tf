@@ -177,6 +177,7 @@ resource "azurerm_linux_virtual_machine" "agent" {
   custom_data = base64encode(local.cloud_init)
 
   os_disk {
+    name                 = "${var.vm_name}-osdisk"
     caching              = "ReadWrite"
     storage_account_type = "StandardSSD_LRS"
     disk_size_gb         = var.os_disk_size_gb
