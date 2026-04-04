@@ -199,9 +199,9 @@ class MicrosoftProvider(BaseIntegrationProvider):
             if isinstance(json_response, dict):
                 return json_response
             return {}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Microsoft HTTP refresh error: {e.response.text}")
-            raise Exception(f"Failed to refresh Microsoft OAuth token: {e}") from e
+        except httpx.HTTPStatusError:
+            # Re-raise as-is so _is_permanent_auth_error() can inspect the response body
+            raise
         except Exception as e:
             logger.error(f"Microsoft OAuth refresh error: {e}")
             raise

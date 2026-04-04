@@ -44,6 +44,7 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.deal_channel_messages_service import (
     DealChannelMessagesService,
 )
+from src.service.integrations.sync_health import record_sync_failure
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 
@@ -256,6 +257,16 @@ def sync_deal_messages_integration_task(
             integration_id,
             _L["soft"],
         )
+        try:
+            run_async(
+                record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to record timeout failure for %s", integration_id)
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,

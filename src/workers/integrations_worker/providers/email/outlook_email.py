@@ -25,7 +25,7 @@ import httpx
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
-    get_access_token,
+    call_with_token_retry,
 )
 from src.workers.integrations_worker.providers._delta_sync import (
     DeltaExpiredError,
@@ -184,25 +184,24 @@ async def fetch_folders(
     _ = last_synced_at  # not used for folder sync
     _ = provider_config_key  # no longer needed — tokens come from local credentials
 
-    # Microsoft Graph endpoint for mail folders
     endpoint = "/v1.0/me/mailFolders"
     params = {
         "$top": "250",
         "$select": "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount,isHidden",
     }
 
-    token = await get_access_token(token_info)
+    async def _do_fetch(token: str) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+        ) as client:
+            resp = await graph_api_request(client, endpoint, params=params)
 
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"}, timeout=30.0
-    ) as client:
-        resp = await graph_api_request(client, endpoint, params=params)
+        items: list[dict[str, Any]] = []
+        if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
+            items = resp["value"]
+        return items
 
-    items: list[dict[str, Any]] = []
-    if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
-        items = resp["value"]
-
-    return items
+    return await call_with_token_retry(token_info, _do_fetch)
 
 
 async def fetch_messages(
@@ -268,16 +267,14 @@ async def fetch_messages(
             time_min_str,
         )
 
-    token = await get_access_token(token_info)
-
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        try:
+    async def _do_fetch(token: str) -> tuple[list[dict[str, Any]], str | None]:
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
             delta_result = await paginate_delta(
                 client,
                 initial_endpoint=initial_endpoint,
@@ -285,31 +282,33 @@ async def fetch_messages(
                 stored_delta_url=stored_delta_url,
                 label="Outlook Email",
             )
-        except DeltaExpiredError:
-            logger.warning(
-                "Outlook Email: stored deltaLink expired, retrying with fresh delta query"
-            )
-            return await fetch_messages(
-                token_info=token_info,
-                connection_id=connection_id,
-                is_initial=True,
-                last_synced_at=last_synced_at,
-                delta_link=None,
-                folder_id=folder_id,
-            )
 
-        all_items = delta_result.items
+            items = delta_result.items
 
-        if not delta_result.delta_link:
-            logger.warning(
-                "Microsoft Graph did NOT return @odata.deltaLink (folder=%s, items=%d)",
-                folder_id,
-                len(all_items),
-            )
+            if not delta_result.delta_link:
+                logger.warning(
+                    "Microsoft Graph did NOT return @odata.deltaLink (folder=%s, items=%d)",
+                    folder_id,
+                    len(items),
+                )
 
-        # Backfill body content (excluded from delta $select to get deltaLink)
-        if all_items:
-            await _backfill_bodies(client, all_items)
+            if items:
+                await _backfill_bodies(client, items)
+
+        return items, delta_result.delta_link
+
+    try:
+        all_items, new_delta_link = await call_with_token_retry(token_info, _do_fetch)
+    except DeltaExpiredError:
+        logger.warning("Outlook Email: stored deltaLink expired, retrying with fresh delta query")
+        return await fetch_messages(
+            token_info=token_info,
+            connection_id=connection_id,
+            is_initial=True,
+            last_synced_at=last_synced_at,
+            delta_link=None,
+            folder_id=folder_id,
+        )
 
     # Filter out "Other" inbox messages (less important emails like newsletters)
     filtered_messages, skipped_count = _filter_other_inbox_messages(all_items)
@@ -330,4 +329,4 @@ async def fetch_messages(
         folder_id,
     )
 
-    return FetchMessagesResult(messages=filtered_messages, delta_link=delta_result.delta_link)
+    return FetchMessagesResult(messages=filtered_messages, delta_link=new_delta_link)

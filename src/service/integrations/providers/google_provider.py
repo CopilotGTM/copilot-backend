@@ -182,9 +182,9 @@ class GoogleProvider(BaseIntegrationProvider):
             if isinstance(json_response, dict):
                 return json_response
             return {}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Google HTTP refresh error: {e.response.text}")
-            raise Exception(f"Failed to refresh Google OAuth token: {e}") from e
+        except httpx.HTTPStatusError:
+            # Re-raise as-is so _is_permanent_auth_error() can inspect the response body
+            raise
         except Exception as e:
             logger.error(f"Google OAuth refresh error: {e}")
             raise

@@ -114,6 +114,7 @@ def sync_calendar_org_task(
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
+    current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
         logger.info("Starting calendar sync for organization (Tier 2): %s", org_id)
@@ -221,6 +222,7 @@ def sync_calendar_org_task(
         total_events = 0
 
         for fetch_data in integration_fetch_list:
+            current_integration_id[0] = fetch_data.integration_id
             logger.info(
                 "Syncing calendar integration: org=%s integration=%s type=%s",
                 org_id,
@@ -417,6 +419,18 @@ def sync_calendar_org_task(
             organisation_id,
             _L["soft"],
         )
+        int_id = current_integration_id[0]
+        if int_id:
+            try:
+                run_async(
+                    record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to record timeout failure for %s", int_id)
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,

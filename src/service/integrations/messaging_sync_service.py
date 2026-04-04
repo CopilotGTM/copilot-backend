@@ -172,7 +172,7 @@ class MessagingSyncService:
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "provider": provider,
                 },
@@ -190,7 +190,7 @@ class MessagingSyncService:
                     "event": "channel_sync_completed",
                     "integration_id": str(integration.integration_id),
                     "provider": provider,
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "failed": records_failed,
                 },
@@ -200,7 +200,7 @@ class MessagingSyncService:
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
             }
 
@@ -290,7 +290,7 @@ class MessagingSyncService:
                     "status": "success",
                     "records_processed": 0,
                     "records_failed": 0,
-                    "created": 0,
+                    "created_count": 0,
                     "updated": 0,
                     "skipped": 0,
                 }
@@ -421,7 +421,7 @@ class MessagingSyncService:
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "skipped": skipped_count,
                     "provider": provider,
@@ -442,7 +442,7 @@ class MessagingSyncService:
                     "event": "incremental_channel_sync_completed",
                     "integration_id": str(integration.integration_id),
                     "provider": provider,
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "skipped": skipped_count,
                     "failed": records_failed,
@@ -455,7 +455,7 @@ class MessagingSyncService:
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
                 "skipped": skipped_count,
             }
@@ -607,7 +607,7 @@ class MessagingSyncService:
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "provider": provider,
                     "channel_id": str(channel_id) if channel_id else None,
@@ -626,7 +626,7 @@ class MessagingSyncService:
                     "event": "message_sync_completed",
                     "integration_id": str(integration.integration_id),
                     "provider": provider,
-                    "created": created_count,
+                    "created_count": created_count,
                     "updated": updated_count,
                     "failed": records_failed,
                 },
@@ -636,7 +636,7 @@ class MessagingSyncService:
                 "status": "success",
                 "records_processed": records_processed,
                 "records_failed": records_failed,
-                "created": created_count,
+                "created_count": created_count,
                 "updated": updated_count,
             }
 

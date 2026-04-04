@@ -73,28 +73,28 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 2,
         "retry_delay": 120,
     },
-    # ── Tier 3: single integration (user-triggered, fast feedback) ──
+    # ── Tier 3: single integration (user-triggered, includes initial sync) ──
     "integrations.sync_calendar_integration": {
-        "soft": 300,
-        "hard": 360,
+        "soft": 900,
+        "hard": 960,
         "retries": 3,
         "retry_delay": 60,
     },
     "integrations.sync_email_integration": {
-        "soft": 300,
-        "hard": 360,
+        "soft": 900,
+        "hard": 960,
         "retries": 3,
         "retry_delay": 60,
     },
     "integrations.sync_messaging_channels_integration": {
-        "soft": 300,
-        "hard": 360,
+        "soft": 900,
+        "hard": 960,
         "retries": 3,
         "retry_delay": 60,
     },
     "integrations.sync_deal_messages_integration": {
-        "soft": 300,
-        "hard": 360,
+        "soft": 900,
+        "hard": 960,
         "retries": 3,
         "retry_delay": 60,
     },
@@ -244,23 +244,17 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # Calendar cadence split between day/night
-            "sync-calendar-events-daytime": {
+            # Calendar: every 5 minutes around the clock
+            "sync-calendar-events": {
                 "task": CALENDAR_SYNC_TASK,
-                "schedule": crontab(minute="*/15", hour="12-23"),
+                "schedule": crontab(minute="*/5"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            "sync-calendar-events-nighttime": {
-                "task": CALENDAR_SYNC_TASK,
-                "schedule": crontab(minute=0, hour="0-11"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            # Email runs every 30 minutes around the clock
+            # Email: every 5 minutes around the clock
             "sync-email-all-orgs": {
                 "task": "integrations.sync_email_all_orgs",
-                "schedule": crontab(minute="0,30"),
+                "schedule": crontab(minute="*/5"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },

@@ -114,6 +114,9 @@ def sync_email_org_task(
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
+    # Track which integration is being synced so the timeout handler can
+    # record a failure against the right integration.
+    current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
         """Sync all email integrations for the organization.
@@ -189,6 +192,7 @@ def sync_email_org_task(
         total_messages = 0
 
         for info in integration_list:
+            current_integration_id[0] = info.integration_id
             logger.info(
                 "Syncing email integration: org=%s integration=%s type=%s",
                 org_id,
@@ -314,6 +318,19 @@ def sync_email_org_task(
             _L["soft"],
             organisation_id,
         )
+        # Record failure for the integration that was being synced when timeout hit
+        int_id = current_integration_id[0]
+        if int_id:
+            try:
+                run_async(
+                    record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to record timeout failure for %s", int_id)
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,

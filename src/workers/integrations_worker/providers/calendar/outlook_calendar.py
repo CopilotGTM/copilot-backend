@@ -24,7 +24,7 @@ import httpx
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
-    get_access_token,
+    call_with_token_retry,
 )
 from src.workers.integrations_worker.providers._delta_sync import (
     DeltaExpiredError,
@@ -281,16 +281,14 @@ async def fetch_events(
             end_dt,
         )
 
-    token = await get_access_token(token_info)
-
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        try:
+    async def _do_fetch(token: str) -> tuple[list[dict[str, Any]], str | None]:
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
             delta_result = await paginate_delta(
                 client,
                 initial_endpoint=initial_endpoint,
@@ -298,38 +296,42 @@ async def fetch_events(
                 stored_delta_url=stored_delta_url,
                 label="Outlook Calendar",
             )
-        except DeltaExpiredError:
-            logger.warning(
-                "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
-            )
-            return await fetch_events(
-                token_info=token_info,
-                connection_id=connection_id,
-                is_initial=False,
-                last_synced_at=last_synced_at,
-                delta_link=None,
-            )
 
-        all_items = delta_result.items
+            items = delta_result.items
 
-        # Hydrate events missing iCalUId (needed for cross-provider matching)
-        hydrated_count = 0
-        unresolved_hydration_count = 0
-        if all_items:
-            (
-                all_items,
-                hydrated_count,
-                unresolved_hydration_count,
-            ) = await _hydrate_missing_identity_events(client, all_items)
-            if hydrated_count > 0 or unresolved_hydration_count > 0:
-                logger.info(
-                    "Outlook Calendar: hydrated %d event(s) missing iCalUId; %d still unresolved",
+            # Hydrate events missing iCalUId (needed for cross-provider matching)
+            hydrated_count = 0
+            unresolved_hydration_count = 0
+            if items:
+                (
+                    items,
                     hydrated_count,
                     unresolved_hydration_count,
-                )
+                ) = await _hydrate_missing_identity_events(client, items)
+                if hydrated_count > 0 or unresolved_hydration_count > 0:
+                    logger.info(
+                        "Outlook Calendar: hydrated %d event(s) missing iCalUId;"
+                        " %d still unresolved",
+                        hydrated_count,
+                        unresolved_hydration_count,
+                    )
 
-    # For incremental syncs, filter out very old events to avoid processing
-    # events from years ago that were modified
+        return items, delta_result.delta_link
+
+    try:
+        all_items, new_delta_link = await call_with_token_retry(token_info, _do_fetch)
+    except DeltaExpiredError:
+        logger.warning(
+            "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
+        )
+        return await fetch_events(
+            token_info=token_info,
+            connection_id=connection_id,
+            is_initial=False,
+            last_synced_at=last_synced_at,
+            delta_link=None,
+        )
+
     if not is_initial and all_items:
         cutoff = now - timedelta(days=90)
         all_items, excluded = _filter_old_events(all_items, cutoff)
@@ -345,4 +347,4 @@ async def fetch_events(
         is_initial,
         bool(delta_link),
     )
-    return FetchEventsResult(events=all_items, delta_link=delta_result.delta_link)
+    return FetchEventsResult(events=all_items, delta_link=new_delta_link)

@@ -48,6 +48,11 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.messaging_sync_service import MessagingSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.sync_health import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    record_sync_failure,
+    record_sync_success,
+)
 from src.service.integrations.sync_history_manager import SyncHistoryManager
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
@@ -127,6 +132,7 @@ def sync_messaging_channels_org_task(
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
+    current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
         """Sync all messaging channels for the organization.
@@ -152,6 +158,7 @@ def sync_messaging_channels_org_task(
                 col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
                 col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                 col(KnowledgeIntegration.connection_id).isnot(None),
+                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -234,10 +241,12 @@ def sync_messaging_channels_org_task(
         integration_results = []
         successful = 0
         failed = 0
+        partial = 0
         total_channels = 0
         total_chats = 0
 
         for fetch_data in integration_fetch_list:
+            current_integration_id[0] = fetch_data.integration_id
             logger.info(
                 "Syncing messaging integration: org=%s integration=%s type=%s",
                 org_id,
@@ -252,6 +261,8 @@ def sync_messaging_channels_org_task(
                 "chats_synced": 0,
                 "errors": [],
             }
+            # Preserve the first real exception for proper failure classification
+            first_exception: Exception | None = None
 
             # ─────────────────────────────────────────────────────────────
             # Create IntegrationSyncHistory record (fresh session)
@@ -299,6 +310,8 @@ def sync_messaging_channels_org_task(
                     exc_info=True,
                 )
                 integration_sync_result["errors"].append(f"channels_fetch: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
 
             # ─────────────────────────────────────────────────────────────
             # Phase 2b: Write channels to DB (fresh session)
@@ -336,6 +349,8 @@ def sync_messaging_channels_org_task(
                         exc_info=True,
                     )
                     integration_sync_result["errors"].append(f"channels_sync: {str(e)}")
+                    if first_exception is None:
+                        first_exception = e
 
             # ─────────────────────────────────────────────────────────────
             # Phase 3a: Fetch chats from API (NO session held)
@@ -364,6 +379,8 @@ def sync_messaging_channels_org_task(
                     exc_info=True,
                 )
                 integration_sync_result["errors"].append(f"chats_fetch: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
 
             # ─────────────────────────────────────────────────────────────
             # Phase 3b: Write chats to DB + update integration (fresh session)
@@ -407,20 +424,34 @@ def sync_messaging_channels_org_task(
                     exc_info=True,
                 )
                 integration_sync_result["errors"].append(f"chats_sync: {str(e)}")
+                if first_exception is None:
+                    first_exception = e
 
-            # Determine integration status
+            # Determine integration status and record health.
+            # Partial failures still record a failure — the real exception
+            # is preserved so classify_sync_error() can detect auth vs transient.
             if integration_sync_result["errors"]:
-                if (
+                has_partial = (
                     integration_sync_result["channels_synced"] > 0
                     or integration_sync_result["chats_synced"] > 0
-                ):
-                    integration_sync_result["status"] = "partial"
+                )
+                integration_sync_result["status"] = "partial" if has_partial else "failed"
+                if has_partial:
+                    partial += 1
                 else:
-                    integration_sync_result["status"] = "failed"
                     failed += 1
+                await record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=fetch_data.integration_id,
+                    error=first_exception or Exception(integration_sync_result["errors"][0]),
+                )
             else:
                 integration_sync_result["status"] = "success"
                 successful += 1
+                await record_sync_success(
+                    organisation_id=org_id,
+                    integration_id=fetch_data.integration_id,
+                )
 
             # ─────────────────────────────────────────────────────────────
             # Update IntegrationSyncHistory record (fresh session)
@@ -432,7 +463,15 @@ def sync_messaging_channels_org_task(
                         await SyncHistoryManager.complete_fresh(
                             session,
                             sync_history_id,
-                            status=SyncStatus.FAILED if errors else SyncStatus.SUCCESS,
+                            status=(
+                                SyncStatus.SUCCESS
+                                if not errors
+                                else (
+                                    SyncStatus.PARTIAL
+                                    if integration_sync_result["status"] == "partial"
+                                    else SyncStatus.FAILED
+                                )
+                            ),
                             records_processed=(
                                 integration_sync_result["channels_synced"]
                                 + integration_sync_result["chats_synced"]
@@ -458,17 +497,18 @@ def sync_messaging_channels_org_task(
         completed_at = datetime.now(UTC).isoformat()
 
         # Determine overall status
-        if failed == 0:
+        if failed == 0 and partial == 0:
             status = "completed"
-        elif successful == 0:
+        elif successful == 0 and partial == 0:
             status = "failed"
         else:
             status = "partial"
 
         logger.info(
-            "Messaging channels sync complete for org %s: successful=%d failed=%d channels=%d chats=%d",
+            "Messaging channels sync complete for org %s: successful=%d partial=%d failed=%d channels=%d chats=%d",
             org_id,
             successful,
+            partial,
             failed,
             total_channels,
             total_chats,
@@ -482,6 +522,7 @@ def sync_messaging_channels_org_task(
             "summary": {
                 "total_integrations": len(integration_fetch_list),
                 "successful": successful,
+                "partial": partial,
                 "failed": failed,
                 "total_channels_synced": total_channels,
                 "total_chats_synced": total_chats,
@@ -497,6 +538,18 @@ def sync_messaging_channels_org_task(
             organisation_id,
             _L["soft"],
         )
+        int_id = current_integration_id[0]
+        if int_id:
+            try:
+                run_async(
+                    record_sync_failure(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to record timeout failure for %s", int_id)
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,

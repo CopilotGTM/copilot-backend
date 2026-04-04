@@ -123,8 +123,10 @@ def _get_cursor_for_folder(
     """
     metadata = sync_data.connection_metadata or {}
     if sync_data.provider == "gmail":
-        return metadata.get(GMAIL_HISTORY_ID_KEY)
-    return metadata.get(EMAIL_DELTA_LINKS_KEY, {}).get(external_folder_id)
+        history_id: str | None = metadata.get(GMAIL_HISTORY_ID_KEY)
+        return history_id
+    delta_links: dict[str, str] = metadata.get(EMAIL_DELTA_LINKS_KEY, {})
+    return delta_links.get(external_folder_id)
 
 
 def _persist_cursors(
@@ -214,7 +216,7 @@ async def _fetch_messages_for_provider(
     is_initial = folder_data.delta_link is None
 
     if sync_data.provider == "gmail":
-        result = await gmail_email.fetch_messages(
+        gmail_result = await gmail_email.fetch_messages(
             token_info=token_info,
             connection_id=sync_data.connection_id,
             is_initial=is_initial,
@@ -223,10 +225,10 @@ async def _fetch_messages_for_provider(
             provider_config_key=sync_data.provider_key,
             label_id=folder_data.external_folder_id,
         )
-        return result.messages, result.history_id
+        return gmail_result.messages, gmail_result.history_id
 
     if sync_data.provider == "outlook":
-        result = await outlook_email.fetch_messages(
+        outlook_result = await outlook_email.fetch_messages(
             token_info=token_info,
             connection_id=sync_data.connection_id,
             is_initial=is_initial,
@@ -235,7 +237,7 @@ async def _fetch_messages_for_provider(
             provider_config_key=sync_data.provider_key,
             folder_id=folder_data.external_folder_id,
         )
-        return result.messages, result.delta_link
+        return outlook_result.messages, outlook_result.delta_link
 
     logger.warning(
         "Unsupported email provider for message fetch",
@@ -438,19 +440,9 @@ class EmailDeltaSyncService:
         )
 
         if folder_sync_due:
-            logger.debug(
-                "Fetching folders: integration=%s",
-                sync_data.integration_id,
-            )
             folders_data = await _fetch_folders_for_provider(
                 sync_data=sync_data,
                 token_info=token_info,
-            )
-        else:
-            logger.debug(
-                "Skipping folder fetch (last synced %s): integration=%s",
-                sync_data.last_synced_at,
-                sync_data.integration_id,
             )
 
         # ─────────────────────────────────────────────────────────────────
@@ -478,13 +470,13 @@ class EmailDeltaSyncService:
                     )
                     folders_synced = folders_result.get("records_processed", 0)
 
-            stmt = select(EmailFolder).where(
+            folder_stmt = select(EmailFolder).where(
                 col(EmailFolder.integration_id) == sync_data.integration_id,
                 col(EmailFolder.is_deleted).is_(False),
                 col(EmailFolder.is_monitored) == "true",
             )
-            result = await session.execute(stmt)
-            monitored_folders = result.scalars().all()
+            folder_result = await session.execute(folder_stmt)
+            monitored_folders = folder_result.scalars().all()
 
             for folder in monitored_folders:
                 cursor = _get_cursor_for_folder(sync_data, folder.external_folder_id)
@@ -633,14 +625,6 @@ class EmailDeltaSyncService:
         folder_name = folder_data.folder_name or folder_data.external_folder_id
         is_initial = folder_data.delta_link is None
 
-        logger.debug(
-            "Fetching messages: integration=%s folder=%s (%s) initial=%s",
-            sync_data.integration_id,
-            folder_name,
-            folder_data.folder_type,
-            is_initial,
-        )
-
         try:
             # ─────────────────────────────────────────────────────────────────
             # Fetch messages from external API (NO session held)
@@ -674,11 +658,6 @@ class EmailDeltaSyncService:
                 )
 
             if not messages_data:
-                logger.debug(
-                    "No messages returned: integration=%s folder=%s",
-                    sync_data.integration_id,
-                    folder_name,
-                )
                 return {
                     "folder_id": str(folder_data.folder_id),
                     "folder_name": folder_name,

@@ -26,7 +26,7 @@ import httpx
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
-    get_access_token,
+    call_with_token_retry,
 )
 from src.workers.integrations_worker.providers._delta_sync import (
     DeltaExpiredError,
@@ -113,66 +113,68 @@ async def fetch_channels(
     _ = last_synced_at
     _ = provider_config_key
 
-    token = await get_access_token(token_info)
+    async def _do_fetch(token: str) -> list[dict[str, Any]]:
+        teams: list[dict[str, Any]] = []
+        teams_endpoint = "/v1.0/me/joinedTeams"
+        teams_params: dict[str, Any] = {"$select": "id,displayName"}
+        next_link: str | None = None
+        max_pages = 500
 
-    # Step 1: Get all teams user is part of (with pagination)
-    teams: list[dict[str, Any]] = []
-    teams_endpoint = "/v1.0/me/joinedTeams"
-    teams_params: dict[str, Any] = {"$select": "id,displayName"}
-    next_link: str | None = None
-    max_pages = 500
-
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        for _ in range(max_pages):
-            if next_link:
-                teams_resp = await graph_api_request_url(client, next_link)
-            else:
-                teams_resp = await graph_api_request(client, teams_endpoint, params=teams_params)
-            page_teams, next_link = extract_collection_page(teams_resp)
-            teams.extend(page_teams)
-            if not next_link:
-                break
-
-        # Step 2: For each team, fetch all channels (with pagination)
-        all_channels: list[dict[str, Any]] = []
-        for team in teams:
-            team_id = team.get("id")
-            team_name = team.get("displayName", "Unknown Team")
-
-            if not team_id:
-                continue
-
-            channels_endpoint = f"/v1.0/teams/{team_id}/channels"
-            channels_params: dict[str, Any] = {
-                "$select": "id,displayName,description,email,webUrl,membershipType,createdDateTime",
-            }
-
-            next_link = None
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
             for _ in range(max_pages):
                 if next_link:
-                    channels_resp = await graph_api_request_url(client, next_link)
+                    teams_resp = await graph_api_request_url(client, next_link)
                 else:
-                    channels_resp = await graph_api_request(
-                        client, channels_endpoint, params=channels_params
+                    teams_resp = await graph_api_request(
+                        client, teams_endpoint, params=teams_params
                     )
-                channels, next_link = extract_collection_page(channels_resp)
-
-                # Enrich each channel with team context
-                for channel in channels:
-                    channel["teamId"] = team_id
-                    channel["teamName"] = team_name
-                    all_channels.append(channel)
-
+                page_teams, next_link = extract_collection_page(teams_resp)
+                teams.extend(page_teams)
                 if not next_link:
                     break
 
-    return all_channels
+            all_channels: list[dict[str, Any]] = []
+            for team in teams:
+                team_id = team.get("id")
+                team_name = team.get("displayName", "Unknown Team")
+
+                if not team_id:
+                    continue
+
+                channels_endpoint = f"/v1.0/teams/{team_id}/channels"
+                channels_params: dict[str, Any] = {
+                    "$select": (
+                        "id,displayName,description,email,webUrl,membershipType,createdDateTime"
+                    ),
+                }
+
+                next_link = None
+                for _ in range(max_pages):
+                    if next_link:
+                        channels_resp = await graph_api_request_url(client, next_link)
+                    else:
+                        channels_resp = await graph_api_request(
+                            client, channels_endpoint, params=channels_params
+                        )
+                    channels, next_link = extract_collection_page(channels_resp)
+
+                    for channel in channels:
+                        channel["teamId"] = team_id
+                        channel["teamName"] = team_name
+                        all_channels.append(channel)
+
+                    if not next_link:
+                        break
+
+        return all_channels
+
+    return await call_with_token_retry(token_info, _do_fetch)
 
 
 async def fetch_messages(
@@ -262,16 +264,14 @@ async def fetch_messages(
         item["teamId"] = team_id
         item["channelId"] = channel_id
 
-    token = await get_access_token(token_info)
-
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        try:
+    async def _do_fetch(token: str) -> FetchMessagesResult:
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
             delta_result = await paginate_delta(
                 client,
                 initial_endpoint=initial_endpoint,
@@ -280,31 +280,32 @@ async def fetch_messages(
                 enrich_item=_enrich,
                 label="Teams Messages",
             )
-        except DeltaExpiredError:
-            logger.warning(
-                "Teams Messages: stored deltaLink expired, retrying with fresh delta query"
-            )
-            return await fetch_messages(
-                token_info=token_info,
-                connection_id=connection_id,
-                is_initial=True,
-                last_synced_at=last_synced_at,
-                delta_link=None,
-                team_id=team_id,
-                channel_id=channel_id,
-            )
 
-    logger.info(
-        "Teams Messages fetch complete: %d messages"
-        " (initial=%s, used_delta_link=%s, team=%s, channel=%s)",
-        len(delta_result.items),
-        is_initial,
-        bool(delta_link),
-        team_id,
-        channel_id,
-    )
+        logger.info(
+            "Teams Messages fetch complete: %d messages"
+            " (initial=%s, used_delta_link=%s, team=%s, channel=%s)",
+            len(delta_result.items),
+            is_initial,
+            bool(delta_link),
+            team_id,
+            channel_id,
+        )
 
-    return FetchMessagesResult(messages=delta_result.items, delta_link=delta_result.delta_link)
+        return FetchMessagesResult(messages=delta_result.items, delta_link=delta_result.delta_link)
+
+    try:
+        return await call_with_token_retry(token_info, _do_fetch)
+    except DeltaExpiredError:
+        logger.warning("Teams Messages: stored deltaLink expired, retrying with fresh delta query")
+        return await fetch_messages(
+            token_info=token_info,
+            connection_id=connection_id,
+            is_initial=True,
+            last_synced_at=last_synced_at,
+            delta_link=None,
+            team_id=team_id,
+            channel_id=channel_id,
+        )
 
 
 def _resolve_chats_lookback_days(
@@ -321,6 +322,50 @@ def _resolve_chats_lookback_days(
         return TEAMS_CHATS_INITIAL_LOOKBACK_DAYS, "initial"
 
     return TEAMS_CHATS_RECURRING_LOOKBACK_DAYS, "recurring"
+
+
+def _enrich_chat_display_name(chat: dict[str, Any]) -> None:
+    """Set a human-readable displayName on a chat dict if topic is missing."""
+    chat_type = chat.get("chatType")
+    topic = chat.get("topic")
+    members = chat.get("members", [])
+
+    if topic:
+        chat["displayName"] = topic
+        return
+
+    if chat_type == "group":
+        member_names = [
+            (m.get("displayName") or m.get("email") or "Unknown")
+            for m in members[:3]
+            if isinstance(m, dict)
+        ]
+        chat["displayName"] = ", ".join(member_names) if member_names else "Group Chat"
+        if len(members) > 3:
+            chat["displayName"] += f" +{len(members) - 3} more"
+    elif chat_type == "meeting":
+        chat["displayName"] = "Meeting Chat"
+    else:
+        chat["displayName"] = "Group Chat"
+
+
+def _normalize_chat_members(chat: dict[str, Any]) -> None:
+    """Normalize member dicts to a consistent schema for storage."""
+    members = chat.get("members", [])
+    if not members:
+        return
+    chat["members"] = [
+        {
+            "id": m.get("id"),
+            "userId": m.get("userId"),
+            "displayName": m.get("displayName"),
+            "email": m.get("email"),
+            "roles": m.get("roles", []),
+            "tenantId": m.get("tenantId"),
+            "visibleHistoryStartDateTime": m.get("visibleHistoryStartDateTime"),
+        }
+        for m in members
+    ]
 
 
 async def fetch_chats(
@@ -398,43 +443,39 @@ async def fetch_chats(
         cutoff_date.isoformat(),
     )
 
-    all_chats: list[dict[str, Any]] = []
-    next_link: str | None = None
-    max_pages = 500  # Safety limit
-    reached_cutoff = False
+    async def _do_fetch(token: str) -> FetchChatsResult:
+        all_chats: list[dict[str, Any]] = []
+        next_link: str | None = None
+        max_pages = 500
+        reached_cutoff = False
 
-    token = await get_access_token(token_info)
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
+            for page_num in range(max_pages):  # noqa: B007
+                if next_link:
+                    resp = await graph_api_request_url(client, next_link)
+                else:
+                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
 
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        for page_num in range(max_pages):  # noqa: B007
-            if next_link:
-                resp = await graph_api_request_url(client, next_link)
-            else:
-                resp = await graph_api_request(client, initial_endpoint, params=initial_params)
+                if not isinstance(resp, dict):
+                    break
 
-            if isinstance(resp, dict):
-                # Extract chats from response
                 if "value" in resp and isinstance(resp["value"], list):
                     for chat in resp["value"]:
-                        # Check if chat is older than cutoff based on last message
                         last_message = chat.get("lastMessagePreview", {})
                         last_message_time_str = (
                             last_message.get("createdDateTime") if last_message else None
                         )
-
-                        # Also check lastUpdatedDateTime as fallback
                         if not last_message_time_str:
                             last_message_time_str = chat.get("lastUpdatedDateTime")
 
                         if last_message_time_str:
                             try:
-                                # Parse the datetime string
                                 last_message_time = datetime.fromisoformat(
                                     last_message_time_str.replace("Z", "+00:00")
                                 )
@@ -446,83 +487,36 @@ async def fetch_chats(
                                     reached_cutoff = True
                                     break
                             except (ValueError, TypeError):
-                                pass  # Continue if date parsing fails
+                                pass
 
-                        # Filter out 1:1 chats (oneOnOne)
                         if chat.get("chatType") == "oneOnOne":
                             continue
 
-                        # Enrich chat name for display
-                        chat_type = chat.get("chatType")
-                        topic = chat.get("topic")
-                        members = chat.get("members", [])
-
-                        if not topic:
-                            if chat_type == "group":
-                                member_names = [
-                                    (m.get("displayName") or m.get("email") or "Unknown")
-                                    for m in members[:3]
-                                    if isinstance(m, dict)
-                                ]
-                                chat["displayName"] = (
-                                    ", ".join(member_names) if member_names else "Group Chat"
-                                )
-                                if len(members) > 3:
-                                    chat["displayName"] += f" +{len(members) - 3} more"
-                            elif chat_type == "meeting":
-                                chat["displayName"] = "Meeting Chat"
-                            else:
-                                chat["displayName"] = "Group Chat"
-                        else:
-                            chat["displayName"] = topic
-
-                        # Normalize members data for storage
-                        # Each member has: id, displayName, email, roles, userId, tenantId, visibleHistoryStartDateTime
-                        if members:
-                            normalized_members = []
-                            for member in members:
-                                normalized_members.append(
-                                    {
-                                        "id": member.get("id"),
-                                        "userId": member.get("userId"),
-                                        "displayName": member.get("displayName"),
-                                        "email": member.get("email"),
-                                        "roles": member.get("roles", []),
-                                        "tenantId": member.get("tenantId"),
-                                        "visibleHistoryStartDateTime": member.get(
-                                            "visibleHistoryStartDateTime"
-                                        ),
-                                    }
-                                )
-                            chat["members"] = normalized_members
-
-                        # Remove lastMessagePreview from stored data (we only needed it for filtering)
+                        _enrich_chat_display_name(chat)
+                        _normalize_chat_members(chat)
                         chat.pop("lastMessagePreview", None)
-
                         all_chats.append(chat)
 
-                # Stop if we've reached the cutoff date
                 if reached_cutoff:
                     break
 
-                # Check for next page
                 next_link = resp.get("@odata.nextLink")
                 if not next_link:
                     break
-            else:
-                break
 
-    logger.info(
-        "Teams Chats fetch complete: %d chats after %d pages (phase=%s, reached_cutoff=%s, max_age_days=%d)",
-        len(all_chats),
-        page_num + 1,
-        sync_phase,
-        reached_cutoff,
-        resolved_max_age_days,
-    )
+        logger.info(
+            "Teams Chats fetch complete: %d chats after %d pages"
+            " (phase=%s, reached_cutoff=%s, max_age_days=%d)",
+            len(all_chats),
+            page_num + 1,
+            sync_phase,
+            reached_cutoff,
+            resolved_max_age_days,
+        )
 
-    # Return without delta_link since delta is not supported for chats listing
-    return FetchChatsResult(chats=all_chats, delta_link=None)
+        return FetchChatsResult(chats=all_chats, delta_link=None)
+
+    return await call_with_token_retry(token_info, _do_fetch)
 
 
 async def fetch_chat_messages(
@@ -584,39 +578,30 @@ async def fetch_chat_messages(
             chat_id,
         )
 
-    all_messages: list[dict[str, Any]] = []
-    next_link: str | None = None
-    max_pages = 500  # Safety limit
-    reached_cutoff = False
+    async def _do_fetch(token: str) -> FetchMessagesResult:
+        all_messages: list[dict[str, Any]] = []
+        next_link: str | None = None
+        max_pages = 500
+        reached_cutoff = False
 
-    token = await get_access_token(token_info)
-
-    async with httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Prefer": "odata.maxpagesize=50",
-        },
-        timeout=30.0,
-    ) as client:
-        for page_num in range(max_pages):  # noqa: B007
-            try:
+        async with httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer": "odata.maxpagesize=50",
+            },
+            timeout=30.0,
+        ) as client:
+            for _page in range(max_pages):
                 if next_link:
                     resp = await graph_api_request_url(client, next_link)
                 else:
                     resp = await graph_api_request(client, initial_endpoint, params=initial_params)
-            except Exception:
-                logger.exception(
-                    "Teams Chat Messages: API error for chat=%s page=%d",
-                    chat_id,
-                    page_num,
-                )
-                raise
 
-            if isinstance(resp, dict):
-                # Extract messages from response
+                if not isinstance(resp, dict):
+                    break
+
                 if "value" in resp and isinstance(resp["value"], list):
                     for item in resp["value"]:
-                        # For incremental sync, check if message is older than cutoff
                         if cutoff_date:
                             created_str = item.get("createdDateTime")
                             if created_str:
@@ -625,39 +610,30 @@ async def fetch_chat_messages(
                                         created_str.replace("Z", "+00:00")
                                     )
                                     if created_at <= cutoff_date:
-                                        # Message is older than cutoff - stop fetching
                                         reached_cutoff = True
-                                        logger.debug(
-                                            "Teams Chat Messages: reached cutoff at message %s (created %s)",
-                                            item.get("id"),
-                                            created_str,
-                                        )
                                         break
                                 except (ValueError, TypeError):
-                                    pass  # If we can't parse date, include the message
+                                    pass
 
-                        # Enrich with chat context
                         item["chatId"] = chat_id
                         all_messages.append(item)
 
-                # Stop if we reached the cutoff
                 if reached_cutoff:
                     break
 
-                # Check for next page
                 next_link = resp.get("@odata.nextLink")
                 if not next_link:
                     break
-            else:
-                break
 
-    logger.info(
-        "Teams Chat Messages fetch complete: %d messages (initial=%s, chat=%s, reached_cutoff=%s)",
-        len(all_messages),
-        is_initial,
-        chat_id,
-        reached_cutoff,
-    )
+        logger.info(
+            "Teams Chat Messages fetch complete: %d messages"
+            " (initial=%s, chat=%s, reached_cutoff=%s)",
+            len(all_messages),
+            is_initial,
+            chat_id,
+            reached_cutoff,
+        )
 
-    # Note: delta_link is always None for chat messages (delta not supported)
-    return FetchMessagesResult(messages=all_messages, delta_link=None)
+        return FetchMessagesResult(messages=all_messages, delta_link=None)
+
+    return await call_with_token_retry(token_info, _do_fetch)

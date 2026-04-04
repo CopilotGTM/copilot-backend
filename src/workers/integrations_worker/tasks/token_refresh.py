@@ -51,7 +51,7 @@ def refresh_tokens_task(buffer_hours: int = 2) -> dict[str, Any]:
     """
     Tier 1: Dispatch token refresh for all approved organizations.
 
-    Triggered by: Celery Beat (scheduled every 30 minutes)
+    Triggered by: Celery Beat (scheduled every 4 hours)
     Dispatches: refresh_tokens_org_task for each approved organization
     """
     started_at = datetime.now(UTC).isoformat()
