@@ -36,9 +36,6 @@ parameters:
     type: string
   - name: agentPoolName
     type: string
-  - name: agentVmImage
-    type: string
-    default: ''
   - name: stageCondition
     type: string
     default: succeeded()
@@ -74,8 +71,6 @@ stages:
         displayName: 'Validate & Plan'
         pool:
           name: ${{ parameters.agentPoolName }}
-          ${{ if ne(parameters.agentVmImage, '') }}:
-            vmImage: ${{ parameters.agentVmImage }}
         steps:
           - checkout: self
             fetchDepth: 1
@@ -197,8 +192,6 @@ stages:
         environment: ${{ parameters.approvalEnvironment }}
         pool:
           name: ${{ parameters.agentPoolName }}
-          ${{ if ne(parameters.agentVmImage, '') }}:
-            vmImage: ${{ parameters.agentVmImage }}
         strategy:
           runOnce:
             deploy:
