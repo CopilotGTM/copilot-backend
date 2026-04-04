@@ -115,3 +115,19 @@ variable "install_azure_cli" {
   type        = bool
   default     = true
 }
+
+# -----------------------------------------------------------------------------
+# Spot Instance Configuration
+# -----------------------------------------------------------------------------
+
+variable "use_spot_instance" {
+  description = "Use Azure Spot VM for significant cost savings (60-90%). The VM may be evicted when Azure needs capacity back, but the recovery module will auto-restart it."
+  type        = bool
+  default     = false
+}
+
+variable "spot_max_bid_price" {
+  description = "Maximum price to pay for the Spot VM per hour. Set to -1 to pay up to the on-demand price (maximizes availability, recommended)."
+  type        = number
+  default     = -1
+}
