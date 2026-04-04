@@ -162,12 +162,6 @@ resource "azurerm_linux_virtual_machine" "agent" {
   size                = var.vm_size
   admin_username      = var.admin_username
 
-  # Spot instance configuration - Deallocate on eviction so disk is preserved
-  # and the VM can be restarted by the recovery automation
-  priority        = var.use_spot_instance ? "Spot" : "Regular"
-  eviction_policy = var.use_spot_instance ? "Deallocate" : null
-  max_bid_price   = var.use_spot_instance ? var.spot_max_bid_price : null
-
   # Use password auth if no SSH key provided
   disable_password_authentication = var.ssh_public_key != "" ? true : false
   admin_password                  = var.ssh_public_key == "" ? var.admin_password : null

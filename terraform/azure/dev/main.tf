@@ -993,25 +993,20 @@ resource "random_password" "agent_admin" {
 }
 
 # -----------------------------------------------------------------
-# Self-Hosted DevOps Agent VM (Spot Instance)
-# Uses a spot VM for ~60-90% cost savings. The recovery module
-# automatically restarts the VM if Azure evicts it.
+# Self-Hosted DevOps Agent VM
+# Placed in private subnet to access Key Vault/Storage via Private Link
 # -----------------------------------------------------------------
 module "devops_agent" {
   source              = "../modules/devops_agent"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   vm_name             = "${var.agent_name}-${var.env}"
-  vm_size             = "Standard_D4as_v4"
+  vm_size             = "Standard_D2as_v4"
   admin_username      = var.admin_username
   admin_password      = random_password.agent_admin.result
 
   # Place in private subnet for Private Link access
   subnet_id = module.vnet.private_subnet_ids[0]
-
-  # Spot instance - pays up to on-demand price for max availability
-  use_spot_instance  = true
-  spot_max_bid_price = -1
 
   # Azure DevOps configuration
   azuredevops_url = var.org_service_url
@@ -1026,6 +1021,7 @@ module "devops_agent" {
   install_kubectl   = true
   install_azure_cli = true
 
+  # No public IP needed - agent communicates outbound only
   enable_public_ip = true
 
   tags = {
@@ -1039,28 +1035,6 @@ module "devops_agent" {
     module.resource_group,
     azuredevops_agent_pool.pool
   ]
-}
-
-# -----------------------------------------------------------------
-# Spot VM Auto-Recovery
-# Monitors the agent VM and automatically restarts it if Azure
-# evicts the spot instance. Checks every hour via Azure Automation.
-# -----------------------------------------------------------------
-module "devops_agent_recovery" {
-  source                  = "../modules/devops_agent_recovery"
-  resource_group_name     = module.resource_group.resource_group_name
-  location                = var.location
-  automation_account_name = "copilot-agent-recovery-${var.env}"
-  vm_name                 = module.devops_agent.vm_name
-  vm_id                   = module.devops_agent.vm_id
-
-  tags = {
-    environment = var.env
-    project     = var.project_name
-    purpose     = "spot-vm-recovery"
-  }
-
-  depends_on = [module.devops_agent]
 }
 
 # -----------------------------------------------------------------
