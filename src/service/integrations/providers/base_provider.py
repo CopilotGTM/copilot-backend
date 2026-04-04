@@ -31,7 +31,7 @@ class BaseIntegrationProvider(ABC):
 
         Args:
             state: Secure state string (typically a JWT) containing user/org context.
-            
+
         Returns:
             The full URL to redirect the user to.
         """
@@ -45,7 +45,7 @@ class BaseIntegrationProvider(ABC):
         Args:
             code: The OAuth authorization code.
             redirect_uri: The URI the provider redirected to.
-            
+
         Returns:
             Dictionary containing tokens (`access_token`, `refresh_token`, `expires_in`).
         """
@@ -58,7 +58,7 @@ class BaseIntegrationProvider(ABC):
 
         Args:
             refresh_token: The stored refresh token.
-            
+
         Returns:
             Dictionary containing new tokens (`access_token`, `expires_in`, and optionally a new `refresh_token`).
         """
@@ -78,10 +78,10 @@ class BaseIntegrationProvider(ABC):
     async def get_user_info(self, access_token: str) -> dict[str, Any]:
         """
         Fetch the authenticated user's basic profile details (e.g., email) from the provider.
-        
+
         Args:
             access_token: The valid OAuth access token.
-            
+
         Returns:
             Dictionary with user details (must include `email` if available).
         """

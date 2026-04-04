@@ -14,7 +14,6 @@ from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlmodel import col
-
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
