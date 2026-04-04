@@ -805,3 +805,11 @@ variable "teams_bot_messaging_endpoint" {
   default     = "https://api.copilotgtm.com/api/teams/messages"
 }
 
+# -----------------------------------------------------------------
+# OAuth App Registration
+# -----------------------------------------------------------------
+variable "oauth_redirect_uris" {
+  description = "OAuth callback redirect URIs for Microsoft app registration"
+  type        = list(string)
+  default     = []
+}

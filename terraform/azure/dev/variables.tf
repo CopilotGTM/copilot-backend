@@ -802,6 +802,15 @@ variable "teams_bot_messaging_endpoint" {
 }
 
 # -----------------------------------------------------------------
+# OAuth App Registration
+# -----------------------------------------------------------------
+variable "oauth_redirect_uris" {
+  description = "OAuth callback redirect URIs for Microsoft app registration"
+  type        = list(string)
+  default     = []
+}
+
+# -----------------------------------------------------------------
 # Demo Frontend App Service
 # -----------------------------------------------------------------
 

@@ -372,3 +372,27 @@ module "teams_bot" {
     azurerm_key_vault.master_key_vault
   ]
 }
+
+# -----------------------------------------------------------------
+# Microsoft OAuth App Registration (per-environment isolation)
+# Creates Entra ID app with Graph API permissions for Outlook/Teams.
+# Admin consent must be granted manually after terraform apply.
+# -----------------------------------------------------------------
+module "microsoft_app_registration" {
+  source = "../modules/microsoft_oauth_app"
+
+  env            = var.env
+  display_name   = "CopilotGTM"
+  redirect_uris  = var.oauth_redirect_uris
+  key_vault_id   = azurerm_key_vault.master_key_vault.id
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+
+  depends_on = [
+    module.resource_group,
+    azurerm_key_vault.master_key_vault
+  ]
+}
