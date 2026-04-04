@@ -18,8 +18,10 @@ from src.domain.models.organisation_tables.sync import (
     MessagingChannel,
     MessagingDealLink,
 )
-from src.domain.models.organisation_tables.sync.messaging_models import MessagingChannelMember
-from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
+from src.domain.models.organisation_tables.sync.messaging_models import (
+    MessagingChannelIntegrationState,
+    MessagingChannelMember,
+)
 from src.infra.auth.user_context import UserIDs
 
 logger = logging.getLogger(__name__)
@@ -187,10 +189,19 @@ class IntegrationService:
         if not integration:
             raise ValueError("Integration not found")
 
-        # Query MessagingChannel table
-        stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
-            col(MessagingChannel.is_archived) == "false",  # Only active channels
+        # Query MessagingChannel table via integration state for visibility
+        stmt = (
+            select(MessagingChannel)
+            .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id,
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
+                col(MessagingChannel.is_archived) == "false",
+            )
         )
 
         if deal_id:
@@ -212,22 +223,17 @@ class IntegrationService:
             members_stmt = (
                 select(
                     col(MessagingChannelMember.channel_id),
-                    col(IntegrationParticipant.display_name),
-                    col(IntegrationParticipant.canonical_email),
+                    col(MessagingChannelMember.display_name),
+                    col(MessagingChannelMember.email),
                     col(MessagingChannelMember.member_role),
-                )
-                .join(
-                    IntegrationParticipant,
-                    col(IntegrationParticipant.participant_id)
-                    == col(MessagingChannelMember.participant_id),
                 )
                 .where(
                     col(MessagingChannelMember.channel_id).in_(channel_ids),
-                    col(MessagingChannelMember.left_at).is_(None),  # Only active members
+                    col(MessagingChannelMember.left_at).is_(None),
                 )
                 .order_by(
                     col(MessagingChannelMember.channel_id),
-                    col(MessagingChannelMember.member_role),  # Owners/admins first
+                    col(MessagingChannelMember.member_role),
                 )
             )
             members_result = await self.db.execute(members_stmt)
@@ -242,7 +248,7 @@ class IntegrationService:
                     channel_members_map[channel_id_str].append(
                         {
                             "name": row.display_name,
-                            "email": row.canonical_email,
+                            "email": row.email,
                             "role": row.member_role,
                         }
                     )

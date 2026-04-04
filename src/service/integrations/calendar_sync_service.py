@@ -268,16 +268,8 @@ class CalendarSyncService:
         """
         fields = self._extract_event_fields(event_data, provider)
 
-        organiser_email = fields.get("organiser_email")
-        is_organizer = (
-            organiser_email
-            and integration.integration_email
-            and organiser_email.lower() == integration.integration_email.lower()
-        )
-
         values = {
             "organisation_id": self.organisation_id,
-            "integration_id": integration.integration_id,
             "external_id": external_id,
             "provider": provider,
             "occurrence_anchor": occurrence_anchor,
@@ -303,9 +295,6 @@ class CalendarSyncService:
                 "created_at",
             )
         }
-
-        if not is_organizer:
-            update_dict.pop("integration_id")
 
         stmt = stmt.on_conflict_do_update(
             index_elements=["external_id", "occurrence_anchor"],

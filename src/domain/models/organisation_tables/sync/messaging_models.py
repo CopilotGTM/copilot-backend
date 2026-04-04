@@ -7,10 +7,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field, Relationship
+from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import utcnow
-from .base import SyncedRecordMixin
+from .base import OrgScopedRecordMixin, SyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
 
 EMPTY_JSONB_ARRAY = "'[]'::jsonb"
@@ -62,15 +62,24 @@ class MessageType(str, Enum):
     POLL = "poll"
 
 
-class MessagingChannel(SyncedRecordMixin, table=True):
-    """Represents a messaging channel/space from Slack, Teams, Google Chat, etc."""
+class MessagingChannel(OrgScopedRecordMixin, table=True):
+    """
+    Org-scoped messaging channel/space from Slack, Teams, Google Chat, etc.
+
+    One row per channel per organisation — shared across integrations.
+    integration_id is always None on canonical rows.
+    Sync cursors (last_sync_cursor, last_synced_at) live here — any
+    integration's token can continue from the same cursor.
+    Per-integration visibility tracked in MessagingChannelIntegrationState.
+    """
 
     __tablename__ = "messaging_channels"
     __table_args__ = (
         UniqueConstraint(
-            "integration_id",
+            "organisation_id",
+            "provider",
             "external_channel_id",
-            name="uq_messaging_channel_external",
+            name="uq_messaging_channel_org_provider_external",
         ),
         Index("ix_messaging_channel_org_active", "organisation_id", "is_monitored"),
         Index("ix_messaging_channel_name", "channel_name"),
@@ -128,11 +137,10 @@ class MessagingChannel(SyncedRecordMixin, table=True):
         sa_column=Column(String, nullable=False, server_default=text("false")),
         description="Whether the channel is archived.",
     )
-    creator_participant_id: UUID | None = Field(
-        default=None,
-        foreign_key="integration_participants.participant_id",
-        index=True,
-        description="Channel creator resolved to canonical participant.",
+
+    provider: str = Field(
+        sa_column=Column(String(32), nullable=False, server_default=text("'teams'")),
+        description="Source platform (teams, slack, google_chat).",
     )
 
     channel_metadata: dict[str, Any] = Field(
@@ -147,50 +155,123 @@ class MessagingChannel(SyncedRecordMixin, table=True):
         ),
     )
 
-    # Application-level sync state (Nango handles OAuth tokens)
+    # Sync state — channel-level, not per-integration.
+    # Any integration with access can continue from the same cursor.
     last_sync_cursor: str | None = Field(
         default=None,
         sa_column=Column(String(512), nullable=True),
-        description="Application cursor for where we left off (e.g., Slack message ts, last message ID).",
+        description="Sync cursor for message delta queries (e.g., Teams deltaLink).",
     )
     last_synced_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Last successful sync completion timestamp.",
+        description="Last successful sync (metadata + members). Updated each sync run.",
     )
     sync_retry_count: int = Field(
         default=0,
-        description="Number of consecutive sync failures for this channel.",
-    )
-
-    synced_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Last time this channel metadata was synced.",
-    )
-    last_seen_at: datetime | None = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Most recent observation during sync.",
+        description="Consecutive sync failures. Reset on success.",
     )
 
     messages: list["MessagingMessage"] = Relationship(back_populates="channel")
     thread_summaries: list["MessagingThreadSummary"] = Relationship(back_populates="channel")
+    integration_states: list["MessagingChannelIntegrationState"] = Relationship(
+        back_populates="channel"
+    )
 
 
-class MessagingChannelMember(SyncedRecordMixin, table=True):
-    """Tracks channel membership for compliance and analytics."""
+class MessagingChannelIntegrationState(SQLModel, table=True):
+    """
+    Per-integration visibility for a messaging channel.
+
+    Tracks which integrations can access a channel. Used for:
+    - Channel visibility (show user only channels their integration can see)
+    - Token selection (pick any active integration's token for syncing)
+    - Cleanup (when integration is disconnected, mark channels as not visible)
+
+    Follows the same pattern as CalendarEventUserState.
+    Sync cursors live on MessagingChannel (channel-level, not per-integration).
+    """
+
+    __tablename__ = "messaging_channel_integration_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel_id",
+            "integration_id",
+            name="uq_messaging_channel_integration_state",
+        ),
+        Index("ix_msg_channel_state_integration", "integration_id"),
+        Index(
+            "ix_msg_channel_state_integration_external",
+            "integration_id",
+            "external_channel_id",
+        ),
+    )
+
+    state_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+    )
+    channel_id: UUID = Field(
+        foreign_key="messaging_channels.channel_id",
+        index=True,
+        description="Canonical messaging channel.",
+    )
+    integration_id: UUID = Field(
+        foreign_key="knowledge_integrations.integration_id",
+        index=True,
+        description="Integration that can access this channel.",
+    )
+    external_channel_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="External channel ID as seen by this integration.",
+    )
+    organisation_id: UUID = Field(
+        index=True,
+        description="Organisation (denormalized for query efficiency).",
+    )
+
+    is_deleted: bool = Field(
+        default=False,
+        description="Whether this channel is no longer visible to this integration.",
+    )
+
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="When this integration first discovered the channel.",
+    )
+    updated_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Last update to this state row.",
+    )
+
+    channel: MessagingChannel | None = Relationship(back_populates="integration_states")
+
+
+class MessagingChannelMember(OrgScopedRecordMixin, table=True):
+    """
+    Org-scoped channel membership with member data stored directly.
+
+    One row per (channel, external_user_id). Since channels are org-scoped,
+    the same channel coming from multiple integrations produces only one set
+    of member records — second integration upserts the same rows.
+    integration_id is always None on canonical rows.
+
+    Stores email, display_name directly (no FK to IntegrationParticipant).
+    Provider is on the parent MessagingChannel.
+    A future backfill script can resolve these to canonical participants if needed.
+    """
 
     __tablename__ = "messaging_channel_members"
     __table_args__ = (
         UniqueConstraint(
             "channel_id",
-            "participant_id",
-            "joined_at",
+            "external_user_id",
             name="uq_channel_member",
         ),
         Index("ix_channel_member_channel", "channel_id"),
-        Index("ix_channel_member_participant", "participant_id"),
+        Index("ix_channel_member_email", "email_normalized"),
         Index("ix_channel_member_active", "channel_id", "left_at"),
     )
 
@@ -200,20 +281,37 @@ class MessagingChannelMember(SyncedRecordMixin, table=True):
         index=True,
         description="Channel this membership belongs to.",
     )
-    participant_id: UUID = Field(
-        foreign_key="integration_participants.participant_id",
-        index=True,
-        description="Participant who is/was a member.",
+
+    # Member identity — stored directly for simplicity
+    external_user_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider's user ID (e.g., Teams userId, Slack user ID).",
+    )
+    email: str | None = Field(
+        default=None,
+        sa_column=Column(String(320), nullable=True),
+        description="Member's email address as reported by provider.",
+    )
+    email_normalized: str | None = Field(
+        default=None,
+        sa_column=Column(String(320), nullable=True),
+        description="Lower-cased email for matching.",
+    )
+    display_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Member's display name.",
     )
 
-    joined_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="When the participant joined the channel.",
+    joined_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When the member joined the channel.",
     )
     left_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="When the participant left (NULL if still active).",
+        description="When the member left (NULL if still active).",
     )
 
     member_role: str | None = Field(
@@ -221,16 +319,11 @@ class MessagingChannelMember(SyncedRecordMixin, table=True):
         sa_column=Column(String(64), nullable=True),
         description="Role in channel (owner, admin, member, guest).",
     )
-    added_by_participant_id: UUID | None = Field(
-        default=None,
-        foreign_key="integration_participants.participant_id",
-        description="Participant who added this member.",
-    )
 
     member_metadata: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Provider-specific membership metadata.",
+        description="Provider-specific metadata (tenant_id, roles array, etc.).",
     )
 
 
@@ -305,19 +398,27 @@ class MessagingDealLink(SyncedRecordMixin, table=True):
     )
 
 
-class MessagingMessage(SyncedRecordMixin, table=True):
-    """Individual message from a messaging platform."""
+class MessagingMessage(OrgScopedRecordMixin, table=True):
+    """
+    Org-scoped message — one row per message per channel.
+
+    A message is a fact about a channel. The same message synced by
+    multiple integrations produces one row. Deal linkage is handled
+    separately via MessagingDealLink.
+
+    Author data stored directly (no FK to IntegrationParticipant).
+    """
 
     __tablename__ = "messaging_messages"
     __table_args__ = (
         UniqueConstraint(
-            "integration_id",
+            "channel_id",
             "external_message_id",
             name="uq_messaging_message_external",
         ),
         Index("ix_messaging_message_channel_sent", "channel_id", "sent_at"),
         Index("ix_messaging_message_thread", "thread_id"),
-        Index("ix_messaging_message_participant", "participant_id"),
+        Index("ix_messaging_message_author_email", "author_email_normalized"),
     )
 
     message_id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -331,16 +432,26 @@ class MessagingMessage(SyncedRecordMixin, table=True):
         description="Provider's message ID.",
     )
 
-    participant_id: UUID | None = Field(
-        default=None,
-        foreign_key="integration_participants.participant_id",
-        index=True,
-        description="Author of the message.",
-    )
+    # Author identity — stored directly
     external_user_id: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
-        description="Provider's user ID when participant not yet resolved.",
+        description="Provider's user ID for the author.",
+    )
+    author_email: str | None = Field(
+        default=None,
+        sa_column=Column(String(320), nullable=True),
+        description="Author's email address.",
+    )
+    author_email_normalized: str | None = Field(
+        default=None,
+        sa_column=Column(String(320), nullable=True),
+        description="Lower-cased author email for matching.",
+    )
+    author_display_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Author's display name.",
     )
 
     thread_id: str | None = Field(
@@ -562,6 +673,7 @@ __all__ = [
     "ChannelType",
     "MessageType",
     "MessagingChannel",
+    "MessagingChannelIntegrationState",
     "MessagingChannelMember",
     "MessagingDealLink",
     "MessagingMessage",

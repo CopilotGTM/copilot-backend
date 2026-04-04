@@ -158,12 +158,13 @@ def _persist_cursors(
                 integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][folder_id] = delta_link
                 persisted_count += 1
         logger.info(
-            "_persist_cursors: wrote %d/%d delta link(s) to connection_metadata"
-            " (integration=%s, metadata_keys=%s)",
-            persisted_count,
-            len(cursor_updates),
-            integration.integration_id,
-            list(integration.connection_metadata.keys()),
+            "Delta links persisted to connection_metadata",
+            extra={
+                "event": "email_delta_links_persisted",
+                "integration_id": str(integration.integration_id),
+                "persisted": persisted_count,
+                "total": len(cursor_updates),
+            },
         )
 
 
@@ -190,9 +191,12 @@ async def _fetch_folders_for_provider(
             provider_config_key=sync_data.provider_key,
         )
     logger.warning(
-        "Unsupported email provider for folder fetch: provider=%s integration=%s",
-        sync_data.provider,
-        sync_data.integration_id,
+        "Unsupported email provider for folder fetch",
+        extra={
+            "event": "email_unsupported_provider_folder",
+            "provider": sync_data.provider,
+            "integration_id": str(sync_data.integration_id),
+        },
     )
     return []
 
@@ -234,9 +238,12 @@ async def _fetch_messages_for_provider(
         return result.messages, result.delta_link
 
     logger.warning(
-        "Unsupported email provider for message fetch: provider=%s integration=%s",
-        sync_data.provider,
-        sync_data.integration_id,
+        "Unsupported email provider for message fetch",
+        extra={
+            "event": "email_unsupported_provider_message",
+            "provider": sync_data.provider,
+            "integration_id": str(sync_data.integration_id),
+        },
     )
     return [], None
 
@@ -289,9 +296,12 @@ class EmailDeltaSyncService:
             Dictionary with sync results
         """
         logger.info(
-            "Starting email sync: org=%s integration=%s",
-            organisation_id,
-            integration_id,
+            "Email sync started",
+            extra={
+                "event": "email_sync_started",
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+            },
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -312,9 +322,12 @@ class EmailDeltaSyncService:
 
             if not integration:
                 logger.warning(
-                    "Email integration not found or inactive: org=%s integration=%s",
-                    organisation_id,
-                    integration_id,
+                    "Email integration not found or inactive",
+                    extra={
+                        "event": "email_integration_not_found",
+                        "organisation_id": str(organisation_id),
+                        "integration_id": str(integration_id),
+                    },
                 )
                 return {
                     "status": "failed",
@@ -360,10 +373,14 @@ class EmailDeltaSyncService:
             )
         except Exception as e:
             logger.error(
-                "Email sync failed: org=%s integration=%s error=%s",
-                organisation_id,
-                integration_id,
-                str(e),
+                "Email sync failed",
+                extra={
+                    "event": "email_sync_failed",
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
             return {
@@ -397,10 +414,13 @@ class EmailDeltaSyncService:
             Dictionary with detailed sync results
         """
         logger.info(
-            "Syncing email integration: org=%s integration=%s type=%s",
-            org_id,
-            sync_data.integration_id,
-            sync_data.integration_type_value,
+            "Syncing email integration",
+            extra={
+                "event": "email_integration_sync_started",
+                "organisation_id": str(org_id),
+                "integration_id": str(sync_data.integration_id),
+                "integration_type": sync_data.integration_type_value,
+            },
         )
 
         token_info = IntegrationTokenInfo.from_integration(sync_data, org_id)
@@ -481,17 +501,23 @@ class EmailDeltaSyncService:
         # Session released
 
         logger.info(
-            "Folders to sync messages: integration=%s monitored=%d (folders=%s)",
-            sync_data.integration_id,
-            len(folders_to_sync),
-            [f"{f.folder_name} ({f.folder_type})" for f in folders_to_sync],
+            "Folders to sync messages",
+            extra={
+                "event": "email_monitored_folders_resolved",
+                "integration_id": str(sync_data.integration_id),
+                "monitored_count": len(folders_to_sync),
+                "folders": [f"{f.folder_name} ({f.folder_type})" for f in folders_to_sync],
+            },
         )
 
         if not folders_to_sync:
             logger.info(
-                "No folders to sync messages for: org=%s integration=%s",
-                org_id,
-                sync_data.integration_id,
+                "No monitored folders to sync",
+                extra={
+                    "event": "email_no_monitored_folders",
+                    "organisation_id": str(org_id),
+                    "integration_id": str(sync_data.integration_id),
+                },
             )
             return {
                 "status": "success",
@@ -534,17 +560,22 @@ class EmailDeltaSyncService:
             if integration:
                 if delta_link_updates:
                     logger.info(
-                        "Persisting %d delta link(s) for integration=%s: folders=%s",
-                        len(delta_link_updates),
-                        sync_data.integration_id,
-                        list(delta_link_updates.keys()),
+                        "Persisting delta links",
+                        extra={
+                            "event": "email_delta_links_persisting",
+                            "integration_id": str(sync_data.integration_id),
+                            "folder_count": len(delta_link_updates),
+                            "folder_ids": list(delta_link_updates.keys()),
+                        },
                     )
                     _persist_cursors(integration, sync_data.provider, delta_link_updates)
                 else:
                     logger.warning(
-                        "No delta links to persist for integration=%s"
-                        " — all folders returned None cursor",
-                        sync_data.integration_id,
+                        "No delta links to persist — all folders returned None cursor",
+                        extra={
+                            "event": "email_no_delta_links",
+                            "integration_id": str(sync_data.integration_id),
+                        },
                     )
 
                 integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
@@ -553,19 +584,24 @@ class EmailDeltaSyncService:
 
                 stored = (integration.connection_metadata or {}).get(EMAIL_DELTA_LINKS_KEY, {})
                 logger.info(
-                    "Post-commit connection_metadata delta links: %d folder(s)"
-                    " stored for integration=%s",
-                    len(stored),
-                    sync_data.integration_id,
+                    "Delta links committed",
+                    extra={
+                        "event": "email_delta_links_committed",
+                        "integration_id": str(sync_data.integration_id),
+                        "stored_folder_count": len(stored),
+                    },
                 )
         # Session released
 
         logger.info(
-            "Email sync complete: org=%s integration=%s folders=%d messages=%d",
-            org_id,
-            sync_data.integration_id,
-            len(folders_to_sync),
-            total_messages,
+            "Email sync complete",
+            extra={
+                "event": "email_sync_completed",
+                "organisation_id": str(org_id),
+                "integration_id": str(sync_data.integration_id),
+                "folders_synced": len(folders_to_sync),
+                "messages_synced": total_messages,
+            },
         )
 
         return {
@@ -619,16 +655,22 @@ class EmailDeltaSyncService:
             if new_cursor:
                 delta_link_updates[folder_data.external_folder_id] = new_cursor
                 logger.info(
-                    "Delta link captured for folder=%s (%s), length=%d",
-                    folder_name,
-                    folder_data.external_folder_id,
-                    len(new_cursor),
+                    "Delta link captured for folder",
+                    extra={
+                        "event": "email_folder_delta_link_captured",
+                        "folder_name": folder_name,
+                        "external_folder_id": folder_data.external_folder_id,
+                        "cursor_length": len(new_cursor),
+                    },
                 )
             else:
                 logger.warning(
-                    "No delta link returned for folder=%s (%s) — next sync will be a full re-fetch",
-                    folder_name,
-                    folder_data.external_folder_id,
+                    "No delta link returned for folder — next sync will be full re-fetch",
+                    extra={
+                        "event": "email_folder_no_delta_link",
+                        "folder_name": folder_name,
+                        "external_folder_id": folder_data.external_folder_id,
+                    },
                 )
 
             if not messages_data:
@@ -662,8 +704,11 @@ class EmailDeltaSyncService:
 
                 if not integration:
                     logger.warning(
-                        "Integration no longer exists: %s",
-                        sync_data.integration_id,
+                        "Integration no longer exists",
+                        extra={
+                            "event": "email_integration_missing",
+                            "integration_id": str(sync_data.integration_id),
+                        },
                     )
                     return {
                         "folder_id": str(folder_data.folder_id),
@@ -703,11 +748,14 @@ class EmailDeltaSyncService:
             # Session released
 
             logger.info(
-                "Messages synced: integration=%s folder=%s count=%d initial=%s",
-                sync_data.integration_id,
-                folder_name,
-                messages_synced,
-                is_initial,
+                "Folder messages synced",
+                extra={
+                    "event": "email_folder_messages_synced",
+                    "integration_id": str(sync_data.integration_id),
+                    "folder_name": folder_name,
+                    "messages_synced": messages_synced,
+                    "is_initial": is_initial,
+                },
             )
 
             return {
@@ -720,10 +768,14 @@ class EmailDeltaSyncService:
 
         except Exception as e:
             logger.error(
-                "Failed to sync folder messages: integration=%s folder=%s error=%s",
-                sync_data.integration_id,
-                folder_name,
-                str(e),
+                "Failed to sync folder messages",
+                extra={
+                    "event": "email_folder_messages_sync_failed",
+                    "integration_id": str(sync_data.integration_id),
+                    "folder_name": folder_name,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
             return {

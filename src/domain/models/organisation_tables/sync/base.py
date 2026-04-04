@@ -46,3 +46,13 @@ class FlexibleSyncedRecordMixin(TimestampMixin):
         default=False,
         description="Soft delete flag reflecting provider state.",
     )
+
+
+class OrgScopedRecordMixin(TimestampMixin):
+    """For records scoped to an org, not tied to any specific integration."""
+
+    organisation_id: UUID = Field(index=True)
+    is_deleted: bool = Field(
+        default=False,
+        description="Soft delete flag reflecting provider state.",
+    )

@@ -7,7 +7,7 @@ from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueC
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
-from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecordMixin
+from src.domain.models.organisation_tables.sync.base import OrgScopedRecordMixin
 
 if TYPE_CHECKING:
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
@@ -34,7 +34,7 @@ class GenerationStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class CalendarEvent(FlexibleSyncedRecordMixin, table=True):
+class CalendarEvent(OrgScopedRecordMixin, table=True):
     __tablename__ = "calendar_events"
     __table_args__ = (
         UniqueConstraint(

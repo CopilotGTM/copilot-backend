@@ -7,15 +7,21 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from ..base_mixins import utcnow
-from .base import SyncedRecordMixin
+from .base import FlexibleSyncedRecordMixin, SyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
 
 if TYPE_CHECKING:
     from .conversation_intelligence import CICallSpeaker
 
 
-class IntegrationParticipant(SyncedRecordMixin, table=True):
-    """Canonical participant record across integrations."""
+class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
+    """
+    Canonical participant record — org-scoped, shared across integrations.
+
+    integration_id is nullable: set to the first integration that discovered
+    this participant, but not used for scoping. Per-integration identity
+    mappings are tracked in IntegrationParticipantIdentity.
+    """
 
     __tablename__ = "integration_participants"
     __table_args__ = (

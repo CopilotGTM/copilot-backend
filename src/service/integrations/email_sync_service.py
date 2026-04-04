@@ -141,10 +141,13 @@ class EmailSyncService:
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync folder %d (external_id=%s): %s",
-                        idx,
-                        folder_data.get("id"),
-                        str(e),
+                        "Failed to sync email folder",
+                        extra={
+                            "event": "email_folder_sync_item_failed",
+                            "folder_index": idx,
+                            "external_id": folder_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     records_failed += 1
@@ -189,9 +192,13 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Folder sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Folder sync failed",
+                extra={
+                    "event": "email_folder_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -286,21 +293,26 @@ class EmailSyncService:
 
                     records_processed += 1
 
-                    await self.db.commit()
+                    # Commit in batches of 50
+                    if records_processed % 50 == 0:
+                        await self.db.commit()
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync message %d (external_id=%s): %s",
-                        idx,
-                        message_data.get("id"),
-                        str(e),
+                        "Failed to sync email message",
+                        extra={
+                            "event": "email_message_sync_item_failed",
+                            "message_index": idx,
+                            "external_id": message_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
                         await self.db.rollback()
                     records_failed += 1
 
-            # Final commit (no-op if already committed per message)
+            # Final commit
             await self.db.commit()
 
             # Update sync history
@@ -341,9 +353,13 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Message sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Email message sync failed",
+                extra={
+                    "event": "email_message_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -1002,10 +1018,13 @@ class EmailSyncService:
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync folder %d (external_id=%s): %s",
-                        idx,
-                        folder_data.get("id"),
-                        str(e),
+                        "Failed to sync email folder",
+                        extra={
+                            "event": "email_folder_sync_item_failed",
+                            "folder_index": idx,
+                            "external_id": folder_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     records_failed += 1
@@ -1055,9 +1074,13 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Folder incremental sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Folder incremental sync failed",
+                extra={
+                    "event": "email_folder_incremental_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -1212,21 +1235,26 @@ class EmailSyncService:
                             )
                             continue
 
-                    await self.db.commit()
+                    # Commit in batches of 50
+                    if records_processed % 50 == 0:
+                        await self.db.commit()
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync message %d (external_id=%s): %s",
-                        idx,
-                        message_data.get("id"),
-                        str(e),
+                        "Failed to sync email message (incremental)",
+                        extra={
+                            "event": "email_message_incremental_sync_item_failed",
+                            "message_index": idx,
+                            "external_id": message_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
                         await self.db.rollback()
                     records_failed += 1
 
-            # Final commit (no-op if already committed per message)
+            # Final commit
             await self.db.commit()
 
             # Update sync history
@@ -1272,9 +1300,13 @@ class EmailSyncService:
 
         except Exception as e:
             logger.error(
-                "Message incremental sync failed: integration=%s error=%s",
-                integration_id,
-                str(e),
+                "Email message incremental sync failed",
+                extra={
+                    "event": "email_message_incremental_sync_failed",
+                    "integration_id": str(integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 

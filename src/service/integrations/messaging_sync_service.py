@@ -6,12 +6,13 @@ This service writes to:
 2. messaging_channel_members - Channel participant memberships
 3. messaging_messages - Individual message records
 4. messaging_deal_links - Channel-to-deal mappings
-5. integration_participants - Participant/user records
-6. integration_sync_history - Sync tracking
+5. integration_sync_history - Sync tracking
 """
 
 from __future__ import annotations
 
+import contextlib
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -28,12 +29,9 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     ChannelType,
     MessageType,
     MessagingChannel,
+    MessagingChannelIntegrationState,
     MessagingChannelMember,
     MessagingMessage,
-)
-from src.domain.models.organisation_tables.sync.participant_models import (
-    IntegrationParticipant,
-    IntegrationParticipantIdentity,
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.sync_history_manager import (
@@ -47,6 +45,9 @@ from src.workers.integrations_worker.utils.sync_metadata import (
 
 logger = get_logger(__name__)
 
+# Batch size for channel processing — balances memory vs commit frequency
+_CHANNEL_BATCH_SIZE = 50
+
 
 class MessagingSyncService:
     """
@@ -57,7 +58,6 @@ class MessagingSyncService:
     - messaging_channel_members (channel participants)
     - messaging_messages
     - messaging_deal_links (for channel-to-deal mappings)
-    - integration_participants (resolved participant records)
     - integration_sync_history
     """
 
@@ -96,10 +96,13 @@ class MessagingSyncService:
         try:
             channel_list = list(channels)
             logger.info(
-                "sync_channels started: integration=%s provider=%s channel_count=%d",
-                integration.integration_id,
-                provider,
-                len(channel_list),
+                "Channel sync started",
+                extra={
+                    "event": "channel_sync_started",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "channel_count": len(channel_list),
+                },
             )
 
             records_processed = 0
@@ -146,10 +149,13 @@ class MessagingSyncService:
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync channel %d (external_id=%s): %s",
-                        idx,
-                        channel_data.get("id"),
-                        str(e),
+                        "Channel sync failed for single channel",
+                        extra={
+                            "event": "channel_sync_item_failed",
+                            "channel_index": idx,
+                            "external_id": channel_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
@@ -179,11 +185,15 @@ class MessagingSyncService:
             await self.db.commit()
 
             logger.info(
-                "Channel sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration.integration_id,
-                created_count,
-                updated_count,
-                records_failed,
+                "Channel sync completed",
+                extra={
+                    "event": "channel_sync_completed",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "created": created_count,
+                    "updated": updated_count,
+                    "failed": records_failed,
+                },
             )
 
             return {
@@ -196,9 +206,13 @@ class MessagingSyncService:
 
         except Exception as e:
             logger.error(
-                "Channel sync failed: integration=%s error=%s",
-                integration.integration_id,
-                str(e),
+                "Channel sync failed",
+                extra={
+                    "event": "channel_sync_failed",
+                    "integration_id": str(integration.integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -232,6 +246,9 @@ class MessagingSyncService:
         - Skips unchanged channels based on change detection
         - Uses database state to determine create vs update
         - Tracks action counts for observability
+        - Batch-resolves participants across all channels (single query)
+        - Batch-loads memberships per commit batch
+        - Commits in batches of _CHANNEL_BATCH_SIZE for throughput
 
         Tables Modified:
         - messaging_channels (primary)
@@ -252,10 +269,13 @@ class MessagingSyncService:
         try:
             channel_list = list(channels)
             logger.info(
-                "sync_channels_incremental started: integration=%s provider=%s channel_count=%d",
-                integration.integration_id,
-                provider,
-                len(channel_list),
+                "Incremental channel sync started",
+                extra={
+                    "event": "incremental_channel_sync_started",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "channel_count": len(channel_list),
+                },
             )
 
             if not channel_list:
@@ -282,7 +302,7 @@ class MessagingSyncService:
                 if self._extract_channel_id(ch, provider)
             ]
             existing_map = await self._load_existing_channels_by_external_ids(
-                integration.integration_id, external_ids
+                external_ids, provider
             )
 
             records_processed = 0
@@ -291,90 +311,108 @@ class MessagingSyncService:
             updated_count = 0
             skipped_count = 0
 
-            for idx, channel_data in enumerate(channel_list):
-                try:
-                    external_id = self._extract_channel_id(channel_data, provider)
-                    if not external_id:
-                        logger.debug("Channel %d: skipping (no external_id)", idx)
+            t0 = time.monotonic()
+
+            # Process channels in batches for controlled commit frequency
+            for batch_start in range(0, len(channel_list), _CHANNEL_BATCH_SIZE):
+                batch = channel_list[batch_start : batch_start + _CHANNEL_BATCH_SIZE]
+
+                for idx, channel_data in enumerate(batch, start=batch_start):
+                    try:
+                        # Savepoint per channel — failure rolls back only this
+                        # channel, not the entire batch
+                        async with self.db.begin_nested():
+                            external_id = self._extract_channel_id(channel_data, provider)
+                            if not external_id:
+                                logger.debug(
+                                    "Channel %d: skipping (no external_id)",
+                                    idx,
+                                )
+                                records_failed += 1
+                                continue
+
+                            sync_action = extract_sync_action(channel_data)
+                            action_counts.increment(sync_action)
+
+                            existing_channel = existing_map.get(external_id)
+                            is_new = existing_channel is None
+
+                            if is_new:
+                                channel = await self._create_channel(
+                                    integration,
+                                    channel_data,
+                                    provider,
+                                    external_id,
+                                )
+                                created_count += 1
+                                logger.debug(
+                                    "Created channel: external_id=%s name=%s",
+                                    external_id,
+                                    channel_data.get("displayName"),
+                                )
+
+                                members = channel_data.get("members", [])
+                                if members:
+                                    await self._sync_channel_members(
+                                        channel, channel_data, provider
+                                    )
+
+                                await self._upsert_integration_state(
+                                    channel, integration.integration_id, external_id
+                                )
+                            else:
+                                if self._has_meaningful_channel_changes(
+                                    existing_channel, channel_data, provider
+                                ):
+                                    await self._update_channel(
+                                        existing_channel, channel_data, provider
+                                    )
+                                    updated_count += 1
+                                    logger.debug(
+                                        "Updated channel: external_id=%s name=%s",
+                                        external_id,
+                                        channel_data.get("displayName"),
+                                    )
+
+                                    members = channel_data.get("members", [])
+                                    if members:
+                                        await self._sync_channel_members(
+                                            existing_channel, channel_data, provider
+                                        )
+                                else:
+                                    skipped_count += 1
+                                    logger.debug(
+                                        "Skipped unchanged channel: external_id=%s",
+                                        external_id,
+                                    )
+
+                                    members = channel_data.get("members", [])
+                                    if members:
+                                        await self._sync_channel_members(
+                                            existing_channel, channel_data, provider
+                                        )
+
+                                await self._upsert_integration_state(
+                                    existing_channel, integration.integration_id, external_id
+                                )
+
+                            records_processed += 1
+
+                    except Exception as e:
+                        logger.error(
+                            "Incremental channel sync failed for single channel",
+                            extra={
+                                "event": "incremental_channel_sync_item_failed",
+                                "channel_index": idx,
+                                "external_id": channel_data.get("id"),
+                                "error": str(e),
+                            },
+                            exc_info=True,
+                        )
                         records_failed += 1
-                        continue
 
-                    # Extract sync action for observability
-                    sync_action = extract_sync_action(channel_data)
-                    action_counts.increment(sync_action)
-
-                    # Database state is source of truth for create vs update
-                    existing_channel = existing_map.get(external_id)
-                    is_new = existing_channel is None
-
-                    if is_new:
-                        # Create new channel
-                        channel = await self._create_channel(
-                            integration, channel_data, provider, external_id
-                        )
-                        created_count += 1
-                        logger.debug(
-                            "Created channel: external_id=%s name=%s",
-                            external_id,
-                            channel_data.get("displayName"),
-                        )
-
-                        # Sync members for new channel
-                        members = channel_data.get("members", [])
-                        if members:
-                            await self._sync_channel_members(
-                                channel, channel_data, integration, provider
-                            )
-                    else:
-                        # Check if meaningful changes exist
-                        if self._has_meaningful_channel_changes(
-                            existing_channel, channel_data, provider
-                        ):
-                            await self._update_channel(existing_channel, channel_data, provider)
-                            updated_count += 1
-                            logger.debug(
-                                "Updated channel: external_id=%s name=%s",
-                                external_id,
-                                channel_data.get("displayName"),
-                            )
-
-                            # Sync members for updated channel
-                            members = channel_data.get("members", [])
-                            if members:
-                                await self._sync_channel_members(
-                                    existing_channel, channel_data, integration, provider
-                                )
-                        else:
-                            skipped_count += 1
-                            logger.debug(
-                                "Skipped unchanged channel: external_id=%s",
-                                external_id,
-                            )
-
-                            # Still sync members for skipped channels if we have member data
-                            members = channel_data.get("members", [])
-                            if members:
-                                await self._sync_channel_members(
-                                    existing_channel, channel_data, integration, provider
-                                )
-
-                    records_processed += 1
-                    await self.db.commit()
-
-                except Exception as e:
-                    logger.error(
-                        "Failed to sync channel %d (external_id=%s): %s",
-                        idx,
-                        channel_data.get("id"),
-                        str(e),
-                        exc_info=True,
-                    )
-                    if self.db.in_transaction():
-                        await self.db.rollback()
-                    records_failed += 1
-
-            # Final commit
-            await self.db.commit()
+                # Commit after each batch
+                await self.db.commit()
 
             # Update sync history
             await self._sync_history.complete(
@@ -397,15 +435,20 @@ class MessagingSyncService:
             self.db.add(integration)
             await self.db.commit()
 
+            total_time = round(time.monotonic() - t0, 2)
             logger.info(
-                "Channel incremental sync completed: integration=%s "
-                "created=%d updated=%d skipped=%d failed=%d actions=%s",
-                integration.integration_id,
-                created_count,
-                updated_count,
-                skipped_count,
-                records_failed,
-                action_counts.to_dict(),
+                "Incremental channel sync completed",
+                extra={
+                    "event": "incremental_channel_sync_completed",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "created": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "failed": records_failed,
+                    "action_counts": action_counts.to_dict(),
+                    "total_time_s": total_time,
+                },
             )
 
             return {
@@ -419,9 +462,13 @@ class MessagingSyncService:
 
         except Exception as e:
             logger.error(
-                "Channel incremental sync failed: integration=%s error=%s",
-                integration.integration_id,
-                str(e),
+                "Incremental channel sync failed",
+                extra={
+                    "event": "incremental_channel_sync_failed",
+                    "integration_id": str(integration.integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -430,7 +477,10 @@ class MessagingSyncService:
                 status=SyncStatus.FAILED,
                 records_processed=0,
                 records_failed=len(channel_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error_details={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
             )
 
             integration.last_sync_status = SyncStatus.FAILED.value
@@ -472,11 +522,14 @@ class MessagingSyncService:
         try:
             message_list = list(messages)
             logger.info(
-                "sync_messages started: integration=%s provider=%s message_count=%d channel_id=%s",
-                integration.integration_id,
-                provider,
-                len(message_list),
-                channel_id,
+                "Message sync started",
+                extra={
+                    "event": "message_sync_started",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "message_count": len(message_list),
+                    "channel_id": str(channel_id) if channel_id else None,
+                },
             )
 
             records_processed = 0
@@ -492,9 +545,14 @@ class MessagingSyncService:
                         records_failed += 1
                         continue
 
-                    # Check if message already exists
+                    # Resolve channel for this message
+                    resolved_channel_id = await self._ensure_channel_id(
+                        message_data, provider, channel_id, external_id
+                    )
+
+                    # Check if message already exists (unique per channel)
                     existing_message = await self._get_message_by_external_id(
-                        integration.integration_id, external_id
+                        resolved_channel_id, external_id
                     )
 
                     if existing_message:
@@ -508,11 +566,10 @@ class MessagingSyncService:
                     else:
                         # Create new message
                         await self._create_message(
-                            integration,
                             message_data,
                             provider,
                             external_id,
-                            channel_id,
+                            resolved_channel_id,
                         )
                         created_count += 1
                         logger.debug(
@@ -527,10 +584,13 @@ class MessagingSyncService:
 
                 except Exception as e:
                     logger.error(
-                        "Failed to sync message %d (external_id=%s): %s",
-                        idx,
-                        message_data.get("id"),
-                        str(e),
+                        "Message sync failed for single message",
+                        extra={
+                            "event": "message_sync_item_failed",
+                            "message_index": idx,
+                            "external_id": message_data.get("id"),
+                            "error": str(e),
+                        },
                         exc_info=True,
                     )
                     if self.db.in_transaction():
@@ -561,11 +621,15 @@ class MessagingSyncService:
             await self.db.commit()
 
             logger.info(
-                "Message sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration.integration_id,
-                created_count,
-                updated_count,
-                records_failed,
+                "Message sync completed",
+                extra={
+                    "event": "message_sync_completed",
+                    "integration_id": str(integration.integration_id),
+                    "provider": provider,
+                    "created": created_count,
+                    "updated": updated_count,
+                    "failed": records_failed,
+                },
             )
 
             return {
@@ -578,9 +642,13 @@ class MessagingSyncService:
 
         except Exception as e:
             logger.error(
-                "Message sync failed: integration=%s error=%s",
-                integration.integration_id,
-                str(e),
+                "Message sync failed",
+                extra={
+                    "event": "message_sync_failed",
+                    "integration_id": str(integration.integration_id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
 
@@ -601,40 +669,77 @@ class MessagingSyncService:
             raise
 
     async def get_monitored_channels(self, integration_id: UUID) -> list[MessagingChannel]:
-        """Get all channels that should be actively synced (is_monitored=true)."""
-        stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
-            col(MessagingChannel.is_monitored) == "true",
+        """Get all monitored channels visible to this integration."""
+        stmt = (
+            select(MessagingChannel)
+            .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id,
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
+                col(MessagingChannel.is_monitored) == "true",
+            )
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
-    async def _get_channel_by_external_id(
-        self, integration_id: UUID, external_id: str
-    ) -> MessagingChannel | None:
-        """Get existing messaging channel by external_id."""
+    async def _get_channel_by_external_id(self, external_id: str) -> MessagingChannel | None:
+        """Get existing messaging channel by external_id (org-scoped)."""
         stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.organisation_id) == self.organisation_id,
             col(MessagingChannel.external_channel_id) == external_id,
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
     async def _load_existing_channels_by_external_ids(
-        self, integration_id: UUID, external_ids: list[str]
+        self,
+        external_ids: list[str],
+        provider: str,
     ) -> dict[str, MessagingChannel]:
         """Batch load existing channels by external IDs for efficient comparison."""
         if not external_ids:
             return {}
 
         stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
+            col(MessagingChannel.organisation_id) == self.organisation_id,
+            col(MessagingChannel.provider) == provider,
             col(MessagingChannel.external_channel_id).in_(external_ids),
         )
         result = await self.db.execute(stmt)
         channels = result.scalars().all()
 
         return {ch.external_channel_id: ch for ch in channels}
+
+    async def _upsert_integration_state(
+        self,
+        channel: MessagingChannel,
+        integration_id: UUID,
+        external_channel_id: str,
+    ) -> None:
+        """Create or update integration visibility state for a channel."""
+        stmt = select(MessagingChannelIntegrationState).where(
+            col(MessagingChannelIntegrationState.channel_id) == channel.channel_id,
+            col(MessagingChannelIntegrationState.integration_id) == integration_id,
+        )
+        result = await self.db.execute(stmt)
+        state = result.scalars().first()
+
+        if state:
+            state.is_deleted = False
+            state.updated_at = datetime.now(UTC)
+            self.db.add(state)
+        else:
+            state = MessagingChannelIntegrationState(
+                channel_id=channel.channel_id,
+                integration_id=integration_id,
+                external_channel_id=external_channel_id,
+                organisation_id=self.organisation_id,
+            )
+            self.db.add(state)
 
     def _has_meaningful_channel_changes(
         self,
@@ -683,17 +788,17 @@ class MessagingSyncService:
 
     async def _create_channel(
         self,
-        integration: KnowledgeIntegration,
+        integration: KnowledgeIntegration,  # noqa: ARG002 — kept for caller interface consistency
         channel_data: dict[str, Any],
         provider: str,
         external_id: str,
     ) -> MessagingChannel:
-        """Create a new messaging channel."""
+        """Create a new org-scoped messaging channel."""
         channel = MessagingChannel(
             organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
+            provider=provider,
             external_channel_id=external_id,
-            synced_at=datetime.now(UTC),
+            last_synced_at=datetime.now(UTC),
             **self._extract_channel_fields(channel_data, provider),
         )
 
@@ -715,8 +820,7 @@ class MessagingSyncService:
         for key, value in fields.items():
             setattr(channel, key, value)
 
-        # Update sync timestamp
-        channel.synced_at = datetime.now(UTC)
+        channel.last_synced_at = datetime.now(UTC)
 
         self.db.add(channel)
         await self.db.flush()
@@ -725,47 +829,32 @@ class MessagingSyncService:
         self,
         channel: MessagingChannel,
         channel_data: dict[str, Any],
-        integration: KnowledgeIntegration,
         provider: str,
     ) -> int:
         """
-        Sync channel members/participants from provider data.
+        Sync channel members — stores member data directly on the row.
 
-        This method:
-        1. Extracts members from channel_data
-        2. Resolves or creates IntegrationParticipant for each member
-        3. Upserts MessagingChannelMember records (safe for multiple integrations)
-
-        Args:
-            channel: The MessagingChannel record
-            channel_data: Raw channel data from provider (with 'members' array)
-            integration: The integration record
-            provider: Provider name (teams, slack, etc.)
-
-        Returns:
-            Number of members synced
+        Batch-loads all existing members for the channel in one query, then
+        upserts in-memory. This avoids N+1 queries (one SELECT per member).
         """
         members = channel_data.get("members", [])
         if not members:
-            logger.debug(
-                "No members to sync for channel: channel_id=%s",
-                channel.channel_id,
-            )
             return 0
 
-        logger.debug(
-            "Syncing %d members for channel: channel_id=%s external_id=%s",
-            len(members),
-            channel.channel_id,
-            channel.external_channel_id,
+        # Batch-load all existing members for this channel in one query
+        existing_stmt = select(MessagingChannelMember).where(
+            col(MessagingChannelMember.channel_id) == channel.channel_id,
         )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_map: dict[str, MessagingChannelMember] = {
+            m.external_user_id: m for m in existing_result.scalars().all()
+        }
 
         synced_count = 0
-        current_member_participant_ids: set[UUID] = set()
+        current_external_user_ids: set[str] = set()
 
         for member in members:
             try:
-                # Extract member data based on provider
                 if provider == "teams":
                     external_user_id = member.get("userId") or member.get("id")
                     display_name = member.get("displayName")
@@ -775,7 +864,6 @@ class MessagingSyncService:
                     joined_at_str = member.get("visibleHistoryStartDateTime")
                     tenant_id = member.get("tenantId")
                 else:
-                    # Slack or other providers
                     external_user_id = member.get("id") or member.get("userId")
                     display_name = member.get("displayName") or member.get("name")
                     email = member.get("email")
@@ -785,335 +873,87 @@ class MessagingSyncService:
                     tenant_id = None
 
                 if not external_user_id:
-                    logger.debug(
-                        "Skipping member without user ID in channel %s", channel.channel_id
-                    )
                     continue
 
-                # Resolve or create IntegrationParticipant
-                participant = await self._resolve_or_create_participant(
-                    integration=integration,
-                    external_user_id=external_user_id,
-                    display_name=display_name,
-                    email=email,
-                    provider=provider,
-                )
+                current_external_user_ids.add(external_user_id)
 
-                if not participant:
-                    logger.warning(
-                        "Could not resolve participant for member: external_user_id=%s channel_id=%s",
-                        external_user_id,
-                        channel.channel_id,
-                    )
-                    continue
-
-                current_member_participant_ids.add(participant.participant_id)
-
-                # Parse joined_at timestamp - default to now if not provided
-                joined_at: datetime = datetime.now(UTC)
+                joined_at: datetime | None = None
                 if joined_at_str and joined_at_str.strip():
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         joined_at = datetime.fromisoformat(joined_at_str.replace("Z", "+00:00"))
-                    except (ValueError, TypeError) as e:
-                        logger.debug(
-                            "Could not parse joined_at '%s': %s, using current time",
-                            joined_at_str,
-                            e,
-                        )
-                        joined_at = datetime.now(UTC)
 
-                # Build metadata
-                member_metadata = {
-                    "provider": provider,
-                    "external_user_id": external_user_id,
-                    "email": email,
-                    "roles": roles,
-                    "tenant_id": tenant_id,
-                    "last_synced_at": datetime.now(UTC).isoformat(),
-                }
+                email_normalized = email.lower().strip() if email else None
 
-                # Upsert membership - find any existing (active or not)
-                existing_membership = await self._get_channel_membership(
-                    channel.channel_id, participant.participant_id
-                )
-
-                if existing_membership:
-                    # Update existing membership
-                    existing_membership.member_role = member_role
-                    existing_membership.member_metadata = member_metadata
-                    existing_membership.left_at = None  # Mark as active
-                    existing_membership.is_deleted = False
-                    # Fix invalid joined_at (e.g., -infinity from previous bugs)
-                    if (
-                        existing_membership.joined_at is None
-                        or existing_membership.joined_at.year < 1900
-                    ):
-                        existing_membership.joined_at = joined_at
-                    self.db.add(existing_membership)
-                    logger.debug(
-                        "Updated membership: channel=%s participant=%s",
-                        channel.channel_id,
-                        participant.participant_id,
-                    )
+                existing = existing_map.get(external_user_id)
+                if existing:
+                    existing.display_name = display_name
+                    existing.email = email
+                    existing.email_normalized = email_normalized
+                    existing.member_role = member_role
+                    existing.left_at = None
+                    existing.is_deleted = False
+                    existing.member_metadata = {
+                        "roles": roles,
+                        "tenant_id": tenant_id,
+                        "last_synced_at": datetime.now(UTC).isoformat(),
+                    }
+                    if joined_at and (existing.joined_at is None or existing.joined_at.year < 1900):
+                        existing.joined_at = joined_at
+                    self.db.add(existing)
                 else:
-                    # Create new membership
-                    new_membership = MessagingChannelMember(
+                    new_member = MessagingChannelMember(
                         organisation_id=self.organisation_id,
-                        integration_id=integration.integration_id,
                         channel_id=channel.channel_id,
-                        participant_id=participant.participant_id,
+                        external_user_id=external_user_id,
+                        email=email,
+                        email_normalized=email_normalized,
+                        display_name=display_name or "Unknown",
                         joined_at=joined_at,
                         member_role=member_role,
-                        member_metadata=member_metadata,
+                        member_metadata={
+                            "roles": roles,
+                            "tenant_id": tenant_id,
+                            "last_synced_at": datetime.now(UTC).isoformat(),
+                        },
                     )
-                    self.db.add(new_membership)
-                    logger.debug(
-                        "Created membership: channel=%s participant=%s",
-                        channel.channel_id,
-                        participant.participant_id,
-                    )
+                    self.db.add(new_member)
 
                 synced_count += 1
 
             except Exception as e:
                 logger.error(
-                    "Failed to sync channel member: channel_id=%s member=%s error=%s",
-                    channel.channel_id,
-                    member.get("userId") or member.get("id"),
-                    str(e),
+                    "Failed to sync channel member",
+                    extra={
+                        "event": "channel_member_sync_failed",
+                        "channel_id": str(channel.channel_id),
+                        "member_id": member.get("userId") or member.get("id"),
+                        "error": str(e),
+                    },
                     exc_info=True,
                 )
                 continue
 
-        # Flush all member changes
         await self.db.flush()
 
-        # Mark members no longer in the channel as left (soft delete)
-        await self._mark_removed_members(
-            channel.channel_id,
-            current_member_participant_ids,
-            integration.integration_id,
-        )
+        # Mark members no longer in the channel as left
+        if current_external_user_ids:
+            for ext_id, existing_member in existing_map.items():
+                if ext_id not in current_external_user_ids and existing_member.left_at is None:
+                    existing_member.left_at = datetime.now(UTC)
+                    self.db.add(existing_member)
 
-        # Update participant count on channel
         channel.participant_count = len(members)
         self.db.add(channel)
         await self.db.flush()
 
-        logger.debug(
-            "Synced %d/%d members for channel: channel_id=%s",
-            synced_count,
-            len(members),
-            channel.channel_id,
-        )
-
         return synced_count
 
-    async def _get_channel_membership(
-        self, channel_id: UUID, participant_id: UUID
-    ) -> MessagingChannelMember | None:
-        """
-        Get existing channel membership by channel and participant.
-
-        Finds the most recent membership record (whether active or not).
-        """
-        stmt = (
-            select(MessagingChannelMember)
-            .where(
-                col(MessagingChannelMember.channel_id) == channel_id,
-                col(MessagingChannelMember.participant_id) == participant_id,
-            )
-            .order_by(col(MessagingChannelMember.joined_at).desc())
-            .limit(1)
-        )
-        result = await self.db.execute(stmt)
-        return result.scalars().first()
-
-    async def _mark_removed_members(
-        self,
-        channel_id: UUID,
-        current_participant_ids: set[UUID],
-        integration_id: UUID,
-    ) -> None:
-        """
-        Mark members who are no longer in the channel as left.
-
-        Only marks members from the same integration to avoid conflicts
-        when multiple integrations sync the same channel.
-        """
-        if not current_participant_ids:
-            return
-
-        # Find active members from this integration who are no longer in the member list
-        stmt = select(MessagingChannelMember).where(
-            col(MessagingChannelMember.channel_id) == channel_id,
-            col(MessagingChannelMember.integration_id) == integration_id,
-            col(MessagingChannelMember.left_at).is_(None),
-            col(MessagingChannelMember.participant_id).notin_(current_participant_ids),
-        )
-        result = await self.db.execute(stmt)
-        removed_members = result.scalars().all()
-
-        for member in removed_members:
-            member.left_at = datetime.now(UTC)
-            self.db.add(member)
-            logger.debug(
-                "Marked member as left: channel=%s participant=%s",
-                channel_id,
-                member.participant_id,
-            )
-
-    async def _resolve_or_create_participant(
-        self,
-        integration: KnowledgeIntegration,
-        external_user_id: str,
-        display_name: str | None,
-        email: str | None,
-        provider: str,
-    ) -> IntegrationParticipant | None:
-        """
-        Resolve existing or create new IntegrationParticipant.
-
-        Uses the two-table structure:
-        - IntegrationParticipant: Canonical participant record
-        - IntegrationParticipantIdentity: Provider-specific identity mapping
-
-        First tries to find by provider_participant_id in identities, then by email.
-        Creates new participant and identity if not found.
-        """
-        email_normalized = email.lower().strip() if email else None
-
-        # Try to find by provider participant ID in identities
-        stmt = (
-            select(IntegrationParticipant)
-            .join(IntegrationParticipantIdentity)
-            .where(
-                col(IntegrationParticipantIdentity.integration_id) == integration.integration_id,
-                col(IntegrationParticipantIdentity.provider_participant_id) == external_user_id,
-            )
-        )
-        result = await self.db.execute(stmt)
-        participant = result.scalars().first()
-
-        if participant:
-            # Update display name if changed
-            if display_name and participant.display_name != display_name:
-                participant.display_name = display_name
-                self.db.add(participant)
-            return participant
-
-        # Try to find by email if we have one
-        if email_normalized:
-            stmt = select(IntegrationParticipant).where(
-                col(IntegrationParticipant.organisation_id) == self.organisation_id,
-                col(IntegrationParticipant.canonical_email_normalized) == email_normalized,
-            )
-            result = await self.db.execute(stmt)
-            participant = result.scalars().first()
-
-            if participant:
-                # Create identity link for this provider
-                await self._create_participant_identity(
-                    integration=integration,
-                    participant=participant,
-                    external_user_id=external_user_id,
-                    email=email,
-                    display_name=display_name,
-                )
-                # Update display name if changed
-                if display_name and participant.display_name != display_name:
-                    participant.display_name = display_name
-                    self.db.add(participant)
-                return participant
-
-        # Create new participant
-        new_participant = IntegrationParticipant(
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            canonical_email=email,
-            canonical_email_normalized=email_normalized,
-            display_name=display_name or "Unknown",
-            participant_metadata={
-                "provider": provider,
-                "source": "channel_member_sync",
-            },
-        )
-        self.db.add(new_participant)
-        await self.db.flush()
-        await self.db.refresh(new_participant)
-
-        # Create identity link
-        await self._create_participant_identity(
-            integration=integration,
-            participant=new_participant,
-            external_user_id=external_user_id,
-            email=email,
-            display_name=display_name,
-        )
-
-        logger.debug(
-            "Created new participant: external_id=%s display_name=%s email=%s",
-            external_user_id,
-            display_name,
-            email,
-        )
-
-        return new_participant
-
-    async def _create_participant_identity(
-        self,
-        integration: KnowledgeIntegration,
-        participant: IntegrationParticipant,
-        external_user_id: str,
-        email: str | None,
-        display_name: str | None,
-    ) -> IntegrationParticipantIdentity:
-        """Create a provider-specific identity for a participant."""
-        email_normalized = email.lower().strip() if email else None
-
-        # Check if identity already exists
-        stmt = select(IntegrationParticipantIdentity).where(
-            col(IntegrationParticipantIdentity.integration_id) == integration.integration_id,
-            col(IntegrationParticipantIdentity.provider_participant_id) == external_user_id,
-        )
-        result = await self.db.execute(stmt)
-        existing = result.scalars().first()
-
-        if existing:
-            # Update existing identity
-            existing.last_seen_at = datetime.now(UTC)
-            if display_name:
-                existing.provider_display_name = display_name
-            self.db.add(existing)
-            return existing
-
-        # Create new identity
-        identity = IntegrationParticipantIdentity(
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            participant_id=participant.participant_id,
-            provider_participant_id=external_user_id,
-            provider_email=email,
-            provider_email_normalized=email_normalized,
-            provider_display_name=display_name,
-        )
-        self.db.add(identity)
-        await self.db.flush()
-
-        logger.debug(
-            "Created participant identity: participant=%s provider_id=%s",
-            participant.participant_id,
-            external_user_id,
-        )
-
-        return identity
-
     async def _get_message_by_external_id(
-        self, integration_id: UUID, external_id: str
+        self, channel_id: UUID, external_id: str
     ) -> MessagingMessage | None:
-        """Get existing messaging message by external_id."""
+        """Get existing messaging message by external_id (org-scoped, unique per channel)."""
         stmt = select(MessagingMessage).where(
-            col(MessagingMessage.integration_id) == integration_id,
+            col(MessagingMessage.channel_id) == channel_id,
             col(MessagingMessage.external_message_id) == external_id,
         )
         result = await self.db.execute(stmt)
@@ -1121,26 +961,16 @@ class MessagingSyncService:
 
     async def _create_message(
         self,
-        integration: KnowledgeIntegration,
         message_data: dict[str, Any],
         provider: str,
         external_id: str,
-        channel_id: UUID | None,
+        channel_id: UUID,
     ) -> MessagingMessage:
-        """Create a new messaging message."""
-        resolved_channel_id = await self._ensure_channel_id(
-            integration.integration_id,
-            message_data,
-            provider,
-            channel_id,
-            external_id,
-        )
-
+        """Create a new org-scoped messaging message."""
         message = MessagingMessage(
             organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
             external_message_id=external_id,
-            channel_id=resolved_channel_id,
+            channel_id=channel_id,
             synced_at=datetime.now(UTC),
             **self._extract_message_fields(message_data, provider),
         )
@@ -1166,7 +996,6 @@ class MessagingSyncService:
 
     async def _ensure_channel_id(
         self,
-        integration_id: UUID,
         message_data: dict[str, Any],
         provider: str,
         existing_channel_id: UUID | None,
@@ -1177,7 +1006,7 @@ class MessagingSyncService:
             return existing_channel_id
 
         external_channel_id = self._extract_external_channel_id_from_message(message_data, provider)
-        resolved = await self._resolve_channel_id(integration_id, external_channel_id)
+        resolved = await self._resolve_channel_id(external_channel_id)
         if resolved:
             return resolved
 
@@ -1188,10 +1017,9 @@ class MessagingSyncService:
 
     async def _resolve_channel_id(
         self,
-        integration_id: UUID,
         external_channel_id: str | None,
     ) -> UUID | None:
-        """Resolve channel UUID using provider-specific identifiers."""
+        """Resolve channel UUID using provider-specific identifiers (org-scoped)."""
         if not external_channel_id:
             return None
 
@@ -1199,7 +1027,7 @@ class MessagingSyncService:
         if cached_id:
             return cached_id
 
-        channel = await self._get_channel_by_external_id(integration_id, external_channel_id)
+        channel = await self._get_channel_by_external_id(external_channel_id)
         if channel:
             self._channel_cache[external_channel_id] = channel.channel_id
             return channel.channel_id
@@ -1427,9 +1255,12 @@ class MessagingSyncService:
 
             if existing_link:
                 logger.info(
-                    "Channel-to-deal link already exists: channel_id=%s deal_id=%s",
-                    channel_id,
-                    deal_id,
+                    "Channel-to-deal link already exists",
+                    extra={
+                        "event": "deal_link_exists",
+                        "channel_id": str(channel_id),
+                        "deal_id": str(deal_id),
+                    },
                 )
                 return {
                     "status": "exists",
@@ -1466,9 +1297,12 @@ class MessagingSyncService:
                 channel.is_monitored = "true"
                 self.db.add(channel)
                 logger.info(
-                    "Enabled monitoring for channel: channel_id=%s (linked to deal=%s)",
-                    channel_id,
-                    deal_id,
+                    "Enabled monitoring for channel",
+                    extra={
+                        "event": "channel_monitoring_enabled",
+                        "channel_id": str(channel_id),
+                        "deal_id": str(deal_id),
+                    },
                 )
 
             await self.db.commit()
@@ -1483,11 +1317,15 @@ class MessagingSyncService:
 
         except Exception as e:
             await self.db.rollback()
-            logger.exception(
-                "Failed to link channel to deal: channel_id=%s deal_id=%s error=%s",
-                channel_id,
-                deal_id,
-                str(e),
+            logger.error(
+                "Failed to link channel to deal",
+                extra={
+                    "event": "deal_link_failed",
+                    "channel_id": str(channel_id),
+                    "deal_id": str(deal_id),
+                    "error": str(e),
+                },
+                exc_info=True,
             )
             raise
 
@@ -1563,9 +1401,18 @@ class MessagingSyncService:
         Returns:
             List of all channel dictionaries
         """
-        stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
-            col(MessagingChannel.is_deleted) == False,  # noqa: E712
+        stmt = (
+            select(MessagingChannel)
+            .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .where(
+                col(MessagingChannelIntegrationState.integration_id) == integration_id,
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
+                col(MessagingChannel.is_deleted).is_(False),
+            )
         )
 
         if not include_archived:
