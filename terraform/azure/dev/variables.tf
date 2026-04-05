@@ -598,59 +598,8 @@ variable "certificates" {
   default = {}
 }
 
-# -----------------------------------------------------------------
-# Supabase Variables
-# -----------------------------------------------------------------
 
-variable "super_admin_email" {
-  description = "Email address for the super admin user."
-  type        = string
-  default     = ""
-}
 
-variable "supabase_url" {
-  description = "URL for the Supabase instance."
-  type        = string
-  default     = ""
-}
-
-variable "supabase_anon_key" {
-  description = "API key for the Supabase instance."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "supabase_service_role_key" {
-  description = "Service role key for the Supabase instance."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "supabase_jwt_secret" {
-  description = "JWT secret for the Supabase instance."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-# -----------------------------------------------------------------
-# Resend API Key
-# -----------------------------------------------------------------
-
-variable "resend_api_key" {
-  description = "API key for the Resend service."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "resend_email" {
-  description = "Email address for the Resend service."
-  type        = string
-  default     = "noreply@team.copilotgtm.com"
-}
 
 # -----------------------------------------------------------------
 # KEDA Configuration
@@ -719,15 +668,6 @@ variable "gpu_node_taints" {
   description = "List of taints applied to GPU nodes"
   type        = list(string)
   default     = ["dedicated=gpu:NoSchedule"]
-}
-
-# -----------------------------------------------------------------
-# Nango Config 
-# ----------------------------------------------------------------
-variable "nango_secret" {
-  description = "Nango Secret Key"
-  type        = string
-  default     = ""
 }
 
 # -----------------------------------------------------------------

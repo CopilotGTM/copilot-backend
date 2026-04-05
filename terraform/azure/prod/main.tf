@@ -700,33 +700,7 @@ resource "azuredevops_variable_group" "secrets" {
     is_secret    = true
   }
 
-  variable {
-    name  = "SUPER_ADMIN_EMAIL"
-    value = var.super_admin_email
-  }
 
-  variable {
-    name  = "SUPABASE_URL"
-    value = var.supabase_url
-  }
-
-  variable {
-    name         = "SUPABASE_ANON_KEY"
-    secret_value = var.supabase_anon_key
-    is_secret    = true
-  }
-
-  variable {
-    name         = "SUPABASE_SERVICE_ROLE_KEY"
-    secret_value = var.supabase_service_role_key
-    is_secret    = true
-  }
-
-  variable {
-    name         = "SUPABASE_JWT_SECRET"
-    secret_value = var.supabase_jwt_secret
-    is_secret    = true
-  }
 
   variable {
     name  = "AZURE_SUBSCRIPTION"
@@ -736,27 +710,6 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name  = "APP_NAME"
     value = "CopilotGTM"
-  }
-
-  variable {
-    name  = "APP_URL"
-    value = "https://${var.frontend_dns_a_record_name}.copilotgtm.com"
-  }
-
-  variable {
-    name  = "ADMIN_APP_URL"
-    value = "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com"
-  }
-
-  variable {
-    name  = "FROM_EMAIL"
-    value = var.resend_email
-  }
-
-  variable {
-    name         = "RESEND_API_KEY"
-    secret_value = var.resend_api_key
-    is_secret    = true
   }
 
   variable {
@@ -816,12 +769,6 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name  = "WORKLOAD_IDENTITY_WORKERS_TENANT_ID"
     value = data.azuread_client_config.current.tenant_id
-  }
-
-  variable {
-    name         = "NANGO_SECRET_KEY"
-    secret_value = var.nango_secret
-    is_secret    = true
   }
 
   # Teams Bot Configuration (added after teams_bot module is applied)

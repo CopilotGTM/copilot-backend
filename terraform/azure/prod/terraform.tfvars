@@ -125,17 +125,17 @@ agent_pool = "StaticAgentPool-prod" # Override: unique pool name to avoid collis
 # Repository Names (Required - external resources in Azure DevOps)
 # -----------------------------------------------------------------
 backend_repo_name = "copilot-backend"
-backend_yml_path  = ".azure-pipelines/azure-pipelines.yml"
+backend_yml_path  = ".azure-pipelines/azure-pipelines-prod.yml"
 # backend_pipeline_name = "backend-pipeline"  # Default
 # backend_branch        = "main"              # Default for prod
 
 frontend_repo_name = "copilot-app-frontend"
-frontend_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
+frontend_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-prod.yml"
 # frontend_pipeline_name = "frontend-pipeline"  # Default
 # frontend_branch        = "main"               # Default for prod
 
 frontend_admin_repo_name = "copilot-admin-frontend"
-frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
+frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-prod.yml"
 # frontend_admin_pipeline_name = "frontend-admin-pipeline"  # Default
 # frontend_admin_branch        = "main"                     # Default for prod
 
@@ -167,13 +167,6 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 # gpu_node_taints      = ["dedicated=gpu:NoSchedule"]        # Default
 
 # -----------------------------------------------------------------
-# External Services
-# -----------------------------------------------------------------
-super_admin_email = "tech@copilotgtm.com"
-supabase_url      = "https://zgdizeaxfsvqfwmdwtrp.supabase.co"
-resend_email      = "noreply@team.copilotgtm.com" # Override from default
-
-# -----------------------------------------------------------------
 # Microsoft Teams Bot
 # -----------------------------------------------------------------
 # Messaging endpoint is managed via Azure DevOps Variable Group (copilot-infra-secrets-prod)
@@ -191,8 +184,3 @@ oauth_redirect_uris = [
 # Secrets (provided via TF_VAR_* environment variables)
 # -----------------------------------------------------------------
 # TF_VAR_azuredevops_pat           - Azure DevOps Personal Access Token
-# TF_VAR_supabase_anon_key         - Supabase Anonymous Key
-# TF_VAR_supabase_service_role_key - Supabase Service Role Key
-# TF_VAR_supabase_jwt_secret       - Supabase JWT Secret
-# TF_VAR_resend_api_key            - Resend Email API Key
-# TF_VAR_nango_secret              - Nango Integration Secret
