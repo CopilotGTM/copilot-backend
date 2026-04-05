@@ -18,9 +18,14 @@ class OTelConfig:
     Active when OTEL_ENABLED resolves true and OTEL_EXPORTER_OTLP_ENDPOINT is set.
     Local defaults to disabled unless explicitly opted in.
     Grafana Cloud OTLP endpoint example:
-        https://otlp-gateway-prod-us-central-0.grafana.net/otlp
-    Auth is via OTEL_EXPORTER_OTLP_HEADERS (e.g. "Authorization=Basic <base64>").
+        https://otlp-gateway-prod-us-west-0.grafana.net/otlp
+
+    Auth header (OTEL_EXPORTER_OTLP_HEADERS) is loaded from env var (local dev)
+    or Azure Key Vault (production) with a configurable TTL cache.
     """
+
+    # Key Vault secret name for the auth header
+    SECRET_NAME_OTLP_HEADERS: str = "otel-exporter-otlp-headers"
 
     OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "copilotgtm-backend")
     _OTEL_ENABLED_RAW = os.getenv("OTEL_ENABLED")
@@ -32,6 +37,53 @@ class OTelConfig:
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     OTEL_EXPORTER_OTLP_HEADERS: str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
     OTEL_TRACES_SAMPLE_RATE: float = float(os.getenv("OTEL_TRACES_SAMPLE_RATE", "0.2"))
+
+    _credentials_from_env: bool = bool(os.getenv("OTEL_EXPORTER_OTLP_HEADERS"))
+    _credentials_ttl_hours: float = float(os.getenv("OTEL_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def load_headers(self) -> None:
+        """Load OTLP auth headers from env or Key Vault with TTL cache.
+
+        Env var takes precedence — when OTEL_EXPORTER_OTLP_HEADERS is set,
+        Key Vault is skipped entirely (for local development).
+        """
+        if self._credentials_from_env:
+            return
+
+        if not self._is_expired():
+            return
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return
+            await self._load_from_vault()
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading OTel OTLP headers from Key Vault (TTL refresh)")
+        value = await master_secrets_manager.get(self.SECRET_NAME_OTLP_HEADERS)
+        if value:
+            self.OTEL_EXPORTER_OTLP_HEADERS = value
+            logger.info("OTel OTLP headers cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("OTel OTLP headers missing from Key Vault")
+        self._credentials_loaded_at = time.time()
 
 
 class SentryConfig:
@@ -47,22 +99,110 @@ class SentryConfig:
 
 
 class SupabaseConfig:
-    """Configuration for Supabase authentication"""
+    """Configuration for Supabase authentication.
 
-    # Supabase project URL
+    Credentials are loaded from env vars (local dev) or Azure Key Vault
+    (production) with a configurable TTL cache. When all four env vars are
+    set, Key Vault is skipped entirely.
+    """
+
+    # Key Vault secret names
+    SECRET_NAME_URL: str = "supabase-url"
+    SECRET_NAME_ANON_KEY: str = "supabase-anon-key"
+    SECRET_NAME_SERVICE_ROLE_KEY: str = "supabase-service-role-key"
+    SECRET_NAME_JWT_SECRET: str = "supabase-jwt-secret"
+
+    # Cached values (populated from env or Key Vault)
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-
-    # Supabase anon key (public)
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
-
-    # Supabase service role key (private - for server-side operations)
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-
-    # JWT secret for token verification
     SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
 
     # Enable/disable Supabase auth
     ENABLE_SUPABASE_AUTH: bool = os.getenv("ENABLE_SUPABASE_AUTH", "true").lower() == "true"
+
+    _credentials_from_env: bool = bool(
+        os.getenv("SUPABASE_URL")
+        and os.getenv("SUPABASE_ANON_KEY")
+        and os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        and os.getenv("SUPABASE_JWT_SECRET")
+    )
+    _credentials_ttl_hours: float = float(os.getenv("SUPABASE_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def get_credentials(
+        self,
+    ) -> tuple[str, str, str, str]:
+        """Return (url, anon_key, service_role_key, jwt_secret).
+
+        Env vars take precedence — when all four are set, Key Vault is
+        skipped entirely (for local development).
+        """
+        if self._credentials_from_env:
+            return (
+                self.SUPABASE_URL,
+                self.SUPABASE_ANON_KEY,
+                self.SUPABASE_SERVICE_ROLE_KEY,
+                self.SUPABASE_JWT_SECRET,
+            )
+
+        if not self._is_expired():
+            return (
+                self.SUPABASE_URL,
+                self.SUPABASE_ANON_KEY,
+                self.SUPABASE_SERVICE_ROLE_KEY,
+                self.SUPABASE_JWT_SECRET,
+            )
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return (
+                    self.SUPABASE_URL,
+                    self.SUPABASE_ANON_KEY,
+                    self.SUPABASE_SERVICE_ROLE_KEY,
+                    self.SUPABASE_JWT_SECRET,
+                )
+            await self._load_from_vault()
+
+        return (
+            self.SUPABASE_URL,
+            self.SUPABASE_ANON_KEY,
+            self.SUPABASE_SERVICE_ROLE_KEY,
+            self.SUPABASE_JWT_SECRET,
+        )
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Supabase credentials from Key Vault (TTL refresh)")
+        self.SUPABASE_URL = await master_secrets_manager.get(self.SECRET_NAME_URL) or ""
+        self.SUPABASE_ANON_KEY = await master_secrets_manager.get(self.SECRET_NAME_ANON_KEY) or ""
+        self.SUPABASE_SERVICE_ROLE_KEY = (
+            await master_secrets_manager.get(self.SECRET_NAME_SERVICE_ROLE_KEY) or ""
+        )
+        self.SUPABASE_JWT_SECRET = (
+            await master_secrets_manager.get(self.SECRET_NAME_JWT_SECRET) or ""
+        )
+        self._credentials_loaded_at = time.time()
+
+        if self.SUPABASE_URL and self.SUPABASE_JWT_SECRET:
+            logger.info("Supabase credentials cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Supabase credentials missing from Key Vault")
 
 
 class DatabaseConfig:

@@ -41,19 +41,33 @@ class SupabaseAuthError(Exception):
 class SupabaseUserClient:
     """
     Supabase client for user-facing authentication.
+
+    Credentials are resolved at startup via ``initialize()`` which loads
+    from Key Vault (or env vars for local dev). Call ``initialize()`` in
+    the FastAPI lifespan before any request is served.
     """
 
     def __init__(self):
-        """Initialize the Supabase client."""
-        self.supabase_url = supabase_config.SUPABASE_URL
-        self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
-        self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
+        self.supabase_url: str = ""
+        self.supabase_anon_key: str = ""
+        self.supabase_service_role_key: str = ""
+        self.client: Client | None = None
+        self.admin_client: Client | None = None
+
+    async def initialize(self) -> None:
+        """Load credentials from env or Key Vault and create Supabase clients.
+
+        Called once during app startup (FastAPI lifespan).
+        """
+        url, anon_key, service_role_key, _ = await supabase_config.get_credentials()
+        self.supabase_url = url
+        self.supabase_anon_key = anon_key
+        self.supabase_service_role_key = service_role_key
 
         self._validate_config()
 
-        self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
-        self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
-
+        self.client = create_client(self.supabase_url, self.supabase_anon_key)
+        self.admin_client = create_client(self.supabase_url, self.supabase_service_role_key)
         logger.debug("Supabase User client initialized")
 
     def _validate_config(self) -> None:

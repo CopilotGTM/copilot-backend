@@ -36,25 +36,36 @@ class SupabaseAdminClient:
     """
     Supabase client using the official Python library.
     Provides a clean interface for authentication and user management.
+
+    Credentials are resolved at startup via ``initialize()`` which loads
+    from Key Vault (or env vars for local dev). Call ``initialize()`` in
+    the FastAPI lifespan before any request is served.
     """
 
     def __init__(self):
-        """Initialize the Supabase client."""
-        self.supabase_url = supabase_config.SUPABASE_URL
-        self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
-        self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
-        self.jwt_secret = supabase_config.SUPABASE_JWT_SECRET
+        self.supabase_url: str = ""
+        self.supabase_anon_key: str = ""
+        self.supabase_service_role_key: str = ""
+        self.jwt_secret: str = ""
+        self.client: Client | None = None
+        self.admin_client: Client | None = None
 
-        # Validate required configuration
+    async def initialize(self) -> None:
+        """Load credentials from env or Key Vault and create Supabase clients.
+
+        Called once during app startup (FastAPI lifespan).
+        """
+        url, anon_key, service_role_key, jwt_secret = await supabase_config.get_credentials()
+        self.supabase_url = url
+        self.supabase_anon_key = anon_key
+        self.supabase_service_role_key = service_role_key
+        self.jwt_secret = jwt_secret
+
         self._validate_config()
 
-        # Create client with anon key for user operations
-        self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
-
-        # Create admin client with service role for admin operations
-        self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
-
-        logger.info("Supabase client initialized")
+        self.client = create_client(self.supabase_url, self.supabase_anon_key)
+        self.admin_client = create_client(self.supabase_url, self.supabase_service_role_key)
+        logger.info("Supabase admin client initialized")
 
     def _validate_config(self) -> None:
         """

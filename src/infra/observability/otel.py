@@ -30,12 +30,11 @@ _otel_initialized = False
 _otel_log_handler = None
 
 
-def init_otel(service_name_suffix: str = "") -> None:
+async def async_init_otel(service_name_suffix: str = "") -> None:
     """Bootstrap OTel tracing + log bridge if configured.
 
-    Args:
-        service_name_suffix: Appended to service name to distinguish
-            components (e.g. ``"-deal-worker"``).
+    Async version — loads OTLP auth headers from Key Vault before
+    initializing exporters. Use in FastAPI lifespan.
     """
     global _otel_initialized
     if _otel_initialized:
@@ -45,6 +44,42 @@ def init_otel(service_name_suffix: str = "") -> None:
 
     if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
         return
+
+    # Load auth header from Key Vault before creating exporters
+    await otel_config.load_headers()
+
+    _otel_initialized = True
+
+    _setup_tracing(otel_config, service_name_suffix)
+    _setup_logging(otel_config, service_name_suffix)
+    _auto_instrument()
+
+
+def init_otel(service_name_suffix: str = "") -> None:
+    """Bootstrap OTel tracing + log bridge if configured.
+
+    Sync version for Celery workers — uses run_async() to load
+    OTLP auth headers from Key Vault.
+    """
+    global _otel_initialized
+    if _otel_initialized:
+        return
+
+    from src.infra.config.configs import otel_config
+
+    if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
+        return
+
+    # Load auth header from Key Vault (sync bridge for workers)
+    if not otel_config._credentials_from_env and otel_config._credentials_loaded_at is None:
+        try:
+            from src.infra.utils.async_runner import run_async
+
+            run_async(otel_config.load_headers())
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Could not load OTel headers from Key Vault in sync context"
+            )
 
     _otel_initialized = True
 

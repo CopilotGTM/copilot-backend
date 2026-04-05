@@ -25,13 +25,12 @@ gc.set_threshold(50000, 500, 100)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
-from src.infra.observability.otel import init_otel, instrument_fastapi_app
+from src.infra.observability.otel import async_init_otel, instrument_fastapi_app
 from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import configure_logging
 
 configure_logging(component="api")
 init_sentry()
-init_otel(service_name_suffix="-api")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,6 +101,20 @@ async def lifespan(app: FastAPI):
     initialize_redis_pool()  # Sync Redis pool
     await initialize_async_redis_pool()  # Async Redis pool
     logger.info("Redis connection pools initialized successfully")
+
+    # Load OTel auth headers from Key Vault and initialize tracing
+    await async_init_otel(service_name_suffix="-api")
+    logger.info("OpenTelemetry initialized")
+
+    # Load Supabase credentials from Key Vault (or env vars for local dev)
+    from src.infra.auth.supabase_admin_client import supabase_admin_client
+    from src.infra.auth.supabase_user_client import supabase_user_client
+    from src.infra.security.token_revocation import token_revocation_service
+
+    await supabase_admin_client.initialize()
+    await supabase_user_client.initialize()
+    await token_revocation_service.initialize()
+    logger.info("Supabase clients initialized")
 
     yield
 
