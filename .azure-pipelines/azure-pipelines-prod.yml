@@ -662,7 +662,6 @@ stages:
                       --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
                       --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
                       --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
-                      --set api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED \
                       --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
                       --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
                       --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
@@ -676,26 +675,11 @@ stages:
                       --set api.secrets.ENV="$(ENV)" \
                       --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
                       --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$(AZURE_MASTER_KEY_VAULT_URL)" \
-                      --set api.secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
-                      --set api.secrets.SUPABASE_URL="$(SUPABASE_URL)" \
-                      --set api.secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
-                      --set api.secrets.SUPABASE_SERVICE_ROLE_KEY="$(SUPABASE_SERVICE_ROLE_KEY)" \
-                      --set api.secrets.SUPABASE_JWT_SECRET="$(SUPABASE_JWT_SECRET)" \
                       --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
                       --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
-                      --set api.secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
-                      --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
-                      --set api.secrets.APP_URL="$(APP_URL)" \
-                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
                       --set api.secrets.SENTRY_DSN="$(SENTRY_DSN)" \
                       --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$(SENTRY_TRACES_SAMPLE_RATE)" \
-                      --set api.secrets.OTEL_EXPORTER_OTLP_ENDPOINT="$(OTEL_EXPORTER_OTLP_ENDPOINT)" \
-                      --set api.secrets.OTEL_EXPORTER_OTLP_HEADERS="$(OTEL_EXPORTER_OTLP_HEADERS)" \
-                      --set api.secrets.NANGO_SECRET_KEY="$(NANGO_SECRET_KEY)" \
-                      --set api.secrets.NANGO_BASE_URL="https://api.nango.dev" \
-                      --set api.secrets.GOOGLE_REDIRECT_URI="https://api.copilotgtm.com/users/integrations/copilot-oauth/callback" \
-                      --set api.secrets.MICROSOFT_REDIRECT_URI="https://api.copilotgtm.com/users/integrations/copilot-oauth/callback" \
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
@@ -745,24 +729,11 @@ stages:
                     ENV: $(ENV)
                     AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
                     AZURE_MASTER_KEY_VAULT_URL: $(AZURE_MASTER_KEY_VAULT_URL)
-                    SUPER_ADMIN_EMAIL: $(SUPER_ADMIN_EMAIL)
-                    SUPABASE_URL: $(SUPABASE_URL)
-                    SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
-                    SUPABASE_SERVICE_ROLE_KEY: $(SUPABASE_SERVICE_ROLE_KEY)
-                    SUPABASE_JWT_SECRET: $(SUPABASE_JWT_SECRET)
                     AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
                     AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
-                    RESEND_API_KEY: $(RESEND_API_KEY)
-                    FROM_EMAIL: $(FROM_EMAIL)
                     APP_NAME: $(APP_NAME)
-                    APP_URL: $(APP_URL)
-                    ADMIN_APP_URL: $(ADMIN_APP_URL)
                     SENTRY_DSN: $(SENTRY_DSN)
                     SENTRY_TRACES_SAMPLE_RATE: $(SENTRY_TRACES_SAMPLE_RATE)
-                    OTEL_EXPORTER_OTLP_ENDPOINT: $(OTEL_EXPORTER_OTLP_ENDPOINT)
-                    OTEL_EXPORTER_OTLP_HEADERS: $(OTEL_EXPORTER_OTLP_HEADERS)
-                    NANGO_SECRET_KEY: $(NANGO_SECRET_KEY)
-                    NANGO_BASE_URL: $(NANGO_BASE_URL)
                     WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
                     WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
 

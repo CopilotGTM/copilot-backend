@@ -25,7 +25,12 @@ class TokenRevocationService:
 
     def __init__(self) -> None:
         self._redis: Redis | None = None
-        self._jwt_secret: str = supabase_config.SUPABASE_JWT_SECRET
+        self._jwt_secret: str = ""
+
+    async def initialize(self) -> None:
+        """Load JWT secret from env or Key Vault. Called during app startup."""
+        _, _, _, jwt_secret = await supabase_config.get_credentials()
+        self._jwt_secret = jwt_secret
 
     def _client(self) -> Redis:
         if self._redis is None:
