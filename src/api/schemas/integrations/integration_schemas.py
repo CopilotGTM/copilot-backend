@@ -104,7 +104,6 @@ class IntegrationResponse(IntegrationBase):
     integration_id: UUID
     organisation_id: UUID
     created_by_user_id: UUID = Field(description="User who created this integration")
-    created_by_admin: bool = Field(description="Whether this integration was created by an admin")
     integration_email: str | None = Field(
         default=None,
         description="Email/username of the connected account (e.g., 'sales@acme.com' for HubSpot)",
@@ -140,7 +139,6 @@ class IntegrationStatusResponse(BaseModel):
     integration_type: IntegrationType
     integration_scope: IntegrationScope
     created_by_user_id: UUID
-    created_by_admin: bool
     integration_email: str | None = Field(
         default=None, description="Email/username of the connected account"
     )
@@ -305,10 +303,9 @@ class ChannelListResponse(BaseModel):
 class ChannelLinkRequest(BaseModel):
     """Request schema for linking a channel to a deal."""
 
-    id: str = Field(..., description="Channel ID")
+    id: str = Field(..., description="External channel ID from the provider")
     name: str = Field(..., description="Channel Name")
     type: str = Field(..., description="Channel Type")
-    integration_id: UUID = Field(..., description="Integration ID")
     parent_id: str | None = Field(default=None, description="Parent ID (e.g. Team ID)")
     parent_name: str | None = Field(default=None, description="Parent Name")
 

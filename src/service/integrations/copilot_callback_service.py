@@ -1,18 +1,20 @@
-import uuid
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import desc, select
-from src.domain.models.master_tables import OrganisationIntegrationDetails, User, UserAppRole
+from sqlalchemy import select
+from sqlmodel import col
+from src.domain.models.master_tables import OrganisationIntegrationDetails, User
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
 from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
@@ -21,7 +23,12 @@ logger = get_logger(__name__)
 
 
 class CopilotCallbackService:
-    """Process first-party OAuth callbacks and persist connection metadata."""
+    """Process OAuth callbacks: validate state, exchange tokens, persist integration.
+
+    Handles the second half of the OAuth flow after the provider redirects back.
+    Called by the /callback route. Creates new integrations or reactivates previously
+    disconnected ones for the same user + provider combination.
+    """
 
     _AUTH_BACKEND_CUSTOM = "custom"
     _PROVIDER_KEY_METADATA_KEY = "provider_key"
@@ -34,6 +41,11 @@ class CopilotCallbackService:
 
     @staticmethod
     def _parse_token_expiry(expires_value: int | str | None) -> datetime | None:
+        """Normalize provider expiry into a datetime.
+
+        Providers are inconsistent — some return ISO timestamps, others return
+        seconds-until-expiry as int or string. This handles all three formats.
+        """
         if expires_value is None:
             return None
         if isinstance(expires_value, str):
@@ -66,6 +78,11 @@ class CopilotCallbackService:
         provider_key: str,
         token_payload: dict[str, Any],
     ) -> None:
+        """Merge provider tokens into the integration record and set expiry/metadata.
+
+        Called during both creation and reactivation to store credentials and
+        track the auth backend provenance (custom vs legacy Nango).
+        """
         credentials = dict(integration.credentials or {})
         credentials.update(token_payload)
 
@@ -89,7 +106,27 @@ class CopilotCallbackService:
         integration.connection_metadata = metadata
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, Any]:
-        """Validate state, exchange tokens, and create or reactivate the integration."""
+        """Process the provider's OAuth callback and persist the integration.
+
+        Flow:
+        1. Decode JWT state → extract user/org/type and jti as connection_id
+           (no authenticated session here — the signed JWT is our trust anchor)
+        2. Validate user exists and belongs to the claimed org
+        3. Exchange authorization code for tokens at the provider
+        4. Reactivate a previously disconnected integration for the same user+type,
+           or create a new one if none exists
+        5. Trigger initial data sync via Celery
+
+        Args:
+            code: Authorization code from the provider.
+            state: JWT state token generated during /authorize.
+
+        Returns:
+            Dict with integration_id, type, scope, and email for the redirect response.
+
+        Raises:
+            ValueError: If state is invalid/expired, user mismatch, or token exchange fails.
+        """
         try:
             state_data = copilot_oauth_service.decode_oauth_state(state)
         except Exception as e:
@@ -103,19 +140,22 @@ class CopilotCallbackService:
         except Exception as e:
             raise ValueError("State payload is missing required claims") from e
 
-        connection_id = str(state_data.get("jti") or uuid.uuid4())
+        jti = state_data.get("jti")
+        if not jti:
+            raise ValueError("State payload is missing jti claim")
+        connection_id = str(jti)
+
         provider = ProviderFactory.get_provider(integration_type)
 
+        # Cross-check user against master DB — prevents forged state tokens
+        # from creating integrations for other users
         user = await self._fetch_user_from_master(user_id)
         if not user or user.organisation_id != organisation_id:
             logger.error("User mismatch in state token")
             raise ValueError("Invalid user state context")
 
-        async for org_session in acquire_org_async_session(organisation_id):
-            existing = await self._get_integration_by_connection_id(org_session, connection_id)
-            if existing:
-                return self._build_success_response(existing, reactivated=False)
-
+        # Session released before external calls — token exchange and user info
+        # fetch can take several seconds depending on the provider
         try:
             tokens = await provider.exchange_code(code)
             access_token = tokens.get("access_token")
@@ -123,19 +163,53 @@ class CopilotCallbackService:
                 raise ValueError("Missing access_token from provider")
 
             user_info = await provider.get_user_info(str(access_token))
-            integration_email = str(user_info.get("email") or "")
+            integration_email = str(user_info.get("email") or "").strip().lower()
+            if not integration_email:
+                raise ValueError("Provider did not return an email for the connected account")
+
+            # B2B product — only allow work emails, reject personal/free providers
+            email_domain = integration_email.rsplit("@", 1)[-1]
+            if email_domain in FREE_EMAIL_DOMAINS:
+                raise ValueError(
+                    f"Personal email addresses ({email_domain}) cannot be used. "
+                    "Please connect with your work email."
+                )
         except Exception as e:
             logger.error("Failed to exchange OAuth code for %s: %s", integration_type.value, e)
             raise
 
+        # Prevent duplicate: if another user in the org already connected this
+        # email + provider type, reject — one account can't be shared across users
+        async for org_session in acquire_org_async_session(organisation_id):
+            duplicate_stmt = (
+                select(KnowledgeIntegration)
+                .where(
+                    col(KnowledgeIntegration.integration_type) == integration_type,
+                    col(KnowledgeIntegration.integration_email) == integration_email,
+                    col(KnowledgeIntegration.is_active).is_(True),
+                    col(KnowledgeIntegration.created_by_user_id) != user_id,
+                )
+                .limit(1)
+            )
+            existing = (await org_session.execute(duplicate_stmt)).scalars().first()
+            if existing:
+                raise ValueError(
+                    f"This {integration_type.value.replace('_', ' ').title()} account "
+                    f"({integration_email}) is already connected by another user."
+                )
+
+        # Reactivation: match by email to avoid reactivating the wrong account
+        # when a user has multiple connections for the same provider type
+        # (e.g. work@company.com and personal@gmail.com both for Outlook Calendar)
         async for org_session in acquire_org_async_session(organisation_id):
             reactivate_stmt = (
                 select(KnowledgeIntegration)
                 .where(
-                    KnowledgeIntegration.created_by_user_id == user_id,  # type: ignore[arg-type]
-                    KnowledgeIntegration.integration_type == integration_type,  # type: ignore[arg-type]
+                    col(KnowledgeIntegration.created_by_user_id) == user_id,
+                    col(KnowledgeIntegration.integration_type) == integration_type,
+                    col(KnowledgeIntegration.integration_email) == integration_email,
                 )
-                .order_by(desc(KnowledgeIntegration.updated_at))  # type: ignore[arg-type]
+                .order_by(col(KnowledgeIntegration.updated_at).desc())
                 .limit(1)
             )
             reactivatable = (await org_session.execute(reactivate_stmt)).scalars().first()
@@ -151,17 +225,15 @@ class CopilotCallbackService:
                     integration_email=integration_email,
                 )
 
-        created_by_admin = user.user_role == UserAppRole.ADMIN
-        integration_scope = (
-            IntegrationScope.ORGANIZATION if created_by_admin else IntegrationScope.USER
-        )
+        # Scope comes from integration metadata, not the user's role — personal
+        # integrations (calendar, email) stay USER-scoped even if an admin connects
+        metadata = INTEGRATION_METADATA[integration_type]
         return await self._create_new_integration(
             organisation_id=organisation_id,
             integration_type=integration_type,
             connection_id=connection_id,
             user_id=user_id,
-            created_by_admin=created_by_admin,
-            integration_scope=integration_scope,
+            integration_scope=metadata.default_scope,
             provider_key=provider.provider_key,
             tokens=tokens,
             integration_email=integration_email,
@@ -178,6 +250,15 @@ class CopilotCallbackService:
         tokens: dict[str, Any],
         integration_email: str,
     ) -> dict[str, Any]:
+        """Reactivate a previously disconnected integration with fresh tokens.
+
+        Reuses the existing DB record to preserve integration_id continuity —
+        any deal associations or sync history linked to this integration remain intact.
+        """
+        # Update name to current metadata — old integrations may have stale names
+        # from the deprecated Nango flow
+        metadata = INTEGRATION_METADATA[integration_type]
+        integration.name = metadata.name
         integration.connection_id = connection_id
         integration.is_active = True
         integration.last_sync_error = None
@@ -214,21 +295,19 @@ class CopilotCallbackService:
         integration_type: IntegrationType,
         connection_id: str,
         user_id: UUID,
-        created_by_admin: bool,
         integration_scope: IntegrationScope,
         provider_key: str,
         tokens: dict[str, Any],
         integration_email: str,
     ) -> dict[str, Any]:
+        metadata = INTEGRATION_METADATA[integration_type]
         async for org_session in acquire_org_async_session(organisation_id):
-            type_key = str(self._enum_value(integration_type))
             integration = KnowledgeIntegration(
                 organisation_id=organisation_id,
                 integration_type=integration_type,
-                name=f"{type_key.replace('_', ' ').title()} Custom Integration",
+                name=metadata.name,
                 connection_id=connection_id,
                 created_by_user_id=user_id,
-                created_by_admin=created_by_admin,
                 integration_scope=integration_scope,
                 integration_email=integration_email,
                 connection_metadata={},
@@ -246,6 +325,7 @@ class CopilotCallbackService:
             await org_session.commit()
             await org_session.refresh(integration)
 
+            type_key = str(self._enum_value(integration_type))
             await self._save_connection_mapping(
                 connection_id,
                 integration,
@@ -258,17 +338,6 @@ class CopilotCallbackService:
             return self._build_success_response(integration, reactivated=False)
 
         raise RuntimeError("Failed to acquire organisation session")
-
-    @staticmethod
-    async def _get_integration_by_connection_id(
-        session: Any,
-        connection_id: str,
-    ) -> KnowledgeIntegration | None:
-        stmt = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.connection_id == connection_id  # type: ignore[arg-type]
-        )
-        result = await session.execute(stmt)
-        return result.scalars().first()
 
     def _trigger_initial_sync(self, integration: KnowledgeIntegration) -> None:
         """Dispatch initial sync task so data flows immediately after connect.
@@ -305,7 +374,6 @@ class CopilotCallbackService:
             "integration_type": self._enum_value(integration.integration_type),
             "connection_id": str(integration.connection_id),
             "integration_scope": self._enum_value(integration.integration_scope),
-            "created_by_admin": integration.created_by_admin,
             "integration_email": integration.integration_email,
             "reactivated": reactivated,
         }
@@ -316,6 +384,12 @@ class CopilotCallbackService:
         integration: KnowledgeIntegration,
         provider_config_key: str,
     ) -> None:
+        """Persist connection→integration mapping in the master (public) schema.
+
+        This cross-schema mapping allows the token refresh worker to look up
+        which org and integration a connection belongs to without scanning
+        every tenant schema.
+        """
         connection_uuid = UUID(connection_id)
 
         async for master_session in acquire_master_async_session():

@@ -43,7 +43,6 @@ class FakeKnowledgeIntegration:
         connection_id: str | None = "conn_123",
         is_active: bool = True,
         created_by_user_id: UUID | None = None,
-        created_by_admin: bool = False,
         integration_email: str | None = "test@example.com",
         integration_scope: IntegrationScope = IntegrationScope.ORGANIZATION,
         sync_frequency: str = "daily",
@@ -63,7 +62,6 @@ class FakeKnowledgeIntegration:
         self.connection_id = connection_id
         self.is_active = is_active
         self.created_by_user_id = created_by_user_id or uuid4()
-        self.created_by_admin = created_by_admin
         self.integration_email = integration_email
         self.integration_scope = integration_scope
         self.sync_frequency = sync_frequency

@@ -29,7 +29,7 @@ from src.api.schemas.integrations import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.constant import IntegrationErrors
-from src.infra.config.integrations_metadata import get_all_integration_metadata
+from src.infra.config.integrations_metadata import AvailabilityStatus, get_all_integration_metadata
 from src.infra.utils.logger import get_logger
 from src.service.integrations import IntegrationService
 from src.workers.integrations_worker.client import send_integrations_task_async
@@ -64,8 +64,11 @@ async def list_available_integrations(
     along with all active connected instances for the organization.
     """
     try:
-        # Get all active integrations for the organization
-        connected_integrations = await service.list_all_active_integrations()
+        # Pass user_id so the query returns ORG-scoped integrations (visible to all)
+        # plus only this user's USER-scoped integrations (personal connections)
+        connected_integrations = await service.list_all_active_integrations(
+            user_id=user_ids.user_id,
+        )
 
         # Group connected integrations by type
         connected_by_type = {}
@@ -79,8 +82,14 @@ async def list_available_integrations(
         integrations = []
         total_connected = len(connected_integrations)
 
+        # TODO(nikhil, 2026-Q2): Include a `can_manage` flag per integration so the
+        # frontend can show read-only cards for org integrations when the user is not
+        # an admin, and editable cards for the user's own integrations
         for int_type, metadata in get_all_integration_metadata().items():
+            # Skip internal and deprecated integrations from the available list
             if int_type == IntegrationType.INTERNAL_CRM:
+                continue
+            if metadata.availability_status == AvailabilityStatus.DEPRECATED:
                 continue
 
             # Get connected instances for this type

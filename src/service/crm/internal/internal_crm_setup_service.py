@@ -153,7 +153,6 @@ class InternalCRMSetupService:
         integration = KnowledgeIntegration(
             organisation_id=self.organisation_id,
             created_by_user_id=self.user_id,
-            created_by_admin=False,
             integration_type=IntegrationType.INTERNAL_CRM,
             integration_scope=IntegrationScope.ORGANIZATION,
             name="Copilot CRM",
