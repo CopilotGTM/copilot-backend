@@ -26,7 +26,11 @@ class CopilotOAuthIntegrationUnavailableError(Exception):
 
 
 class CopilotOAuthService:
-    """Service for custom OAuth initiation without Nango."""
+    """Generate OAuth authorization URLs and manage state tokens for integration connections.
+
+    Called by copilot_oauth_routes.py to initiate the OAuth flow. The callback side
+    is handled by CopilotCallbackService.
+    """
 
     _ALLOWED_AVAILABILITY_STATUSES = {AvailabilityStatus.AVAILABLE, AvailabilityStatus.BETA}
 
@@ -45,13 +49,24 @@ class CopilotOAuthService:
 
     @staticmethod
     def generate_oauth_state(user_ids: UserIDs, integration_type: IntegrationType) -> str:
-        """
-        Generates a signed JWT containing minimal user context for the OAuth `state` parameter.
+        """Generate a signed JWT embedding user/org context into the OAuth state parameter.
+
+        The provider returns this token unchanged in the callback, allowing the callback
+        service to identify the user and org without requiring an authenticated session.
+        The jti also serves as an idempotency key for the callback.
+
+        Args:
+            user_ids: Authenticated user context.
+            integration_type: The provider being connected.
+
+        Returns:
+            HS256-signed JWT string (expires in 15 minutes).
         """
         payload = {
             "sub": str(user_ids.user_id),
             "org": str(user_ids.organisation_id),
             "type": integration_type.value,
+            # jti doubles as idempotency key — callback uses it to detect duplicate processing
             "jti": str(uuid4()),
             "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=15),
             "iat": datetime.datetime.now(datetime.UTC),
@@ -65,8 +80,11 @@ class CopilotOAuthService:
 
     @staticmethod
     def decode_oauth_state(state_token: str) -> dict[str, Any]:
-        """
-        Decodes and verifies returning the payload. Raises exceptions if invalid or expired.
+        """Decode and verify the OAuth state JWT from the provider callback.
+
+        Raises:
+            jwt.ExpiredSignatureError: If the 15-minute window has elapsed.
+            jwt.InvalidTokenError: If the token is malformed or signature fails.
         """
         decoded = jwt.decode(
             state_token,
@@ -83,8 +101,22 @@ class CopilotOAuthService:
         user_ids: UserIDs,
         integration_type: IntegrationType,
     ) -> str:
-        """
-        Create the authorization URL and state token.
+        """Build the provider's OAuth authorization URL with an embedded state JWT.
+
+        Called by the /authorize endpoint. The returned URL is opened in a popup
+        by the frontend. After user consent, the provider redirects back to
+        /callback with the state token and an authorization code.
+
+        Args:
+            user_ids: Authenticated user context (user_id + organisation_id).
+            integration_type: The provider to connect (e.g. OUTLOOK_CALENDAR).
+
+        Returns:
+            Full OAuth authorization URL to redirect the user to.
+
+        Raises:
+            CopilotOAuthIntegrationUnavailableError: If integration is not AVAILABLE/BETA.
+            ValueError: If integration_type has no metadata or provider.
         """
         self._ensure_integration_available(integration_type)
         provider = ProviderFactory.get_provider(integration_type)

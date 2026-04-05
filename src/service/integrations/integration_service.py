@@ -171,25 +171,43 @@ class IntegrationService:
             )
         return True
 
-    async def list_integration_channels(
-        self, integration_id: UUID, deal_id: UUID | None = None
+    async def list_user_channels_by_type(
+        self, integration_type: IntegrationType, deal_id: UUID | None = None
     ) -> list[dict[str, Any]]:
-        """
-        List available channels for a specific integration from the database.
+        """List channels visible to the current user for a given integration type.
+
+        Resolves the user's active integrations for the given type and returns
+        all channels across them. The frontend never needs to know integration_id.
 
         Args:
-            integration_id: UUID of the integration
-            deal_id: Optional UUID of the deal to filter out already linked channels
+            integration_type: The provider type (e.g. TEAMS, SLACK).
+            deal_id: If provided, excludes channels already linked to this deal.
 
         Returns:
-            List of channel dictionaries
-        """
-        # Verify integration exists
-        integration = await self.get_integration(integration_id)
-        if not integration:
-            raise ValueError("Integration not found")
+            List of channel dictionaries with member info.
 
-        # Query MessagingChannel table via integration state for visibility
+        Raises:
+            ValueError: If the user has no active integration of this type.
+        """
+        # Find the user's active integrations for this type
+        user_integrations_stmt = select(KnowledgeIntegration).where(
+            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
+            col(KnowledgeIntegration.created_by_user_id) == self.user_ids.user_id,
+            col(KnowledgeIntegration.integration_type) == integration_type,
+            cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
+        )
+        result = await self.db.execute(user_integrations_stmt)
+        user_integrations = list(result.scalars().all())
+
+        if not user_integrations:
+            raise ValueError(
+                f"No active {integration_type.value} integration found. "
+                "Please connect your account first."
+            )
+
+        integration_ids = [i.integration_id for i in user_integrations]
+
+        # Query channels across all the user's integrations for this type
         stmt = (
             select(MessagingChannel)
             .join(
@@ -198,7 +216,7 @@ class IntegrationService:
                 == col(MessagingChannel.channel_id),
             )
             .where(
-                col(MessagingChannelIntegrationState.integration_id) == integration_id,
+                col(MessagingChannelIntegrationState.integration_id).in_(integration_ids),
                 col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(MessagingChannel.is_archived) == "false",
             )
@@ -293,16 +311,20 @@ class IntegrationService:
         return channels
 
     async def get_deal_linked_channels(self, deal_id: UUID) -> list[dict]:
+        """Get all channels linked to a specific deal.
+
+        Returns channels regardless of which user connected the integration —
+        all deal participants should see linked channels.
         """
-        Get all channels linked to a specific deal.
-        """
+        # Join through MessagingDealLink → MessagingChannel, and use the
+        # deal link's integration_id to resolve the integration name/type
         stmt = (
             select(
                 col(MessagingChannel.channel_id),
                 col(MessagingChannel.external_channel_id),
                 col(MessagingChannel.channel_name),
                 col(MessagingChannel.channel_type),
-                col(MessagingChannel.integration_id),
+                col(MessagingDealLink.integration_id),
                 col(KnowledgeIntegration.name).label("integration_name"),
                 col(KnowledgeIntegration.integration_type),
                 col(MessagingChannel.channel_metadata),
@@ -313,7 +335,7 @@ class IntegrationService:
             )
             .join(
                 KnowledgeIntegration,
-                col(KnowledgeIntegration.integration_id) == col(MessagingChannel.integration_id),
+                col(KnowledgeIntegration.integration_id) == col(MessagingDealLink.integration_id),
             )
             .where(col(MessagingDealLink.deal_id) == deal_id)
         )
@@ -323,7 +345,6 @@ class IntegrationService:
 
         channels = []
         for row in rows:
-            # Extract parent name from metadata if available (for Teams)
             parent_name = None
             if row.channel_metadata:
                 parent_name = row.channel_metadata.get("team_name")
@@ -336,7 +357,7 @@ class IntegrationService:
                     "type": row.channel_type,
                     "integration_id": row.integration_id,
                     "integration_name": row.integration_name,
-                    "integration_type": row.integration_type,  # Helper for grouping
+                    "integration_type": row.integration_type,
                     "parent_name": parent_name,
                 }
             )
@@ -388,43 +409,52 @@ class IntegrationService:
         deal_id: UUID,
         channel_data: Any,  # ChannelLinkRequest
     ) -> dict:
-        """
-        Link a messaging channel to a deal.
+        """Link a messaging channel to a deal.
+
+        Resolves the channel and its integration from the DB using the
+        external channel ID — the frontend doesn't need to send integration_id.
 
         Args:
-            deal_id: UUID of the deal
-            channel_data: ChannelLinkRequest object containing channel details
+            deal_id: UUID of the deal.
+            channel_data: ChannelLinkRequest with channel id, name, type.
 
         Returns:
-            Dictionary with linked channel details
+            Dictionary with linked channel details.
         """
-        integration_id = channel_data.integration_id
         external_channel_id = channel_data.id
 
-        # 1. Verify integration exists
-        integration = await self.get_integration(integration_id)
-        if not integration:
-            raise ValueError(f"Integration {integration_id} not found")
-
-        # 2. Find MessagingChannel (must already exist from Teams sync)
-        stmt = select(MessagingChannel).where(
-            col(MessagingChannel.integration_id) == integration_id,
-            col(MessagingChannel.external_channel_id) == external_channel_id,
+        # Find the channel and its integration_id via the integration state table
+        stmt = (
+            select(MessagingChannel, col(MessagingChannelIntegrationState.integration_id))
+            .join(
+                MessagingChannelIntegrationState,
+                col(MessagingChannelIntegrationState.channel_id)
+                == col(MessagingChannel.channel_id),
+            )
+            .where(
+                col(MessagingChannel.organisation_id) == self.user_ids.organisation_id,
+                col(MessagingChannel.external_channel_id) == external_channel_id,
+                col(MessagingChannelIntegrationState.is_deleted).is_(False),
+            )
+            .limit(1)
         )
         result = await self.db.execute(stmt)
-        channel = result.scalars().first()
+        row = result.first()
 
-        if not channel:
+        if not row:
             raise ValueError(
                 f"Channel {external_channel_id} not found. "
-                "Channels must be synced from Teams before linking to deals."
+                "Channels must be synced before linking to deals."
             )
 
-        # 3. Mark channel as monitored (will be synced for messages)
+        channel = row[0]
+        integration_id = row[1]
+
+        # Mark channel as monitored (will be synced for messages)
         if channel.is_monitored != "true":
             channel.is_monitored = "true"
 
-        # 4. Create Link if not exists
+        # Create link if not exists
         link_stmt = select(MessagingDealLink).where(
             col(MessagingDealLink.deal_id) == deal_id,
             col(MessagingDealLink.channel_id) == channel.channel_id,
@@ -433,6 +463,11 @@ class IntegrationService:
         link = link_result.scalars().first()
 
         if not link:
+            channel_type_val = (
+                channel.channel_type.value
+                if hasattr(channel.channel_type, "value")
+                else channel.channel_type
+            )
             link = MessagingDealLink(
                 organisation_id=self.user_ids.organisation_id,
                 integration_id=integration_id,
@@ -446,12 +481,7 @@ class IntegrationService:
                 link_metadata={
                     "source": "deal_channel_link_api",
                     "channel_name": channel.channel_name,
-                    "channel_type": channel.channel_type.value
-                    if hasattr(channel.channel_type, "value")
-                    else channel.channel_type,
-                    "integration_type": integration.integration_type.value
-                    if hasattr(integration.integration_type, "value")
-                    else integration.integration_type,
+                    "channel_type": channel_type_val,
                 },
             )
             self.db.add(link)
@@ -459,13 +489,16 @@ class IntegrationService:
         # Commit both channel update (is_monitored) and link creation
         await self.db.commit()
 
+        channel_type_val = (
+            channel.channel_type.value
+            if hasattr(channel.channel_type, "value")
+            else channel.channel_type
+        )
         return {
             "deal_id": str(deal_id),
             "channel_id": str(channel.channel_id),
             "external_channel_id": channel.external_channel_id,
             "name": channel.channel_name,
-            "type": channel.channel_type.value
-            if hasattr(channel.channel_type, "value")
-            else channel.channel_type,
+            "type": channel_type_val,
             "integration_id": str(integration_id),
         }

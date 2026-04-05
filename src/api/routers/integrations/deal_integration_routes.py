@@ -30,8 +30,11 @@ from src.api.schemas.integrations import (
     LinkedChannel,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.infra.config.integrations_metadata import get_all_integration_metadata
+from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.infra.config.integrations_metadata import (
+    AvailabilityStatus,
+    get_all_integration_metadata,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations import IntegrationService
 
@@ -94,40 +97,38 @@ async def list_available_deal_integrations(
                 connected_by_type[int_type] = []
             connected_by_type[int_type].append(integration)
 
-        # Build response with selected integrations (Slack, Teams)
+        # Only messaging integrations are relevant in deal context
+        deal_integration_types = [IntegrationType.TEAMS, IntegrationType.SLACK]
+        all_metadata = get_all_integration_metadata()
+
         integrations = []
         total_connected = len(connected_integrations)
 
-        # Only include Teams for now
-        target_integrations = ["teams"]
-        all_metadata = get_all_integration_metadata()
+        for int_type in deal_integration_types:
+            metadata = all_metadata.get(int_type)
+            if not metadata or metadata.availability_status == AvailabilityStatus.DEPRECATED:
+                continue
 
-        for int_type in target_integrations:
-            if int_type in all_metadata:
-                metadata = all_metadata[int_type]
-                # Get connected instances for this type
-                connected_instances = connected_by_type.get(int_type, [])
-                is_connected = len(connected_instances) > 0
+            connected_instances = connected_by_type.get(int_type, [])
+            is_connected = len(connected_instances) > 0
+            type_linked_channels = linked_channels_by_type.get(int_type, [])
 
-                # Get linked channels for this type
-                type_linked_channels = linked_channels_by_type.get(int_type, [])
-
-                integrations.append(
-                    AvailableIntegration(
-                        integration_type=int_type,
-                        name=metadata.name,
-                        description=metadata.description,
-                        logo_url=metadata.logo_url,
-                        category=metadata.category,
-                        category_name=metadata.category_name,
-                        availability_status=metadata.availability_status,
-                        is_connected=is_connected,
-                        connected_integrations=[
-                            IntegrationResponse.model_validate(conn) for conn in connected_instances
-                        ],
-                        linked_channels=[LinkedChannel(**ch) for ch in type_linked_channels],
-                    )
+            integrations.append(
+                AvailableIntegration(
+                    integration_type=int_type,
+                    name=metadata.name,
+                    description=metadata.description,
+                    logo_url=metadata.logo_url,
+                    category=metadata.category,
+                    category_name=metadata.category_name,
+                    availability_status=metadata.availability_status,
+                    is_connected=is_connected,
+                    connected_integrations=[
+                        IntegrationResponse.model_validate(conn) for conn in connected_instances
+                    ],
+                    linked_channels=[LinkedChannel(**ch) for ch in type_linked_channels],
                 )
+            )
 
         response_data = AvailableIntegrationsResponse(
             integrations=integrations,
@@ -250,30 +251,25 @@ async def remove_channel_from_deal(
 
 
 @router.get(
-    "/deals/{integration_id}/channels",
+    "/deals/{deal_id}/channels/{integration_type}",
     response_model=GenericResponse[ChannelListResponse],
-    summary="List channels for an integration",
-    description="Fetch available channels/teams for a specific integration (e.g., Teams, Slack).",
+    summary="List channels for the current user by integration type",
+    description="Fetch available channels for the user's connected integrations of the given type.",
 )
-async def list_integration_channels(
-    integration_id: UUID,
+async def list_user_channels(
+    deal_id: UUID,
+    integration_type: IntegrationType,
     response: FastAPIResponse,
-    deal_id: UUID | None = None,
     service: IntegrationService = Depends(get_integration_service),
 ) -> GenericResponse[ChannelListResponse]:
-    """
-    List channels for a specific integration.
+    """List channels visible to the current user for a given integration type.
 
-    Args:
-        integration_id: UUID of the integration
-        deal_id: Optional UUID of the deal to filter out already linked channels
-        service: IntegrationService instance
-
-    Returns:
-        List of channels
+    The backend resolves which integrations the user has connected — the
+    frontend only needs to specify the provider type (teams, slack, etc.).
+    Channels already linked to this deal are excluded.
     """
     try:
-        channels = await service.list_integration_channels(integration_id, deal_id)
+        channels = await service.list_user_channels_by_type(integration_type, deal_id)
 
         response_data = ChannelListResponse(
             channels=channels,
@@ -288,7 +284,10 @@ async def list_integration_channels(
         return Response.error_response(message=str(e), status_code=404, response=response)
     except Exception as e:
         logger.error(
-            f"Failed to list channels for integration {integration_id}: {str(e)}",
+            "Failed to list channels for type %s deal %s: %s",
+            integration_type,
+            deal_id,
+            str(e),
             exc_info=True,
         )
         return Response.internal_server_error_response(

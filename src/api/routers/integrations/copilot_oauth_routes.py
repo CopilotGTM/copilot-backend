@@ -14,8 +14,6 @@ from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import OAuthInitiateRequest
 from src.api.utils.http_response import Response
-from src.domain.models.master_tables import User
-from src.infra.auth.user_auth import user_auth
 from src.infra.config.configs import app_config
 from src.infra.config.constant import IntegrationErrors
 from src.infra.utils.logger import get_logger
@@ -33,6 +31,8 @@ from src.service.integrations.copilot_oauth_service import (
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/copilot-oauth", tags=["copilot-integrations-oauth"])
+
+# Frontend route that receives the OAuth result and signals the parent window to close the popup
 _POPUP_COMPLETE_PATH = "/integrations/oauth/popup-complete"
 
 
@@ -49,6 +49,11 @@ def _build_popup_completion_redirect(
     *,
     status_code: int = 303,
 ) -> RedirectResponse:
+    """Redirect the OAuth popup to the frontend completion page with result params.
+
+    Uses 303 (See Other) to force the browser to GET the frontend URL regardless
+    of the original callback's HTTP method.
+    """
     app_url = (app_config.APP_URL or "").rstrip("/")
     if not app_url:
         raise RuntimeError("APP_URL must be configured for popup completion redirects")
@@ -67,12 +72,11 @@ def _build_popup_completion_redirect(
 async def initiate_custom_oauth_flow(
     request: OAuthInitiateRequest,
     response: FastAPIResponse,
-    user: User = Depends(user_auth),
+    user_ids: UserIDs = Depends(get_current_user),
     oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     try:
-        user_ids = UserIDs(user_id=user.user_id, organisation_id=user.organisation_id)
         auth_url = await oauth_service.initiate_oauth_flow(
             user_ids=user_ids,
             integration_type=request.integration_type,
@@ -93,8 +97,8 @@ async def initiate_custom_oauth_flow(
     except ValueError as e:
         logger.warning(
             "Failed to initiate custom OAuth for user %s org %s: %s",
-            user.user_id,
-            user.organisation_id,
+            user_ids.user_id,
+            user_ids.organisation_id,
             str(e),
         )
         return Response.bad_request_error_response(message=str(e), response=response)
@@ -117,6 +121,7 @@ async def handle_oauth_callback(
     state: str,
     callback_service: CopilotCallbackService = Depends(get_copilot_callback_service),
 ) -> RedirectResponse:
+    """Handle the provider's OAuth redirect — unauthenticated, trust comes from the signed JWT state."""
     try:
         result = await callback_service.handle_oauth_callback(code, state)
         return _build_popup_completion_redirect(
@@ -175,6 +180,15 @@ async def disconnect_integration(
         if not integration:
             return Response.not_found_error_response(
                 message=IntegrationErrors.INTEGRATION_NOT_FOUND, response=response
+            )
+
+        # Only the user who created the integration can disconnect it
+        # TODO(nikhil, 2026-Q2): Allow admins to disconnect any user's integration
+        # by checking user role — admins bypass this check, members cannot
+        if integration.created_by_user_id != service.user_ids.user_id:
+            return Response.forbidden_error_response(
+                message="You can only disconnect integrations you created.",
+                response=response,
             )
 
         if integration.is_active is False:

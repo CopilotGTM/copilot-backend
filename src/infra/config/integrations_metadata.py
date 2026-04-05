@@ -156,7 +156,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://api.nango.dev/images/template-logos/slack.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
-        availability_status=AvailabilityStatus.AVAILABLE,
+        availability_status=AvailabilityStatus.COMING_SOON,
         oauth_scopes=[
             "channels:read",
             "channels:history",
@@ -165,10 +165,10 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         ],
         documentation_url="https://api.slack.com/docs",
         default_sync_frequency="hourly",
-        # Access Control
-        default_scope=IntegrationScope.ORGANIZATION,
-        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
-        allow_multiple_connections=False,
+        # Each user connects their own Slack account
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.TEAMS: IntegrationMetadata(
         name="Microsoft Teams",
@@ -185,10 +185,10 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         ],
         documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/teams-api-overview",
         default_sync_frequency="hourly",
-        # Access Control
-        default_scope=IntegrationScope.ORGANIZATION,
-        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
-        allow_multiple_connections=False,
+        # Each user connects their own Teams account
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.GMAIL: IntegrationMetadata(
         name="Gmail",
@@ -310,7 +310,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://api.nango.dev/images/template-logos/gong-oauth.svg",
         category="sales_enablement",
         category_name=IntegrationCategory.SALES_ENABLEMENT,
-        availability_status=AvailabilityStatus.BETA,
+        availability_status=AvailabilityStatus.COMING_SOON,
         documentation_url="https://docs.gong.io/docs",
         default_sync_frequency="daily",
         # Access Control - Conversation intelligence data is organisation-scoped

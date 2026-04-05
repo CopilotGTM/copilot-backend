@@ -50,7 +50,6 @@ def _make_integration(**overrides: object) -> KnowledgeIntegration:
     defaults: dict[str, object] = {
         "organisation_id": uuid4(),
         "created_by_user_id": uuid4(),
-        "created_by_admin": False,
         "integration_scope": IntegrationScope.ORGANIZATION,
         "integration_type": IntegrationType.GMAIL,
         "name": "Gmail Custom Integration",
