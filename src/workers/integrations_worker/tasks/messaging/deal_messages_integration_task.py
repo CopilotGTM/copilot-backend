@@ -122,9 +122,8 @@ def sync_deal_messages_integration_task(
         2. Service manages its own sessions for sync operations
         """
         logger.info(
-            "Starting manual deal messages sync (Tier 3): org=%s integration=%s",
-            org_id,
-            int_id,
+            "Manual deal messages sync starting (Tier 3)",
+            extra={"organisation_id": organisation_id, "integration_id": integration_id},
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -209,11 +208,13 @@ def sync_deal_messages_integration_task(
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Manual deal messages sync complete: org=%s integration=%s channels=%d messages=%d",
-            org_id,
-            int_id,
-            sync_result.channels_synced,
-            sync_result.messages_synced,
+            "Manual deal messages sync complete",
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "channels_synced": sync_result.channels_synced,
+                "messages_synced": sync_result.messages_synced,
+            },
         )
 
         return {
@@ -236,26 +237,32 @@ def sync_deal_messages_integration_task(
 
         if result.get("status") in ("success", "completed"):
             logger.info(
-                "Manual deal messages sync complete: org=%s integration=%s",
-                organisation_id,
-                integration_id,
+                "Manual deal messages sync succeeded",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                },
             )
         else:
             logger.warning(
-                "Manual deal messages sync failed: org=%s integration=%s error=%s",
-                organisation_id,
-                integration_id,
-                result.get("error"),
+                "Manual deal messages sync failed",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "error": result.get("error"),
+                },
             )
 
         return result
 
     except SoftTimeLimitExceeded:
         logger.error(
-            "Manual deal messages sync timed out: org=%s integration=%s after %ds",
-            organisation_id,
-            integration_id,
-            _L["soft"],
+            "Manual deal messages sync timed out",
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "soft_limit_seconds": _L["soft"],
+            },
         )
         try:
             run_async(
@@ -266,7 +273,10 @@ def sync_deal_messages_integration_task(
                 )
             )
         except Exception:
-            logger.warning("Failed to record timeout failure for %s", integration_id)
+            logger.warning(
+                "Failed to record timeout failure",
+                extra={"integration_id": integration_id},
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -277,21 +287,25 @@ def sync_deal_messages_integration_task(
         }
     except Exception as e:
         logger.error(
-            "Manual deal messages sync exception: org=%s integration=%s error=%s",
-            organisation_id,
-            integration_id,
-            str(e),
+            "Manual deal messages sync exception",
             exc_info=True,
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "error": str(e),
+            },
         )
 
         # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying manual deal messages sync: org=%s integration=%s attempt=%d/%d",
-                organisation_id,
-                integration_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying manual deal messages sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

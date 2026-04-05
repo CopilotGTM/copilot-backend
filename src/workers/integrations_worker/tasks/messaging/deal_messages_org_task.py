@@ -102,7 +102,10 @@ def sync_deal_messages_org_task(
         - Service manages its own sessions internally
         - No session held during API calls
         """
-        logger.info("Starting deal messages sync for organization (Tier 2): %s", org_id)
+        logger.info(
+            "Deal messages sync starting for org (Tier 2)",
+            extra={"organisation_id": organisation_id},
+        )
 
         # Service manages its own sessions - no external session needed
         # Pass None for session since we'll use sync_all_deal_channels_fresh
@@ -123,11 +126,13 @@ def sync_deal_messages_org_task(
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Deal messages sync complete for org %s: channels_synced=%d channels_failed=%d messages=%d",
-            org_id,
-            result.channels_synced,
-            result.channels_failed,
-            result.messages_synced,
+            "Deal messages sync complete for org",
+            extra={
+                "organisation_id": organisation_id,
+                "channels_synced": result.channels_synced,
+                "channels_failed": result.channels_failed,
+                "messages_synced": result.messages_synced,
+            },
         )
 
         return {
@@ -147,9 +152,8 @@ def sync_deal_messages_org_task(
         return run_async(_sync_org())
     except SoftTimeLimitExceeded:
         logger.error(
-            "Deal messages org sync timed out: org=%s after %ds",
-            organisation_id,
-            _L["soft"],
+            "Deal messages org sync timed out",
+            extra={"organisation_id": organisation_id, "soft_limit_seconds": _L["soft"]},
         )
         return {
             "status": "timed_out",
@@ -160,21 +164,22 @@ def sync_deal_messages_org_task(
         }
     except Exception as e:
         logger.error(
-            "Deal messages org sync failed: org=%s error=%s",
-            organisation_id,
-            str(e),
+            "Deal messages org sync failed",
             exc_info=True,
+            extra={"organisation_id": organisation_id, "error": str(e)},
         )
 
         # Check if we should retry with exponential backoff
         if self.request.retries < self.max_retries:
             countdown = 60 * (2**self.request.retries)
             logger.info(
-                "Retrying deal messages org sync: org=%s attempt=%d/%d countdown=%ds",
-                organisation_id,
-                self.request.retries + 1,
-                self.max_retries,
-                countdown,
+                "Retrying deal messages org sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                    "countdown_seconds": countdown,
+                },
             )
             raise self.retry(exc=e, countdown=countdown) from e
 

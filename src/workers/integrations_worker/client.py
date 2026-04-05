@@ -80,12 +80,12 @@ def _create_integrations_client() -> Celery:
         worker_hijack_root_logger=False,
     )
 
-    logger.info(
-        "Integrations Celery client initialized (broker=%s)",
+    masked_broker = (
         config.broker_url.replace(config.redis_password, "****")
         if config.redis_password
-        else config.broker_url,
+        else config.broker_url
     )
+    logger.info("Integrations Celery client initialized", extra={"broker": masked_broker})
 
     return client
 

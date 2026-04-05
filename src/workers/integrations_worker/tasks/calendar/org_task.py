@@ -117,7 +117,10 @@ def sync_calendar_org_task(
     current_integration_id: list[UUID | None] = [None]
 
     async def _sync_org() -> dict[str, Any]:
-        logger.info("Starting calendar sync for organization (Tier 2): %s", org_id)
+        logger.info(
+            "Calendar sync starting for org (Tier 2)",
+            extra={"organisation_id": organisation_id},
+        )
 
         # Session released after this block — extract into plain dataclass so
         # the connection returns to the pool before slow provider API calls.
@@ -137,7 +140,10 @@ def sync_calendar_org_task(
             integrations = result.scalars().all()
 
             if not integrations:
-                logger.info("No active calendar integrations for org: %s", org_id)
+                logger.info(
+                    "No active calendar integrations for org",
+                    extra={"organisation_id": organisation_id},
+                )
                 return {
                     "status": "completed",
                     "organisation_id": organisation_id,
@@ -153,9 +159,11 @@ def sync_calendar_org_task(
                 }
 
             logger.info(
-                "Found %d active calendar integration(s) for org: %s",
-                len(integrations),
-                org_id,
+                "Calendar sync found integrations for org",
+                extra={
+                    "organisation_id": organisation_id,
+                    "total_integrations": len(integrations),
+                },
             )
 
             for integration_row in integrations:
@@ -164,8 +172,8 @@ def sync_calendar_org_task(
                 # strings which pass IS NOT NULL but are unusable as connection IDs.
                 if not connection_id:
                     logger.warning(
-                        "Skipping integration with no connection_id: %s",
-                        integration_row.integration_id,
+                        "Skipping integration with no connection_id",
+                        extra={"integration_id": str(integration_row.integration_id)},
                     )
                     continue
 
@@ -224,10 +232,12 @@ def sync_calendar_org_task(
         for fetch_data in integration_fetch_list:
             current_integration_id[0] = fetch_data.integration_id
             logger.info(
-                "Syncing calendar integration: org=%s integration=%s type=%s",
-                org_id,
-                fetch_data.integration_id,
-                fetch_data.integration_type_value,
+                "Syncing calendar integration",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": str(fetch_data.integration_id),
+                    "integration_type": fetch_data.integration_type_value,
+                },
             )
 
             try:
@@ -259,15 +269,20 @@ def sync_calendar_org_task(
                     new_calendar_delta_link = outlook_fetch_result.delta_link
                 else:
                     logger.warning(
-                        "Unknown calendar provider: %s",
-                        fetch_data.integration_type,
+                        "Unknown calendar provider",
+                        extra={
+                            "integration_id": str(fetch_data.integration_id),
+                            "integration_type": str(fetch_data.integration_type),
+                        },
                     )
                     continue
 
                 logger.info(
-                    "Fetched %d events for integration %s",
-                    len(events),
-                    fetch_data.integration_id,
+                    "Calendar events fetched",
+                    extra={
+                        "integration_id": str(fetch_data.integration_id),
+                        "events_fetched": len(events),
+                    },
                 )
 
                 # Fresh session for persist — re-query integration because
@@ -281,8 +296,8 @@ def sync_calendar_org_task(
 
                     if integration_db is None:
                         logger.warning(
-                            "Integration no longer exists: %s",
-                            fetch_data.integration_id,
+                            "Integration no longer exists",
+                            extra={"integration_id": str(fetch_data.integration_id)},
                         )
                         failed += 1
                         integration_results.append(
@@ -313,9 +328,11 @@ def sync_calendar_org_task(
                             new_calendar_delta_link,
                         )
                         logger.info(
-                            "Calendar cursor saved (integration=%s provider=%s)",
-                            fetch_data.integration_id,
-                            fetch_data.integration_type_value,
+                            "Calendar cursor saved",
+                            extra={
+                                "integration_id": str(fetch_data.integration_id),
+                                "integration_type": fetch_data.integration_type_value,
+                            },
                         )
                     integration_db.connection_metadata = updated_metadata
 
@@ -343,13 +360,14 @@ def sync_calendar_org_task(
             except Exception as e:
                 failure_type = classify_sync_error(e)
                 logger.error(
-                    "Failed to sync calendar integration: org=%s integration=%s"
-                    " error=%s failure_type=%s",
-                    org_id,
-                    fetch_data.integration_id,
-                    str(e),
-                    failure_type.value,
+                    "Failed to sync calendar integration",
                     exc_info=True,
+                    extra={
+                        "organisation_id": organisation_id,
+                        "integration_id": str(fetch_data.integration_id),
+                        "error": str(e),
+                        "failure_type": failure_type.value,
+                    },
                 )
 
                 await record_sync_failure(
@@ -380,11 +398,13 @@ def sync_calendar_org_task(
             status = "partial"
 
         logger.info(
-            "Calendar sync complete for org %s: successful=%d failed=%d events=%d",
-            org_id,
-            successful,
-            failed,
-            total_events,
+            "Calendar sync complete for org",
+            extra={
+                "organisation_id": organisation_id,
+                "successful": successful,
+                "failed": failed,
+                "total_events_synced": total_events,
+            },
         )
 
         # Trigger deal matching only when new events were persisted — avoids
@@ -395,7 +415,10 @@ def sync_calendar_org_task(
                 args=[organisation_id],
                 queue="deal",
             )
-            logger.info("Dispatched calendar matching task for org %s", org_id)
+            logger.info(
+                "Dispatched calendar matching task for org",
+                extra={"organisation_id": organisation_id},
+            )
 
         return {
             "status": status,
@@ -415,9 +438,8 @@ def sync_calendar_org_task(
         return run_async(_sync_org())
     except SoftTimeLimitExceeded:
         logger.error(
-            "Calendar org sync timed out: org=%s soft_limit=%ds",
-            organisation_id,
-            _L["soft"],
+            "Calendar org sync timed out",
+            extra={"organisation_id": organisation_id, "soft_limit_seconds": _L["soft"]},
         )
         int_id = current_integration_id[0]
         if int_id:
@@ -430,7 +452,10 @@ def sync_calendar_org_task(
                     )
                 )
             except Exception:
-                logger.warning("Failed to record timeout failure for %s", int_id)
+                logger.warning(
+                    "Failed to record timeout failure",
+                    extra={"integration_id": str(int_id)},
+                )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -440,18 +465,19 @@ def sync_calendar_org_task(
         }
     except Exception as e:
         logger.error(
-            "Calendar org sync failed: org=%s error=%s",
-            organisation_id,
-            str(e),
+            "Calendar org sync failed",
             exc_info=True,
+            extra={"organisation_id": organisation_id, "error": str(e)},
         )
 
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying calendar org sync: org=%s attempt=%d/%d",
-                organisation_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying calendar org sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

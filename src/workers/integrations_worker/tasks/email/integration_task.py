@@ -89,9 +89,8 @@ def sync_email_integration_task(
     async def _sync_integration() -> dict[str, Any]:
         """Sync the specific integration."""
         logger.info(
-            "Starting manual email sync (Tier 3): org=%s integration=%s",
-            org_id,
-            int_id,
+            "Manual email sync starting (Tier 3)",
+            extra={"organisation_id": organisation_id, "integration_id": integration_id},
         )
 
         service = EmailDeltaSyncService()
@@ -112,28 +111,34 @@ def sync_email_integration_task(
         # Log based on status
         if result.get("status") == "success":
             logger.info(
-                "Manual email sync complete: org=%s integration=%s folders=%d messages=%d",
-                organisation_id,
-                integration_id,
-                result.get("folders_synced", 0),
-                result.get("messages_synced", 0),
+                "Manual email sync complete",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "folders_synced": result.get("folders_synced", 0),
+                    "messages_synced": result.get("messages_synced", 0),
+                },
             )
         else:
             logger.warning(
-                "Manual email sync failed: org=%s integration=%s error=%s",
-                organisation_id,
-                integration_id,
-                result.get("error"),
+                "Manual email sync failed",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "error": result.get("error"),
+                },
             )
 
         return result
 
     except SoftTimeLimitExceeded:
         logger.error(
-            "Manual email sync timed out after %ds: org=%s integration=%s",
-            _L["soft"],
-            organisation_id,
-            integration_id,
+            "Manual email sync timed out",
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "soft_limit_seconds": _L["soft"],
+            },
         )
         try:
             run_async(
@@ -144,7 +149,10 @@ def sync_email_integration_task(
                 )
             )
         except Exception:
-            logger.warning("Failed to record timeout failure for %s", integration_id)
+            logger.warning(
+                "Failed to record timeout failure",
+                extra={"integration_id": integration_id},
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -155,21 +163,25 @@ def sync_email_integration_task(
         }
     except Exception as e:
         logger.error(
-            "Manual email sync exception: org=%s integration=%s error=%s",
-            organisation_id,
-            integration_id,
-            str(e),
+            "Manual email sync exception",
             exc_info=True,
+            extra={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "error": str(e),
+            },
         )
 
         # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
-                "Retrying manual email sync: org=%s integration=%s attempt=%d/%d",
-                organisation_id,
-                integration_id,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying manual email sync",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=e) from e
 

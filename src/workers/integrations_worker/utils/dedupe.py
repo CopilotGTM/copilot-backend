@@ -16,7 +16,10 @@ def acquire_sync_lock(integration_id: str, data_type: str, ttl_seconds: int = 12
         key = f"sync:lock:{integration_id}:{data_type}"
         return bool(redis.set(key, "1", nx=True, ex=ttl_seconds))
     except Exception as e:
-        logger.warning("Redis lock unavailable: %s", str(e))
+        logger.warning(
+            "Redis lock unavailable, failing open",
+            extra={"integration_id": integration_id, "data_type": data_type, "error": str(e)},
+        )
         # Fail-open to keep sync running
         return True
 
@@ -28,4 +31,7 @@ def release_sync_lock(integration_id: str, data_type: str) -> None:
         key = f"sync:lock:{integration_id}:{data_type}"
         redis.delete(key)
     except Exception as e:
-        logger.warning("Failed to release sync lock: %s", str(e))
+        logger.warning(
+            "Failed to release sync lock",
+            extra={"integration_id": integration_id, "data_type": data_type, "error": str(e)},
+        )
