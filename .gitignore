@@ -56,5 +56,10 @@ charts
 tools/
 scripts/
 
-# Teams app manifest - generated zip packages
+# Teams app manifest - generated zip packages and per-env icon copies
+teams-app-manifest/*.zip
 teams-app-manifest/output/*.zip
+teams-app-manifest/dev/*.png
+teams-app-manifest/local/*.png
+teams-app-manifest/prod/*.png
+teams-app-manifest/uat/*.png
