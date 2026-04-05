@@ -310,10 +310,13 @@ async def enrich_account(
     service: AccountsAccessService = Depends(get_accounts_service),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[EnrichAccountResponse]:
-    """Trigger account enrichment. Currently returns a placeholder response."""
+    """Trigger account enrichment.
+
+    Endpoint exists to reserve the API contract for frontend integration.
+    Company research pipeline implementation is deferred to a future phase.
+    """
     try:
-        # Verify the account exists and belongs to this org before accepting the request.
-        # get_account_detail raises a 404 AccountsAccessServiceError if not found.
+        # Verify org ownership before accepting — prevents probing for account IDs
         await service.get_account_detail(company_id)
         return Response.accepted_response(
             "Enrichment request accepted",

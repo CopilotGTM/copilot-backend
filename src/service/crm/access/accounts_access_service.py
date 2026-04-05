@@ -38,14 +38,19 @@ class AccountsAccessServiceError(Exception):
 
 
 class AccountsAccessService:
-    """Service for accessing CRM accounts (companies) with filtering, pagination, and stats."""
+    """Service for accessing CRM accounts (companies) with filtering, pagination, and stats.
+
+    Contacts are linked to accounts via email domain matching (ILIKE '%@domain'),
+    not an explicit FK. Deals are linked via company_external_id on CRMDeal.
+    All queries enforce multi-tenant isolation via organisation_id.
+    """
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         """Initialize the service with an org-scoped session.
 
         Args:
-            org_session: Async database session scoped to the organisation
-            organisation_id: UUID of the organisation to scope queries
+            org_session: Async database session scoped to the organisation.
+            organisation_id: Immutable security boundary — all queries filter by this.
         """
         self.org_session = org_session
         self.organisation_id = organisation_id

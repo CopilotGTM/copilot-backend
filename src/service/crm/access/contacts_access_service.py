@@ -34,14 +34,19 @@ class ContactsAccessServiceError(Exception):
 
 
 class ContactsAccessService:
-    """Service for accessing and managing CRM contacts with filtering, pagination, and CRUD."""
+    """Service for accessing and managing CRM contacts with filtering, pagination, and CRUD.
+
+    All queries are scoped by organisation_id to enforce multi-tenant data isolation.
+    Contacts are linked to accounts via email domain matching — no explicit FK exists
+    between crm_contacts and crm_companies, so the domain is the join key.
+    """
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         """Initialize the service with an org-scoped session.
 
         Args:
-            org_session: Async database session scoped to the organisation
-            organisation_id: UUID of the organisation to scope queries
+            org_session: Async database session scoped to the organisation.
+            organisation_id: Immutable security boundary — all queries filter by this.
         """
         self.org_session = org_session
         self.organisation_id = organisation_id
@@ -341,10 +346,18 @@ class ContactsAccessService:
         relationship_role: str | None = None,
         actor_user_id: UUID | None = None,
     ) -> dict:
-        """Add a contact to a deal as a participant.
+        """Add a contact to a deal as a participant (CRMDealParticipant + DealStakeholder).
 
-        Delegates to DealParticipantService to keep participant logic centralized.
-        Import is deferred inside the method to avoid circular imports.
+        Delegates to DealParticipantService to keep participant creation, duplicate
+        detection, and stakeholder sync logic centralized in one place.
+        Import is deferred inside the method to avoid circular imports between
+        the access and internal service layers.
+
+        Args:
+            contact_id: The contact to add.
+            deal_id: The target deal.
+            relationship_role: Optional role label (e.g. "decision_maker").
+            actor_user_id: The user performing the action — used for audit trail.
         """
         # Verify contact belongs to this org before delegating
         contact_stmt = select(CRMContact).where(

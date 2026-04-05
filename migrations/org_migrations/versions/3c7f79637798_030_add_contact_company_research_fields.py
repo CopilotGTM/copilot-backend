@@ -17,6 +17,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Elevate enrichment from deal-scoped (DealStakeholder.stakeholder_research) to
+    # the contact/company level so research is done once and shared across all deals
+    # the person or company participates in.
     op.add_column("crm_contacts", sa.Column("contact_research", sa.Text(), nullable=True))
     op.add_column(
         "crm_contacts",

@@ -321,7 +321,9 @@ async def enrich_contact(
 ) -> GenericResponse[EnrichContactResponse]:
     """Trigger research enrichment for a contact.
 
-    Enrichment requires the contact to be linked to at least one deal via DealStakeholder.
+    Enrichment currently piggybacks on the stakeholder research pipeline, which
+    operates on DealStakeholder records. Until a standalone contact research
+    pipeline exists, the contact must be linked to at least one deal.
     """
     try:
         # Verify the contact exists first
