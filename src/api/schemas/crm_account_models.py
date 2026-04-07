@@ -42,8 +42,6 @@ class AccountListItem(BaseModel):
     contact_count: int = Field(0)
     deal_count: int = Field(0)
     pipeline_value: float = Field(0.0)
-    research_status: str | None
-    last_researched_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -58,7 +56,6 @@ class AccountDetail(AccountListItem):
     state: str | None
     postal_code: str | None
     timezone: str | None
-    company_research: str | None
     contacts: list[AccountContactItem] = Field(default_factory=list)
     deals: list[AccountDealItem] = Field(default_factory=list)
 
@@ -91,6 +88,10 @@ class UpdateAccountRequest(BaseModel):
     annual_revenue: float | None = None
 
 
-class EnrichAccountResponse(BaseModel):
-    job_id: str | None
-    message: str
+class AccountSuggestion(BaseModel):
+    """Suggested account match for a contact based on email domain."""
+
+    company_id: UUID
+    name: str | None
+    domain: str | None
+    match_type: str = Field(default="domain_match")

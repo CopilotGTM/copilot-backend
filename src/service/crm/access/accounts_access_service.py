@@ -13,7 +13,10 @@ from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    DealStakeholder,
+)
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
@@ -80,6 +83,28 @@ class AccountsAccessService:
         d = d.split("/")[0].split("?")[0].split("#")[0]
         return d.lower() or None
 
+    async def suggest_account_by_domain(self, email_domain: str) -> dict | None:
+        """Find a matching account by email domain for the suggestion dropdown."""
+        normalized = email_domain.strip().lower()
+        if not normalized:
+            return None
+        c = cast(Any, CRMCompany).__table__.c
+        stmt = select(CRMCompany).where(
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+            func.lower(c.domain) == normalized,
+        )
+        res = await self.org_session.execute(stmt)
+        company = res.scalars().first()
+        if not company:
+            return None
+        return {
+            "company_id": company.company_id,
+            "name": company.name,
+            "domain": company.domain,
+            "match_type": "domain_match",
+        }
+
     async def list_accounts(
         self,
         *,
@@ -104,15 +129,18 @@ class AccountsAccessService:
         co = cast(Any, CRMContact).__table__.c
         d = cast(Any, CRMDeal).__table__.c
 
-        # Count contacts per company by matching email domain to company.domain
+        # Count contacts per company: explicit FK OR email domain match
         contact_count_sub = (
             select(
-                func.count(co.contact_id).label("cnt"),
+                func.count(func.distinct(co.contact_id)).label("cnt"),
             )
             .where(
                 co.organisation_id == self.organisation_id,
                 co.is_deleted.is_(False),
-                co.email.ilike(func.concat("%@", c.domain)),
+                or_(
+                    co.company_id == c.company_id,
+                    co.email.ilike(func.concat("%@", c.domain)),
+                ),
             )
             .correlate(CRMCompany.__table__)
             .scalar_subquery()
@@ -215,7 +243,7 @@ class AccountsAccessService:
         contacts = await self.get_account_contacts(company_id)
         deals = await self.get_account_deals(company_id)
 
-        # Batch-query deal counts per contact to avoid N+1 queries
+        # Batch-query deal counts per contact — only approved stakeholders
         contact_ids = [c.contact_id for c in contacts]
         if contact_ids:
             count_stmt = (
@@ -224,6 +252,7 @@ class AccountsAccessService:
                     col(DealStakeholder.contact_id).in_(contact_ids),
                     col(DealStakeholder.organisation_id) == self.organisation_id,
                     col(DealStakeholder.is_deleted).is_(False),
+                    col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED.value,
                 )
                 .group_by(DealStakeholder.contact_id)
             )
@@ -255,10 +284,7 @@ class AccountsAccessService:
         return detail
 
     async def get_account_contacts(self, company_id: UUID) -> list[CRMContact]:
-        """Return contacts whose email domain matches the account's domain.
-
-        Domain matching uses ILIKE '%@domain' so it's case-insensitive.
-        """
+        """Return contacts linked to the account by explicit FK or email domain match."""
         # Resolve company first to get its domain and verify org ownership
         c = cast(Any, CRMCompany).__table__.c
         comp_stmt = select(CRMCompany).where(
@@ -268,14 +294,23 @@ class AccountsAccessService:
         )
         comp_res = await self.org_session.execute(comp_stmt)
         company = comp_res.scalars().first()
-        if not company or not company.domain:
+        if not company:
             return []
 
         co = cast(Any, CRMContact).__table__.c
-        stmt = select(CRMContact).where(
-            co.organisation_id == self.organisation_id,
-            co.is_deleted.is_(False),
-            co.email.ilike(f"%@{company.domain}"),
+        # Explicit FK match OR domain match (deduplicated by DISTINCT)
+        conditions = [co.company_id == company_id]
+        if company.domain:
+            conditions.append(co.email.ilike(f"%@{company.domain}"))
+
+        stmt = (
+            select(CRMContact)
+            .where(
+                co.organisation_id == self.organisation_id,
+                co.is_deleted.is_(False),
+                or_(*conditions),
+            )
+            .distinct()
         )
         res = await self.org_session.execute(stmt)
         return list(res.scalars().all())

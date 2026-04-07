@@ -22,7 +22,6 @@ from src.api.schemas.crm_contact_models import (
     ContactListItem,
     ContactsPage,
     CreateContactRequest,
-    EnrichContactResponse,
     UpdateContactRequest,
 )
 from src.api.utils.http_response import Response
@@ -95,8 +94,6 @@ async def list_contacts(
                 owner_name=row["contact"].owner_name,
                 deal_count=row["deal_count"],
                 source=row["source"],
-                research_status=row["contact"].research_status,
-                last_researched_at=row["contact"].last_researched_at,
                 created_at=row["contact"].created_at,
                 updated_at=row["contact"].updated_at,
             )
@@ -144,6 +141,8 @@ async def create_contact(
             extra["phone"] = body.phone
         if body.linkedin_url is not None:
             extra["properties"] = {"linkedin_url": body.linkedin_url}
+        if body.company_id is not None:
+            extra["company_id"] = body.company_id
 
         contact = await service.create_contact(email=body.email, name=body.name, **extra)
 
@@ -157,14 +156,12 @@ async def create_contact(
             job_title=contact.job_title,
             phone=contact.phone,
             company_name=contact.company_name,
-            company_id=None,
+            company_id=contact.company_id,
             company_domain=None,
             lifecycle_stage=contact.lifecycle_stage,
             owner_name=getattr(contact, "owner_name", None),
             deal_count=0,
-            source="internal",
-            research_status=contact.research_status,
-            last_researched_at=contact.last_researched_at,
+            source="manual",
             created_at=contact.created_at,
             updated_at=contact.updated_at,
         )
@@ -206,7 +203,9 @@ async def get_contact_detail(
                 stakeholder_id=d["stakeholder_id"],
                 stance=None,
                 decision_power=None,
-                relationship_role=d.get("relationship_role"),
+                relationship_role=str(d["relationship_role"])
+                if d.get("relationship_role")
+                else None,
             )
             for d in deals
         ]
@@ -221,14 +220,12 @@ async def get_contact_detail(
             job_title=contact.job_title,
             phone=contact.phone,
             company_name=contact.company_name,
-            company_id=None,
-            company_domain=None,
+            company_id=result.get("company_id"),
+            company_domain=result.get("company_domain"),
             lifecycle_stage=contact.lifecycle_stage,
             owner_name=getattr(contact, "owner_name", None),
             deal_count=len(deals),
-            source="internal",
-            research_status=contact.research_status,
-            last_researched_at=contact.last_researched_at,
+            source=result.get("source", "manual"),
             created_at=contact.created_at,
             updated_at=contact.updated_at,
             additional_emails=contact.additional_emails or [],
@@ -238,7 +235,6 @@ async def get_contact_detail(
             city=contact.city,
             state=contact.state,
             country=contact.country,
-            contact_research=contact.contact_research,
             last_contacted_at=contact.last_contacted_at,
             last_activity_at=contact.last_activity_at,
             deal_involvement=deal_involvement,
@@ -274,6 +270,8 @@ async def update_contact(
         updates = body.model_dump(exclude_unset=True)
         contact = await service.update_contact(contact_id, updates)
 
+        source = await service.resolve_source_for_contact(contact.integration_id)
+
         data = ContactListItem(
             contact_id=contact.contact_id,
             external_id=contact.external_id,
@@ -284,14 +282,12 @@ async def update_contact(
             job_title=contact.job_title,
             phone=contact.phone,
             company_name=contact.company_name,
-            company_id=None,
+            company_id=contact.company_id,
             company_domain=None,
             lifecycle_stage=contact.lifecycle_stage,
             owner_name=getattr(contact, "owner_name", None),
             deal_count=0,
-            source="internal",
-            research_status=contact.research_status,
-            last_researched_at=contact.last_researched_at,
+            source=source,
             created_at=contact.created_at,
             updated_at=contact.updated_at,
         )
@@ -302,81 +298,6 @@ async def update_contact(
         )
     except Exception:
         logger.error("Error updating contact", extra={"contact_id": str(contact_id)}, exc_info=True)
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@contacts_router.post(
-    "/contacts/{contact_id}/enrich",
-    response_model=GenericResponse[EnrichContactResponse],
-    summary="Trigger enrichment research for a contact",
-)
-async def enrich_contact(
-    contact_id: UUID,
-    response: FastAPIResponse,
-    service: ContactsAccessService = Depends(get_contacts_service),
-    user_ids: UserIDs = Depends(get_current_user),
-    _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[EnrichContactResponse]:
-    """Trigger research enrichment for a contact.
-
-    Enrichment currently piggybacks on the stakeholder research pipeline, which
-    operates on DealStakeholder records. Until a standalone contact research
-    pipeline exists, the contact must be linked to at least one deal.
-    """
-    try:
-        # Verify the contact exists first
-        await service.get_contact_detail(contact_id)
-
-        # Deferred import to avoid loading worker code at module level
-        from sqlalchemy import select
-        from sqlmodel import col
-        from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
-        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-            dispatch_stakeholder_research_async,
-        )
-
-        stakeholder_stmt = (
-            select(DealStakeholder)
-            .where(
-                col(DealStakeholder.contact_id) == contact_id,
-                col(DealStakeholder.organisation_id) == service.organisation_id,
-                col(DealStakeholder.is_deleted).is_(False),
-            )
-            .limit(1)
-        )
-        stakeholder_res = await service.org_session.execute(stakeholder_stmt)
-        stakeholder = stakeholder_res.scalars().first()
-
-        if not stakeholder:
-            data = EnrichContactResponse(
-                job_id=None,
-                message="Contact must be added to a deal before enrichment can run",
-            )
-            return Response.success_response(message="Enrichment not available", data=data)
-
-        job_id = await dispatch_stakeholder_research_async(
-            organisation_id=service.organisation_id,
-            stakeholder_id=stakeholder.stakeholder_id,
-            deal_id=stakeholder.deal_id,
-            user_id=user_ids.user_id,
-            force=True,
-        )
-
-        data = EnrichContactResponse(
-            job_id=str(job_id) if job_id else None,
-            message="Enrichment research dispatched" if job_id else "Enrichment skipped (cooldown)",
-        )
-        return Response.success_response(message="Enrich contact request processed", data=data)
-    except ContactsAccessServiceError as e:
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception:
-        logger.error(
-            "Error enriching contact", extra={"contact_id": str(contact_id)}, exc_info=True
-        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -403,6 +324,35 @@ async def add_contact_to_deal(
             relationship_role=body.relationship_role,
             actor_user_id=user_ids.user_id,
         )
+
+        # Commit participant records so the async worker can see them
+        await service.org_session.commit()
+
+        # Trigger stakeholder sync so DealStakeholder records are created
+        if result.get("created"):
+            try:
+                from src.workers.deal_worker.client import send_deal_task_async
+                from src.workers.deal_worker.services.deal_change_detector import (
+                    StakeholderChangeType,
+                )
+
+                await send_deal_task_async(
+                    "stakeholder.sync_deal_stakeholders",
+                    kwargs={
+                        "organisation_id": str(service.organisation_id),
+                        "deal_id": str(body.deal_id),
+                        "change_type": StakeholderChangeType.PARTICIPANT_ADDED.value,
+                        "integration_id": None,
+                        "integration_type": None,
+                        "trigger_rematching": True,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to trigger stakeholder sync after contact-to-deal addition",
+                    exc_info=True,
+                )
+
         return Response.success_response(message="Contact added to deal", data=result)
     except ContactsAccessServiceError as e:
         return Response.error_response(

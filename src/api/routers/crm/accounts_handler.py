@@ -21,8 +21,8 @@ from src.api.schemas.crm_account_models import (
     AccountDetail,
     AccountListItem,
     AccountsPage,
+    AccountSuggestion,
     CreateAccountRequest,
-    EnrichAccountResponse,
     UpdateAccountRequest,
 )
 from src.api.utils.http_response import Response
@@ -92,6 +92,30 @@ async def list_accounts(
         )
     except Exception:
         logger.exception("Unexpected error listing accounts")
+        return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
+
+
+@accounts_router.get(
+    "/accounts/suggest",
+    response_model=GenericResponse[AccountSuggestion | None],
+    tags=["crm", "accounts"],
+    summary="Suggest an account by email domain",
+)
+async def suggest_account(
+    response: FastAPIResponse,
+    email_domain: str = Query(..., description="Email domain to match (e.g., 'acme.com')"),
+    service: AccountsAccessService = Depends(get_accounts_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[AccountSuggestion | None]:
+    """Suggest an account matching an email domain for the account dropdown."""
+    try:
+        suggestion = await service.suggest_account_by_domain(email_domain)
+        if suggestion:
+            data = AccountSuggestion(**suggestion)
+            return Response.success_response("Account suggestion found", data=data)
+        return Response.success_response("No matching account found", data=None)
+    except Exception:
+        logger.exception("Unexpected error suggesting account")
         return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
 
 
@@ -295,40 +319,4 @@ async def get_account_deals(
         )
     except Exception:
         logger.exception("Unexpected error retrieving account deals")
-        return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
-
-
-@accounts_router.post(
-    "/accounts/{company_id}/enrich",
-    response_model=GenericResponse[EnrichAccountResponse],
-    tags=["crm", "accounts"],
-    summary="Enrich account with external data",
-)
-async def enrich_account(
-    company_id: UUID,
-    response: FastAPIResponse,
-    service: AccountsAccessService = Depends(get_accounts_service),
-    _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[EnrichAccountResponse]:
-    """Trigger account enrichment.
-
-    Endpoint exists to reserve the API contract for frontend integration.
-    Company research pipeline implementation is deferred to a future phase.
-    """
-    try:
-        # Verify org ownership before accepting — prevents probing for account IDs
-        await service.get_account_detail(company_id)
-        return Response.accepted_response(
-            "Enrichment request accepted",
-            data=EnrichAccountResponse(
-                job_id=None,
-                message="Account enrichment will be available in a future release",
-            ),
-        )
-    except AccountsAccessServiceError as exc:
-        return Response.error_response(
-            status_code=exc.status_code, message=exc.message, response=response
-        )
-    except Exception:
-        logger.exception("Unexpected error triggering account enrichment")
         return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)

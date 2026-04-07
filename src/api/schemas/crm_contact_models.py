@@ -37,8 +37,6 @@ class ContactListItem(BaseModel):
     owner_name: str | None
     deal_count: int = Field(0)
     source: str = Field("crm_sync")
-    research_status: str | None
-    last_researched_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -55,7 +53,6 @@ class ContactDetail(ContactListItem):
     city: str | None
     state: str | None
     country: str | None
-    contact_research: str | None
     last_contacted_at: datetime | None
     last_activity_at: datetime | None
     deal_involvement: list[ContactDealInvolvement] = Field(default_factory=list)
@@ -79,11 +76,17 @@ class CreateContactRequest(BaseModel):
     job_title: str | None = None
     phone: str | None = None
     linkedin_url: str | None = None
+    company_id: UUID | None = None
 
 
 class UpdateContactRequest(BaseModel):
-    """Request to update an existing contact (all fields optional)."""
+    """Request to update an existing contact (all fields optional).
 
+    email can only be set if the contact currently has no email.
+    Changing an existing email is not allowed.
+    """
+
+    email: str | None = None
     first_name: str | None = None
     last_name: str | None = None
     full_name: str | None = None
@@ -92,6 +95,7 @@ class UpdateContactRequest(BaseModel):
     mobile_phone: str | None = None
     linkedin_url: str | None = None
     company_name: str | None = None
+    company_id: UUID | None = None
 
 
 class AddContactToDealRequest(BaseModel):
@@ -99,10 +103,3 @@ class AddContactToDealRequest(BaseModel):
 
     deal_id: UUID
     relationship_role: str | None = None
-
-
-class EnrichContactResponse(BaseModel):
-    """Response after triggering contact enrichment."""
-
-    job_id: str | None
-    message: str

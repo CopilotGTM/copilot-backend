@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, Text, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -22,6 +22,7 @@ class CRMContact(SyncedRecordMixin, table=True):
         Index("ix_crm_contact_org_email", "organisation_id", "email"),
         Index("ix_crm_contact_owner", "organisation_id", "owner_external_id"),
         Index("ix_crm_contact_lifecycle", "organisation_id", "lifecycle_stage"),
+        Index("ix_crm_contact_company_id", "organisation_id", "company_id"),
     )
 
     # Identity
@@ -44,6 +45,12 @@ class CRMContact(SyncedRecordMixin, table=True):
     )
     company_name: str | None = Field(
         default=None, description="Company string stored on the contact."
+    )
+    # Explicit FK to the linked account — takes precedence over domain matching
+    company_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_companies.company_id",
+        description="Explicit FK to the linked account. When set, takes precedence over domain matching.",
     )
 
     # Email & communication
@@ -164,10 +171,3 @@ class CRMContact(SyncedRecordMixin, table=True):
         sa_column=Column(JSONB),
         description="Raw provider payload useful for debugging.",
     )
-
-    # Research / enrichment
-    contact_research: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    last_researched_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
-    research_status: str | None = Field(default=None, sa_column=Column(String(20), nullable=True))
