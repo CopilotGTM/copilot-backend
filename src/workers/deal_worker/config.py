@@ -77,6 +77,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_memory.trigger_backfill_all_orgs",
             # Deal asset post-upload processing
             "deal_asset.post_upload",
+            # Stakeholder research retry (periodic scan for un-researched)
+            "stakeholder_research.retry_pending_org",
+            "stakeholder_research.trigger_retry_all_orgs",
         )
 
         deal_jobs_queue_tasks = (
@@ -137,6 +140,14 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal-memory-backfill": {
                 "task": "deal_memory.trigger_backfill_all_orgs",
                 "schedule": crontab(minute=10, hour="*/3"),
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
+            # Hourly: Retry stakeholder research for un-researched stakeholders
+            # Picks up stakeholders that were never researched or where enrichment
+            # errored (quality gate leaves last_researched_at NULL on tool failures)
+            "stakeholder-research-retry": {
+                "task": "stakeholder_research.trigger_retry_all_orgs",
+                "schedule": crontab(minute=20),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
         }

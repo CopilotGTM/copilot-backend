@@ -23,6 +23,8 @@ from src.workers.deal_worker.tasks.deal_insight_tasks.stakeholder_analysis_task 
 )
 from src.workers.deal_worker.tasks.deal_insight_tasks.stakeholder_research_tasks import (
     process_stakeholder_research_job,
+    retry_pending_research_org,
+    trigger_retry_pending_research_all_orgs,
 )
 
 __all__ = [
@@ -32,6 +34,8 @@ __all__ = [
     "analyze_deal_stakeholders_task",
     # Stakeholder research
     "process_stakeholder_research_job",
+    "retry_pending_research_org",
+    "trigger_retry_pending_research_all_orgs",
     # Risk/blocker extraction
     "extract_deal_risks_blockers_task",
     "trigger_extraction_all_orgs",
