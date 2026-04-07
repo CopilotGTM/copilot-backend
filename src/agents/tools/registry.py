@@ -124,6 +124,7 @@ class ToolName(str, Enum):
         "enrich_linkedin_profile"  # LinkedIn enrichment for stakeholder workflows
     )
     RESEARCH_LINKEDIN_PROFILE = "research_linkedin_profile"  # LinkedIn research for general chat
+    RESEARCH_STAKEHOLDER = "research_stakeholder"  # Read-only stakeholder lookup via Apollo
 
     # -------------------------------------------------------------------------
     # CALENDAR TOOLS - For upcoming meetings and events
@@ -419,8 +420,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # Purpose: Researches individual stakeholders via Apollo + LinkedIn.
     # -------------------------------------------------------------------------
     "StakeholderResearchAgent": {
-        ToolName.ENRICH_STAKEHOLDER,
-        ToolName.ENRICH_LINKEDIN_PROFILE,
+        ToolName.RESEARCH_STAKEHOLDER,
         ToolName.RESEARCH_LINKEDIN_PROFILE,
     },
 }
@@ -487,6 +487,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
     ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
     ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
+    ToolName.RESEARCH_STAKEHOLDER: ToolCategory.SEARCH,
     # Tasks
     ToolName.CREATE_TASK: ToolCategory.CRM,
     # Reminders
@@ -576,6 +577,7 @@ class ToolRegistry:
             create_get_company_financials,
             create_get_stock_info,
             create_research_linkedin_profile,
+            create_research_stakeholder,
             create_search_arxiv,
             create_search_wikipedia,
         )
@@ -735,6 +737,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
             lambda: create_research_linkedin_profile(self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.RESEARCH_STAKEHOLDER] = lambda: create_research_stakeholder(
+            self.context, self.capabilities_getter
         )
 
         # Task tools

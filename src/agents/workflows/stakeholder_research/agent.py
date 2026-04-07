@@ -1,25 +1,24 @@
 """StakeholderResearchAgent — researches a single stakeholder via Apollo/LinkedIn.
 
-Follows the DealMemoryAgent pattern:
-- AgentContext with immutable organisation_id security boundary
-- Tools from registry (ENRICH_STAKEHOLDER, ENRICH_LINKEDIN_PROFILE, RESEARCH_LINKEDIN_PROFILE)
-- Token usage tracking via extract_token_usage
-- One agent call per stakeholder (no batching)
+Returns a StakeholderResearchResult (structured output) instead of raw markdown.
+The service layer renders markdown and persists all DB fields.
 """
 
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
 from agno.models.message import Message
+from pydantic import ValidationError
 
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
+from src.agents.workflows.stakeholder_research.models import StakeholderResearchResult
 from src.agents.workflows.stakeholder_research.prompts import (
-    get_expected_output_format,
     get_stakeholder_research_system_prompt,
 )
 from src.infra.config.agent_config import agent_config
@@ -62,7 +61,7 @@ class StakeholderResearchAgent:
             description="Stakeholder Research Agent",
             tools=tools,
             tool_call_limit=10,
-            markdown=True,
+            output_schema=StakeholderResearchResult,
             debug_mode=config.debug_mode,
             system_message=get_stakeholder_research_system_prompt(self.org_name),
             telemetry=False,
@@ -73,17 +72,17 @@ class StakeholderResearchAgent:
         stakeholder_id: UUID,
         email: str,
         name: str | None = None,
-    ) -> str:
-        """Research a single stakeholder. Returns markdown profile."""
+    ) -> StakeholderResearchResult:
+        """Research a single stakeholder. Returns structured result."""
         identity = f"email={email}"
         if name:
             identity = f"name={name}, {identity}"
 
         user_prompt = (
-            f"Research this stakeholder and produce a markdown profile.\n\n"
+            f"Research this stakeholder and populate the structured output.\n\n"
             f"Stakeholder ID: {stakeholder_id}\n"
             f"Identity: {identity}\n\n"
-            f'Start by calling enrich_stakeholder with stakeholder_id="{stakeholder_id}".'
+            f'Start by calling research_stakeholder with stakeholder_id="{stakeholder_id}".'
         )
 
         logger.info(
@@ -93,7 +92,6 @@ class StakeholderResearchAgent:
         )
 
         message_list = [
-            Message(role="user", content=get_expected_output_format()),
             Message(role="user", content=user_prompt),
         ]
 
@@ -101,7 +99,44 @@ class StakeholderResearchAgent:
 
         self.last_token_usage = extract_token_usage(response, agent_name="StakeholderResearchAgent")
 
-        content = response.content
-        if isinstance(content, str):
+        return self._normalize_output(response.content)
+
+    @staticmethod
+    def _normalize_output(content: object) -> StakeholderResearchResult:
+        """Normalize agent output into StakeholderResearchResult.
+
+        Handles cases where the LLM returns the Pydantic model directly,
+        a dict, a JSON string, or something unexpected (content filter, etc.).
+        """
+        if isinstance(content, StakeholderResearchResult):
             return content
-        return str(content)
+
+        if isinstance(content, dict):
+            try:
+                return StakeholderResearchResult.model_validate(content)
+            except ValidationError:
+                logger.warning("Dict output failed validation: %.200s", str(content))
+
+        if isinstance(content, str):
+            stripped = content.strip()
+
+            try:
+                return StakeholderResearchResult.model_validate_json(stripped)
+            except (ValidationError, json.JSONDecodeError):
+                pass
+
+            try:
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    return StakeholderResearchResult.model_validate(payload)
+            except (ValidationError, json.JSONDecodeError, TypeError):
+                pass
+
+        logger.warning(
+            "StakeholderResearchAgent returned non-structured response: %.200s",
+            str(content),
+        )
+        return StakeholderResearchResult(
+            status="error",
+            error_detail="Agent returned unstructured response",
+        )

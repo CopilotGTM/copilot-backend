@@ -1,9 +1,9 @@
-"""Celery task for stakeholder research via LLM agent.
+"""Celery tasks for stakeholder research via LLM agent.
 
-Processes a single stakeholder research job:
-1. Load DealJobs record, extract stakeholder_id, mark IN_PROGRESS
-2. Call StakeholderResearchService.research_stakeholder()
-3. Save result + token_usage to DealJobs, mark COMPLETED
+Tasks:
+- process_stakeholder_research_job: Process a single research job (Tier 3)
+- retry_pending_research_org: Find un-researched stakeholders and dispatch (Tier 2)
+- trigger_retry_pending_research_all_orgs: Dispatch to all orgs (Tier 1)
 """
 
 from __future__ import annotations
@@ -11,8 +11,19 @@ from __future__ import annotations
 from uuid import UUID
 
 from celery import Task
+from sqlalchemy import select
+from sqlmodel import col
 
+from src.domain.models.master_tables.organisation_models import (
+    Organisation,
+    OrganisationStatus,
+)
 from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    DealStakeholder,
+)
+from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -157,3 +168,113 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
         raise self.retry(exc=e, countdown=30 * (2**self.request.retries)) from e
     finally:
         release_task_lock(lock_key)
+
+
+# Max stakeholders to dispatch per org per run to avoid overwhelming the queue
+_RETRY_BATCH_LIMIT = 20
+
+
+@app.task(bind=True, name="stakeholder_research.retry_pending_org", acks_late=True, max_retries=2)
+def retry_pending_research_org(self: Task, organisation_id: str):
+    """Tier 2: Find approved stakeholders without research and dispatch jobs.
+
+    Picks up stakeholders where last_researched_at IS NULL — either never
+    researched or a previous attempt hit an enrichment error (quality gate
+    clears last_researched_at on tool-level failures so they're retried).
+    """
+    lock_key = f"task_lock:stakeholder_research_retry:{organisation_id}"
+    if not acquire_task_lock(lock_key, ttl=1800):
+        return {"status": "skipped", "reason": "already_running"}
+
+    try:
+        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+            dispatch_stakeholder_research_async,
+        )
+
+        async def _run():
+            org_uuid = UUID(organisation_id)
+
+            async for session in acquire_org_async_session(org_uuid):
+                stmt = (
+                    select(DealStakeholder)
+                    .where(
+                        col(DealStakeholder.organisation_id) == org_uuid,
+                        col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
+                        col(DealStakeholder.last_researched_at).is_(None),
+                    )
+                    .limit(_RETRY_BATCH_LIMIT)
+                )
+                result = await session.execute(stmt)
+                pending = result.scalars().all()
+
+                # Extract IDs before releasing session
+                stakeholder_infos = [(s.stakeholder_id, s.deal_id) for s in pending]
+
+            dispatched = 0
+            for s_id, d_id in stakeholder_infos:
+                try:
+                    job_id = await dispatch_stakeholder_research_async(
+                        organisation_id=org_uuid,
+                        stakeholder_id=s_id,
+                        deal_id=d_id,
+                    )
+                    if job_id:
+                        dispatched += 1
+                except Exception:
+                    logger.warning(
+                        "Failed to dispatch research for stakeholder %s", s_id, exc_info=True
+                    )
+
+            logger.info(
+                "Stakeholder research retry org=%s found=%d dispatched=%d",
+                organisation_id,
+                len(stakeholder_infos),
+                dispatched,
+            )
+            return {
+                "status": "completed",
+                "found": len(stakeholder_infos),
+                "dispatched": dispatched,
+            }
+
+        return run_async(_run())
+    except Exception as exc:
+        logger.error(
+            "Stakeholder research retry failed for org %s: %s",
+            organisation_id,
+            exc,
+            exc_info=True,
+        )
+        raise self.retry(exc=exc, countdown=120) from exc
+    finally:
+        release_task_lock(lock_key)
+
+
+@app.task(
+    bind=False,
+    name="stakeholder_research.trigger_retry_all_orgs",
+    acks_late=True,
+    max_retries=0,
+)
+def trigger_retry_pending_research_all_orgs():
+    """Tier 1: Dispatch pending research retry to all approved organisations."""
+
+    async def _dispatch():
+        provider = get_async_provider()
+        async with provider.master_session() as master_session:
+            result = await master_session.execute(
+                select(Organisation).where(col(Organisation.status) == OrganisationStatus.APPROVED)
+            )
+            orgs = result.scalars().all()
+
+        dispatched = 0
+        for org in orgs:
+            try:
+                retry_pending_research_org.delay(organisation_id=str(org.organisation_id))
+                dispatched += 1
+            except Exception as e:
+                logger.warning("Failed to dispatch retry for org %s: %s", org.organisation_id, e)
+
+        return {"status": "completed", "orgs_dispatched": dispatched}
+
+    return run_async(_dispatch())
