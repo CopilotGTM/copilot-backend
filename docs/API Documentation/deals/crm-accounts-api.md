@@ -1,0 +1,999 @@
+# CRM Accounts API Documentation
+
+> Version: 1.0
+> Base URL: `/users/crm`
+> Last Updated: 2026-04-06
+
+---
+
+## Overview
+
+Accounts represent CRM companies/organisations that your deals and contacts belong to. Each account is a normalised `CRMCompany` record stored in the tenant-scoped `crm_companies` table.
+
+### Internal vs Synced Accounts
+
+All account records include an implicit origin via their `integration_id`:
+
+- **Internal accounts** (created via this API): Owned by the `INTERNAL_CRM` integration. Fully editable — users can update all fields, trigger enrichment, and manage relationships.
+- **CRM-synced accounts** (imported from HubSpot, Salesforce, etc.): Owned by the corresponding CRM integration. Editable through this API (updates are local only — they do **not** sync back to the external CRM).
+
+**Frontend Implementation**: Check the `source` or `external_id` pattern to determine origin. Internally-created accounts have `external_id` equal to their `company_id` (UUID format). CRM-synced accounts have provider-specific external IDs (e.g., numeric HubSpot IDs).
+
+### Related APIs
+
+| API | Relationship | Documentation |
+|-----|-------------|---------------|
+| **CRM Contacts** | Contacts linked to accounts via email domain matching | `crm-contacts-api.md` |
+| **CRM Deals** | Deals linked to accounts via `company_external_id` | `crm-deals-api.md` |
+| **Stakeholders** | Stakeholders linked to contacts, which link to accounts | `stakeholders-api.md` |
+| **Deal Participants** | Participants may reference contacts from an account | `crm-participants-api.md` |
+
+---
+
+## Authentication
+
+### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer <access_token>` (Supabase JWT) |
+| `Content-Type` | Yes (for POST/PATCH) | `application/json` |
+
+User identity (`organisation_id`, `user_id`, `user_name`, `user_email`) is extracted from the JWT. Clients never pass these explicitly. All queries are automatically scoped to the authenticated user's organisation.
+
+### Unauthorised Response (401)
+
+```json
+{
+  "detail": "Invalid or missing user credentials."
+}
+```
+
+---
+
+## Rate Limiting
+
+Per-user, fixed-window rate limits enforced via Redis. Limits are shared across all endpoints in the same category.
+
+| Category | Per Minute | Per Hour | Applies To |
+|----------|-----------|----------|------------|
+| **Read** | 120 | 2,000 | `GET` endpoints |
+| **Write** | 120 | 2,000 | `POST`, `PATCH` endpoints |
+
+Configurable via environment variables: `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_HOUR`, `RATE_LIMIT_READ_PER_MINUTE`, `RATE_LIMIT_READ_PER_HOUR`.
+
+### Rate Limit Exceeded Response (429)
+
+```json
+{
+  "detail": "Too many requests (per-minute limit exceeded)"
+}
+```
+
+Response includes a `Retry-After` header (seconds until the window resets).
+
+**Fail-open behaviour**: If Redis is unavailable, the rate limiter logs a warning and allows the request through.
+
+---
+
+## Response Envelope
+
+All endpoints return the shared `GenericResponse<T>` envelope:
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Human-readable message",
+  "data": { ... }
+}
+```
+
+Error responses use the same envelope:
+
+```json
+{
+  "status": "ERROR",
+  "message": "Human-readable error description",
+  "data": null
+}
+```
+
+The HTTP status code is set on the response (not inside the JSON body). Always check the HTTP status code first, then read `message` for display and `data` for payload.
+
+---
+
+## Data Relationships
+
+### Account → Contacts (FK + Domain Matching)
+
+Contacts can be linked to accounts via **two mechanisms**, checked in priority order:
+
+1. **Explicit FK** (`crm_contacts.company_id` → `crm_companies.company_id`): Takes precedence. When a contact has a `company_id` set, it is always associated with that account regardless of email domain.
+2. **Email domain matching** (`contact.email` domain vs `crm_companies.domain`): Fallback when no explicit FK exists. Matches the contact's email domain against the account's `domain` field using case-insensitive suffix matching.
+
+```
+Account (company_id: "aaa...", domain: "acme.com")
+
+Contact (company_id: "aaa...")               ← matched via FK (takes precedence)
+Contact (email: "john@acme.com")             ← matched via domain
+Contact (email: "jane@acme.com")             ← matched via domain
+Contact (email: "bob@other.com")             ← NOT matched
+Contact (company_id: "bbb...", email: "x@acme.com")  ← matched to account "bbb..." (FK wins)
+```
+
+**Implications for frontend:**
+
+- Changing an account's `domain` will change which contacts appear under it (for domain-matched contacts)
+- A contact with an explicit `company_id` is always linked to that account, even if its email domain doesn't match
+- A contact with no email, no `company_id`, and a non-matching domain won't appear under any account
+- The domain matching is case-insensitive
+
+### Account → Deals (External ID Matching)
+
+Deals are linked to accounts via `CRMDeal.company_external_id` matching `CRMCompany.external_id`.
+
+```
+Account (external_id: "hub_12345")
+  ↕ company_external_id = external_id
+Deal (company_external_id: "hub_12345")  ← matched
+```
+
+### Computed Metrics
+
+These fields are calculated at query time, **not stored** in the database:
+
+| Field | Computation |
+|-------|------------|
+| `contact_count` | Count of non-deleted contacts whose email domain matches the account's domain |
+| `deal_count` | Count of non-deleted deals whose `company_external_id` matches the account's `external_id` |
+| `pipeline_value` | Sum of `amount` from matched deals where `deal_status = 'open'` only |
+
+**Note on `deal_count` in nested contacts:** The `deal_count` on each `AccountContactItem` counts only **approved** stakeholder relationships (`approval_status = APPROVED`). Removed, rejected, and pending stakeholders are excluded.
+
+---
+
+## Enums & Field Reference
+
+### research_status
+
+Status of the AI research/enrichment for this account.
+
+| Value | Description | Frontend Display |
+|-------|-------------|-----------------|
+| `null` | Never researched | Show "Not researched" or enrichment CTA |
+| `"pending"` | Research queued | Show spinner or "Pending..." |
+| `"in_progress"` | Research actively running | Show spinner or progress indicator |
+| `"completed"` | Research finished successfully | Show research content |
+| `"failed"` | Research encountered an error | Show retry CTA |
+
+### lifecycle_stage
+
+Free-form string from the CRM provider. Common values:
+
+| Value | Description |
+|-------|-------------|
+| `"subscriber"` | Newsletter or content subscriber |
+| `"lead"` | Marketing qualified lead |
+| `"opportunity"` | Active sales opportunity |
+| `"customer"` | Paying customer |
+| `"evangelist"` | Active promoter/advocate |
+| `"other"` | Other/custom stage |
+
+### Field Nullability Reference
+
+| Field | Can Be Null | When Null |
+|-------|------------|-----------|
+| `name` | Yes | Rare — CRM record had no company name |
+| `domain` | Yes | No domain was set or derivable |
+| `website` | Yes | Not provided |
+| `industry` | Yes | Not provided |
+| `lifecycle_stage` | Yes | Not set in CRM |
+| `owner_name` | Yes | No owner assigned |
+| `number_of_employees` | Yes | Not provided |
+| `annual_revenue` | Yes | Not provided |
+| `phone` | Yes | Not provided |
+| `country` | Yes | Not provided |
+| `linkedin_url` | Yes | Not provided |
+| `description` | Yes | Not provided (detail view only) |
+| `company_research` | Yes | Not yet researched (detail view only) |
+| `last_researched_at` | Yes | Never researched |
+| `research_status` | Yes | Never researched |
+
+---
+
+## Response Models (TypeScript)
+
+```ts
+type UUID = string;
+type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:30:00Z")
+
+/**
+ * Account item returned in list views (GET /accounts).
+ * Use for table rows, cards, and search results.
+ *
+ * contact_count, deal_count, and pipeline_value are computed at query time.
+ */
+export interface AccountListItem {
+  company_id: UUID;
+  external_id: string;               // Provider ID. For internal accounts, equals company_id
+  name: string | null;
+  domain: string | null;              // Normalised: lowercase, no protocol/www
+  website: string | null;             // Full URL (may include protocol)
+  industry: string | null;
+  lifecycle_stage: string | null;     // Free-form CRM value
+  owner_name: string | null;
+  number_of_employees: number | null;
+  annual_revenue: number | null;      // Decimal (up to 2 decimal places)
+  phone: string | null;
+  country: string | null;
+  linkedin_url: string | null;
+  is_active: boolean;                 // Always true for active records (soft-deleted records are filtered out)
+
+  // Computed metrics (calculated per request, not stored)
+  contact_count: number;              // Contacts with email domain matching account domain
+  deal_count: number;                 // Deals linked via company_external_id
+  pipeline_value: number;             // Sum of open deal amounts (0.0 if no open deals)
+
+  // Research/enrichment
+  research_status: string | null;     // null | "pending" | "in_progress" | "completed" | "failed"
+  last_researched_at: ISODate | null;
+
+  // Timestamps
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+/**
+ * Full account detail returned by GET /accounts/{company_id}.
+ * Extends AccountListItem with description, location, research content,
+ * and nested contacts + deals arrays.
+ */
+export interface AccountDetail extends AccountListItem {
+  description: string | null;
+  company_type: string | null;        // e.g., "Private", "Public", "Subsidiary"
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  timezone: string | null;            // IANA timezone (e.g., "America/Los_Angeles")
+  company_research: string | null;    // AI-generated research summary (markdown)
+
+  /** Contacts whose email domain matches this account's domain */
+  contacts: AccountContactItem[];
+
+  /** Deals linked via company_external_id */
+  deals: AccountDealItem[];
+}
+
+/**
+ * Contact summary nested inside AccountDetail.
+ * Minimal fields for display in account detail view.
+ */
+export interface AccountContactItem {
+  contact_id: UUID;
+  full_name: string | null;
+  email: string | null;
+  job_title: string | null;
+  deal_count: number;                 // Number of deals this contact is a stakeholder on
+}
+
+/**
+ * Deal summary nested inside AccountDetail.
+ * Minimal fields for display in account detail view.
+ */
+export interface AccountDealItem {
+  deal_id: UUID;
+  name: string | null;
+  amount: number | null;
+  currency: string | null;            // ISO 4217 (e.g., "USD", "INR")
+  deal_status: string | null;         // "open" | "won" | "lost" | "closed"
+  stage_name: string | null;          // Pipeline stage display name
+  owner_name: string | null;          // Deal owner display name
+}
+
+/**
+ * Account suggestion returned by GET /accounts/suggest.
+ * Used to auto-select an account when creating/editing a contact.
+ * Returns null (not this interface) when no match is found.
+ */
+export interface AccountSuggestion {
+  company_id: UUID;
+  name: string | null;
+  domain: string | null;
+  match_type: "domain_match";             // Currently only domain matching is supported
+}
+
+/**
+ * Paginated response wrapper for list endpoints.
+ */
+export interface AccountsPage {
+  items: AccountListItem[];
+  page: number;                       // Current page (1-indexed)
+  limit: number;                      // Items per page requested
+  total_count: number;                // Total matching records
+  total_pages: number;                // ceil(total_count / limit)
+}
+
+/**
+ * Request to create a new account.
+ */
+export interface CreateAccountRequest {
+  name: string;                       // Required. Company name
+  domain?: string | null;             // Auto-normalised (protocol/www stripped, lowercased)
+  website?: string | null;
+  industry?: string | null;
+  linkedin_url?: string | null;
+}
+
+/**
+ * Request to update an account. All fields optional.
+ * Only include fields that should change.
+ */
+export interface UpdateAccountRequest {
+  name?: string | null;
+  domain?: string | null;             // Auto-normalised if provided
+  website?: string | null;
+  industry?: string | null;
+  description?: string | null;
+  phone?: string | null;
+  linkedin_url?: string | null;
+  number_of_employees?: number | null;
+  annual_revenue?: number | null;
+}
+
+/**
+ * Response after triggering account enrichment.
+ */
+export interface EnrichAccountResponse {
+  job_id: string | null;              // null until enrichment pipeline is implemented
+  message: string;                    // Human-readable status message
+}
+```
+
+### Frontend Utility: Check if Account is Internally Created
+
+```ts
+/**
+ * Internal accounts have external_id equal to their company_id (both UUIDs).
+ * CRM-synced accounts have provider-specific external IDs (e.g., numeric).
+ */
+function isInternalAccount(account: AccountListItem): boolean {
+  return account.external_id === account.company_id;
+}
+```
+
+---
+
+## Endpoints
+
+### 1. List Accounts
+
+```http
+GET /users/crm/accounts
+```
+
+Paginated account list with computed `contact_count`, `deal_count`, and `pipeline_value`. Results are sorted alphabetically by `name` (ascending), then by `company_id` for stable pagination when names collide.
+
+#### Query Parameters
+
+| Parameter  | Type    | Default | Validation | Description |
+|-----------|---------|---------|------------|-------------|
+| `page`    | integer | `1`     | `>= 1` | Page number (1-indexed) |
+| `limit`   | integer | `25`    | `1–100` | Maximum accounts per page |
+| `q`       | string  | —       | Any string | Case-insensitive partial match on `name` OR `domain` |
+| `industry`| string  | —       | Any string | Case-insensitive partial match on `industry` |
+
+**Search behaviour (`q` parameter):**
+
+- Matches anywhere in the string: `q=acm` matches "Acme Corp"
+- Matches on `name` OR `domain` (not both required)
+- Example: `q=tech` matches name "TechCorp" and domain "techstartup.io"
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Accounts retrieved successfully",
+  "data": {
+    "items": [
+      {
+        "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+        "external_id": "hub_12345",
+        "name": "Acme Corp",
+        "domain": "acme.com",
+        "website": "https://acme.com",
+        "industry": "Technology",
+        "lifecycle_stage": "customer",
+        "owner_name": "Jane Smith",
+        "number_of_employees": 250,
+        "annual_revenue": 50000000.00,
+        "phone": "+1-555-0100",
+        "country": "US",
+        "linkedin_url": "https://linkedin.com/company/acme-corp",
+        "is_active": true,
+        "contact_count": 12,
+        "deal_count": 3,
+        "pipeline_value": 150000.00,
+        "research_status": "completed",
+        "last_researched_at": "2026-03-15T10:30:00Z",
+        "created_at": "2026-01-10T08:00:00Z",
+        "updated_at": "2026-03-20T14:00:00Z"
+      }
+    ],
+    "page": 1,
+    "limit": 25,
+    "total_count": 48,
+    "total_pages": 2
+  }
+}
+```
+
+**Empty results:** When no accounts match, returns `items: []`, `total_count: 0`, `total_pages: 0`.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Page must be >= 1"` | `page` parameter < 1 |
+| `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
+| `429` | `"Too many requests (per-minute limit exceeded)"` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 2. Suggest Account for Contact
+
+```http
+GET /users/crm/accounts/suggest
+```
+
+Suggests a matching account for a given email domain. Powers the account dropdown auto-suggestion when creating or editing contacts — the frontend extracts the email domain from the contact's email address and calls this endpoint to pre-select the matching account.
+
+#### Query Parameters
+
+| Parameter | Type | Required | Validation | Description |
+|-----------|------|----------|------------|-------------|
+| `email_domain` | string | **Yes** | Non-empty | Email domain to match (e.g., `acme.com`) |
+
+#### Example Request
+
+```http
+GET /users/crm/accounts/suggest?email_domain=acme.com
+```
+
+#### Success Response — Match Found (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account suggestion found",
+  "data": {
+    "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+    "name": "Acme Corp",
+    "domain": "acme.com",
+    "match_type": "domain_match"
+  }
+}
+```
+
+#### Success Response — No Match (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "No matching account found",
+  "data": null
+}
+```
+
+**Frontend implementation:** When the user types or selects a contact email, extract the domain portion (everything after `@`), call this endpoint, and if `data` is non-null, pre-select the returned account in the account dropdown. If `data` is null, leave the dropdown unselected.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
+| `422` | Pydantic validation error | Missing or empty `email_domain` parameter |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 3. Create Account
+
+```http
+POST /users/crm/accounts
+```
+
+Creates a new account owned by the `INTERNAL_CRM` integration. The domain is normalised before storage and checked for uniqueness.
+
+#### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer <access_token>` |
+| `Content-Type` | Yes | `application/json` |
+
+#### Request Body
+
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| `name` | string | **Yes** | Non-empty | Company name |
+| `domain` | string | No | — | Company domain (auto-normalised; see table below) |
+| `website` | string | No | — | Full website URL |
+| `industry` | string | No | — | Industry classification |
+| `linkedin_url` | string | No | — | LinkedIn company page URL |
+
+#### Domain Normalisation
+
+The `domain` field is automatically cleaned before storage:
+
+| Input | Stored As | Rule Applied |
+|-------|-----------|--------------|
+| `"https://www.ACME.com/about"` | `"acme.com"` | Strip protocol, www, path, lowercase |
+| `"ACME.COM"` | `"acme.com"` | Lowercase |
+| `"www.acme.com"` | `"acme.com"` | Strip www |
+| `"http://acme.com?ref=123"` | `"acme.com"` | Strip protocol, query string |
+| `""` or `"  "` | `null` | Empty/whitespace → null |
+
+#### Example Request
+
+```json
+{
+  "name": "Acme Corp",
+  "domain": "https://www.acme.com",
+  "website": "https://acme.com",
+  "industry": "Technology",
+  "linkedin_url": "https://linkedin.com/company/acme-corp"
+}
+```
+
+#### Minimal Request
+
+```json
+{
+  "name": "Quick Account"
+}
+```
+
+#### Success Response (201)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account created successfully",
+  "data": {
+    "company_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "external_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Acme Corp",
+    "domain": "acme.com",
+    "website": "https://acme.com",
+    "industry": "Technology",
+    "lifecycle_stage": null,
+    "owner_name": null,
+    "number_of_employees": null,
+    "annual_revenue": null,
+    "phone": null,
+    "country": null,
+    "linkedin_url": "https://linkedin.com/company/acme-corp",
+    "is_active": true,
+    "contact_count": 0,
+    "deal_count": 0,
+    "pipeline_value": 0.0,
+    "research_status": null,
+    "last_researched_at": null,
+    "created_at": "2026-04-06T10:00:00Z",
+    "updated_at": "2026-04-06T10:00:00Z"
+  }
+}
+```
+
+**Note:** `external_id` equals `company_id` for internally-created accounts. `contact_count`, `deal_count`, and `pipeline_value` are always `0` in the create response (they're computed from relationships that don't exist yet).
+
+#### Error Responses
+
+| HTTP Status | `message` | `data` | When |
+|-------------|-----------|--------|------|
+| `409` | `"An account with domain 'acme.com' already exists"` | `{"company_id": "..."}` | Non-deleted account with same normalised domain exists |
+| `409` | `"Internal CRM integration not configured"` | `null` | Org has no INTERNAL_CRM integration (should not happen in normal operation) |
+| `422` | Pydantic validation error | Validation details | Invalid request body (e.g., missing `name`) |
+| `429` | `"Too many requests ..."` | `null` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | `null` | Unhandled server error |
+
+**Frontend: handling 409 duplicate domain:**
+
+```ts
+if (response.status === 409 && response.data?.company_id) {
+  // Offer to navigate to the existing account
+  showError(`Account already exists`, {
+    action: { label: "View existing", href: `/accounts/${response.data.company_id}` }
+  });
+}
+```
+
+---
+
+### 4. Get Account Detail
+
+```http
+GET /users/crm/accounts/{company_id}
+```
+
+Full account detail including nested contacts array, deals array, and all extended fields (description, location, research content).
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | UUID | Yes | Account identifier |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account detail retrieved successfully",
+  "data": {
+    "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+    "external_id": "hub_12345",
+    "name": "Acme Corp",
+    "domain": "acme.com",
+    "website": "https://acme.com",
+    "industry": "Technology",
+    "lifecycle_stage": "customer",
+    "owner_name": "Jane Smith",
+    "number_of_employees": 250,
+    "annual_revenue": 50000000.00,
+    "phone": "+1-555-0100",
+    "country": "US",
+    "linkedin_url": "https://linkedin.com/company/acme-corp",
+    "is_active": true,
+    "contact_count": 5,
+    "deal_count": 2,
+    "pipeline_value": 75000.00,
+    "research_status": "completed",
+    "last_researched_at": "2026-03-15T10:30:00Z",
+    "created_at": "2026-01-10T08:00:00Z",
+    "updated_at": "2026-03-20T14:00:00Z",
+
+    "description": "Enterprise software company specialising in cloud infrastructure",
+    "company_type": "Private",
+    "address": "123 Tech Blvd",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "timezone": "America/Los_Angeles",
+    "company_research": "## Company Overview\nAcme Corp is a mid-market...",
+
+    "contacts": [
+      {
+        "contact_id": "c1d2e3f4-a5b6-7890-cdef-123456789abc",
+        "full_name": "John Doe",
+        "email": "john@acme.com",
+        "job_title": "VP Engineering",
+        "deal_count": 2
+      },
+      {
+        "contact_id": "d2e3f4a5-b6c7-8901-defa-23456789abcd",
+        "full_name": "Sarah Chen",
+        "email": "sarah@acme.com",
+        "job_title": "CTO",
+        "deal_count": 1
+      }
+    ],
+
+    "deals": [
+      {
+        "deal_id": "e3f4a5b6-c7d8-9012-efab-3456789abcde",
+        "name": "Acme Enterprise License",
+        "amount": 75000.00,
+        "currency": "USD",
+        "deal_status": "open",
+        "stage_name": "Negotiation",
+        "owner_name": "Jane Smith"
+      },
+      {
+        "deal_id": "f4a5b6c7-d8e9-0123-fabc-456789abcdef",
+        "name": "Acme Support Renewal",
+        "amount": 25000.00,
+        "currency": "USD",
+        "deal_status": "won",
+        "stage_name": "Closed Won",
+        "owner_name": "Jane Smith"
+      }
+    ]
+  }
+}
+```
+
+**Note:** `contact_count` and `deal_count` in the detail response reflect the actual lengths of the `contacts` and `deals` arrays. `pipeline_value` is the sum of `amount` from deals where `deal_status = "open"` only (won/lost/closed deals are excluded).
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `404` | `"Account not found"` | No non-deleted account with this ID in this organisation |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 5. Update Account
+
+```http
+PATCH /users/crm/accounts/{company_id}
+```
+
+Partial update — only send fields you want to change. Omitted fields remain unchanged. Domain is normalised if provided.
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | UUID | Yes | Account identifier |
+
+#### Request Body
+
+All fields optional. Only include fields to update.
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| `name` | string | — | Company name |
+| `domain` | string | — | Domain (auto-normalised) |
+| `website` | string | — | Website URL |
+| `industry` | string | — | Industry classification |
+| `description` | string | — | Company description |
+| `phone` | string | — | Phone number |
+| `linkedin_url` | string | — | LinkedIn URL |
+| `number_of_employees` | integer | — | Employee count |
+| `annual_revenue` | number | — | Annual revenue (decimal) |
+
+#### Example Request
+
+```json
+{
+  "industry": "Enterprise Software",
+  "number_of_employees": 500,
+  "annual_revenue": 75000000.00
+}
+```
+
+#### Success Response (200)
+
+Returns the updated `AccountListItem`. `contact_count`, `deal_count`, and `pipeline_value` are returned as `0` in the update response (not re-computed for performance).
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account updated successfully",
+  "data": {
+    "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+    "name": "Acme Corp",
+    "industry": "Enterprise Software",
+    "number_of_employees": 500,
+    "annual_revenue": 75000000.00,
+    "contact_count": 0,
+    "deal_count": 0,
+    "pipeline_value": 0.0,
+    "...": "other AccountListItem fields"
+  }
+}
+```
+
+**Frontend note:** After a successful update, either refetch the account detail or merge the response into local state. The `contact_count`/`deal_count`/`pipeline_value` fields will be `0` in the PATCH response — use previously cached values or refetch if needed.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `404` | `"Account not found"` | No non-deleted account with this ID in this organisation |
+| `422` | Pydantic validation error | Invalid field types in body |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 6. Get Account Contacts
+
+```http
+GET /users/crm/accounts/{company_id}/contacts
+```
+
+Returns contacts whose email domain matches the account's `domain`. If the account has no `domain` set, returns an empty array.
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | UUID | Yes | Account identifier |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account contacts retrieved successfully",
+  "data": [
+    {
+      "contact_id": "c1d2e3f4-a5b6-7890-cdef-123456789abc",
+      "full_name": "John Doe",
+      "email": "john@acme.com",
+      "job_title": "VP Engineering",
+      "deal_count": 0
+    }
+  ]
+}
+```
+
+**Note:** `deal_count` is always `0` in this endpoint (not computed for performance). Use the account detail endpoint or the contacts list endpoint for accurate deal counts.
+
+**Empty results:** Returns `data: []` when:
+
+- The account has no `domain` set
+- No contacts have emails matching the account domain
+- The account doesn't exist (no error — just empty array)
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 7. Get Account Deals
+
+```http
+GET /users/crm/accounts/{company_id}/deals
+```
+
+Returns deals linked to the account via `company_external_id`. If the account has no `external_id`, returns an empty array.
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | UUID | Yes | Account identifier |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Account deals retrieved successfully",
+  "data": [
+    {
+      "deal_id": "e3f4a5b6-c7d8-9012-efab-3456789abcde",
+      "name": "Acme Enterprise License",
+      "amount": 75000.00,
+      "currency": "USD",
+      "deal_status": "open",
+      "stage_name": "Negotiation",
+      "owner_name": "Jane Smith"
+    }
+  ]
+}
+```
+
+**Note:** Both open and closed/won/lost deals are returned. Filter by `deal_status` client-side if needed.
+
+**Empty results:** Returns `data: []` when:
+
+- The account has no `external_id`
+- No deals have a matching `company_external_id`
+- The account doesn't exist (no error — just empty array)
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 8. Enrich Account
+
+```http
+POST /users/crm/accounts/{company_id}/enrich
+```
+
+Trigger account enrichment with external data sources. **Currently a placeholder** — the company research pipeline is deferred to a future phase. The endpoint validates that the account exists and belongs to the organisation, then returns an accepted response.
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | UUID | Yes | Account identifier |
+
+#### Success Response (202 Accepted)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Enrichment request accepted",
+  "data": {
+    "job_id": null,
+    "message": "Account enrichment will be available in a future release"
+  }
+}
+```
+
+**Frontend implementation:** Show a disabled or "coming soon" state for the enrich button. The endpoint exists to reserve the API contract — when the pipeline is built, it will return a `job_id` that can be polled for progress.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `404` | `"Account not found"` | No non-deleted account with this ID in this organisation |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+## Error Catalog
+
+Consolidated reference of all error responses across all endpoints.
+
+| HTTP Status | Error Message | Endpoint(s) | Cause |
+|-------------|--------------|-------------|-------|
+| `400` | `"Page must be >= 1"` | List accounts | Invalid page parameter |
+| `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
+| `404` | `"Account not found"` | Get detail, Update, Enrich | Account doesn't exist or is deleted |
+| `409` | `"An account with domain '...' already exists"` | Create | Duplicate normalised domain |
+| `409` | `"Internal CRM integration not configured"` | Create | Missing INTERNAL_CRM integration |
+| `422` | Pydantic validation error | Create, Update, Suggest | Invalid request body or query parameters |
+| `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
+| `429` | `"Too many requests (per-hour limit exceeded)"` | All | Per-hour rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | All | Unhandled exception |
+
+---
+
+## Backend Architecture Notes
+
+> This section is for backend developers working on the service layer.
+
+### Database
+
+**Table:** `crm_companies` (tenant-scoped, in `org_*` schema)
+
+**Key indexes:**
+
+| Index | Columns | Purpose |
+|-------|---------|---------|
+| `ix_crm_company_org_domain` | `organisation_id, domain` | Domain-based lookups and duplicate checks |
+| `ix_crm_company_org_name` | `organisation_id, name` | Name search and sorting |
+| `ix_crm_company_owner` | `organisation_id, owner_external_id` | Owner filtering |
+| `ix_crm_company_lifecycle` | `organisation_id, lifecycle_stage` | Lifecycle filtering |
+| `ix_crm_company_synced` | `organisation_id, synced_at` | Sync recency queries |
+| `uq_crm_company_external` | `integration_id, external_id` | Uniqueness per integration |
+
+**Migration:** Research fields (`company_research`, `last_researched_at`, `research_status`) added in migration `3c7f79637798_030_add_contact_company_research_fields`.
+
+### Service Layer
+
+**Class:** `AccountsAccessService` (`src/service/crm/access/accounts_access_service.py`)
+
+- Receives `org_session` and `organisation_id` at construction
+- All queries filter by `organisation_id` and `is_deleted = False`
+- `list_accounts()` uses correlated subqueries for `contact_count`, `deal_count`, `pipeline_value` to avoid N+1
+- `create_account()` checks domain uniqueness (normalised, case-insensitive) and auto-creates `INTERNAL_CRM` integration if missing
+- `update_account()` normalises domain if provided, only updates allowed fields (ignores unknown fields)
+- Domain normalisation strips protocol (`https://`), `www.` prefix, paths, query strings, and lowercases
+
+### Domain Matching SQL Pattern
+
+Contact-to-account matching uses:
+
+```sql
+-- Contact count per company
+SELECT count(contact_id)
+FROM crm_contacts
+WHERE organisation_id = :org_id
+  AND is_deleted = false
+  AND email ILIKE concat('%@', crm_companies.domain)
+```
+
+This means domain matching is case-insensitive and suffix-based. A company with domain `acme.com` will match contacts with emails like `john@ACME.COM`, `jane@acme.com`, etc.

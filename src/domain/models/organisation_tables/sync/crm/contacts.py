@@ -22,6 +22,7 @@ class CRMContact(SyncedRecordMixin, table=True):
         Index("ix_crm_contact_org_email", "organisation_id", "email"),
         Index("ix_crm_contact_owner", "organisation_id", "owner_external_id"),
         Index("ix_crm_contact_lifecycle", "organisation_id", "lifecycle_stage"),
+        Index("ix_crm_contact_company_id", "organisation_id", "company_id"),
     )
 
     # Identity
@@ -44,6 +45,12 @@ class CRMContact(SyncedRecordMixin, table=True):
     )
     company_name: str | None = Field(
         default=None, description="Company string stored on the contact."
+    )
+    # Explicit FK to the linked account — takes precedence over domain matching
+    company_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_companies.company_id",
+        description="Explicit FK to the linked account. When set, takes precedence over domain matching.",
     )
 
     # Email & communication

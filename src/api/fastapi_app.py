@@ -45,6 +45,8 @@ from src.api.routers.chat_attachments.access_handler import (
 )
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.crm import (
+    accounts_router,
+    contacts_router,
     crm_users_router,
     custom_fields_router,
     deal_assets_router,
@@ -224,6 +226,8 @@ def create_fastapi_app():
     fastapp.include_router(
         stakeholder_insights_router, prefix="/users/crm/deals", tags=["stakeholder-insights"]
     )
+    fastapp.include_router(contacts_router, prefix="/users/crm", tags=["crm-contacts"])
+    fastapp.include_router(accounts_router, prefix="/users/crm", tags=["crm-accounts"])
 
     # Admin routers
     fastapp.include_router(
