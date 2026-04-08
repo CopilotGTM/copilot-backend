@@ -24,6 +24,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger("meetings_service")
@@ -75,7 +76,7 @@ class MeetingsService:
         for assoc, event in rows:
             attendees = [
                 MeetingAttendee(
-                    name=att.display_name,
+                    name=resolve_attendee_display_name(att.display_name, att.email),
                     email=att.email,
                     status=att.response_status,
                 )
@@ -88,7 +89,7 @@ class MeetingsService:
             meetings.append(
                 DealMeetingResponse(
                     event_id=event.event_id,
-                    subject=event.data_payload.get("subject") if event.data_payload else None,
+                    subject=event.title,
                     start_at=event.start_at,
                     status=assoc.status,
                     attendees=attendees,
