@@ -636,6 +636,17 @@ class EmailSyncService:
         if not body_text and body_html:
             body_text = cls._html_to_text(body_html)
 
+        sent_at = cls._parse_datetime(message_data.get("sentDateTime"))
+        # Outlook can return null receivedDateTime for drafts and a small set of
+        # system-generated messages. Preserve the provider timestamp when present,
+        # then fall back to adjacent timestamps before using "now".
+        received_at = (
+            cls._parse_datetime(message_data.get("receivedDateTime"))
+            or sent_at
+            or cls._parse_datetime(message_data.get("createdDateTime"))
+            or datetime.now(UTC)
+        )
+
         return {
             "thread_id": message_data.get("conversationId"),
             "internet_message_id": message_data.get("internetMessageId"),
@@ -649,8 +660,8 @@ class EmailSyncService:
             "body_text": body_text,
             "body_html": body_html,
             "snippet": message_data.get("bodyPreview"),
-            "received_at": cls._parse_datetime(message_data.get("receivedDateTime")),
-            "sent_at": cls._parse_datetime(message_data.get("sentDateTime")),
+            "received_at": received_at,
+            "sent_at": sent_at,
             "is_read": "true" if message_data.get("isRead", False) else "false",
             "is_starred": "false",  # Outlook uses flag instead (stored as string in DB)
             "is_important": "true" if message_data.get("importance") == "high" else "false",

@@ -220,6 +220,72 @@ class TestExtractGmailMessageFields:
         assert fields["body_text"] == "Original plain text"
 
 
+class TestExtractOutlookMessageFields:
+    def test_received_at_uses_received_datetime_when_present(self):
+        msg = {
+            "id": "msg-1",
+            "conversationId": "thread-1",
+            "internetMessageId": "<msg-1@example.com>",
+            "from": {"emailAddress": {"address": "alice@example.com", "name": "Alice"}},
+            "toRecipients": [],
+            "ccRecipients": [],
+            "bccRecipients": [],
+            "subject": "Test",
+            "body": {"contentType": "text", "content": "Hello"},
+            "bodyPreview": "Hello",
+            "receivedDateTime": "2026-04-08T16:30:00Z",
+            "sentDateTime": "2026-04-08T16:29:00Z",
+        }
+
+        fields = EmailSyncService._extract_outlook_message_fields(msg)
+
+        assert fields["received_at"].isoformat() == "2026-04-08T16:30:00+00:00"
+        assert fields["sent_at"].isoformat() == "2026-04-08T16:29:00+00:00"
+
+    def test_received_at_falls_back_to_sent_datetime(self):
+        msg = {
+            "id": "msg-2",
+            "conversationId": "thread-2",
+            "internetMessageId": "<msg-2@example.com>",
+            "from": {"emailAddress": {"address": "alice@example.com", "name": "Alice"}},
+            "toRecipients": [],
+            "ccRecipients": [],
+            "bccRecipients": [],
+            "subject": "Draft",
+            "body": {"contentType": "text", "content": "Hello"},
+            "bodyPreview": "Hello",
+            "receivedDateTime": None,
+            "sentDateTime": "2026-04-08T16:29:00Z",
+        }
+
+        fields = EmailSyncService._extract_outlook_message_fields(msg)
+
+        assert fields["received_at"].isoformat() == "2026-04-08T16:29:00+00:00"
+        assert fields["sent_at"].isoformat() == "2026-04-08T16:29:00+00:00"
+
+    def test_received_at_falls_back_to_created_datetime(self):
+        msg = {
+            "id": "msg-3",
+            "conversationId": "thread-3",
+            "internetMessageId": "<msg-3@example.com>",
+            "from": {"emailAddress": {"address": "alice@example.com", "name": "Alice"}},
+            "toRecipients": [],
+            "ccRecipients": [],
+            "bccRecipients": [],
+            "subject": "System message",
+            "body": {"contentType": "text", "content": "Hello"},
+            "bodyPreview": "Hello",
+            "receivedDateTime": None,
+            "sentDateTime": None,
+            "createdDateTime": "2026-04-08T16:28:00Z",
+        }
+
+        fields = EmailSyncService._extract_outlook_message_fields(msg)
+
+        assert fields["received_at"].isoformat() == "2026-04-08T16:28:00+00:00"
+        assert fields["sent_at"] is None
+
+
 # ---------------------------------------------------------------------------
 # Email address parsing helpers
 # ---------------------------------------------------------------------------
