@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
 # Re-export from shared module so existing imports keep working
 from src.workers.base.worker_utils import get_organisation_name
@@ -533,7 +534,9 @@ async def get_previous_meetings_with_summaries(
         attendee_names: list[str] = []
         if event.attendees:
             attendee_names = [
-                a.display_name or a.email for a in event.attendees if a.display_name or a.email
+                name
+                for a in event.attendees
+                if (name := resolve_attendee_display_name(a.display_name, a.email) or a.email)
             ]
 
         has_summary = (
@@ -688,7 +691,12 @@ def _get_event_attendees_info(event: CalendarEvent) -> str:
     """
     # First try the relationship (if loaded)
     if event.attendees:
-        return "\n".join([f"- {a.display_name or 'Unknown'} ({a.email})" for a in event.attendees])
+        return "\n".join(
+            [
+                f"- {resolve_attendee_display_name(a.display_name, a.email) or 'Unknown'} ({a.email})"
+                for a in event.attendees
+            ]
+        )
     # Fallback to data_payload
     if event.data_payload and event.data_payload.get("attendees"):
         attendees = event.data_payload.get("attendees", [])
@@ -743,7 +751,7 @@ MEETING BRIEFING REQUEST
 TARGET MEETING (Prepare briefing for THIS meeting):
 - Subject: {_get_event_title(event)}
 - Date/Time: {meeting_date}
-- Organizer: {event.organiser_name or event.organiser_email or "Unknown"}
+- Organizer: {resolve_attendee_display_name(event.organiser_name, event.organiser_email) or event.organiser_email or "Unknown"}
 - Location: {event.location or "Online Meeting"}
 - Conference Link: {event.conference_link or "N/A"}
 

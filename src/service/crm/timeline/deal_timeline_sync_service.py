@@ -54,6 +54,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.crm.timeline.timeline_event_source_resolver import (
     resolve_crm_event_source,
     resolve_email_event_source,
@@ -1100,8 +1101,11 @@ def build_meeting_timeline_event(
     # Build participant preview
     participant_names: list[str] = []
     if event:
-        if event.organiser_name:
-            participant_names.append(event.organiser_name)
+        organiser_display = resolve_attendee_display_name(
+            event.organiser_name, event.organiser_email
+        )
+        if organiser_display:
+            participant_names.append(organiser_display)
         elif event.organiser_email:
             participant_names.append(event.organiser_email)
 
@@ -1109,7 +1113,9 @@ def build_meeting_timeline_event(
         attendees = getattr(event, "attendees", None)
         if attendees:
             for att in attendees[:3]:
-                name = getattr(att, "display_name", None) or getattr(att, "email", None)
+                name = resolve_attendee_display_name(
+                    getattr(att, "display_name", None), getattr(att, "email", None)
+                ) or getattr(att, "email", None)
                 if name and name not in participant_names:
                     participant_names.append(name)
 

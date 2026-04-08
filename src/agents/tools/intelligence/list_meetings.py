@@ -32,6 +32,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -185,7 +186,7 @@ async def list_deal_meetings(
                 attendees.append(
                     {
                         "email": att.email,
-                        "name": att.display_name,
+                        "name": resolve_attendee_display_name(att.display_name, att.email),
                         "response_status": att.response_status,
                         "is_organiser": att.is_organiser,
                     }
@@ -198,7 +199,9 @@ async def list_deal_meetings(
                     "start_at": event.start_at.isoformat() if event.start_at else None,
                     "end_at": event.end_at.isoformat() if event.end_at else None,
                     "status": event.status,
-                    "organiser_name": event.organiser_name,
+                    "organiser_name": resolve_attendee_display_name(
+                        event.organiser_name, event.organiser_email
+                    ),
                     "organiser_email": event.organiser_email,
                     "attendee_count": event.attendee_count,
                     "attendees": attendees,

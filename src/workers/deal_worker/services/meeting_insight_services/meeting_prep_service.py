@@ -27,6 +27,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.services.meeting_insight_services.meeting_summary_service import (
     AUTOMATED_PIPELINE_USER_ID,
@@ -147,15 +148,17 @@ class MeetingPrepService:
             event_description = event.description
             event_start_at = event.start_at.isoformat() if event.start_at else None
             event_end_at = event.end_at.isoformat() if event.end_at else None
-            organiser_name = event.organiser_name
+            organiser_name = resolve_attendee_display_name(
+                event.organiser_name, event.organiser_email
+            )
             organiser_email = event.organiser_email
             attendee_count = event.attendee_count
 
             if event.attendees:
                 attendees_preview = [
-                    (a.display_name or a.email)
+                    name
                     for a in event.attendees
-                    if (a.display_name or a.email)
+                    if (name := resolve_attendee_display_name(a.display_name, a.email) or a.email)
                 ][:8]
 
             if association:

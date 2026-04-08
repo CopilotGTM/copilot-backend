@@ -40,6 +40,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -267,7 +268,9 @@ async def list_meetings_by_date(
                     },
                     "attendee_count": event.attendee_count or 0,
                     "external_attendee_count": external_count,
-                    "organiser_name": event.organiser_name,
+                    "organiser_name": resolve_attendee_display_name(
+                        event.organiser_name, event.organiser_email
+                    ),
                     "organiser_email": event.organiser_email,
                     "has_transcript": has_transcript_val,
                     "has_summary": assoc.meeting_summary_status == GenerationStatus.COMPLETED,
