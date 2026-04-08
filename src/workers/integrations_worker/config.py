@@ -244,17 +244,17 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # Calendar: every 15 minutes around the clock
+            # Calendar: every 5 minutes for faster validation
             "sync-calendar-events": {
                 "task": CALENDAR_SYNC_TASK,
-                "schedule": crontab(minute="*/15"),
+                "schedule": crontab(minute="*/5"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # Email: every 30 minutes around the clock
+            # Email: every 7 minutes for faster validation
             "sync-email-all-orgs": {
                 "task": "integrations.sync_email_all_orgs",
-                "schedule": crontab(minute="0,30"),
+                "schedule": crontab(minute="*/7"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },

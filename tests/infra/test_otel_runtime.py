@@ -285,6 +285,18 @@ def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock.assert_any_call(service_name_suffix="-unit_worker")
 
 
+def test_create_celery_app_sets_resilient_redis_transport_options():
+    app = celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
+
+    assert app.conf.broker_transport_options == {
+        "socket_timeout": 30,
+        "socket_connect_timeout": 30,
+        "socket_keepalive": True,
+        "retry_on_timeout": True,
+        "health_check_interval": 30,
+    }
+
+
 def test_otel_log_sanitizer_drops_source_location_fields():
     from src.infra.observability.otel import _OtelLogSanitizer
 

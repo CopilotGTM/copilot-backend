@@ -183,6 +183,16 @@ def create_celery_app(worker_name, config, tasks_module):
         broker_connection_retry_on_startup=True,
         broker_connection_retry=True,
         broker_connection_max_retries=10,
+        # Azure Redis can silently close idle TLS sockets. Keepalive + broker
+        # health checks ensure Beat and workers detect stale sockets promptly
+        # instead of hanging on a dead connection after the next scheduled tick.
+        broker_transport_options={
+            "socket_timeout": 30,
+            "socket_connect_timeout": 30,
+            "socket_keepalive": True,
+            "retry_on_timeout": True,
+            "health_check_interval": 30,
+        },
         # Task execution settings
         task_track_started=True,
         task_time_limit=default_time_limit,
