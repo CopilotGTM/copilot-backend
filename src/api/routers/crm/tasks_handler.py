@@ -135,6 +135,10 @@ async def _enrich_task_list_item(task, session: AsyncSession) -> TaskListItem:
             "is_overdue": _compute_is_overdue(task.due_date, task.status),
             "has_reminder": has_reminder,
             "deal_name": deal_name,
+            # Mirrors the write-path guard in tasks_write_service._load_user_task:
+            # integration_id is the authoritative CRM-synced predicate. Do NOT use
+            # `source` here — it is nullable and can drift from integration_id.
+            "is_read_only": task.integration_id is not None,
         }
     )
 
@@ -153,6 +157,10 @@ async def _enrich_task_detail(task, session: AsyncSession) -> TaskDetail:
             "has_reminder": has_reminder,
             "deal_name": deal_name,
             "reminder": reminder_dict,
+            # Mirrors the write-path guard in tasks_write_service._load_user_task:
+            # integration_id is the authoritative CRM-synced predicate. Do NOT use
+            # `source` here — it is nullable and can drift from integration_id.
+            "is_read_only": task.integration_id is not None,
         }
     )
 

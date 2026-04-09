@@ -111,6 +111,14 @@ class TaskListItem(BaseModel):
         description="Computed flag: due_date < now and status != COMPLETED",
     )
     has_reminder: bool = Field(default=False, description="Whether a reminder is linked.")
+    is_read_only: bool = Field(
+        default=False,
+        description=(
+            "True when the task originates from an external CRM sync and cannot be "
+            "edited via the user API. Authoritative editability flag — the frontend "
+            "should use this instead of inspecting `source`."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
@@ -206,6 +214,14 @@ class TaskDetail(BaseModel):
     # Integration metadata
     integration_id: UUID | None
     organisation_id: UUID
+    is_read_only: bool = Field(
+        default=False,
+        description=(
+            "True when the task originates from an external CRM sync and cannot be "
+            "edited via the user API. Authoritative editability flag — the frontend "
+            "should use this instead of inspecting `source`."
+        ),
+    )
 
     # Timestamps
     synced_at: datetime

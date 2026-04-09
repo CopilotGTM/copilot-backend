@@ -622,6 +622,12 @@ class TasksWriteService:
             raise TasksWriteServiceError("Task not found", 404)
         if task.activity_type not in _ALLOWED_TASK_TYPES:
             raise TasksWriteServiceError("Task not found", 404)
+        # Authoritative read-only predicate: any task with integration_id set is a
+        # CRM-synced record and cannot be edited via the user API. `source` is
+        # informational only — it is nullable and was only backfilled once (in
+        # migration 035), so it can drift from integration_id and MUST NOT be used
+        # here. The response-layer `is_read_only` flag in TaskListItem/TaskDetail
+        # mirrors this same predicate so the frontend stays in sync.
         if task.integration_id is not None:
             raise TasksWriteServiceError("External CRM tasks are read-only", 409)
         return task
