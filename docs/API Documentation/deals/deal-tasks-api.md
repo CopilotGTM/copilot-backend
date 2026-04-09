@@ -84,6 +84,7 @@ export interface TaskListItem {
   created_by_user_id: UUID | null;
   is_overdue: boolean;
   has_reminder: boolean;
+  is_read_only: boolean;          // True for CRM-synced tasks; frontend MUST use this to gate edit UI
   created_at: string;
   updated_at: string;
   synced_at: string;
@@ -208,6 +209,7 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
         "created_by_user_id": "b1a7f9c0-...",
         "is_overdue": false,
         "has_reminder": true,
+        "is_read_only": false,
         "owner_name": "Jordan Lee",
         "owner_email": "jordan@example.com",
         "created_at": "2026-03-10T09:00:00Z",
@@ -226,6 +228,7 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
 
 - By default, completed and cancelled tasks are excluded. Pass `include_completed=true` to include them.
 - `is_overdue` is computed server-side: `due_date < now AND status NOT IN (COMPLETED, CANCELLED)`.
+- `is_read_only` is computed server-side as `integration_id IS NOT NULL` and is the authoritative flag for whether a task can be edited. PATCH / DELETE / reminder / assign endpoints all return **409 "External CRM tasks are read-only"** when invoked on a read-only task. The frontend MUST gate edit affordances on `is_read_only` (do **not** use `source === "CRM_SYNC"` — `source` is nullable and can drift).
 - `deal_name` is resolved from the associated `crm_deals` row (null for standalone tasks).
 - Sorting by `due_date` places null due dates last regardless of sort order.
 
@@ -300,6 +303,7 @@ GET /tasks/{task_id}
     "created_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
     "is_overdue": false,
     "has_reminder": true,
+    "is_read_only": false,
     "reminder": {
       "reminder_id": "c2d3e4f5-...",
       "trigger_time": "2026-03-24T09:00:00Z",
