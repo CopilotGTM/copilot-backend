@@ -24,9 +24,9 @@ from src.api.schemas.crm_custom_field_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.infra.utils.logger import get_logger
-from src.service.crm.internal.custom_field_service import (
-    CustomFieldService,
-    CustomFieldServiceError,
+from src.service.crm.internal.custom_field_write_service import (
+    CustomFieldWriteService,
+    CustomFieldWriteServiceError,
 )
 
 logger = get_logger(__name__)
@@ -40,10 +40,10 @@ async def get_custom_field_service(
     user_ids: UserIDs = Depends(get_current_user),
     session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = CustomFieldService(
+    service = CustomFieldWriteService(
         session=session,
         organisation_id=user_ids.organisation_id,
-        actor_user_id=user_ids.user_id,
+        user_id=user_ids.user_id,
     )
     try:
         yield service
@@ -51,7 +51,7 @@ async def get_custom_field_service(
         try:
             await service.close()
         except Exception:
-            logger.debug("CustomFieldService close failed", exc_info=True)
+            logger.debug("CustomFieldWriteService close failed", exc_info=True)
 
 
 def _to_response_item(field) -> CustomFieldDefinitionItem:
@@ -85,7 +85,7 @@ async def list_custom_fields(
         CRMCustomFieldEntity.DEAL, description="Entity scope for field definitions"
     ),
     include_inactive: bool = Query(False, description="Include inactive fields in the response"),
-    service: CustomFieldService = Depends(get_custom_field_service),
+    service: CustomFieldWriteService = Depends(get_custom_field_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[list[CustomFieldDefinitionItem]]:
     """List custom field definitions for the current organisation."""
@@ -93,7 +93,7 @@ async def list_custom_fields(
         fields = await service.list_fields(entity=entity, include_inactive=include_inactive)
         items = [_to_response_item(field) for field in fields]
         return Response.success_response(message="Custom fields retrieved", data=items)
-    except CustomFieldServiceError as exc:
+    except CustomFieldWriteServiceError as exc:
         logger.warning("Custom field list error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message,
@@ -118,30 +118,26 @@ async def list_custom_fields(
 async def create_custom_field(
     request: CreateCustomFieldRequest,
     response: FastAPIResponse,
-    service: CustomFieldService = Depends(get_custom_field_service),
+    service: CustomFieldWriteService = Depends(get_custom_field_service),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CustomFieldDefinitionItem]:
-    """Create a custom field definition for the current organisation."""
+    """Create a custom column definition for the current organisation."""
     try:
-        field = await service.create_field(request.model_dump())
-        await service.session.commit()
-        await service.session.refresh(field)
+        field = await service.create_field(request)
         return Response.created_response(
-            message="Custom field created",
+            message="Custom column created",
             data=_to_response_item(field),
             response=response,
         )
-    except CustomFieldServiceError as exc:
-        await service.session.rollback()
-        logger.warning("Custom field create error: %s", exc.message, exc_info=True)
+    except CustomFieldWriteServiceError as exc:
+        logger.warning("Custom column create error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message,
             status_code=exc.status_code,
             response=response,
         )
     except Exception as exc:
-        await service.session.rollback()
-        logger.error("Unexpected custom field create error: %s", exc, exc_info=True)
+        logger.error("Unexpected custom column create error: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -158,29 +154,25 @@ async def update_custom_field(
     field_id: UUID,
     request: UpdateCustomFieldRequest,
     response: FastAPIResponse,
-    service: CustomFieldService = Depends(get_custom_field_service),
+    service: CustomFieldWriteService = Depends(get_custom_field_service),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CustomFieldDefinitionItem]:
-    """Update mutable properties of a custom field definition."""
+    """Update mutable properties of a custom column definition."""
     try:
-        field = await service.update_field(field_id, request.model_dump(exclude_unset=True))
-        await service.session.commit()
-        await service.session.refresh(field)
+        field = await service.update_field(field_id, request)
         return Response.success_response(
-            message="Custom field updated",
+            message="Custom column updated",
             data=_to_response_item(field),
         )
-    except CustomFieldServiceError as exc:
-        await service.session.rollback()
-        logger.warning("Custom field update error: %s", exc.message, exc_info=True)
+    except CustomFieldWriteServiceError as exc:
+        logger.warning("Custom column update error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message,
             status_code=exc.status_code,
             response=response,
         )
     except Exception as exc:
-        await service.session.rollback()
-        logger.error("Unexpected custom field update error: %s", exc, exc_info=True)
+        logger.error("Unexpected custom column update error: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -190,35 +182,28 @@ async def update_custom_field(
 
 @custom_fields_router.delete(
     "/custom-fields/{field_id}",
-    response_model=GenericResponse[CustomFieldDefinitionItem],
-    summary="Archive a custom field definition",
+    response_model=GenericResponse[None],
+    summary="Soft-delete a custom column definition",
 )
 async def delete_custom_field(
     field_id: UUID,
     response: FastAPIResponse,
-    service: CustomFieldService = Depends(get_custom_field_service),
+    service: CustomFieldWriteService = Depends(get_custom_field_service),
     _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[CustomFieldDefinitionItem]:
-    """Soft delete a custom field definition."""
+) -> GenericResponse[None]:
+    """Soft-delete a custom column. Blocked when any deal still uses it."""
     try:
-        field = await service.archive_field(field_id)
-        await service.session.commit()
-        await service.session.refresh(field)
-        return Response.success_response(
-            message="Custom field archived",
-            data=_to_response_item(field),
-        )
-    except CustomFieldServiceError as exc:
-        await service.session.rollback()
-        logger.warning("Custom field archive error: %s", exc.message, exc_info=True)
+        await service.delete_field(field_id)
+        return Response.success_response(message="Custom column deleted", data=None)
+    except CustomFieldWriteServiceError as exc:
+        logger.warning("Custom column delete error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message,
             status_code=exc.status_code,
             response=response,
         )
     except Exception as exc:
-        await service.session.rollback()
-        logger.error("Unexpected custom field archive error: %s", exc, exc_info=True)
+        logger.error("Unexpected custom column delete error: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -234,7 +219,7 @@ async def delete_custom_field(
 async def validate_formula(
     request: ValidateFormulaRequest,
     response: FastAPIResponse,
-    service: CustomFieldService = Depends(get_custom_field_service),
+    service: CustomFieldWriteService = Depends(get_custom_field_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ValidateFormulaResponse]:
     """Validate formula syntax and field dependencies for the current organisation."""
@@ -245,7 +230,7 @@ async def validate_formula(
         )
         payload = ValidateFormulaResponse(is_valid=True, dependencies=dependencies)
         return Response.success_response(message="Formula is valid", data=payload)
-    except CustomFieldServiceError as exc:
+    except CustomFieldWriteServiceError as exc:
         logger.warning("Formula validation error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message,
