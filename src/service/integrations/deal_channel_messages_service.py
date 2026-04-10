@@ -1,18 +1,18 @@
 """
 Deal channel messages sync service.
 
-This service handles syncing messages from Teams channels that users have linked to deals.
+This service handles syncing messages from Slack/Teams channels that users have linked to deals.
 It follows the existing service patterns in the codebase.
 
 Key features:
 - Query deal-linked channels with deduplication by external_channel_id
 - Random integration selection for rate limit distribution
-- Fetch messages via Teams Graph API (Nango proxy)
+- Fetch messages via provider APIs (Teams Graph / Slack Web API)
 - Store messages in messaging_messages table
 
 Architecture:
 - Service layer handles business logic and database operations
-- Provider layer (teams.py) handles external API calls
+- Provider layer handles external API calls
 - Task layer (deal_channel_messages_tasks.py) handles Celery orchestration
 
 Session Management:
@@ -53,6 +53,15 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.workers.integrations_worker.providers.messaging.slack import (
+    fetch_chat_messages as fetch_slack_chat_messages,
+)
+from src.workers.integrations_worker.providers.messaging.slack import (
+    fetch_messages as fetch_slack_messages,
+)
+from src.workers.integrations_worker.providers.messaging.slack import (
+    split_slack_channel_external_id,
+)
 from src.workers.integrations_worker.providers.messaging.teams import (
     FetchMessagesResult,
     fetch_chat_messages,
@@ -104,13 +113,13 @@ class OrgSyncResult:
 
 class DealChannelMessagesService:
     """
-    Service for syncing messages from deal-linked Teams channels.
+    Service for syncing messages from deal-linked Slack/Teams channels.
 
     This service:
     1. Queries MessagingDealLink for user-selected channels
     2. Groups by external_channel_id to avoid duplicate fetches
     3. Randomly selects integration for load distribution
-    4. Fetches messages via Teams Graph API (Nango proxy)
+    4. Fetches messages via provider APIs
     5. Stores in messaging_messages table
 
     Session Management:
@@ -127,6 +136,12 @@ class DealChannelMessagesService:
         """
         self.db = session
         self.organisation_id = organisation_id
+
+    def _require_session(self) -> AsyncSession:
+        """Return the configured session or fail fast for legacy code paths."""
+        if self.db is None:
+            raise RuntimeError("Database session is required for this operation")
+        return self.db
 
     async def sync_all_deal_channels_fresh(
         self,
@@ -374,7 +389,9 @@ class DealChannelMessagesService:
                 col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
-                col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
+                col(KnowledgeIntegration.integration_type).in_(
+                    [IntegrationType.TEAMS, IntegrationType.SLACK]
+                ),
             )
             .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
@@ -389,7 +406,8 @@ class DealChannelMessagesService:
                 col(MessagingChannelIntegrationState.integration_id) == integration_id
             )
 
-        result = await self.db.execute(stmt)
+        session = self._require_session()
+        result = await session.execute(stmt)
         rows = result.all()
 
         channels_to_sync: list[DealLinkedChannelInfo] = []
@@ -475,7 +493,9 @@ class DealChannelMessagesService:
                 col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
-                col(KnowledgeIntegration.integration_type) == IntegrationType.TEAMS,
+                col(KnowledgeIntegration.integration_type).in_(
+                    [IntegrationType.TEAMS, IntegrationType.SLACK]
+                ),
             )
             .distinct(col(MessagingChannel.external_channel_id))
             .order_by(
@@ -603,9 +623,11 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             # Phase 3: Store messages (fresh session)
             # ─────────────────────────────────────────────────────────────────
+            provider = str(channel_info.channel_metadata.get("provider") or "teams").lower()
             messages_stored = await self._store_messages_fresh_session(
                 channel_id=channel_info.channel_id,
                 messages=messages,
+                provider=provider,
             )
 
             # ─────────────────────────────────────────────────────────────────
@@ -739,9 +761,11 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             # Phase 3: Store messages (fresh session)
             # ─────────────────────────────────────────────────────────────────
+            provider = str(channel_info.channel_metadata.get("provider") or "teams").lower()
             messages_stored = await self._store_messages_fresh_session(
                 channel_id=channel_info.channel_id,
                 messages=messages,
+                provider=provider,
             )
 
             # ─────────────────────────────────────────────────────────────────
@@ -809,7 +833,8 @@ class DealChannelMessagesService:
         stmt = select(KnowledgeIntegration).where(
             col(KnowledgeIntegration.integration_id) == integration_id
         )
-        result = await self.db.execute(stmt)
+        session = self._require_session()
+        result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def _fetch_messages_with_connection_id(
@@ -833,7 +858,43 @@ class DealChannelMessagesService:
         Returns:
             FetchMessagesResult with messages and new deltaLink for next sync
         """
+        provider = str(channel_info.channel_metadata.get("provider") or "teams").lower()
         channel_type = channel_info.channel_type
+
+        if provider == "slack":
+            _, raw_channel_id = split_slack_channel_external_id(channel_info.external_channel_id)
+            is_initial = channel_info.last_sync_cursor is None
+
+            if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
+                return await fetch_slack_messages(
+                    token_info=token_info,
+                    connection_id=connection_id,
+                    channel_id=raw_channel_id,
+                    is_initial=is_initial,
+                    last_synced_at=channel_info.last_synced_at,
+                    delta_link=delta_link,
+                )
+
+            if channel_type == ChannelType.GROUP_MESSAGE:
+                return await fetch_slack_chat_messages(
+                    token_info=token_info,
+                    connection_id=connection_id,
+                    chat_id=raw_channel_id,
+                    is_initial=is_initial,
+                    last_synced_at=channel_info.last_synced_at,
+                    delta_link=delta_link,
+                )
+
+            if channel_type == ChannelType.DIRECT_MESSAGE:
+                logger.debug("Skipping Slack 1:1 DM channel %s", channel_info.channel_id)
+                return FetchMessagesResult(messages=[], delta_link=None)
+
+            logger.warning(
+                "Unknown Slack channel type %s for channel %s",
+                channel_type,
+                channel_info.channel_id,
+            )
+            return FetchMessagesResult(messages=[], delta_link=None)
 
         if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
             # Team channel - needs team_id from metadata
@@ -885,7 +946,7 @@ class DealChannelMessagesService:
         delta_link: str | None = None,
     ) -> FetchMessagesResult:
         """
-        Fetch messages from Teams API via provider layer using Delta Query.
+        Fetch messages from the provider API via the provider layer.
 
         Args:
             channel_info: Channel information
@@ -907,6 +968,7 @@ class DealChannelMessagesService:
         self,
         channel_id: UUID,
         messages: list[dict[str, Any]],
+        provider: str,
     ) -> int:
         """
         Store fetched messages in the database using a fresh session.
@@ -916,19 +978,21 @@ class DealChannelMessagesService:
 
         Args:
             channel_id: Channel UUID (our internal ID)
-            messages: List of message dicts from Teams API
+            messages: List of message dicts from the provider API
+            provider: Source provider (teams or slack)
 
         Returns:
             Number of new messages stored
         """
         async for session in acquire_org_async_session(self.organisation_id):
-            return await self._store_messages_internal(session, channel_id, messages)
+            return await self._store_messages_internal(session, channel_id, messages, provider)
         return 0
 
     async def _store_messages(
         self,
         channel_id: UUID,
         messages: list[dict[str, Any]],
+        provider: str,
     ) -> int:
         """
         Store fetched messages in the database (backward compatible).
@@ -937,18 +1001,21 @@ class DealChannelMessagesService:
 
         Args:
             channel_id: Channel UUID (our internal ID)
-            messages: List of message dicts from Teams API
+            messages: List of message dicts from the provider API
+            provider: Source provider (teams or slack)
 
         Returns:
             Number of new messages stored
         """
-        return await self._store_messages_internal(self.db, channel_id, messages)
+        session = self._require_session()
+        return await self._store_messages_internal(session, channel_id, messages, provider)
 
     async def _store_messages_internal(
         self,
         session: AsyncSession,
         channel_id: UUID,
         messages: list[dict[str, Any]],
+        provider: str,
     ) -> int:
         """
         Internal: Store fetched messages in the database.
@@ -958,7 +1025,8 @@ class DealChannelMessagesService:
         Args:
             session: Database session to use
             channel_id: Channel UUID (our internal ID)
-            messages: List of message dicts from Teams API
+            messages: List of message dicts from the provider API
+            provider: Source provider (teams or slack)
 
         Returns:
             Number of new messages stored
@@ -996,23 +1064,6 @@ class DealChannelMessagesService:
                         )
                     continue  # Skip to next message
 
-                # Detect system event messages (user joined, call started, members added, etc.)
-                # These are stored for timeline/analytics but filtered out for chat display
-                # Detection methods:
-                # 1. messageType == "systemEventMessage"
-                # 2. eventDetail property exists (indicates system event)
-                # 3. body.content contains "<systemEventMessage/>" marker
-                msg_type_raw = msg.get("messageType", "message")
-                has_event_detail = msg.get("eventDetail") is not None
-                body = msg.get("body", {})
-                raw_content = body.get("content", "") if isinstance(body, dict) else ""
-
-                is_system_event = (
-                    msg_type_raw == "systemEventMessage"
-                    or has_event_detail
-                    or raw_content.strip() == "<systemEventMessage/>"
-                )
-
                 # Check if message already exists (unique by channel + external ID)
                 existing_stmt = select(MessagingMessage).where(
                     col(MessagingMessage.channel_id) == channel_id,
@@ -1020,108 +1071,256 @@ class DealChannelMessagesService:
                 )
                 existing_result = await session.execute(existing_stmt)
                 existing = existing_result.scalar_one_or_none()
-
-                # Extract content type
-                content_type = body.get("contentType", "text") if isinstance(body, dict) else "text"
-
-                # Process content based on type:
-                # Teams API returns body.content which can be HTML or plain text
-                # - content: Always plain text (for search, preview, AI analysis)
-                # - formatted_content: Original HTML (for rich display in UI)
-                if content_type == "html" and raw_content:
-                    # Extract plain text from HTML
-                    soup = BeautifulSoup(raw_content, "html.parser")
-                    # Replace <br> and </p> with newlines for better formatting
-                    for br in soup.find_all("br"):
-                        br.replace_with("\n")
-                    for p in soup.find_all("p"):
-                        p.append("\n")
-                    plain_text = soup.get_text(separator=" ").strip()
-                    # Clean up multiple spaces/newlines
-                    plain_text = re.sub(r"\s+", " ", plain_text).strip()
-                    content = plain_text
-                    formatted_content = raw_content  # Keep original HTML
-                else:
-                    # Plain text message
-                    content = raw_content
-                    formatted_content = None  # No HTML version
-
-                # Extract sender info
-                from_info = msg.get("from", {})
-                sender_user = from_info.get("user", {}) if isinstance(from_info, dict) else {}
-                sender_id = sender_user.get("id") if isinstance(sender_user, dict) else None
-                sender_name = (
-                    sender_user.get("displayName") if isinstance(sender_user, dict) else None
-                )
-
-                # Parse timestamps
-                sent_at_str = msg.get("createdDateTime")
-                sent_at = (
-                    datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
-                    if sent_at_str
-                    else datetime.now(UTC)
-                )
+                extracted = self._extract_message_fields(msg, provider)
 
                 if existing:
-                    # Update existing message
-                    existing.content = content
-                    existing.formatted_content = formatted_content
-                    existing.message_type = (
-                        MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
-                    )
+                    existing.external_user_id = extracted["external_user_id"]
+                    existing.author_display_name = extracted["author_display_name"]
+                    existing.author_email = extracted["author_email"]
+                    existing.author_email_normalized = extracted["author_email_normalized"]
+                    existing.thread_id = extracted["thread_id"]
+                    existing.content = extracted["content"]
+                    existing.formatted_content = extracted["formatted_content"]
+                    existing.message_type = extracted["message_type"]
+                    existing.sent_at = extracted["sent_at"]
+                    existing.edited_at = extracted["edited_at"]
+                    existing.attachments = extracted["attachments"]
+                    existing.mentions = extracted["mentions"]
+                    existing.reactions = extracted["reactions"]
+                    existing.is_deleted = False
+                    existing.is_bot_message = extracted["is_bot_message"]
+                    existing.is_important = extracted["is_important"]
+                    existing.message_metadata = extracted["message_metadata"]
+                    existing.synced_at = datetime.now(UTC)
+                    existing.last_seen_at = datetime.now(UTC)
                     existing.updated_at = datetime.now(UTC)
                 else:
-                    # Determine message type:
-                    # - SYSTEM_EVENT: Call started, members added, etc. (for timeline/analytics)
-                    # - TEXT: Regular user messages (for chat display and AI analysis)
-                    message_type = MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
-
-                    # For system events, store event details in metadata for future analytics
-                    metadata = {
-                        "importance": msg.get("importance"),
-                        "webUrl": msg.get("webUrl"),
-                        "sender_display_name": sender_name,
-                    }
-                    if is_system_event and msg.get("eventDetail"):
-                        # Store event type (e.g., "callEndedEventMessageDetail")
-                        event_detail = msg.get("eventDetail", {})
-                        metadata["event_type"] = event_detail.get("@odata.type", "").replace(
-                            "#microsoft.graph.", ""
-                        )
-                        metadata["event_detail"] = event_detail
-
-                    # Extract sender email from Teams user info if available
-                    sender_email = (
-                        sender_user.get("email") if isinstance(sender_user, dict) else None
-                    )
-
                     new_message = MessagingMessage(
                         organisation_id=self.organisation_id,
                         channel_id=channel_id,
                         external_message_id=external_message_id,
-                        content=content,
-                        formatted_content=formatted_content,
-                        message_type=message_type,
-                        sent_at=sent_at,
-                        external_user_id=sender_id,
-                        author_display_name=sender_name,
-                        author_email=sender_email,
-                        author_email_normalized=(
-                            sender_email.lower().strip() if sender_email else None
-                        ),
-                        attachments=msg.get("attachments", []),
-                        mentions=[m.get("id") for m in msg.get("mentions", []) if m.get("id")],
-                        reactions={"items": msg.get("reactions", [])},
+                        external_user_id=extracted["external_user_id"],
+                        author_display_name=extracted["author_display_name"],
+                        author_email=extracted["author_email"],
+                        author_email_normalized=extracted["author_email_normalized"],
+                        thread_id=extracted["thread_id"],
+                        content=extracted["content"],
+                        formatted_content=extracted["formatted_content"],
+                        message_type=extracted["message_type"],
+                        sent_at=extracted["sent_at"],
+                        edited_at=extracted["edited_at"],
+                        attachments=extracted["attachments"],
+                        mentions=extracted["mentions"],
+                        reactions=extracted["reactions"],
                         is_deleted=False,
-                        is_bot_message=False,
-                        is_important=msg.get("importance") == "high",
-                        message_metadata=metadata,
+                        is_bot_message=extracted["is_bot_message"],
+                        is_important=extracted["is_important"],
+                        message_metadata=extracted["message_metadata"],
                     )
                     session.add(new_message)
                     stored_count += 1
 
         await session.commit()
         return stored_count
+
+    def _extract_message_fields(
+        self,
+        msg: dict[str, Any],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Normalize provider payloads into MessagingMessage fields."""
+        if provider == "slack":
+            return self._extract_slack_message_fields(msg)
+        return self._extract_teams_message_fields(msg)
+
+    def _extract_teams_message_fields(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Extract normalized message fields from a Teams message payload."""
+        body = msg.get("body", {})
+        if not isinstance(body, dict):
+            body = {}
+
+        raw_content = body.get("content", "")
+        if not isinstance(raw_content, str):
+            raw_content = str(raw_content or "")
+
+        content_type = body.get("contentType", "text")
+        if content_type == "html" and raw_content:
+            soup = BeautifulSoup(raw_content, "html.parser")
+            for br in soup.find_all("br"):
+                br.replace_with("\n")
+            for p in soup.find_all("p"):
+                p.append("\n")
+            plain_text = soup.get_text(separator=" ").strip()
+            content = re.sub(r"\s+", " ", plain_text).strip()
+            formatted_content = raw_content
+        else:
+            content = raw_content
+            formatted_content = None
+
+        from_info = msg.get("from", {})
+        sender_user = from_info.get("user", {}) if isinstance(from_info, dict) else {}
+        sender_id = sender_user.get("id") if isinstance(sender_user, dict) else None
+        sender_name = sender_user.get("displayName") if isinstance(sender_user, dict) else None
+        sender_email = sender_user.get("email") if isinstance(sender_user, dict) else None
+
+        sent_at = self._parse_iso_datetime(msg.get("createdDateTime")) or datetime.now(UTC)
+        edited_at = self._parse_iso_datetime(msg.get("lastEditedDateTime"))
+
+        msg_type_raw = msg.get("messageType", "message")
+        has_event_detail = msg.get("eventDetail") is not None
+        is_system_event = (
+            msg_type_raw == "systemEventMessage"
+            or has_event_detail
+            or raw_content.strip() == "<systemEventMessage/>"
+        )
+
+        metadata: dict[str, Any] = {
+            "provider": "teams",
+            "importance": msg.get("importance"),
+            "webUrl": msg.get("webUrl"),
+            "sender_display_name": sender_name,
+            "message_type": msg_type_raw,
+            "subject": msg.get("subject"),
+            "locale": msg.get("locale"),
+            "team_id": msg.get("teamId"),
+            "channel_id": msg.get("channelId"),
+            "chat_id": msg.get("chatId"),
+        }
+        if is_system_event and msg.get("eventDetail"):
+            event_detail = msg.get("eventDetail", {})
+            metadata["event_type"] = event_detail.get("@odata.type", "").replace(
+                "#microsoft.graph.", ""
+            )
+            metadata["event_detail"] = event_detail
+
+        mentions = []
+        for mention in msg.get("mentions", []):
+            if isinstance(mention, dict) and mention.get("id"):
+                mentions.append(mention["id"])
+
+        return {
+            "external_user_id": sender_id,
+            "author_display_name": sender_name,
+            "author_email": sender_email,
+            "author_email_normalized": sender_email.lower().strip() if sender_email else None,
+            "thread_id": msg.get("replyToId"),
+            "content": content,
+            "formatted_content": formatted_content,
+            "message_type": MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT,
+            "sent_at": sent_at,
+            "edited_at": edited_at,
+            "attachments": msg.get("attachments", []),
+            "mentions": mentions,
+            "reactions": {"items": msg.get("reactions", [])},
+            "is_bot_message": False,
+            "is_important": msg.get("importance") == "high",
+            "message_metadata": metadata,
+        }
+
+    def _extract_slack_message_fields(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Extract normalized message fields from a Slack message payload."""
+        user_profile = msg.get("user_profile", {})
+        if not isinstance(user_profile, dict):
+            user_profile = {}
+
+        text = msg.get("text")
+        content = text if isinstance(text, str) else None
+
+        subtype = str(msg.get("subtype") or "")
+        files = msg.get("files", [])
+        if not isinstance(files, list):
+            files = []
+
+        reactions = msg.get("reactions", [])
+        if not isinstance(reactions, list):
+            reactions = []
+
+        edited = msg.get("edited", {})
+        if not isinstance(edited, dict):
+            edited = {}
+
+        system_subtypes = {
+            "channel_join",
+            "channel_leave",
+            "channel_topic",
+            "channel_purpose",
+            "channel_name",
+            "channel_archive",
+            "channel_unarchive",
+            "group_join",
+            "group_leave",
+            "group_topic",
+            "group_purpose",
+            "group_name",
+            "group_archive",
+            "group_unarchive",
+            "thread_broadcast",
+        }
+
+        message_type = MessageType.TEXT
+        if files:
+            message_type = MessageType.FILE
+        elif subtype in system_subtypes:
+            message_type = MessageType.SYSTEM_EVENT
+
+        sender_email = user_profile.get("email")
+        sender_name = user_profile.get("displayName") or user_profile.get("name")
+        thread_ts = msg.get("thread_ts")
+
+        return {
+            "external_user_id": msg.get("user"),
+            "author_display_name": sender_name,
+            "author_email": sender_email,
+            "author_email_normalized": sender_email.lower().strip() if sender_email else None,
+            "thread_id": thread_ts if thread_ts else None,
+            "content": content,
+            "formatted_content": None,
+            "message_type": message_type,
+            "sent_at": self._parse_slack_ts(msg.get("ts")) or datetime.now(UTC),
+            "edited_at": self._parse_slack_ts(edited.get("ts")),
+            "attachments": files,
+            "mentions": self._extract_slack_mentions(content),
+            "reactions": {"items": reactions},
+            "is_bot_message": bool(msg.get("bot_id") or subtype == "bot_message"),
+            "is_important": bool(msg.get("pinned_to")),
+            "message_metadata": {
+                "provider": "slack",
+                "subtype": subtype or None,
+                "channel_id": msg.get("channel"),
+                "slack_channel_id": msg.get("slack_channel_id"),
+                "reply_count": msg.get("reply_count"),
+                "reply_users_count": msg.get("reply_users_count"),
+                "author_display_name": sender_name,
+                "author_email": sender_email,
+            },
+        }
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        """Parse an ISO timestamp from Teams payloads."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_slack_ts(value: Any) -> datetime | None:
+        """Parse a Slack timestamp into a UTC datetime."""
+        if value is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(str(value)), tz=UTC)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _extract_slack_mentions(text: str | None) -> list[str]:
+        """Extract Slack user mentions from mrkdwn text."""
+        if not text:
+            return []
+        return re.findall(r"<@([A-Z0-9]+)>", text)
 
     async def _update_channel_sync_state_fresh_session(
         self,
@@ -1156,7 +1355,8 @@ class DealChannelMessagesService:
             channel_id: Channel UUID
             delta_link: New deltaLink from Microsoft Graph for next incremental sync
         """
-        await self._update_channel_sync_state_internal(self.db, channel_id, delta_link)
+        session = self._require_session()
+        await self._update_channel_sync_state_internal(session, channel_id, delta_link)
 
     async def _update_channel_sync_state_internal(
         self,

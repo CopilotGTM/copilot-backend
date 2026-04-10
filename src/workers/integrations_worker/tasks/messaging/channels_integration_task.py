@@ -51,6 +51,12 @@ from src.service.integrations.sync_health import record_sync_failure
 from src.service.integrations.sync_history_manager import SyncHistoryManager
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
+from src.workers.integrations_worker.providers.messaging.slack import (
+    fetch_channels as slack_fetch_channels,
+)
+from src.workers.integrations_worker.providers.messaging.slack import (
+    fetch_chats as slack_fetch_chats,
+)
 from src.workers.integrations_worker.providers.messaging.teams import (
     fetch_channels as teams_fetch_channels,
 )
@@ -78,10 +84,21 @@ class IntegrationFetchData:
 
 
 # Messaging integration types
-MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS,)
+MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS, IntegrationType.SLACK)
 
 _TASK_NAME = "integrations.sync_messaging_channels_integration"
 _L = TASK_LIMITS[_TASK_NAME]
+
+
+def _resolve_messaging_provider(
+    integration_type: IntegrationType,
+) -> tuple[str, str]:
+    """Map integration types to worker provider names/config keys."""
+    if integration_type == IntegrationType.TEAMS:
+        return "teams", "microsoft-teams"
+    if integration_type == IntegrationType.SLACK:
+        return "slack", "slack"
+    return str(integration_type.value), str(integration_type.value)
 
 
 @app.task(
@@ -192,12 +209,7 @@ def sync_messaging_channels_integration_task(
             if isinstance(int_type, str):
                 int_type = IntegrationType(int_type)
 
-            if int_type == IntegrationType.TEAMS:
-                provider = "teams"
-                provider_config_key = "microsoft-teams"
-            else:
-                provider = str(int_type.value)
-                provider_config_key = str(int_type.value)
+            provider, provider_config_key = _resolve_messaging_provider(int_type)
 
             fetch_data = IntegrationFetchData(
                 integration_id=integration.integration_id,
@@ -264,13 +276,22 @@ def sync_messaging_channels_integration_task(
         # ─────────────────────────────────────────────────────────────────
         channels: list[dict[str, Any]] = []
         try:
-            channels = await teams_fetch_channels(
-                token_info=token_info,
-                connection_id=fetch_data.connection_id,
-                is_initial=fetch_data.is_initial,
-                last_synced_at=fetch_data.last_synced_at,
-                provider_config_key=fetch_data.provider_config_key,
-            )
+            if fetch_data.provider == "slack":
+                channels = await slack_fetch_channels(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
+            else:
+                channels = await teams_fetch_channels(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
             logger.info(
                 "Channels fetched for integration",
                 extra={
@@ -331,13 +352,22 @@ def sync_messaging_channels_integration_task(
         # ─────────────────────────────────────────────────────────────────
         chats: list[dict[str, Any]] = []
         try:
-            chats_result = await teams_fetch_chats(
-                token_info=token_info,
-                connection_id=fetch_data.connection_id,
-                is_initial=fetch_data.is_initial,
-                last_synced_at=fetch_data.last_synced_at,
-                provider_config_key=fetch_data.provider_config_key,
-            )
+            if fetch_data.provider == "slack":
+                chats_result = await slack_fetch_chats(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
+            else:
+                chats_result = await teams_fetch_chats(
+                    token_info=token_info,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
             chats = chats_result.chats
             logger.info(
                 "Chats fetched for integration",

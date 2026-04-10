@@ -111,7 +111,7 @@ class IntegrationMetadata:
 
     def can_user_create(self, user_role: UserAppRole) -> bool:
         """Check if a user with the given role can create this integration."""
-        return user_role in self.can_be_created_by
+        return user_role in (self.can_be_created_by or [])
 
 
 # Integration metadata registry
@@ -156,12 +156,17 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://api.nango.dev/images/template-logos/slack.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
-        availability_status=AvailabilityStatus.COMING_SOON,
+        availability_status=AvailabilityStatus.AVAILABLE,
         oauth_scopes=[
             "channels:read",
+            "groups:read",
+            "mpim:read",
             "channels:history",
-            "files:read",
+            "groups:history",
+            "mpim:history",
             "users:read",
+            "users:read.email",
+            "team:read",
         ],
         documentation_url="https://api.slack.com/docs",
         default_sync_frequency="hourly",

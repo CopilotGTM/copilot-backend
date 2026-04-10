@@ -40,7 +40,7 @@ class InitialSyncService:
     EMAIL_INTEGRATION_TYPES = {IntegrationType.GMAIL, IntegrationType.OUTLOOK_EMAIL}
 
     # Messaging integration types
-    MESSAGING_INTEGRATION_TYPES = {IntegrationType.TEAMS}
+    MESSAGING_INTEGRATION_TYPES = {IntegrationType.TEAMS, IntegrationType.SLACK}
 
     def trigger_initial_sync(
         self,

@@ -68,9 +68,12 @@ class IntegrationTokenInfo:
 
 def _is_token_expiring_soon(token_info: IntegrationTokenInfo) -> bool:
     """Check if the token needs a proactive refresh."""
-    # None expiry = unknown state — refresh to be safe
+    # Slack user tokens can be long-lived when token rotation is not enabled.
+    # In that case we keep using the stored token until Slack rejects it.
     if token_info.access_token_expires_at is None:
-        return True
+        return not (
+            token_info.integration_type == IntegrationType.SLACK and token_info.access_token
+        )
     now = datetime.now(UTC)
     expiry = token_info.access_token_expires_at
     # DB stores tz-naive datetimes — normalize for comparison

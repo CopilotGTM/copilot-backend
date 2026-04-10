@@ -131,3 +131,72 @@ def test_list_available_mixed_active_inactive(
     data = body["data"]
     # Only active integration should be counted
     assert data["total_connected"] == 1
+
+
+def test_refresh_channels_accepts_slack(
+    client: TestClient,
+    integrations_dependency_overrides,
+    monkeypatch,
+) -> None:
+    """Slack integrations can trigger the manual channel refresh task."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_id = uuid4()
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=integration_id,
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="slack",
+            is_active=True,
+            connection_id="slack_conn_123",
+        )
+    )
+
+    async def _fake_send_task_async(*, task_name, args, queue, routing_key):
+        assert task_name == "integrations.sync_messaging_channels_integration"
+        assert args == [
+            str(integrations_dependency_overrides["user_ids"].organisation_id),
+            str(integration_id),
+        ]
+        assert queue == "integrations_priority"
+        assert routing_key == "integrations_priority"
+        return "task-123"
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.integration_routes.send_integrations_task_async",
+        _fake_send_task_async,
+    )
+
+    resp = client.post(f"/users/integrations/{integration_id}/refresh-channels")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["task_id"] == "task-123"
+    assert body["data"]["integration_id"] == str(integration_id)
+
+
+def test_refresh_channels_rejects_non_messaging_integration(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    """Only Slack and Teams integrations support channel refresh."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_id = uuid4()
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=integration_id,
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="gmail",
+            is_active=True,
+            connection_id="gmail_conn_123",
+        )
+    )
+
+    resp = client.post(f"/users/integrations/{integration_id}/refresh-channels")
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["status"] == "ERROR"
