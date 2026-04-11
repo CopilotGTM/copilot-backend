@@ -10,6 +10,7 @@ Usage:
     uv run python -m scripts.cleanup_internal_stakeholders --domain acme.com
     uv run python -m scripts.cleanup_internal_stakeholders --hard-delete
 """
+
 import argparse
 import os
 import sys

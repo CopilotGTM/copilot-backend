@@ -28,7 +28,9 @@ def validate_timezone_name(value: str | None) -> str | None:
     return timezone_name
 
 
-def resolve_timezone_name(*candidates: str | None, default: str | None = DEFAULT_TIMEZONE) -> str | None:
+def resolve_timezone_name(
+    *candidates: str | None, default: str | None = DEFAULT_TIMEZONE
+) -> str | None:
     """Resolve the first valid IANA timezone from the provided candidates."""
 
     for candidate in candidates:

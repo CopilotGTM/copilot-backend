@@ -77,16 +77,20 @@ def test_organisations_table(engine: Engine) -> list[uuid.UUID]:
     try:
         with engine.connect() as conn:
             # Check if table exists
-            result = conn.execute(text("""
+            result = conn.execute(
+                text("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_name = 'organisations'
-            """))
+            """)
+            )
             if result.fetchone()[0] == 0:
                 print("  FAILED: Table 'public.organisations' does not exist")
                 return []
 
             # Get organisations
-            result = conn.execute(text("SELECT organisation_id, name FROM public.organisations LIMIT 10"))
+            result = conn.execute(
+                text("SELECT organisation_id, name FROM public.organisations LIMIT 10")
+            )
             rows = result.fetchall()
 
             print(f"  OK: Found {len(rows)} organisations (showing up to 10)")
@@ -110,7 +114,7 @@ def test_schema_exists(engine: Engine, schema: str) -> bool:
         with engine.connect() as conn:
             result = conn.execute(
                 text("SELECT 1 FROM information_schema.schemata WHERE schema_name = :schema"),
-                {"schema": schema}
+                {"schema": schema},
             )
             return result.fetchone() is not None
     except Exception:
@@ -126,7 +130,7 @@ def test_table_exists(engine: Engine, schema: str, table: str) -> bool:
                     SELECT 1 FROM information_schema.tables
                     WHERE table_schema = :schema AND table_name = :table
                 """),
-                {"schema": schema, "table": table}
+                {"schema": schema, "table": table},
             )
             return result.fetchone() is not None
     except Exception:
@@ -178,7 +182,9 @@ def test_tenant_schema(engine: Engine, org_id: uuid.UUID, verbose: bool = False)
     return results
 
 
-def test_all_tenant_schemas(engine: Engine, org_ids: list[uuid.UUID], verbose: bool = False) -> None:
+def test_all_tenant_schemas(
+    engine: Engine, org_ids: list[uuid.UUID], verbose: bool = False
+) -> None:
     """Test all tenant schemas for calendar tables."""
     print("\n[TEST] Tenant Schemas & Calendar Tables")
     print("-" * 40)
@@ -269,24 +275,39 @@ def test_export_only_simulation(engine: Engine, org_ids: list[uuid.UUID]) -> Non
         print(f"\n  Testing queries for {str(org_id)[:8]} ({schema}):")
 
         queries = [
-            ("calendar_events", f"SELECT COUNT(*) FROM {schema}.calendar_events WHERE organisation_id = :org_id"),
-            ("attendees (join)", f"""
+            (
+                "calendar_events",
+                f"SELECT COUNT(*) FROM {schema}.calendar_events WHERE organisation_id = :org_id",
+            ),
+            (
+                "attendees (join)",
+                f"""
                 SELECT COUNT(*) FROM {schema}.calendar_event_attendees a
                 JOIN {schema}.calendar_events e ON a.event_id = e.event_id
                 WHERE e.organisation_id = :org_id
-            """),
-            ("user_states (join)", f"""
+            """,
+            ),
+            (
+                "user_states (join)",
+                f"""
                 SELECT COUNT(*) FROM {schema}.calendar_event_user_states s
                 JOIN {schema}.calendar_events e ON s.event_id = e.event_id
                 WHERE e.organisation_id = :org_id
-            """),
-            ("deal_associations", f"SELECT COUNT(*) FROM {schema}.calendar_event_deal_associations WHERE organisation_id = :org_id"),
-            ("sync_history (calendar)", f"""
+            """,
+            ),
+            (
+                "deal_associations",
+                f"SELECT COUNT(*) FROM {schema}.calendar_event_deal_associations WHERE organisation_id = :org_id",
+            ),
+            (
+                "sync_history (calendar)",
+                f"""
                 SELECT COUNT(*) FROM {schema}.integration_sync_history h
                 JOIN {schema}.knowledge_integrations ki ON h.integration_id = ki.integration_id
                 WHERE ki.organisation_id = :org_id
                   AND ki.integration_type IN ('google_calendar', 'outlook_calendar')
-            """),
+            """,
+            ),
         ]
 
         for name, query in queries:
@@ -363,7 +384,9 @@ def main() -> None:
     print("TEST COMPLETE")
     print("=" * 60)
     print("\nNext steps:")
-    print("  1. Run export-only to verify: python scripts/maintenance/purge_calendar_data.py --export-only")
+    print(
+        "  1. Run export-only to verify: python scripts/maintenance/purge_calendar_data.py --export-only"
+    )
     print("  2. Check exported JSON files")
     print("  3. Run full purge when ready: python scripts/maintenance/purge_calendar_data.py --yes")
 

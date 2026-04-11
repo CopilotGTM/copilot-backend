@@ -208,7 +208,10 @@ def export_messaging_sync_history(
             WHERE ki.organisation_id = :org_id
               AND ki.integration_type IN :integration_types
         """  # noqa: S608
-        params: dict[str, Any] = {"org_id": org_id, "integration_types": MESSAGING_INTEGRATION_TYPES}
+        params: dict[str, Any] = {
+            "org_id": org_id,
+            "integration_types": MESSAGING_INTEGRATION_TYPES,
+        }
     else:
         query = f"""
             SELECT h.*
@@ -305,7 +308,9 @@ def export_single_org_data(
 
     # Export messaging_channel_members (needs join)
     print("    Exporting messaging_channel_members...", end=" ", flush=True)
-    count = export_channel_members(engine, base_dir / "messaging_channel_members.json", org_id, schema)
+    count = export_channel_members(
+        engine, base_dir / "messaging_channel_members.json", org_id, schema
+    )
     counts["messaging_channel_members"] = count
     print(f"{count} records")
 
@@ -427,19 +432,23 @@ def export_all_data(
             for table, count in org_counts.items():
                 total_counts[table] += count
 
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "counts": org_counts,
-                "total_records": sum(org_counts.values()),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "counts": org_counts,
+                    "total_records": sum(org_counts.values()),
+                }
+            )
         except Exception as e:
             print(f"    ERROR: {e}")
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "error": str(e),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "error": str(e),
+                }
+            )
 
     # Write overall summary
     summary = {
@@ -557,7 +566,9 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
     return counts
 
 
-def delete_messaging_channel_data(engine: Engine, org_id: str | None, schema: str | None) -> dict[str, int]:
+def delete_messaging_channel_data(
+    engine: Engine, org_id: str | None, schema: str | None
+) -> dict[str, int]:
     """Delete all messaging channel-related data in the correct order (respecting FK constraints)."""
 
     # If org_id and schema are provided, delete for single org

@@ -41,7 +41,9 @@ logger = get_logger(__name__)
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Delete calendar events created today for an org")
     parser.add_argument("--org-id", required=True, type=str, help="Organisation UUID")
-    parser.add_argument("--execute", action="store_true", help="Persist deletions (default: dry run)")
+    parser.add_argument(
+        "--execute", action="store_true", help="Persist deletions (default: dry run)"
+    )
     parser.add_argument(
         "--date",
         type=str,
@@ -79,17 +81,29 @@ async def main() -> None:
 
         # Show samples
         for e in events[:15]:
-            print(f"    {e.event_id} title={e.title} created={e.created_at} external_id={e.external_id[:50]}...")
+            print(
+                f"    {e.event_id} title={e.title} created={e.created_at} external_id={e.external_id[:50]}..."
+            )
         if len(events) > 15:
             print(f"    ... {len(events) - 15} more")
 
         # Count child records
         def _count(model, col_name, ids):
-            return select(func.count()).select_from(model).where(col(getattr(model, col_name)).in_(ids))
+            return (
+                select(func.count())
+                .select_from(model)
+                .where(col(getattr(model, col_name)).in_(ids))
+            )
 
-        us_count = (await session.execute(_count(CalendarEventUserState, "event_id", event_ids))).scalar() or 0
-        att_count = (await session.execute(_count(CalendarAttendee, "event_id", event_ids))).scalar() or 0
-        assoc_count = (await session.execute(_count(CalendarEventDealAssociation, "event_id", event_ids))).scalar() or 0
+        us_count = (
+            await session.execute(_count(CalendarEventUserState, "event_id", event_ids))
+        ).scalar() or 0
+        att_count = (
+            await session.execute(_count(CalendarAttendee, "event_id", event_ids))
+        ).scalar() or 0
+        assoc_count = (
+            await session.execute(_count(CalendarEventDealAssociation, "event_id", event_ids))
+        ).scalar() or 0
         dj_count = (await session.execute(_count(DealJobs, "event_id", event_ids))).scalar() or 0
 
         # Split meetings into today's vs old (pre-existing that got linked to today's events)
@@ -104,18 +118,26 @@ async def main() -> None:
 
         ts_count_new = 0
         if new_meeting_ids:
-            ts_count_new = (await session.execute(_count(TranscriptSegment, "meeting_id", new_meeting_ids))).scalar() or 0
+            ts_count_new = (
+                await session.execute(_count(TranscriptSegment, "meeting_id", new_meeting_ids))
+            ).scalar() or 0
         ts_count_old = 0
         if old_meeting_ids:
-            ts_count_old = (await session.execute(_count(TranscriptSegment, "meeting_id", old_meeting_ids))).scalar() or 0
+            ts_count_old = (
+                await session.execute(_count(TranscriptSegment, "meeting_id", old_meeting_ids))
+            ).scalar() or 0
 
         print(f"\n  Child records:")
         print(f"    user_states: {us_count}")
         print(f"    attendees: {att_count}")
         print(f"    deal_associations: {assoc_count}")
         print(f"    deal_jobs: {dj_count}")
-        print(f"    meetings (created today, WILL delete): {len(new_meetings)} ({ts_count_new} transcript segments)")
-        print(f"    meetings (old, will UNLINK only):       {len(old_meetings)} ({ts_count_old} transcript segments)")
+        print(
+            f"    meetings (created today, WILL delete): {len(new_meetings)} ({ts_count_new} transcript segments)"
+        )
+        print(
+            f"    meetings (old, will UNLINK only):       {len(old_meetings)} ({ts_count_old} transcript segments)"
+        )
 
         if old_meetings:
             print(f"\n  OLD meetings that will be UNLINKED (not deleted):")
@@ -132,8 +154,14 @@ async def main() -> None:
         # Delete in FK-safe order
         # New meetings: delete transcript segments + meeting
         if new_meeting_ids:
-            await session.execute(delete(TranscriptSegment).where(col(TranscriptSegment.meeting_id).in_(new_meeting_ids)))
-            await session.execute(delete(Meeting).where(col(Meeting.meeting_id).in_(new_meeting_ids)))
+            await session.execute(
+                delete(TranscriptSegment).where(
+                    col(TranscriptSegment.meeting_id).in_(new_meeting_ids)
+                )
+            )
+            await session.execute(
+                delete(Meeting).where(col(Meeting.meeting_id).in_(new_meeting_ids))
+            )
 
         # Old meetings: unlink from calendar event (set calendar_event_id = NULL) so they survive
         for old_m in old_meetings:
@@ -141,10 +169,22 @@ async def main() -> None:
             session.add(old_m)
 
         await session.execute(delete(DealJobs).where(col(DealJobs.event_id).in_(event_ids)))
-        await session.execute(delete(CalendarEventDealAssociation).where(col(CalendarEventDealAssociation.event_id).in_(event_ids)))
-        await session.execute(delete(CalendarAttendee).where(col(CalendarAttendee.event_id).in_(event_ids)))
-        await session.execute(delete(CalendarEventUserState).where(col(CalendarEventUserState.event_id).in_(event_ids)))
-        await session.execute(delete(CalendarEvent).where(col(CalendarEvent.event_id).in_(event_ids)))
+        await session.execute(
+            delete(CalendarEventDealAssociation).where(
+                col(CalendarEventDealAssociation.event_id).in_(event_ids)
+            )
+        )
+        await session.execute(
+            delete(CalendarAttendee).where(col(CalendarAttendee.event_id).in_(event_ids))
+        )
+        await session.execute(
+            delete(CalendarEventUserState).where(
+                col(CalendarEventUserState.event_id).in_(event_ids)
+            )
+        )
+        await session.execute(
+            delete(CalendarEvent).where(col(CalendarEvent.event_id).in_(event_ids))
+        )
 
         await session.commit()
         print(f"\n  DELETED {len(events)} event(s) and all child records.")

@@ -442,19 +442,23 @@ def export_all_data(
             for table, count in org_counts.items():
                 total_counts[table] += count
 
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "counts": org_counts,
-                "total_records": sum(org_counts.values()),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "counts": org_counts,
+                    "total_records": sum(org_counts.values()),
+                }
+            )
         except Exception as e:
             print(f"    ERROR: {e}")
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "error": str(e),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "error": str(e),
+                }
+            )
 
     # Write overall summary
     summary = {

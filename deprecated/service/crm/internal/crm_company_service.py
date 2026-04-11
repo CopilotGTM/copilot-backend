@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealParticipant, CRMParticipantType
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
@@ -159,9 +163,7 @@ class CRMCompanyService:
         self.session.add(company)
         return company
 
-    async def update_company(
-        self, company_id: UUID, payload: dict[str, Any]
-    ) -> CRMCompany:
+    async def update_company(self, company_id: UUID, payload: dict[str, Any]) -> CRMCompany:
         integration_id = await self._get_internal_integration_id(require=True)
         company = await self._get_internal_company(company_id, integration_id)
 
@@ -280,9 +282,7 @@ class CRMCompanyService:
         integration = await setup_service.get_internal_integration()
         if not integration:
             if require:
-                raise CRMCompanyServiceError(
-                    "Internal CRM is not configured", status_code=409
-                )
+                raise CRMCompanyServiceError("Internal CRM is not configured", status_code=409)
             return None
         return integration.integration_id
 

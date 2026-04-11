@@ -8,9 +8,7 @@ from src.agents.workflows.general.agent import GeneralAgent
 
 
 def test_resolve_agent_timezone_identifier_uses_valid_user_timezone() -> None:
-    assert (
-        resolve_agent_timezone_identifier({"user_timezone": "Asia/Kolkata"}) == "Asia/Kolkata"
-    )
+    assert resolve_agent_timezone_identifier({"user_timezone": "Asia/Kolkata"}) == "Asia/Kolkata"
 
 
 def test_resolve_agent_timezone_identifier_falls_back_to_utc_for_invalid_timezone() -> None:

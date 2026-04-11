@@ -409,19 +409,23 @@ def export_all_data(
             for table, count in org_counts.items():
                 total_counts[table] = total_counts.get(table, 0) + count
 
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "counts": org_counts,
-                "total_records": sum(org_counts.values()),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "counts": org_counts,
+                    "total_records": sum(org_counts.values()),
+                }
+            )
         except Exception as e:
             print(f"    ERROR: {e}")
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "error": str(e),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "error": str(e),
+                }
+            )
 
     # Write overall summary
     summary = {
@@ -606,7 +610,12 @@ def main() -> None:
         exported = export_counts.get(table, 0)
         deleted = delete_counts.get(table, 0)
         # Skip tables that don't exist (0 in both)
-        if exported == 0 and deleted == 0 and table not in export_counts and table not in delete_counts:
+        if (
+            exported == 0
+            and deleted == 0
+            and table not in export_counts
+            and table not in delete_counts
+        ):
             continue
         print(f"{table:<45} {exported:<12} {deleted:<12}")
 
@@ -617,12 +626,24 @@ def main() -> None:
 
     # Show reset counts
     print("-" * 70)
-    print(f"{'integrations_status_reset':<45} {'-':<12} {delete_counts.get('integrations_status_reset', 0):<12}")
-    print(f"{'integrations_metadata_reset':<45} {'-':<12} {delete_counts.get('integrations_metadata_reset', 0):<12}")
+    print(
+        f"{'integrations_status_reset':<45} {'-':<12} {delete_counts.get('integrations_status_reset', 0):<12}"
+    )
+    print(
+        f"{'integrations_metadata_reset':<45} {'-':<12} {delete_counts.get('integrations_metadata_reset', 0):<12}"
+    )
 
     print("-" * 70)
-    total_exported = sum(v for k, v in export_counts.items() if k in CRM_TABLES_DELETE_ORDER or k == "integration_sync_history")
-    total_deleted = sum(v for k, v in delete_counts.items() if k in CRM_TABLES_DELETE_ORDER or k == "integration_sync_history")
+    total_exported = sum(
+        v
+        for k, v in export_counts.items()
+        if k in CRM_TABLES_DELETE_ORDER or k == "integration_sync_history"
+    )
+    total_deleted = sum(
+        v
+        for k, v in delete_counts.items()
+        if k in CRM_TABLES_DELETE_ORDER or k == "integration_sync_history"
+    )
     print(f"{'TOTAL RECORDS':<45} {total_exported:<12} {total_deleted:<12}")
     print("=" * 70)
     print("\nPurge complete.")

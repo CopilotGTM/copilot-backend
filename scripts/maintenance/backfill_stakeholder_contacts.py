@@ -61,14 +61,10 @@ SYSTEM_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Backfill CRMContact for orphaned stakeholders."
-    )
+    parser = argparse.ArgumentParser(description="Backfill CRMContact for orphaned stakeholders.")
     parser.add_argument("--org-id", type=UUID, help="Single org to process.")
     parser.add_argument("--all", action="store_true", help="Process all approved orgs.")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Print actions without committing."
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without committing.")
     return parser.parse_args()
 
 
@@ -142,9 +138,18 @@ async def _ensure_participant(
 
 
 PERSONAL_EMAIL_DOMAINS = {
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-    "aol.com", "icloud.com", "mail.com", "protonmail.com",
-    "live.com", "msn.com", "ymail.com", "googlemail.com",
+    "gmail.com",
+    "yahoo.com",
+    "hotmail.com",
+    "outlook.com",
+    "aol.com",
+    "icloud.com",
+    "mail.com",
+    "protonmail.com",
+    "live.com",
+    "msn.com",
+    "ymail.com",
+    "googlemail.com",
 }
 
 
@@ -266,8 +271,12 @@ async def backfill_org(org_id: UUID, dry_run: bool) -> dict[str, int]:
                 and stakeholder.source == StakeholderSource.MANUAL
             ):
                 created = await _ensure_participant(
-                    session, org_id, integration.integration_id,
-                    stakeholder, resolved_contact_id, email,
+                    session,
+                    org_id,
+                    integration.integration_id,
+                    stakeholder,
+                    resolved_contact_id,
+                    email,
                 )
                 if created:
                     stats["participants_created"] += 1
@@ -290,8 +299,12 @@ async def backfill_org(org_id: UUID, dry_run: bool) -> dict[str, int]:
                 continue
             email = stakeholder.email.lower().strip()
             created = await _ensure_participant(
-                session, org_id, int_id,
-                stakeholder, stakeholder.contact_id, email,
+                session,
+                org_id,
+                int_id,
+                stakeholder,
+                stakeholder.contact_id,
+                email,
             )
             if created:
                 stats["participants_created"] += 1
@@ -346,10 +359,7 @@ def main() -> None:
         print("No organisations found.")
         return
 
-    print(
-        f"Processing {len(org_ids)} organisation(s)"
-        f"{'  [DRY RUN]' if args.dry_run else ''}"
-    )
+    print(f"Processing {len(org_ids)} organisation(s){'  [DRY RUN]' if args.dry_run else ''}")
     asyncio.run(main_async(org_ids, args.dry_run))
 
 

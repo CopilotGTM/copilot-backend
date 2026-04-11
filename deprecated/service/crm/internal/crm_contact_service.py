@@ -204,7 +204,9 @@ class CRMContactService:
                 await self._ensure_email_clearable(contact_id)
 
         if "additional_emails" in contact_data:
-            additional_emails = self._normalize_email_list(contact_data.get("additional_emails") or [])
+            additional_emails = self._normalize_email_list(
+                contact_data.get("additional_emails") or []
+            )
             primary_email = new_email if "email" in contact_data else contact.email
             if primary_email:
                 additional_emails = [addr for addr in additional_emails if addr != primary_email]
@@ -290,9 +292,7 @@ class CRMContactService:
 
         return contact, deal_ids, integration_id
 
-    async def delete_contact(
-        self, contact_id: UUID
-    ) -> tuple[CRMContact, list[UUID], UUID]:
+    async def delete_contact(self, contact_id: UUID) -> tuple[CRMContact, list[UUID], UUID]:
         integration_id = await self._get_internal_integration_id(require=True)
         contact = await self._get_internal_contact(contact_id, integration_id)
 
@@ -332,9 +332,7 @@ class CRMContactService:
         integration = await setup_service.get_internal_integration()
         if not integration:
             if require:
-                raise CRMContactServiceError(
-                    "Internal CRM is not configured", status_code=409
-                )
+                raise CRMContactServiceError("Internal CRM is not configured", status_code=409)
             return None
         return integration.integration_id
 
@@ -381,9 +379,7 @@ class CRMContactService:
                 "Cannot clear email for a contact linked to stakeholders", status_code=400
             )
 
-    async def _ensure_stakeholder_email_available(
-        self, contact_id: UUID, email: str
-    ) -> None:
+    async def _ensure_stakeholder_email_available(self, contact_id: UUID, email: str) -> None:
         stmt = select(col(DealStakeholder.deal_id)).where(
             col(DealStakeholder.organisation_id) == self.organisation_id,
             col(DealStakeholder.contact_id) == contact_id,

@@ -34,7 +34,10 @@ def resolve_agent_timezone_identifier(metadata: Mapping[str, Any] | None) -> str
             raw_timezone,
             DEFAULT_AGENT_TIMEZONE,
         )
-    return resolve_timezone_name(raw_timezone if isinstance(raw_timezone, str) else None) or DEFAULT_AGENT_TIMEZONE
+    return (
+        resolve_timezone_name(raw_timezone if isinstance(raw_timezone, str) else None)
+        or DEFAULT_AGENT_TIMEZONE
+    )
 
 
 def get_agno_datetime_settings(metadata: Mapping[str, Any] | None) -> dict[str, Any]:

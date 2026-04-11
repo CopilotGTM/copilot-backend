@@ -86,6 +86,7 @@ def on_test_start(environment, **kwargs):
     # Perform initial login to get token BEFORE spawning users
     # This avoids all users trying to login simultaneously
     import requests
+
     host = environment.host.rstrip("/")
     print(f"Performing initial login to {host}...")
 
