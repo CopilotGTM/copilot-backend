@@ -95,6 +95,11 @@ class User(TimestampMixin, table=True):
     job_title: str | None = Field(
         default=None, max_length=100, description="Optional job title for the user."
     )
+    timezone: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Preferred IANA timezone for local scheduling and date interpretation.",
+    )
     status: SupabaseUserStatus = Field(
         default=SupabaseUserStatus.PENDING_SETUP,
         index=True,

@@ -31,6 +31,7 @@ class UserLoginResponse(BaseModel):
     created_at: datetime | None = None
     email_verified: bool | None = None
     last_login_at: datetime | None = None
+    timezone: str | None = None
     tokens: dict[str, Any] | None = None
     password_reset_link: str | None = None
 

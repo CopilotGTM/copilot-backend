@@ -12,6 +12,7 @@ Identity Flow:
 """
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -281,6 +282,7 @@ class TeamsBotService:
             "user_aad_object_id": user_aad_object_id,
             "external_user_id": external_user_id,
             "external_tenant_id": external_tenant_id,
+            "current_datetime": datetime.now(UTC).isoformat(),
         }
         if local_timezone:
             bot_context["user_timezone"] = local_timezone

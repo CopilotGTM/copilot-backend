@@ -85,6 +85,7 @@ class ConversationData:
     user_message_parent_id: UUID | None
     user_message_type: ChatMessageType
     user_email: str | None = None
+    job_metadata: dict[str, Any] = field(default_factory=dict)
     history: list[dict] = field(default_factory=list)
     attachments: list[AttachmentInfo] = field(default_factory=list)
 
@@ -355,6 +356,7 @@ class MessageProcessingService:
                 chat_type=chat_session.chat_type,
                 user_id=chat_session.user_id,
                 user_email=user_email,
+                job_metadata=md,
                 user_message_session_id=user_message.session_id,
                 user_message_parent_id=user_message.message_id,
                 user_message_type=user_message.message_type,
@@ -450,6 +452,16 @@ class MessageProcessingService:
                 "allowed_attachment_ids": [
                     str(attachment.attachment_id) for attachment in data.attachments
                 ],
+                **(
+                    {"user_timezone": str(data.job_metadata["user_timezone"])}
+                    if data.job_metadata.get("user_timezone")
+                    else {}
+                ),
+                **(
+                    {"current_datetime": str(data.job_metadata["current_datetime"])}
+                    if data.job_metadata.get("current_datetime")
+                    else {}
+                ),
             },
         )
 

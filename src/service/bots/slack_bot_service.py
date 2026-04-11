@@ -14,6 +14,7 @@ Identity Flow:
 """
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -524,6 +525,7 @@ class SlackBotService:
             "slack_channel_id": channel_id,
             "external_user_id": external_user_id,
             "external_tenant_id": external_tenant_id,
+            "current_datetime": datetime.now(UTC).isoformat(),
         }
         if user_timezone:
             bot_context["user_timezone"] = user_timezone

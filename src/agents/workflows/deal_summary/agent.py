@@ -23,6 +23,7 @@ from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
+from src.agents.timezone import get_agno_datetime_settings
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_summary.models import DealHealthStatus, DealSummaryData
 from src.agents.workflows.deal_summary.prompts import get_deal_summary_system_prompt
@@ -103,6 +104,7 @@ class DealSummaryAgent:
             description=get_deal_summary_system_prompt(self.context.org_name),
             tools=tools,
             markdown=True,
+            **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
             telemetry=False,
         )

@@ -18,6 +18,7 @@ from src.agents.common.metadata_parser import MetadataParser
 from src.agents.common.stream_buffer import StreamingAnswerBuffer
 from src.agents.common.token_tracking import extract_token_usage
 from src.agents.context import AgentContext
+from src.agents.timezone import get_agno_datetime_settings
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.tools.transparent_tools import AgentCapabilities
 from src.agents.utils import prepare_messages
@@ -89,6 +90,7 @@ class GeneralAgent(BaseAgent):
             structured_outputs=False,
             debug_mode=config.debug_mode,
             markdown=True,
+            **get_agno_datetime_settings(context.metadata),
             tools=self._tools,
             skills=skills,
             telemetry=False,

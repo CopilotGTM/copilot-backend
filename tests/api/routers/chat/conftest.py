@@ -134,6 +134,7 @@ def dependency_overrides(client, test_user_ids):
             organisation_id=test_user_ids["organisation_id"],
             user_name=test_user_ids.get("user_name", "Test User"),
             user_email=test_user_ids.get("user_email", "test@example.com"),
+            user_timezone=test_user_ids.get("user_timezone", "Asia/Kolkata"),
         )
 
     # Create a single service instance per test function to preserve state
@@ -218,6 +219,7 @@ class FakeChatMessageService:
         self.sessions = {}  # session_id (str) -> session data
         self.messages = {}  # message_id (str) -> FakeMessage
         self.jobs = {}  # job_id (str) -> FakeJob
+        self.last_create_user_message_call = None
 
     async def close(self):
         pass
@@ -238,11 +240,21 @@ class FakeChatMessageService:
         self,
         session_id: UUID,
         content: str,
+        user_timezone: str | None = None,
         attachment_ids: list[UUID] | None = None,
         message_type: ChatMessageType = ChatMessageType.GENERAL_MESSAGE,
         role: ChatMessageRole = ChatMessageRole.USER,
     ):
         """Create a user message and return the message, job, and assistant message ID."""
+        self.last_create_user_message_call = {
+            "session_id": session_id,
+            "content": content,
+            "user_timezone": user_timezone,
+            "attachment_ids": attachment_ids,
+            "message_type": message_type,
+            "role": role,
+        }
+
         # Verify session exists (or create for testing)
         self._get_or_create_session(session_id)
 
@@ -381,6 +393,7 @@ def messages_dependency_overrides(client, test_user_ids):
             organisation_id=test_user_ids["organisation_id"],
             user_name=test_user_ids.get("user_name", "Test User"),
             user_email=test_user_ids.get("user_email", "test@example.com"),
+            user_timezone=test_user_ids.get("user_timezone", "Asia/Kolkata"),
         )
 
     # Create a single service instance per test function to preserve state

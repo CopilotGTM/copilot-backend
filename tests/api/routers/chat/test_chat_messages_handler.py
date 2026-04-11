@@ -52,6 +52,29 @@ def test_send_message_with_message_type(client: TestClient, messages_dependency_
     assert body["status"] == "SUCCESS"
 
 
+def test_send_message_uses_context_user_timezone_for_service(
+    client: TestClient, messages_dependency_overrides, mocker
+):
+    """Test sending a message uses the authenticated user's timezone context."""
+    mocker.patch(
+        "src.api.routers.chat.messages_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    session_id = str(uuid4())
+    payload = {
+        "session_id": session_id,
+        "content": "What meetings do I have tomorrow?",
+    }
+    resp = client.post("/users/chats/send_message", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert messages_dependency_overrides.last_create_user_message_call is not None
+    assert (
+        messages_dependency_overrides.last_create_user_message_call["user_timezone"]
+        == "Asia/Kolkata"
+    )
+
+
 def test_send_message_empty_content_rejected(client: TestClient, messages_dependency_overrides):
     """Test that empty content is rejected."""
     session_id = str(uuid4())

@@ -40,6 +40,11 @@ Authenticates a user via Supabase and returns access/refresh tokens. If the acco
 
 Not required
 
+### Recommended Headers
+
+- `X-User-Timezone: <IANA timezone>` to capture the user's preferred timezone at login.
+  Example values: `Asia/Kolkata`, `America/New_York`.
+
 ### Login Rate Limiting
 
 - Default: 10 requests/minute, 50/hour per (IP + email)
@@ -71,6 +76,7 @@ Not required
     "created_at": "2025-09-01T08:00:00Z",
     "email_verified": true,
     "last_login_at": "2025-10-06T08:12:00Z",
+    "timezone": "Asia/Kolkata",
     "tokens": {
       "access_token": "<JWT>",
       "refresh_token": "<REFRESH_TOKEN>"
@@ -106,6 +112,7 @@ Not required
 
 ```bash
 curl -X POST "$BASE_URL/users/auth/login" \
+  -H "X-User-Timezone: Asia/Kolkata" \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"your-password"}'
 ```
@@ -352,6 +359,7 @@ curl -X POST "$BASE_URL/users/auth/logout" \
 ### User Login Response Fields
 
 - `state`: `ACTIVE` or `PASSWORD_CHANGE_REQUIRED`
+- `timezone`: Preferred IANA timezone persisted from `X-User-Timezone` when provided
 - `tokens.access_token`: JWT used in `Authorization: Bearer` header
 - `tokens.refresh_token`: Token to exchange at `/refresh-token`
 - `password_reset_link`: Present only when `state` is `PASSWORD_CHANGE_REQUIRED`

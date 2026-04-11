@@ -2,6 +2,7 @@
 
 import importlib
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -34,6 +35,7 @@ class FakeUser:
         last_login_at: datetime | None = None,
         created_at: datetime | None = None,
         organisation_id: UUID | None = None,
+        timezone: str | None = None,
     ):
         self.user_id = user_id or uuid4()
         self.email = email
@@ -46,6 +48,7 @@ class FakeUser:
         self.last_login_at = last_login_at or datetime.now(UTC)
         self.created_at = created_at or datetime.now(UTC)
         self.organisation_id = organisation_id or uuid4()
+        self.timezone = timezone
 
 
 # =============================================================================
@@ -258,6 +261,7 @@ def create_user(
     user_role: UserAppRole = UserAppRole.MEMBER,
     requires_password_change: bool = False,
     supabase_user_id: str | None = None,
+    timezone: str | None = None,
 ) -> tuple[FakeUser, str]:
     """Create a test user with matching Supabase data.
 
@@ -270,6 +274,7 @@ def create_user(
         last_name=last_name,
         user_role=user_role,
         supabase_user_id=supabase_id,
+        timezone=timezone,
     )
     return user, supabase_id
 
@@ -342,6 +347,15 @@ def client_with_user_auth(mocker, user_auth_test_data):
     mocker.patch(
         "src.api.routers.users.auth_handler.email_service",
         email_service,
+    )
+
+    @asynccontextmanager
+    async def fake_master_async_session_scope():
+        yield master_session
+
+    mocker.patch(
+        "src.api.routers.users.auth_handler.master_async_session_scope",
+        fake_master_async_session_scope,
     )
 
     # Build ASGI app
