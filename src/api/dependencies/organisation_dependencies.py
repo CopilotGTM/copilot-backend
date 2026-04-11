@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from src.domain.models.authentication import Authentication
@@ -27,13 +27,18 @@ from src.infra.database.sessions import (
 from src.infra.database.sessions import (
     acquire_org_session as _acquire_org_session,
 )
+from src.infra.utils.timezone import (
+    USER_TIMEZONE_HEADER,
+    resolve_timezone_name,
+    validate_timezone_name,
+)
 
 # Backward compatibility alias used by legacy imports and test bootstrap.
 # Keep this object exposing verify_session for older dependency overrides.
 auth = Authentication()
 
 
-def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
+def get_current_user(request: Request, user: User = Depends(user_auth)) -> UserIDs:
     """FastAPI dependency to extract user_id and organisation_id from the authenticated user."""
     if not user or not user.user_id or not user.organisation_id:
         raise HTTPException(
@@ -46,11 +51,16 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
     if user.first_name or user.last_name:
         user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
 
+    header_timezone = validate_timezone_name(request.headers.get(USER_TIMEZONE_HEADER))
+    effective_timezone = resolve_timezone_name(header_timezone, user.timezone, default=None)
+    request.state.user_timezone = effective_timezone
+
     return UserIDs(
         user_id=user.user_id,
         organisation_id=user.organisation_id,
         user_name=user_name,
         user_email=str(user.email) if user.email else None,
+        user_timezone=effective_timezone,
     )
 
 

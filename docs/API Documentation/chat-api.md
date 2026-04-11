@@ -56,6 +56,9 @@ All endpoints return a consistent envelope:
 
 - Authentication: Bearer JWT in `Authorization: Bearer <token>`
 - Content Type: `Content-Type: application/json`; `Accept: application/json`
+- Timezone propagation: Prefer `X-User-Timezone: <IANA name>` on authenticated requests.
+  The backend resolves time using request header first, then stored user profile timezone,
+  then UTC.
 - Idempotency: Create/send endpoints are not idempotent. Clients should guard against duplicate submissions (disable submit while in-flight; de-dupe using a client-generated UUID). Presign/finalize are also not idempotent — avoid automatic retries without user confirmation.
 - Pagination: Cursor-based; treat `cursor` as opaque and pass back verbatim.
 - Upload Model: Direct-to-storage via short-lived SAS URL; server never proxies file bytes.
@@ -701,6 +704,11 @@ Persists a user message (with optional attachments) and enqueues a background jo
 Notes:
 
 - `role` must be `user`.
+- Prefer `X-User-Timezone: <IANA name>` on the request so the backend can reuse the same
+  timezone across authenticated APIs without repeating it in every payload.
+- Relative-date grounding is anchored to message creation time, not worker execution time,
+  so delayed jobs still resolve `today`, `tomorrow`, and similar phrases against the
+  user's local day at submission time.
 - `attachments` are IDs from the Attachment endpoints once uploaded/finalized.
 
 ### Success Response (200)

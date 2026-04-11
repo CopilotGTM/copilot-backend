@@ -14,6 +14,7 @@ from agno.models.message import Message
 
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
+from src.agents.timezone import get_agno_datetime_settings
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_memory.prompts import (
     get_deal_memory_system_prompt,
@@ -64,6 +65,7 @@ class DealMemoryAgent:
             tools=tools,
             tool_call_limit=100,
             markdown=True,
+            **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
             system_message=get_deal_memory_system_prompt(self.org_name),
             telemetry=False,

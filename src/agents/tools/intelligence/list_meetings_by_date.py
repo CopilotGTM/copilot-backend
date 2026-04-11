@@ -23,6 +23,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased, selectinload
@@ -40,6 +41,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.infra.utils.timezone import get_context_anchor_utc, get_context_timezone_name
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
 if TYPE_CHECKING:
@@ -57,6 +59,8 @@ def _get_date_range(
     days: int,
     start_date: date | None,
     end_date: date | None,
+    timezone_name: str,
+    anchor_utc: datetime,
 ) -> tuple[datetime, datetime]:
     """Calculate start and end datetime based on filter type.
 
@@ -69,27 +73,28 @@ def _get_date_range(
     Returns:
         Tuple of (start_datetime, end_datetime) in UTC
     """
-    now = datetime.now(UTC)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
+    anchor_local = anchor_utc.astimezone(ZoneInfo(timezone_name))
+    today_start_local = anchor_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end_local = today_start_local + timedelta(days=1)
 
     if filter_type == "today":
-        return today_start, today_end
+        return today_start_local.astimezone(UTC), today_end_local.astimezone(UTC)
 
     if filter_type == "upcoming":
-        return now, now + timedelta(days=days)
+        return anchor_utc, (anchor_local + timedelta(days=days)).astimezone(UTC)
 
     if filter_type == "recent":
-        return now - timedelta(days=days), now
+        return (anchor_local - timedelta(days=days)).astimezone(UTC), anchor_utc
 
     # filter_type == "custom"
     if start_date and end_date:
-        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
-        end_dt = datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
+        tz = ZoneInfo(timezone_name)
+        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=tz).astimezone(UTC)
+        end_dt = datetime.combine(end_date, datetime.max.time(), tzinfo=tz).astimezone(UTC)
         return start_dt, end_dt
 
     # Fallback to last 7 days if custom dates not provided
-    return now - timedelta(days=7), now
+    return (anchor_local - timedelta(days=7)).astimezone(UTC), anchor_utc
 
 
 async def list_meetings_by_date(
@@ -139,7 +144,11 @@ async def list_meetings_by_date(
         return []
 
     effective_limit = max(1, min(limit, 100))
-    start_dt, end_dt = _get_date_range(filter_type, days, start_date, end_date)
+    timezone_name = get_context_timezone_name(context.metadata)
+    anchor_utc = get_context_anchor_utc(context.metadata)
+    start_dt, end_dt = _get_date_range(
+        filter_type, days, start_date, end_date, timezone_name, anchor_utc
+    )
 
     user_email = context.user_email
 
@@ -279,10 +288,12 @@ async def list_meetings_by_date(
             )
 
     logger.info(
-        "list_meetings_by_date: found %d meetings (filter=%s, days=%d)",
+        "list_meetings_by_date: found %d meetings (filter=%s, days=%d, timezone=%s, anchor=%s)",
         len(output),
         filter_type,
         days,
+        timezone_name,
+        anchor_utc.isoformat(),
     )
     return output
 

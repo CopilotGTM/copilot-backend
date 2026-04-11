@@ -603,6 +603,9 @@ class BotMessageProcessingService:
         user_tz = (bot_context or {}).get("user_timezone", "")
         if user_tz:
             metadata["user_timezone"] = user_tz
+        current_datetime = (bot_context or {}).get("current_datetime", "")
+        if current_datetime:
+            metadata["current_datetime"] = current_datetime
         if bot_context and bot_context.get("chat_session_id"):
             metadata["chat_session_id"] = bot_context.get("chat_session_id")
         if bot_context and bot_context.get("current_user_message_id"):

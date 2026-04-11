@@ -33,6 +33,40 @@ def test_login_success(client_with_user_auth):
     assert "refresh_token" in body["data"]["tokens"]
 
 
+def test_login_uses_timezone_header_and_persists_profile(client_with_user_auth):
+    """Test login captures the preferred user timezone from the request header."""
+    client = client_with_user_auth["client"]
+    user = client_with_user_auth["user"]
+
+    resp = client.post(
+        "/users/auth/login",
+        json={"email": "testuser@example.com", "password": "correctpassword"},
+        headers={"X-User-Timezone": "Asia/Kolkata"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["timezone"] == "Asia/Kolkata"
+    assert user.timezone == "Asia/Kolkata"
+
+
+def test_login_ignores_malformed_timezone_header(client_with_user_auth):
+    """Test malformed timezone headers are ignored instead of crashing the request."""
+    client = client_with_user_auth["client"]
+    user = client_with_user_auth["user"]
+
+    resp = client.post(
+        "/users/auth/login",
+        json={"email": "testuser@example.com", "password": "correctpassword"},
+        headers={"X-User-Timezone": "../../etc/passwd"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["timezone"] is None
+    assert user.timezone is None
+
+
 def test_login_user_not_found(client_with_user_auth):
     """Test login with non-existent email returns error status.
 
@@ -95,6 +129,38 @@ def test_login_password_change_required(client_with_user_auth):
     body = resp.json()
     assert body["data"]["state"] == "PASSWORD_CHANGE_REQUIRED"
     assert body["data"]["password_reset_link"] is not None
+
+
+def test_login_password_change_required_persists_timezone_header(client_with_user_auth):
+    """Test PENDING_SETUP login still captures and returns the user's timezone."""
+    client = client_with_user_auth["client"]
+    supabase_client = client_with_user_auth["supabase_client"]
+    master_session = client_with_user_auth["master_session"]
+
+    user, supabase_id = create_user(
+        email="setupuser@example.com",
+        password="temppassword",
+        requires_password_change=True,
+    )
+    master_session.add_user(user)
+    supabase_client.add_user(
+        email="setupuser@example.com",
+        password="temppassword",
+        user_id=supabase_id,
+        requires_password_change=True,
+    )
+
+    resp = client.post(
+        "/users/auth/login",
+        json={"email": "setupuser@example.com", "password": "temppassword"},
+        headers={"X-User-Timezone": "America/New_York"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["state"] == "PASSWORD_CHANGE_REQUIRED"
+    assert body["data"]["timezone"] == "America/New_York"
+    assert user.timezone == "America/New_York"
 
 
 def test_login_invalid_email_format(client_with_user_auth):

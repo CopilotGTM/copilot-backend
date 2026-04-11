@@ -18,6 +18,7 @@ class UserIDs(BaseModel):
     organisation_id: UUID
     user_name: str | None = None
     user_email: str | None = None
+    user_timezone: str | None = None
 
 
 __all__ = ["UserIDs"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC
 from functools import partial
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -95,6 +96,7 @@ class ChatMessageService:
         *,
         session_id: UUID,
         content: str,
+        user_timezone: str | None = None,
         attachment_ids: Iterable[UUID] | None = None,
         message_type: ChatMessageType = ChatMessageType.GENERAL_MESSAGE,
         role: ChatMessageRole = ChatMessageRole.USER,
@@ -143,16 +145,22 @@ class ChatMessageService:
 
         # Create a pending job for processing this message (assistant reply generation)
         assistant_message_id = str(uuid4())
+        job_metadata: dict[str, Any] = {
+            "session_id": str(session_id),
+            "user_message_id": str(message.message_id),
+            "assistant_message_id": assistant_message_id,
+            "current_datetime": message.created_at.astimezone(UTC).isoformat(),
+        }
+        if user_timezone:
+            # Preserve the user's local timezone so relative dates in the agent match
+            # the caller's day rather than the worker region.
+            job_metadata["user_timezone"] = user_timezone
         job = ChatMessageJob(
             message_id=message.message_id,
             job_type=job_type,
             status=JobStatus.PENDING,
             user_id=self.user_id,
-            job_metadata={
-                "session_id": str(session_id),
-                "user_message_id": str(message.message_id),
-                "assistant_message_id": assistant_message_id,
-            },
+            job_metadata=job_metadata,
         )
         self.db.add(job)
 

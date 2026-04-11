@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from src.api.dependencies.rate_limit import rate_limit_login, rate_limit_password_reset
@@ -25,6 +25,7 @@ from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import UserAuthErrors
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
+from src.infra.utils.timezone import USER_TIMEZONE_HEADER, validate_timezone_name
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -40,6 +41,7 @@ UserTable = cast("Table", _user_table)
 
 @router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
 async def user_login(
+    request: Request,
     login_request: UserLoginRequest,
     response: FastAPIResponse,
     _rl_login: None = Depends(rate_limit_login),
@@ -70,6 +72,8 @@ async def user_login(
             )
 
         logger.debug("User found in database")
+        request_timezone = validate_timezone_name(request.headers.get(USER_TIMEZONE_HEADER))
+        effective_timezone = request_timezone or getattr(user, "timezone", None)
 
         # External call to Supabase — no DB session held
         try:
@@ -102,12 +106,23 @@ async def user_login(
         if requires_password_change:
             # External call to Supabase — no DB session held
             try:
+                if request_timezone:
+                    async with master_async_session_scope() as session:
+                        statement = select(User).where(UserTable.c.user_id == user_id)
+                        result = await session.execute(statement)
+                        user_obj = result.scalars().first()
+                        if user_obj:
+                            user_obj.timezone = request_timezone
+                            session.add(user_obj)
+                            await session.commit()
+
                 password_reset_link = supabase_user_client.generate_password_reset_link(
                     email=login_request.email
                 )
 
                 response_data = UserLoginResponse(
                     state=UserLoginState.PENDING_SETUP,
+                    timezone=effective_timezone,
                     password_reset_link=password_reset_link,
                 )
                 return Response.success_response(
@@ -130,6 +145,8 @@ async def user_login(
                 user_obj = result.scalars().first()
                 if user_obj:
                     user_obj.last_login_at = last_login_at
+                    if request_timezone:
+                        user_obj.timezone = request_timezone
                     session.add(user_obj)
                     await session.commit()
 
@@ -142,6 +159,7 @@ async def user_login(
                 created_at=user_created_at,
                 email_verified=email_verified,
                 last_login_at=last_login_at,
+                timezone=effective_timezone,
                 tokens={
                     "access_token": access_token,
                     "refresh_token": refresh_token,

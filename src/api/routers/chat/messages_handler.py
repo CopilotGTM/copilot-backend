@@ -74,6 +74,7 @@ async def send_message(
         user_message, job, assistant_message_id = await service.create_user_message(
             session_id=payload.session_id,
             content=payload.content,
+            user_timezone=user_ids.user_timezone,
             attachment_ids=attach_ids,
             message_type=message_type,
             role=payload.role,
