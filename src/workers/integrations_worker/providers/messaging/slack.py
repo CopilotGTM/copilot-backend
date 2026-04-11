@@ -440,6 +440,66 @@ async def _fetch_thread_replies(
     return replies
 
 
+async def fetch_thread_replies_for_known_threads(
+    *,
+    token_info: IntegrationTokenInfo,
+    connection_id: str,
+    channel_id: str | None,
+    thread_oldest_map: dict[str, str] | None,
+    data_type: str | None = None,
+    provider_config_key: str | None = None,
+) -> FetchMessagesResult:
+    """Fetch incremental replies for known Slack threads in a conversation."""
+    _ = connection_id
+    _ = data_type
+    _ = provider_config_key
+
+    if not channel_id:
+        raise ValueError("channel_id is required for fetching Slack thread replies")
+
+    if not thread_oldest_map:
+        return FetchMessagesResult(messages=[], delta_link=None)
+
+    _, raw_channel_id = split_slack_channel_external_id(channel_id)
+
+    async def _do_fetch(token: str) -> FetchMessagesResult:
+        _, _, user_map = await _fetch_workspace_context(token)
+        headers = {"Authorization": f"Bearer {token}"}
+        replies: list[dict[str, Any]] = []
+        newest_ts: str | None = None
+        seen_ids: set[str] = set()
+
+        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+            for thread_ts, oldest_ts in thread_oldest_map.items():
+                thread_replies = await _fetch_thread_replies(
+                    client,
+                    raw_channel_id=raw_channel_id,
+                    external_channel_id=channel_id,
+                    parent_message={"ts": thread_ts, "thread_ts": thread_ts},
+                    oldest_ts=oldest_ts,
+                    user_map=user_map,
+                )
+                for reply in thread_replies:
+                    reply_id = reply.get("client_msg_id") or reply.get("ts")
+                    if not isinstance(reply_id, str) or reply_id in seen_ids:
+                        continue
+                    seen_ids.add(reply_id)
+                    replies.append(reply)
+
+                    reply_ts = reply.get("ts")
+                    if (
+                        isinstance(reply_ts, str)
+                        and reply_ts
+                        and (newest_ts is None or float(reply_ts) > float(newest_ts))
+                    ):
+                        newest_ts = reply_ts
+
+        replies.sort(key=lambda msg: float(str(msg.get("ts") or "0")))
+        return FetchMessagesResult(messages=replies, delta_link=newest_ts)
+
+    return await call_with_token_retry(token_info, _do_fetch)
+
+
 async def fetch_messages(
     *,
     token_info: IntegrationTokenInfo,

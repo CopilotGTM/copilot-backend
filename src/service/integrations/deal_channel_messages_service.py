@@ -35,7 +35,7 @@ from typing import Any
 from uuid import UUID
 
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
@@ -60,7 +60,7 @@ from src.workers.integrations_worker.providers.messaging.slack import (
     fetch_messages as fetch_slack_messages,
 )
 from src.workers.integrations_worker.providers.messaging.slack import (
-    split_slack_channel_external_id,
+    fetch_thread_replies_for_known_threads as fetch_slack_thread_replies_for_known_threads,
 )
 from src.workers.integrations_worker.providers.messaging.teams import (
     FetchMessagesResult,
@@ -142,6 +142,67 @@ class DealChannelMessagesService:
         if self.db is None:
             raise RuntimeError("Database session is required for this operation")
         return self.db
+
+    @staticmethod
+    def _format_slack_oldest_timestamp(value: datetime) -> str:
+        """Format a stored UTC datetime as a Slack `oldest` cursor."""
+        normalized = value if value.tzinfo else value.replace(tzinfo=UTC)
+        return f"{normalized.astimezone(UTC).timestamp():.6f}"
+
+    @staticmethod
+    def _merge_slack_fetch_results(
+        primary: FetchMessagesResult,
+        thread_replies: FetchMessagesResult,
+    ) -> FetchMessagesResult:
+        """Merge Slack channel history with reply polling results."""
+        merged_messages: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        def add_messages(messages: list[dict[str, Any]]) -> None:
+            for message in messages:
+                message_id = message.get("client_msg_id") or message.get("ts")
+                if not isinstance(message_id, str) or message_id in seen_ids:
+                    continue
+                seen_ids.add(message_id)
+                merged_messages.append(message)
+
+        add_messages(primary.messages)
+        add_messages(thread_replies.messages)
+        merged_messages.sort(key=lambda msg: float(str(msg.get("ts") or "0")))
+
+        newest_ts = primary.delta_link
+        if thread_replies.delta_link and (
+            newest_ts is None or float(thread_replies.delta_link) > float(newest_ts)
+        ):
+            newest_ts = thread_replies.delta_link
+
+        return FetchMessagesResult(messages=merged_messages, delta_link=newest_ts)
+
+    async def _get_known_slack_thread_sync_points(
+        self,
+        session: AsyncSession,
+        channel_id: UUID,
+    ) -> dict[str, str]:
+        """Load known Slack thread roots for incremental reply polling."""
+        stmt = (
+            select(
+                col(MessagingMessage.thread_id),
+                func.max(col(MessagingMessage.sent_at)),
+            )
+            .where(
+                col(MessagingMessage.organisation_id) == self.organisation_id,
+                col(MessagingMessage.channel_id) == channel_id,
+                col(MessagingMessage.thread_id).isnot(None),
+            )
+            .group_by(col(MessagingMessage.thread_id))
+        )
+        result = await session.execute(stmt)
+
+        sync_points: dict[str, str] = {}
+        for thread_id, latest_sent_at in result.all():
+            if isinstance(thread_id, str) and thread_id and isinstance(latest_sent_at, datetime):
+                sync_points[thread_id] = self._format_slack_oldest_timestamp(latest_sent_at)
+        return sync_points
 
     async def sync_all_deal_channels_fresh(
         self,
@@ -558,6 +619,7 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             connection_id: str | None = None
             token_info: IntegrationTokenInfo | None = None
+            slack_thread_sync_points: dict[str, str] = {}
             async for session in acquire_org_async_session(self.organisation_id):
                 stmt = select(KnowledgeIntegration).where(
                     col(KnowledgeIntegration.integration_id) == channel_info.integration_id
@@ -569,6 +631,14 @@ class DealChannelMessagesService:
                     token_info = IntegrationTokenInfo.from_integration(
                         integration, self.organisation_id
                     )
+                    if (
+                        str(channel_info.channel_metadata.get("provider") or "teams").lower()
+                        == "slack"
+                        and channel_info.last_sync_cursor is not None
+                    ):
+                        slack_thread_sync_points = await self._get_known_slack_thread_sync_points(
+                            session, channel_info.channel_id
+                        )
             # Session is now released
 
             if not connection_id or not token_info:
@@ -595,6 +665,7 @@ class DealChannelMessagesService:
                 connection_id=connection_id,
                 token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
+                thread_oldest_map=slack_thread_sync_points,
             )
 
             messages = fetch_result.messages
@@ -695,6 +766,7 @@ class DealChannelMessagesService:
             # ─────────────────────────────────────────────────────────────────
             connection_id: str | None = None
             token_info: IntegrationTokenInfo | None = None
+            slack_thread_sync_points: dict[str, str] = {}
 
             async for session in acquire_org_async_session(self.organisation_id):
                 stmt = select(KnowledgeIntegration).where(
@@ -707,6 +779,14 @@ class DealChannelMessagesService:
                     token_info = IntegrationTokenInfo.from_integration(
                         integration, self.organisation_id
                     )
+                    if (
+                        str(channel_info.channel_metadata.get("provider") or "teams").lower()
+                        == "slack"
+                        and channel_info.last_sync_cursor is not None
+                    ):
+                        slack_thread_sync_points = await self._get_known_slack_thread_sync_points(
+                            session, channel_info.channel_id
+                        )
             # Session released
 
             if not connection_id or not token_info:
@@ -733,6 +813,7 @@ class DealChannelMessagesService:
                 connection_id=connection_id,
                 token_info=token_info,
                 delta_link=channel_info.last_sync_cursor,
+                thread_oldest_map=slack_thread_sync_points,
             )
 
             messages = fetch_result.messages
@@ -843,9 +924,10 @@ class DealChannelMessagesService:
         connection_id: str,
         token_info: IntegrationTokenInfo,
         delta_link: str | None = None,
+        thread_oldest_map: dict[str, str] | None = None,
     ) -> FetchMessagesResult:
         """
-        Fetch messages from Teams API using connection_id directly.
+        Fetch messages from the provider API using connection_id directly.
 
         This method accepts connection_id as a string, allowing it to be called
         without holding a reference to the ORM integration object.
@@ -862,28 +944,45 @@ class DealChannelMessagesService:
         channel_type = channel_info.channel_type
 
         if provider == "slack":
-            _, raw_channel_id = split_slack_channel_external_id(channel_info.external_channel_id)
             is_initial = channel_info.last_sync_cursor is None
 
             if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
-                return await fetch_slack_messages(
+                channel_result = await fetch_slack_messages(
                     token_info=token_info,
                     connection_id=connection_id,
-                    channel_id=raw_channel_id,
+                    channel_id=channel_info.external_channel_id,
                     is_initial=is_initial,
                     last_synced_at=channel_info.last_synced_at,
                     delta_link=delta_link,
                 )
+                if is_initial or not thread_oldest_map:
+                    return channel_result
+                thread_result = await fetch_slack_thread_replies_for_known_threads(
+                    token_info=token_info,
+                    connection_id=connection_id,
+                    channel_id=channel_info.external_channel_id,
+                    thread_oldest_map=thread_oldest_map,
+                )
+                return self._merge_slack_fetch_results(channel_result, thread_result)
 
             if channel_type == ChannelType.GROUP_MESSAGE:
-                return await fetch_slack_chat_messages(
+                channel_result = await fetch_slack_chat_messages(
                     token_info=token_info,
                     connection_id=connection_id,
-                    chat_id=raw_channel_id,
+                    chat_id=channel_info.external_channel_id,
                     is_initial=is_initial,
                     last_synced_at=channel_info.last_synced_at,
                     delta_link=delta_link,
                 )
+                if is_initial or not thread_oldest_map:
+                    return channel_result
+                thread_result = await fetch_slack_thread_replies_for_known_threads(
+                    token_info=token_info,
+                    connection_id=connection_id,
+                    channel_id=channel_info.external_channel_id,
+                    thread_oldest_map=thread_oldest_map,
+                )
+                return self._merge_slack_fetch_results(channel_result, thread_result)
 
             if channel_type == ChannelType.DIRECT_MESSAGE:
                 logger.debug("Skipping Slack 1:1 DM channel %s", channel_info.channel_id)

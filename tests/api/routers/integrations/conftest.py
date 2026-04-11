@@ -122,16 +122,21 @@ class FakeIntegrationService:
     async def link_channel_to_deal(self, deal_id: UUID, channel_data: Any) -> dict[str, Any]:
         """Link a channel to a deal."""
         channel_id = uuid4()
-        integration = self.integrations.get(str(channel_data.integration_id))
+        integration = None
+        if channel_data.integration_id is not None:
+            integration = self.integrations.get(str(channel_data.integration_id))
+        elif self.integrations:
+            integration = next(iter(self.integrations.values()))
         integration_type = integration.integration_type if integration else "teams"
         integration_name = integration.name if integration else "Test Integration"
+        resolved_integration_id = integration.integration_id if integration else uuid4()
         result = {
             "channel_id": channel_id,
             "deal_id": deal_id,
             "external_channel_id": channel_data.id,
             "name": channel_data.name,
             "type": channel_data.type,
-            "integration_id": channel_data.integration_id,
+            "integration_id": resolved_integration_id,
         }
 
         deal_key = str(deal_id)

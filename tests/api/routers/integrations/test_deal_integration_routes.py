@@ -138,6 +138,43 @@ def test_link_channel_success(client: TestClient, integrations_dependency_overri
     assert str(data["deal_id"]) == str(deal_id)
 
 
+def test_link_channel_success_without_integration_id(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    """Older clients can still link channels without sending integration_id."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    deal_id = uuid4()
+    integration_id = uuid4()
+
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=integration_id,
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="slack",
+            name="Revenue Slack",
+            is_active=True,
+        )
+    )
+
+    payload = {
+        "id": "T123:C456",
+        "name": "deal-room",
+        "type": "private",
+        "parent_id": "T123",
+        "parent_name": "Revenue Workspace",
+    }
+
+    resp = client.post(f"/users/integrations/deals/{deal_id}/channels", json=payload)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["integration_id"] == str(integration_id)
+
+
 def test_link_channel_missing_fields(client: TestClient, integrations_dependency_overrides) -> None:
     """Validation errors are returned for malformed channel-link payloads."""
     deal_id = uuid4()
