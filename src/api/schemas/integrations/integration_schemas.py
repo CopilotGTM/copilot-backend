@@ -273,6 +273,7 @@ class ChannelItem(BaseModel):
 
     id: str = Field(..., description="Channel ID or Team ID")
     name: str = Field(..., description="Channel name or Team name")
+    integration_id: UUID = Field(..., description="Integration ID to use when linking this channel")
     type: str = Field(..., description="Type of channel (public, private, group, meeting, etc.)")
     type_label: str = Field(
         ...,
@@ -306,6 +307,10 @@ class ChannelLinkRequest(BaseModel):
     id: str = Field(..., description="External channel ID from the provider")
     name: str = Field(..., description="Channel Name")
     type: str = Field(..., description="Channel Type")
+    integration_id: UUID | None = Field(
+        default=None,
+        description="Integration ID to use for this channel when the client can provide it",
+    )
     parent_id: str | None = Field(default=None, description="Parent ID (e.g. Team ID)")
     parent_name: str | None = Field(default=None, description="Parent Name")
 

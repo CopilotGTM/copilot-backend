@@ -209,7 +209,7 @@ class IntegrationService:
 
         # Query channels across all the user's integrations for this type
         stmt = (
-            select(MessagingChannel)
+            select(MessagingChannel, col(MessagingChannelIntegrationState.integration_id))
             .join(
                 MessagingChannelIntegrationState,
                 col(MessagingChannelIntegrationState.channel_id)
@@ -219,6 +219,11 @@ class IntegrationService:
                 col(MessagingChannelIntegrationState.integration_id).in_(integration_ids),
                 col(MessagingChannelIntegrationState.is_deleted).is_(False),
                 col(MessagingChannel.is_archived) == "false",
+            )
+            .distinct(col(MessagingChannel.channel_id))
+            .order_by(
+                col(MessagingChannel.channel_id),
+                col(MessagingChannelIntegrationState.integration_id),
             )
         )
 
@@ -230,10 +235,10 @@ class IntegrationService:
             stmt = stmt.where(col(MessagingChannel.channel_id).not_in(subquery))
 
         result = await self.db.execute(stmt)
-        db_channels = result.scalars().all()
+        channel_rows = result.all()
 
         # Collect channel IDs to batch-fetch members
-        channel_ids = [ch.channel_id for ch in db_channels]
+        channel_ids = [row[0].channel_id for row in channel_rows]
 
         # Fetch members for all channels in one query (limit to active members)
         channel_members_map: dict[str, list[dict]] = {}
@@ -272,17 +277,21 @@ class IntegrationService:
                     )
 
         channels = []
-        for ch in db_channels:
+        for ch, integration_id in channel_rows:
             # Extract parent info from metadata
             parent_id = None
             parent_name = None
 
             if ch.channel_metadata:
-                parent_id = ch.channel_metadata.get("parent_id") or ch.channel_metadata.get(
-                    "team_id"
+                parent_id = (
+                    ch.channel_metadata.get("parent_id")
+                    or ch.channel_metadata.get("team_id")
+                    or ch.channel_metadata.get("workspace_id")
                 )
-                parent_name = ch.channel_metadata.get("parent_name") or ch.channel_metadata.get(
-                    "team_name"
+                parent_name = (
+                    ch.channel_metadata.get("parent_name")
+                    or ch.channel_metadata.get("team_name")
+                    or ch.channel_metadata.get("workspace_name")
                 )
 
             # Determine channel type value
@@ -297,6 +306,7 @@ class IntegrationService:
                 {
                     "id": ch.external_channel_id,
                     "name": ch.channel_name,
+                    "integration_id": integration_id,
                     "type": channel_type,
                     "type_label": get_channel_type_label(channel_type),
                     "parent_id": parent_id,
@@ -347,7 +357,11 @@ class IntegrationService:
         for row in rows:
             parent_name = None
             if row.channel_metadata:
-                parent_name = row.channel_metadata.get("team_name")
+                parent_name = (
+                    row.channel_metadata.get("parent_name")
+                    or row.channel_metadata.get("team_name")
+                    or row.channel_metadata.get("workspace_name")
+                )
 
             channels.append(
                 {
@@ -411,8 +425,9 @@ class IntegrationService:
     ) -> dict:
         """Link a messaging channel to a deal.
 
-        Resolves the channel and its integration from the DB using the
-        external channel ID — the frontend doesn't need to send integration_id.
+        Resolves the channel and integration from the DB using the external
+        channel ID, with optional deterministic integration selection when
+        the client provides integration_id.
 
         Args:
             deal_id: UUID of the deal.
@@ -423,7 +438,9 @@ class IntegrationService:
         """
         external_channel_id = channel_data.id
 
-        # Find the channel and its integration_id via the integration state table
+        # Prefer the exact integration chosen by the client when available.
+        # Older clients do not send integration_id, so keep the original
+        # external-id lookup as a backward-compatible fallback.
         stmt = (
             select(MessagingChannel, col(MessagingChannelIntegrationState.integration_id))
             .join(
@@ -436,8 +453,15 @@ class IntegrationService:
                 col(MessagingChannel.external_channel_id) == external_channel_id,
                 col(MessagingChannelIntegrationState.is_deleted).is_(False),
             )
-            .limit(1)
         )
+        if channel_data.integration_id is not None:
+            stmt = stmt.where(
+                col(MessagingChannelIntegrationState.integration_id) == channel_data.integration_id
+            )
+        else:
+            stmt = stmt.order_by(col(MessagingChannelIntegrationState.integration_id))
+
+        stmt = stmt.limit(1)
         result = await self.db.execute(stmt)
         row = result.first()
 

@@ -140,8 +140,8 @@ async def list_available_integrations(
 @router.post(
     "/{integration_id}/refresh-channels",
     response_model=GenericResponse[RefreshChannelsResponse],
-    summary="Refresh Teams channels for an integration",
-    description="Trigger a manual refresh of Teams channels and chats for an integration.",
+    summary="Refresh messaging channels for an integration",
+    description="Trigger a manual refresh of Slack or Teams channels/chats for an integration.",
 )
 async def refresh_integration_channels(
     integration_id: UUID,
@@ -150,7 +150,7 @@ async def refresh_integration_channels(
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[RefreshChannelsResponse]:
     """
-    Trigger a manual refresh of Teams channels and chats.
+    Trigger a manual refresh of Slack or Teams channels/chats.
 
     This endpoint validates the integration and dispatches a Celery task
     to refresh the channels. The task runs asynchronously and the task_id
@@ -166,10 +166,13 @@ async def refresh_integration_channels(
                 response=response,
             )
 
-        # Validate it's a Teams integration
-        if integration.integration_type != IntegrationType.TEAMS:
+        # Validate it's a supported messaging integration
+        if integration.integration_type not in {
+            IntegrationType.TEAMS,
+            IntegrationType.SLACK,
+        }:
             return Response.bad_request_error_response(
-                message="Channel refresh is only supported for Teams integrations",
+                message="Channel refresh is only supported for Slack and Teams integrations",
                 response=response,
             )
 

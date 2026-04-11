@@ -7,7 +7,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.responses import JSONResponse
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.routers.integrations.copilot_oauth_routes import (
     get_copilot_callback_service,
@@ -19,14 +18,6 @@ from src.api.routers.integrations.deal_integration_routes import (
 from src.api.routers.integrations.integration_routes import (
     get_integration_service as get_list_integration_service,
 )
-from src.api.routers.integrations.oauth_routes import (
-    get_integration_service as get_oauth_integration_service,
-)
-from src.api.routers.integrations.oauth_routes import (
-    get_oauth_service,
-    get_webhook_service,
-)
-from src.api.schemas.integrations import OAuthInitiateResponse
 from src.domain.models.organisation_tables.sync import IntegrationScope, IntegrationType
 from src.infra.auth.user_auth import user_auth
 
@@ -131,13 +122,21 @@ class FakeIntegrationService:
     async def link_channel_to_deal(self, deal_id: UUID, channel_data: Any) -> dict[str, Any]:
         """Link a channel to a deal."""
         channel_id = uuid4()
+        integration = None
+        if channel_data.integration_id is not None:
+            integration = self.integrations.get(str(channel_data.integration_id))
+        elif self.integrations:
+            integration = next(iter(self.integrations.values()))
+        integration_type = integration.integration_type if integration else "teams"
+        integration_name = integration.name if integration else "Test Integration"
+        resolved_integration_id = integration.integration_id if integration else uuid4()
         result = {
             "channel_id": channel_id,
             "deal_id": deal_id,
             "external_channel_id": channel_data.id,
             "name": channel_data.name,
             "type": channel_data.type,
-            "integration_id": channel_data.integration_id,
+            "integration_id": resolved_integration_id,
         }
 
         deal_key = str(deal_id)
@@ -146,8 +145,8 @@ class FakeIntegrationService:
         self.deal_channels[deal_key].append(
             {
                 **result,
-                "integration_type": "teams",
-                "integration_name": "Test Integration",
+                "integration_type": integration_type,
+                "integration_name": integration_name,
                 "parent_name": channel_data.parent_name,
             }
         )
@@ -187,6 +186,55 @@ class FakeIntegrationService:
 
         return channels
 
+    async def list_user_channels_by_type(
+        self, integration_type: IntegrationType, deal_id: UUID | None = None
+    ) -> list[dict[str, Any]]:
+        """List channels visible through the user's active integrations of a given type."""
+        matching_integrations = [
+            integration
+            for integration in self.integrations.values()
+            if integration.is_active and integration.integration_type == integration_type.value
+        ]
+        if not matching_integrations:
+            raise ValueError(
+                f"No active {integration_type.value} integration found. "
+                "Please connect your account first."
+            )
+
+        linked_ids: set[str] = set()
+        if deal_id:
+            linked_ids = {
+                ch.get("external_channel_id") for ch in self.deal_channels.get(str(deal_id), [])
+            }
+
+        channels: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for integration in matching_integrations:
+            for channel in self.channels.get(str(integration.integration_id), []):
+                channel_id = channel.get("id")
+                if not channel_id or channel_id in linked_ids or channel_id in seen_ids:
+                    continue
+                channel_type = str(channel.get("type") or "public")
+                channels.append(
+                    {
+                        "id": channel_id,
+                        "name": channel.get("name"),
+                        "integration_id": integration.integration_id,
+                        "type": channel_type,
+                        "type_label": channel.get("type_label")
+                        or channel_type.replace("_", " ").title(),
+                        "parent_id": channel.get("parent_id"),
+                        "parent_name": channel.get("parent_name"),
+                        "description": channel.get("description"),
+                        "member_count": channel.get("member_count", 0),
+                        "members": channel.get("members", []),
+                        "last_activity_at": channel.get("last_activity_at"),
+                    }
+                )
+                seen_ids.add(channel_id)
+
+        return channels
+
     # Helper methods for test setup
     def add_integration(self, integration: FakeKnowledgeIntegration):
         """Add an integration for testing."""
@@ -195,78 +243,6 @@ class FakeIntegrationService:
     def add_channels(self, integration_id: UUID, channels: list[dict]):
         """Add channels for an integration."""
         self.channels[str(integration_id)] = channels
-
-
-class FakeOAuthIntegrationService:
-    """Fake OAuthIntegrationService for testing."""
-
-    def __init__(self):
-        self.should_raise_unavailable = False
-        self.should_raise_nango_error = False
-        self.nango_error_status = None
-        self.nango_error_payload = None
-        self._unavailable_error_class = None
-        self._nango_error_class = None
-
-    def _get_exception_classes(self):
-        """Lazy load exception classes to ensure proper import."""
-        if self._unavailable_error_class is None:
-            from src.service.integrations.nango_client import NangoConnectionError
-            from src.service.integrations.oauth_service import IntegrationUnavailableError
-
-            self._unavailable_error_class = IntegrationUnavailableError
-            self._nango_error_class = NangoConnectionError
-
-    async def create_connect_session(
-        self,
-        user_ids: UserIDs,
-        user: Any,
-        integration_type: IntegrationType,
-    ) -> OAuthInitiateResponse:
-        """Create a Nango connect session."""
-        self._get_exception_classes()
-
-        if self.should_raise_unavailable:
-            raise self._unavailable_error_class(status="coming_soon")
-
-        if self.should_raise_nango_error:
-            raise self._nango_error_class(
-                message="Nango error",
-                status_code=self.nango_error_status,
-                payload=self.nango_error_payload,
-            )
-
-        return OAuthInitiateResponse(
-            session_token="fake_session_token_123",
-            integration_type=integration_type,
-            expires_at="2024-12-31T23:59:59Z",
-        )
-
-    @staticmethod
-    def extract_nango_error_message(payload: dict | None) -> str | None:
-        """Extract error message from Nango payload."""
-        if payload and isinstance(payload, dict):
-            return payload.get("error", {}).get("message")
-        return None
-
-
-class FakeNangoWebhookService:
-    """Fake NangoWebhookService for testing."""
-
-    def __init__(self):
-        self.valid_signature = True
-        self.auth_webhook_response = JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Integration created"},
-        )
-
-    def _is_valid_signature(self, signature: str | None, payload: dict) -> bool:
-        """Validate webhook signature."""
-        return self.valid_signature and signature is not None
-
-    async def _handle_authorization_webhook(self, payload: dict) -> JSONResponse:
-        """Handle authorization webhook."""
-        return self.auth_webhook_response
 
 
 class FakeCopilotOAuthService:
@@ -344,18 +320,6 @@ def fake_integration_service(integration_test_ids):
 
 
 @pytest.fixture(scope="function")
-def fake_oauth_service():
-    """Create a FakeOAuthIntegrationService instance."""
-    return FakeOAuthIntegrationService()
-
-
-@pytest.fixture(scope="function")
-def fake_webhook_service():
-    """Create a FakeNangoWebhookService instance."""
-    return FakeNangoWebhookService()
-
-
-@pytest.fixture(scope="function")
 def fake_copilot_oauth_service():
     """Create a FakeCopilotOAuthService instance."""
     return FakeCopilotOAuthService()
@@ -372,8 +336,6 @@ def integrations_dependency_overrides(
     client,
     integration_test_ids,
     fake_integration_service,
-    fake_oauth_service,
-    fake_webhook_service,
     fake_copilot_oauth_service,
     fake_copilot_callback_service,
 ):
@@ -404,12 +366,6 @@ def integrations_dependency_overrides(
         finally:
             await fake_integration_service.close()
 
-    async def _override_oauth_service():
-        yield fake_oauth_service
-
-    async def _override_webhook_service():
-        yield fake_webhook_service
-
     async def _override_copilot_oauth_service():
         yield fake_copilot_oauth_service
 
@@ -421,19 +377,14 @@ def integrations_dependency_overrides(
     # Override all the dependencies
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[user_auth] = _override_user_auth
-    app.dependency_overrides[get_oauth_integration_service] = _override_integration_service
     app.dependency_overrides[get_list_integration_service] = _override_integration_service
     app.dependency_overrides[get_deal_integration_service] = _override_integration_service
-    app.dependency_overrides[get_oauth_service] = _override_oauth_service
-    app.dependency_overrides[get_webhook_service] = _override_webhook_service
     app.dependency_overrides[get_copilot_oauth_service] = _override_copilot_oauth_service
     app.dependency_overrides[get_copilot_callback_service] = _override_copilot_callback_service
 
     yield {
         "user_ids": user_ids,
         "integration_service": fake_integration_service,
-        "oauth_service": fake_oauth_service,
-        "webhook_service": fake_webhook_service,
         "copilot_oauth_service": fake_copilot_oauth_service,
         "copilot_callback_service": fake_copilot_callback_service,
     }

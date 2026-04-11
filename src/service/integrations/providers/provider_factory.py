@@ -2,6 +2,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 from src.service.integrations.providers.google_provider import GoogleProvider
 from src.service.integrations.providers.microsoft_provider import MicrosoftProvider
+from src.service.integrations.providers.slack_provider import SlackProvider
 
 
 class ProviderFactory:
@@ -15,6 +16,7 @@ class ProviderFactory:
         IntegrationType.OUTLOOK_EMAIL: MicrosoftProvider,
         IntegrationType.OUTLOOK_CALENDAR: MicrosoftProvider,
         IntegrationType.TEAMS: MicrosoftProvider,
+        IntegrationType.SLACK: SlackProvider,
     }
 
     @classmethod

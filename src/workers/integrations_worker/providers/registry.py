@@ -9,6 +9,7 @@ Fetch signature:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
 from .calendar.outlook_calendar import fetch_events as outlook_calendar_fetch
@@ -17,12 +18,16 @@ from .calendar.outlook_calendar import fetch_events as outlook_calendar_fetch
 # Will be restored for one-time data migration in the future.
 from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
 from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
+from .messaging.slack import fetch_channels as slack_fetch_channels
+from .messaging.slack import fetch_chat_messages as slack_fetch_chat_messages
+from .messaging.slack import fetch_chats as slack_fetch_chats
+from .messaging.slack import fetch_messages as slack_fetch_messages
 from .messaging.teams import fetch_channels as teams_fetch_channels
 from .messaging.teams import fetch_chat_messages as teams_fetch_chat_messages
 from .messaging.teams import fetch_chats as teams_fetch_chats
 from .messaging.teams import fetch_messages as teams_fetch_messages
 
-FetchFn = Callable[..., Awaitable[list[dict]]]
+FetchFn = Callable[..., Awaitable[Any]]
 
 _REGISTRY: dict[tuple[str, str], dict[str, FetchFn]] = {}
 
@@ -51,6 +56,13 @@ def _init_defaults() -> None:
         "chats": teams_fetch_chats,  # 1:1, group, meeting chats
         "messages": teams_fetch_messages,  # Channel messages
         "chat_messages": teams_fetch_chat_messages,  # Chat messages
+    }
+    # Messaging: Slack
+    _REGISTRY[("messaging", "slack")] = {
+        "channels": slack_fetch_channels,
+        "chats": slack_fetch_chats,  # Multi-party DMs
+        "messages": slack_fetch_messages,  # Conversation messages
+        "chat_messages": slack_fetch_chat_messages,  # MPIM messages
     }
 
 

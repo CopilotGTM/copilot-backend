@@ -1129,6 +1129,11 @@ class SlackConfig:
         os.getenv("SLACK_WEBHOOK_DEDUPE_TTL_SECONDS", "300")
     )
 
+    # OAuth callback URL for the user-level Slack integration flow.
+    # Mirrors Google/Microsoft so local frontend APP_URL does not leak into
+    # provider redirects for backend callback endpoints.
+    REDIRECT_URI: str = os.getenv("SLACK_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
+
     # Auth URLs for the login flow
     SLACK_AUTH_LOGIN_URL: str = os.getenv(
         "SLACK_AUTH_LOGIN_URL",

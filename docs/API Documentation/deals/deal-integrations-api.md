@@ -19,12 +19,14 @@ GET /deals/{deal_id}/available
 ### List Deal Integrations Description
 
 Returns available integrations specifically for deal context (Slack and Teams).
-Shows which integrations are connected to the specified deal.
+Shows which integrations are connected for the current user and which canonical
+channels are already linked to the specified deal.
 
-**Note:** This endpoint filters integrations based on the current user's access. It returns:
+**Note:** Messaging integrations are **user-scoped connections** with **org-scoped canonical
+channels**. This endpoint filters integrations based on the current user's access. It returns:
 
-- Organization-wide integrations (e.g., Slack)
-- User-specific integrations (e.g., Teams) belonging to the current user.
+- Active Slack/Teams integrations created by the current user
+- Deal-linked canonical channels regardless of which user originally linked them
 
 ### List Deal Integrations Authentication
 
@@ -60,9 +62,8 @@ Required - Bearer token
             "integration_type": "slack",
             "name": "Acme Corp Slack",
             "created_by_user_id": "admin-uuid",
-            "created_by_admin": true,
             "integration_email": null,
-            "integration_scope": "organization",
+            "integration_scope": "user",
             "is_active": true,
             "created_at": "2025-10-01T08:00:00Z",
             "updated_at": "2025-10-05T10:30:00Z"
@@ -71,13 +72,12 @@ Required - Bearer token
         "linked_channels": [
           {
             "channel_id": "uuid-of-channel",
-            "external_channel_id": "C12345",
+            "external_channel_id": "T12345:C12345",
             "name": "general",
             "type": "public",
             "integration_id": "123e4567-e89b-12d3-a456-426614174000",
             "integration_name": "Acme Corp Slack",
-            "integration_type": "slack",
-            "parent_name": null
+            "parent_name": "Acme Corp Workspace"
           }
         ]
       }
@@ -90,19 +90,19 @@ Required - Bearer token
 
 ---
 
-## 2. List Channels for Integration
+## 2. List Channels for Integration Type
 
 ### List Integration Channels Endpoint
 
 ```http
-GET /deals/{integration_id}/channels?deal_id={deal_id}
+GET /deals/{deal_id}/channels/{integration_type}
 ```
 
 ### List Integration Channels Description
 
-Fetch available channels/teams for a specific integration (e.g., Teams, Slack).
-This is used to populate the channel selection dropdown when linking a channel to a deal.
-If `deal_id` is provided, channels already linked to that deal will be excluded from the response.
+Fetch channels visible through the current user's connected integrations of a specific
+provider type (`teams` or `slack`). This is used to populate the channel selection dropdown
+when linking a channel to a deal. Channels already linked to that deal are excluded automatically.
 
 ### List Integration Channels Authentication
 
@@ -112,11 +112,8 @@ Required - Bearer token
 
 **Path Parameters:**
 
-- `integration_id` (UUID, required): The ID of the integration to fetch channels from.
-
-**Query Parameters:**
-
-- `deal_id` (UUID, optional): ID of the deal to filter out already linked channels.
+- `deal_id` (UUID, required): Deal context used to filter out already linked channels.
+- `integration_type` (string, required): `teams` or `slack`.
 
 ### List Integration Channels Response (200 OK)
 
@@ -129,6 +126,7 @@ Required - Bearer token
       {
         "id": "team_1_channel_general",
         "name": "General",
+        "integration_id": "123e4567-e89b-12d3-a456-426614174000",
         "type": "public",
         "type_label": "Public Channel",
         "parent_id": "team_1",
@@ -152,6 +150,7 @@ Required - Bearer token
       {
         "id": "meeting_chat_abc123",
         "name": "Acme Deal Review Meeting",
+        "integration_id": "223e4567-e89b-12d3-a456-426614174000",
         "type": "meeting",
         "type_label": "Meeting Chat",
         "parent_id": null,
@@ -179,6 +178,7 @@ Required - Bearer token
 | --- | --- | --- |
 | `id` | string | External channel ID from the provider |
 | `name` | string | Channel display name |
+| `integration_id` | UUID | Exact user integration to use when linking this channel |
 | `type` | string | Channel type: `public`, `private`, `direct_message`, `group_message`, `meeting`, `thread` |
 | `type_label` | string | Human-readable label (e.g., "Public Channel", "Meeting Chat", "Private Channel") |
 | `parent_id` | string\|null | Parent ID (e.g., Team ID for Teams channels) |
@@ -205,6 +205,8 @@ POST /deals/{deal_id}/channels
 
 Links a specific messaging channel (Slack/Teams) to a deal.
 This enables message syncing for that channel in the context of the deal.
+The request must include the `integration_id` returned by the list-channels API so the backend
+can bind the canonical channel to the exact user integration that can access it.
 
 ### Link Channel Authentication
 
@@ -248,7 +250,9 @@ Required - Bearer token
     "deal_id": "123e4567-e89b-12d3-a456-426614174000",
     "channel_id": "internal-channel-uuid",
     "external_channel_id": "team_1_channel_general",
-    "name": "General"
+    "name": "General",
+    "type": "public",
+    "integration_id": "123e4567-e89b-12d3-a456-426614174000"
   }
 }
 ```

@@ -10,14 +10,21 @@
 | Google Calendar | Google API | Calendar | Incremental sync (syncToken) |
 | Teams Channels | Microsoft Graph | Messaging | Delta Query (messages/delta) |
 | Teams Chats | Microsoft Graph | Messaging | Pagination with date cutoff |
+| Slack Channels | Slack Web API | Messaging | conversations.list |
+| Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
+| Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
 
 CRM integrations (HubSpot, Salesforce) are deprecated and excluded from active sync.
 
 ## OAuth Model
 
-CopilotGTM uses **first-party custom OAuth** — no third-party proxy (Nango was removed). Each environment (local, dev, prod) has its own Azure AD app registration and Google OAuth client, managed via Terraform.
+CopilotGTM uses **first-party custom OAuth** for Google, Microsoft, and Slack. Each
+environment (local, dev, prod) has its own provider app credentials, managed via Terraform/Key Vault.
 
-Credentials are stored in Azure Key Vault (`microsoft-integration-client-id`, `microsoft-integration-client-secret`, `google-integration-client-id`, `google-integration-client-secret`) and loaded at runtime with a TTL cache.
+Credentials are stored in Azure Key Vault (`microsoft-integration-client-id`,
+`microsoft-integration-client-secret`, `google-integration-client-id`,
+`google-integration-client-secret`, `slack-client-id`, `slack-client-secret`) and loaded
+at runtime with a TTL cache.
 
 ## Directory Structure
 
@@ -28,12 +35,13 @@ src/
       token_resolution.py       # Token fetch, refresh, 401 retry, distributed lock
       google_provider.py        # Google OAuth: authorize, exchange, refresh
       microsoft_provider.py     # Microsoft OAuth: authorize, exchange, refresh
+      slack_provider.py         # Slack OAuth: authorize, exchange, refresh, revoke
       provider_factory.py       # Route integration_type -> provider
     copilot_callback_service.py # OAuth callback handler (store tokens, trigger sync)
     calendar_sync_service.py    # Calendar event upsert (org-scoped)
     email_sync_service.py       # Email folder/message upsert
     email_delta_sync_service.py # Email sync orchestrator (fresh session pattern)
-    messaging_sync_service.py   # Teams channel/chat/message upsert (org-scoped)
+    messaging_sync_service.py   # Teams/Slack channel/chat/message upsert (org-scoped)
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -51,6 +59,7 @@ src/
         google_calendar.py      # Google Calendar fetcher (sync tokens)
       messaging/
         teams.py                # Teams channels, chats, messages fetcher
+        slack.py                # Slack channels, chats, messages fetcher
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
@@ -81,7 +90,10 @@ Celery Beat (scheduled)
 
 ## Key Design Decisions
 
-**Org-scoped records**: Calendar events, messaging channels/members/messages are org-scoped (not per-integration). Multiple users' integrations contribute to the same canonical records. Per-integration tracking is done via state tables (`calendar_event_user_states`, `messaging_channel_integration_states`).
+**Org-scoped records**: Calendar events, messaging channels/members/messages are org-scoped
+(not per-integration). Multiple users' integrations contribute to the same canonical records.
+Per-integration tracking is done via state tables
+(`calendar_event_user_states`, `messaging_channel_integration_states`).
 
 **Fresh session pattern**: Database sessions are never held during external API calls. Data is extracted into dataclasses, the session is released, the API call is made, then a new session is acquired to write results.
 

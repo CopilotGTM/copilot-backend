@@ -119,9 +119,7 @@ class MessagingSyncService:
                         continue
 
                     # Check if channel already exists
-                    existing_channel = await self._get_channel_by_external_id(
-                        integration.integration_id, external_id
-                    )
+                    existing_channel = await self._get_channel_by_external_id(external_id)
 
                     if existing_channel:
                         # Update existing channel
@@ -296,11 +294,11 @@ class MessagingSyncService:
                 }
 
             # Batch load existing channels for comparison
-            external_ids = [
-                self._extract_channel_id(ch, provider)
-                for ch in channel_list
-                if self._extract_channel_id(ch, provider)
-            ]
+            external_ids: list[str] = []
+            for channel_data in channel_list:
+                external_id = self._extract_channel_id(channel_data, provider)
+                if external_id:
+                    external_ids.append(external_id)
             existing_map = await self._load_existing_channels_by_external_ids(
                 external_ids, provider
             )
@@ -332,7 +330,8 @@ class MessagingSyncService:
                                 continue
 
                             sync_action = extract_sync_action(channel_data)
-                            action_counts.increment(sync_action)
+                            if sync_action is not None:
+                                action_counts.increment(sync_action)
 
                             existing_channel = existing_map.get(external_id)
                             is_new = existing_channel is None
@@ -794,13 +793,12 @@ class MessagingSyncService:
         external_id: str,
     ) -> MessagingChannel:
         """Create a new org-scoped messaging channel."""
-        channel = MessagingChannel(
-            organisation_id=self.organisation_id,
-            provider=provider,
-            external_channel_id=external_id,
-            last_synced_at=datetime.now(UTC),
-            **self._extract_channel_fields(channel_data, provider),
-        )
+        channel = MessagingChannel(organisation_id=self.organisation_id)
+        channel.provider = provider
+        channel.external_channel_id = external_id
+        channel.last_synced_at = datetime.now(UTC)
+        for key, value in self._extract_channel_fields(channel_data, provider).items():
+            setattr(channel, key, value)
 
         self.db.add(channel)
         await self.db.flush()
@@ -1061,6 +1059,8 @@ class MessagingSyncService:
         """Extract channel fields from provider data."""
         if provider in ("microsoft", "teams"):
             return cls._extract_teams_channel_fields(channel_data)
+        if provider == "slack":
+            return cls._extract_slack_channel_fields(channel_data)
         return cls._extract_generic_channel_fields(channel_data)
 
     @classmethod
@@ -1114,6 +1114,45 @@ class MessagingSyncService:
             },
         }
 
+    @classmethod
+    def _extract_slack_channel_fields(cls, channel_data: dict[str, Any]) -> dict[str, Any]:
+        """Extract channel fields from Slack conversation data."""
+        is_mpim = bool(channel_data.get("is_mpim"))
+        is_private = bool(channel_data.get("is_private"))
+
+        if is_mpim:
+            channel_type = ChannelType.GROUP_MESSAGE
+        elif is_private:
+            channel_type = ChannelType.PRIVATE
+        else:
+            channel_type = ChannelType.PUBLIC
+
+        workspace_id = channel_data.get("teamId")
+        workspace_name = channel_data.get("teamName")
+        raw_channel_id = channel_data.get("slack_channel_id") or channel_data.get("id")
+
+        return {
+            "channel_name": channel_data.get("name") or "Unnamed",
+            "channel_type": channel_type,
+            "channel_description": channel_data.get("description"),
+            "is_monitored": "false",
+            "participant_count": channel_data.get("num_members")
+            or len(channel_data.get("members", [])),
+            "is_archived": "true" if channel_data.get("is_archived") else "false",
+            "channel_metadata": {
+                "provider": "slack",
+                "parent_id": workspace_id,
+                "parent_name": workspace_name,
+                "workspace_id": workspace_id,
+                "workspace_name": workspace_name,
+                "slack_channel_id": raw_channel_id,
+                "is_private": is_private,
+                "is_mpim": is_mpim,
+                "created": channel_data.get("created"),
+                "last_updated_date_time": channel_data.get("lastUpdatedDateTime"),
+            },
+        }
+
     @staticmethod
     def _extract_generic_channel_fields(channel_data: dict[str, Any]) -> dict[str, Any]:
         """Extract channel fields from generic provider data."""
@@ -1134,6 +1173,8 @@ class MessagingSyncService:
         """Extract message fields from provider data."""
         if provider in ("microsoft", "teams"):
             return cls._extract_teams_message_fields(message_data)
+        if provider == "slack":
+            return cls._extract_slack_message_fields(message_data)
         return cls._extract_generic_message_fields(message_data)
 
     @classmethod
@@ -1179,6 +1220,54 @@ class MessagingSyncService:
             },
         }
 
+    @classmethod
+    def _extract_slack_message_fields(cls, message_data: dict[str, Any]) -> dict[str, Any]:
+        """Extract message fields from Slack conversation history data."""
+        user_profile = message_data.get("user_profile", {})
+        if not isinstance(user_profile, dict):
+            user_profile = {}
+
+        subtype = str(message_data.get("subtype") or "")
+        thread_ts = message_data.get("thread_ts")
+        ts = message_data.get("ts")
+        reactions = message_data.get("reactions", [])
+        files = message_data.get("files", [])
+        edited = message_data.get("edited", {})
+        if not isinstance(edited, dict):
+            edited = {}
+
+        message_type = MessageType.TEXT
+        if subtype == "file_share" and files:
+            message_type = MessageType.FILE
+        elif subtype in {"channel_join", "channel_leave", "thread_broadcast"}:
+            message_type = MessageType.SYSTEM_EVENT
+
+        return {
+            "external_user_id": message_data.get("user"),
+            "thread_id": thread_ts if thread_ts and thread_ts != ts else thread_ts,
+            "message_type": message_type,
+            "content": message_data.get("text"),
+            "formatted_content": None,
+            "sent_at": cls._parse_slack_ts(ts),
+            "edited_at": cls._parse_slack_ts(edited.get("ts")),
+            "reactions": {"items": reactions} if isinstance(reactions, list) else {},
+            "attachments": files if isinstance(files, list) else [],
+            "mentions": cls._extract_slack_mentions(message_data.get("text")),
+            "is_deleted": "false",
+            "is_bot_message": "true" if message_data.get("bot_id") else "false",
+            "is_important": "true" if message_data.get("pinned_to") else "false",
+            "message_metadata": {
+                "provider": "slack",
+                "channel_id": message_data.get("channel"),
+                "slack_channel_id": message_data.get("slack_channel_id"),
+                "subtype": subtype or None,
+                "reply_count": message_data.get("reply_count"),
+                "reply_users_count": message_data.get("reply_users_count"),
+                "author_display_name": user_profile.get("displayName") or user_profile.get("name"),
+                "author_email": user_profile.get("email"),
+            },
+        }
+
     @staticmethod
     def _extract_generic_message_fields(message_data: dict[str, Any]) -> dict[str, Any]:
         """Extract message fields from generic provider data."""
@@ -1211,6 +1300,26 @@ class MessagingSyncService:
             return datetime.fromisoformat(value)
         except (ValueError, AttributeError):
             return None
+
+    @staticmethod
+    def _parse_slack_ts(value: str | None) -> datetime | None:
+        """Parse a Slack timestamp string (`1712339623.123456`) into a datetime."""
+        if not value:
+            return None
+        try:
+            return datetime.fromtimestamp(float(value), tz=UTC)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _extract_slack_mentions(text: Any) -> list[str]:
+        """Extract mentioned Slack user IDs from mrkdwn content."""
+        if not isinstance(text, str) or not text:
+            return []
+
+        import re
+
+        return re.findall(r"<@([A-Z0-9]+)>", text)
 
     async def link_channel_to_deal(
         self,

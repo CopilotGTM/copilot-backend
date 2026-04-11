@@ -83,10 +83,11 @@ Only `inbox` and `sent` folders are synced by default (`is_monitored = "true"`).
 
 ---
 
-## Messaging Sync (Teams)
+## Messaging Sync (Teams + Slack)
 
-### Provider
+### Providers
 - **Microsoft Teams**: Microsoft Graph API (channels, chats, messages)
+- **Slack**: Slack Web API (`conversations.*`, `users.list`, `auth.test`, `team.info`)
 
 ### Data Model (Org-Scoped)
 
@@ -97,19 +98,31 @@ MessagingChannel (OrgScopedRecordMixin — no integration_id)
   └── MessagingChannelIntegrationState (per-integration visibility)
 ```
 
-Messaging is org-scoped: the same Teams channel appears once regardless of how many users have connected Teams. Per-integration tracking is via `MessagingChannelIntegrationState`.
+Messaging is org-scoped: the same Slack/Teams channel appears once regardless of how many
+users have connected that provider. Per-integration tracking is via
+`MessagingChannelIntegrationState`.
+
+Slack integrations are still **user-scoped**. Canonical channels/messages stay org-scoped,
+while `MessagingChannelIntegrationState` records which user integration can access each channel.
 
 ### Two Sync Phases
 
 **Phase 1: Channel/Chat sync** (Tier 2: `channels_org_task`)
-- Fetch Teams channels (teams → channels per team)
-- Fetch Teams chats (group + meeting chats, filtered by date cutoff)
+- Fetch provider channels/chats for every active user integration
 - Upsert via `MessagingSyncService.sync_channels_incremental()`
 
 **Phase 2: Deal message sync** (Tier 2: `deal_messages_org_task`)
 - For each deal with linked messaging channels
 - Fetch messages from those channels
 - Upsert via `DealChannelMessagesService`
+
+### Slack Channels and Chats
+- **Channel discovery**: `conversations.list` for `public_channel` and `private_channel`
+- **Group chats**: `conversations.list` for `mpim`
+- **Workspace namespacing**: canonical Slack channel IDs are stored as `{team_id}:{channel_id}`
+  so the same raw channel ID from different workspaces cannot collide
+- **Members**: `conversations.members` + `users.list`
+- 1:1 DMs are not synced into deal-channel workflows
 
 ### Teams Channels
 - **Delta query**: `GET /v1.0/teams/{teamId}/channels/{channelId}/messages/delta`
@@ -122,6 +135,13 @@ Messaging is org-scoped: the same Teams channel appears once regardless of how m
 - Client-side date cutoff stops pagination when chats are older than the lookback window
 - Lookback: 90 days for initial sync, 7 days for recurring sync
 - 1:1 chats (`oneOnOne`) are filtered out
+
+### Slack Messages
+- **History API**: `conversations.history`
+- **Thread replies**: `conversations.replies`
+- **Incremental cutoff**: last synced timestamp with a configurable safety buffer
+- Lookback: 90 days for initial sync by default, configurable via environment variables
+- Messages are normalized into the same org-scoped `messaging_messages` table as Teams
 
 ### Member Sync
 Members are batch-loaded per channel (one SELECT per channel, not per member) to avoid N+1 queries. Upserted by `(channel_id, external_user_id)`.
