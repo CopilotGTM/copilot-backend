@@ -175,13 +175,25 @@ class StakeholderSyncService:
         result.total_deals = len(deal_ids)
 
         if result.total_deals == 0:
-            logger.info("No deals found for org %s", self.organisation_id)
+            logger.info(
+                "No deals found for org %s",
+                self.organisation_id,
+                extra={
+                    "event": "stakeholder_sync_no_deals",
+                    "organisation_id": str(self.organisation_id),
+                },
+            )
             return result
 
         logger.info(
             "Syncing stakeholders for %d deals in org %s",
             result.total_deals,
             self.organisation_id,
+            extra={
+                "event": "stakeholder_sync_started",
+                "organisation_id": str(self.organisation_id),
+                "total_deals": result.total_deals,
+            },
         )
 
         # Phase 2: Process each deal with fresh session per deal
@@ -210,6 +222,12 @@ class StakeholderSyncService:
                         "Failed to sync stakeholders for deal %s: %s",
                         deal_id,
                         str(e),
+                        extra={
+                            "event": "stakeholder_sync_failed_for_deal",
+                            "organisation_id": str(self.organisation_id),
+                            "deal_id": str(deal_id),
+                            "error": str(e),
+                        },
                     )
 
         logger.info(
@@ -219,6 +237,17 @@ class StakeholderSyncService:
             result.total_deals,
             result.stakeholders_created,
             result.stakeholders_updated,
+            extra={
+                "event": "stakeholder_sync_complete",
+                "organisation_id": str(self.organisation_id),
+                "successful_deals": result.successful_deals,
+                "failed_deals": result.failed_deals,
+                "total_deals": result.total_deals,
+                "created": result.stakeholders_created,
+                "updated": result.stakeholders_updated,
+                "deactivated": result.stakeholders_deactivated,
+                "rejected": result.stakeholders_rejected,
+            },
         )
 
         return result
@@ -251,6 +280,15 @@ class StakeholderSyncService:
                 result.updated,
                 result.deactivated,
                 result.skipped,
+                extra={
+                    "event": "stakeholder_sync_result",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "created": result.created,
+                    "updated": result.updated,
+                    "deactivated": result.deactivated,
+                    "skipped": result.skipped,
+                },
             )
             await self._dispatch_pending_research()
             return result
@@ -402,6 +440,12 @@ class StakeholderSyncService:
             logger.warning(
                 "Participant %s has no related_email, skipping",
                 participant.participant_id,
+                extra={
+                    "event": "stakeholder_sync_participant_missing_email",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal.deal_id),
+                    "participant_id": str(participant.participant_id),
+                },
             )
             return False
         email = participant.related_email.lower()
@@ -507,6 +551,12 @@ class StakeholderSyncService:
                         "Failed to dispatch research for stakeholder %s",
                         stakeholder_id,
                         exc_info=True,
+                        extra={
+                            "event": "stakeholder_sync_research_dispatch_failed",
+                            "organisation_id": str(self.organisation_id),
+                            "stakeholder_id": str(stakeholder_id),
+                            "deal_id": str(deal_id),
+                        },
                     )
         finally:
             self._pending_research.clear()
@@ -646,6 +696,12 @@ class StakeholderSyncService:
                 "Rejected %d internal-domain stakeholders for deal %s",
                 count,
                 deal_id,
+                extra={
+                    "event": "stakeholder_sync_rejected_internal_domains",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "rejected_count": count,
+                },
             )
 
         return count

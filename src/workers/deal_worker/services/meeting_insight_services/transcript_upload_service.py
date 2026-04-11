@@ -99,6 +99,13 @@ class TranscriptUploadService:
             "Extracted %d characters from uploaded transcript for event %s",
             len(transcript_text),
             self.event_id,
+            extra={
+                "event": "transcript_upload_extracted",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(self.deal_id),
+                "event_id": str(self.event_id),
+                "transcript_length": len(transcript_text),
+            },
         )
 
         # Step 3: Save Meeting record (fresh session)
@@ -257,6 +264,13 @@ class TranscriptUploadService:
             logger.info(
                 "Saved meeting %s (full_transcript only, no segments)",
                 meeting_id,
+                extra={
+                    "event": "transcript_upload_meeting_saved",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(self.deal_id),
+                    "event_id": str(self.event_id),
+                    "meeting_id": str(meeting_id),
+                },
             )
             return meeting_id
 
@@ -301,5 +315,13 @@ class TranscriptUploadService:
             "Triggered meeting summary job %s after transcript upload for event %s",
             summary_job_id,
             self.event_id,
+            extra={
+                "event": "transcript_upload_summary_job_dispatched",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(self.deal_id),
+                "event_id": str(self.event_id),
+                "summary_job_id": str(summary_job_id),
+                "user_id": str(self.user_id),
+            },
         )
         return summary_job_id

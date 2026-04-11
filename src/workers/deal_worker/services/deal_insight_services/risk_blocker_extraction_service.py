@@ -239,7 +239,15 @@ class RiskBlockerExtractionService:
         async for master_session in acquire_master_async_session():
             org_name = await get_organisation_name(master_session, self.organisation_id)
 
-        logger.info("Starting risk/blocker extraction for deal %s", deal_id)
+        logger.info(
+            "Starting risk/blocker extraction for deal %s",
+            deal_id,
+            extra={
+                "event": "risk_blocker_extraction_started",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+            },
+        )
         self._publish_progress("Starting AI analysis...", "preparing", 0.2)
 
         # Phase 2: Call agent (tools acquire sessions on-demand)
@@ -283,6 +291,14 @@ class RiskBlockerExtractionService:
             len(result.items),
             created_count,
             result.duplicate_items_count,
+            extra={
+                "event": "risk_blocker_extraction_completed",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "extracted_items": len(result.items),
+                "new_items": created_count,
+                "duplicate_items": result.duplicate_items_count,
+            },
         )
 
         return result
@@ -317,7 +333,19 @@ class RiskBlockerExtractionService:
             }
 
         except RiskBlockerExtractionError as e:
-            logger.warning("Extraction failed for deal %s: %s", deal_id, e.message)
+            logger.warning(
+                "Extraction failed for deal %s: %s",
+                deal_id,
+                e.message,
+                extra={
+                    "event": "risk_blocker_extraction_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "error_code": e.error_code,
+                    "retryable": e.retryable,
+                    "error": e.message,
+                },
+            )
             return {
                 "success": False,
                 "deal_id": str(deal_id),
@@ -327,7 +355,16 @@ class RiskBlockerExtractionService:
             }
 
         except Exception as e:
-            logger.exception("Unexpected error during extraction for deal %s", deal_id)
+            logger.exception(
+                "Unexpected error during extraction for deal %s",
+                deal_id,
+                extra={
+                    "event": "risk_blocker_extraction_unexpected_error",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "error": str(e),
+                },
+            )
             return {
                 "success": False,
                 "deal_id": str(deal_id),

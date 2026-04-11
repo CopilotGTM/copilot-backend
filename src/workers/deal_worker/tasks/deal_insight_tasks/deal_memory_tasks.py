@@ -70,12 +70,23 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
     Returns:
         Dictionary with job completion status
     """
-    logger.info("Processing deal memory job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Processing deal memory job",
+        extra={"event": "deal_memory_job_started", "organisation_id": organisation_id, "job_id": job_id},
+    )
 
     # Prevent concurrent execution for the same job (retries can stack)
     lock_key = f"task_lock:deal_memory_job:{job_id}"
     if not acquire_task_lock(lock_key, ttl=700):
-        logger.info("Deal memory job %s already running, skipping", job_id)
+        logger.info(
+            "Deal memory job already running, skipping",
+            extra={
+                "event": "deal_memory_job_skipped",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": "already_running",
+            },
+        )
         return {"status": "skipped", "reason": "already_running"}
 
     async def _run():
@@ -116,7 +127,16 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
             )
         except Exception as e:
             error_msg = e.message if isinstance(e, DealMemoryError) else str(e)[:500]
-            logger.error("Deal memory job failed %s: %s", job_id, e, exc_info=True)
+            logger.error(
+                "Deal memory job failed",
+                extra={
+                    "event": "deal_memory_job_failed",
+                    "organisation_id": organisation_id,
+                    "job_id": job_id,
+                    "failure_reason": str(e),
+                },
+                exc_info=True,
+            )
 
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
@@ -148,7 +168,10 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
 
         publisher.publish_finalize("done")
 
-        logger.info("Deal memory job completed: %s", job_id)
+        logger.info(
+            "Deal memory job completed",
+            extra={"event": "deal_memory_job_completed", "organisation_id": organisation_id, "job_id": job_id},
+        )
         return {
             "status": "completed",
             "job_id": job_id,
@@ -158,7 +181,16 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
     try:
         return run_async(_run())
     except Exception as e:
-        logger.error("Deal memory task failed %s: %s", job_id, e, exc_info=True)
+        logger.error(
+            "Deal memory task failed",
+            extra={
+                "event": "deal_memory_task_failed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         # Exponential backoff: 60, 120, 240 seconds
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
     finally:
@@ -193,10 +225,13 @@ def build_deal_memory_org(self: Task, organisation_id: str):
             dispatch_deal_insight_pipeline(org_id_str, deal_id_str, job_id_str)
 
         logger.info(
-            "Deal memory backfill org=%s dispatched=%d skipped=%d",
-            organisation_id,
-            result["dispatched"],
-            result["skipped"],
+            "Deal memory backfill completed for organisation",
+            extra={
+                "event": "deal_memory_backfill_org_completed",
+                "organisation_id": organisation_id,
+                "dispatched_jobs": result["dispatched"],
+                "skipped_jobs": result["skipped"],
+            },
         )
         return {
             "status": "completed",
@@ -204,7 +239,15 @@ def build_deal_memory_org(self: Task, organisation_id: str):
             "skipped": result["skipped"],
         }
     except Exception as exc:
-        logger.error("Backfill failed for org %s: %s", organisation_id, exc, exc_info=True)
+        logger.error(
+            "Deal memory backfill failed for organisation",
+            extra={
+                "event": "deal_memory_backfill_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
+            exc_info=True,
+        )
         raise self.retry(exc=exc, countdown=120) from exc
     finally:
         release_task_lock(lock_key)
@@ -232,7 +275,14 @@ def trigger_deal_memory_backfill_all_orgs():
                 build_deal_memory_org.delay(organisation_id=str(org.organisation_id))
                 dispatched += 1
             except Exception as e:
-                logger.warning("Failed to dispatch for org %s: %s", org.organisation_id, e)
+                logger.warning(
+                    "Failed to dispatch backfill for organisation",
+                    extra={
+                        "event": "deal_memory_backfill_all_orgs_dispatch_failed",
+                        "organisation_id": str(org.organisation_id),
+                        "failure_reason": str(e),
+                    },
+                )
 
         return {"status": "completed", "orgs_dispatched": dispatched}
 

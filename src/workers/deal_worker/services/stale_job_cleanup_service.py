@@ -170,6 +170,12 @@ class DealStaleJobCleanupService:
                 self.organisation_id,
                 total_found,
                 total_marked,
+                extra={
+                    "event": "stale_job_cleanup_completed",
+                    "organisation_id": str(self.organisation_id),
+                    "jobs_found": total_found,
+                    "jobs_marked_failed": total_marked,
+                },
             )
         else:
             logger.debug(
@@ -234,6 +240,14 @@ class DealStaleJobCleanupService:
             job_type.value,
             threshold_hours,
             self.organisation_id,
+            extra={
+                "event": "stale_job_cleanup_jobs_found",
+                "organisation_id": str(self.organisation_id),
+                "job_type": job_type.value,
+                "status": status.value,
+                "jobs_found": len(stale_job_ids),
+                "threshold_hours": threshold_hours,
+            },
         )
 
         # Phase 2: Mark stale jobs as failed

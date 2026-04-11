@@ -36,6 +36,7 @@ class DealJobRedisPublisher:
 
     def __init__(self, organisation_id: UUID, job_id: UUID, job_type: str, maxlen: int = 100):
         self._stream_key = channel_for_deal_job(organisation_id, job_id)
+        self.organisation_id = organisation_id
         self._job_type = job_type
         self._job_id = str(job_id)
         self._maxlen = maxlen
@@ -49,7 +50,15 @@ class DealJobRedisPublisher:
         frame["job_id"] = self._job_id
         self._sequence += 1
         if xadd_json_frame(self._stream_key, frame, maxlen=self._maxlen) is None:
-            logger.warning("Failed to XADD frame for job %s", self._job_id)
+            logger.warning(
+                "Failed to publish frame to Redis stream",
+                extra={
+                    "event": "deal_job_publish_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "job_id": self._job_id,
+                    "job_type": self._job_type,
+                },
+            )
 
     def publish_progress(self, message: str, stage: str, progress: float) -> None:
         """Publish a progress update.

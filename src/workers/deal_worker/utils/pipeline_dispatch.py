@@ -169,6 +169,14 @@ def _create_pipeline_jobs(
         deal_id,
         risk_job_id,
         stakeholder_job_id,
+        extra={
+            "event": "deal_insight_pipeline_jobs_created",
+            "organisation_id": str(org_uuid),
+            "deal_id": str(deal_uuid),
+            "risk_blocker_job_id": risk_job_id,
+            "stakeholder_job_id": stakeholder_job_id,
+            "pipeline_type": "sync",
+        },
     )
     return risk_job_id, stakeholder_job_id
 
@@ -212,6 +220,14 @@ async def _create_pipeline_jobs_async(
         deal_id,
         risk_job_id,
         stakeholder_job_id,
+        extra={
+            "event": "deal_insight_pipeline_jobs_created",
+            "organisation_id": str(org_uuid),
+            "deal_id": str(deal_uuid),
+            "risk_blocker_job_id": risk_job_id,
+            "stakeholder_job_id": stakeholder_job_id,
+            "pipeline_type": "async",
+        },
     )
     return risk_job_id, stakeholder_job_id
 

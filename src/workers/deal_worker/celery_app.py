@@ -35,25 +35,52 @@ app.conf.update(
     result_expires=7200,  # Results expire after 2 hours
 )
 
+WORKER_COMPONENT = resolve_celery_component(app.main)
+
+
+def _is_current_worker_signal(sender) -> bool:
+    return getattr(getattr(sender, "app", None), "main", None) == app.main
+
 
 # Signal Handlers
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
-    logger.info("Deal worker starting. Initializing Redis connection pool...")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Deal worker starting",
+        extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
+    )
     initialize_redis_pool()
-    logger.info("Deal worker is ready. Redis connection pool initialized.")
+    logger.info(
+        "Deal worker ready",
+        extra={"event": "worker_ready", "worker_component": WORKER_COMPONENT},
+    )
 
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
-    logger.info("Deal worker shutting down. Closing Redis connection pool.")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Deal worker shutting down",
+        extra={"event": "worker_shutdown", "worker_component": WORKER_COMPONENT},
+    )
     try:
         close_redis_pool()
-        logger.info("Redis connection pool closed successfully")
-    except Exception as e:
-        logger.error(f"Error closing Redis connection pool: {e}")
+        logger.info(
+            "Redis connection pool closed",
+            extra={"event": "redis_pool_closed", "worker_component": WORKER_COMPONENT},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to close Redis connection pool",
+            extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
+        )
 
 
 # Task modules are auto-discovered via the tasks_module path passed to create_celery_app.

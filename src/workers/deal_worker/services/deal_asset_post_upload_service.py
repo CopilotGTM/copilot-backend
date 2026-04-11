@@ -77,10 +77,15 @@ class DealAssetPostUploadService:
 
         except Exception as e:
             logger.error(
-                "Deal asset post-upload failed org=%s asset=%s error=%s",
-                self.organisation_id,
-                asset_id,
-                e,
+                "Deal asset post-upload failed",
+                extra={
+                    "event": "deal_asset_post_upload_failed",
+                    "organisation_id": self.organisation_id,
+                    "asset_id": asset_id,
+                    "error": str(e),
+                },
+                # Keep old exception context for callers expecting positional logging
+                exc_info=True,
             )
             self._mark_failed(asset_id, str(e))
             return False
@@ -94,15 +99,36 @@ class DealAssetPostUploadService:
         for session in acquire_org_session(self.org_uuid):
             asset = session.get(DealAsset, asset_id)
             if not asset:
-                logger.warning("Deal asset %s not found for processing", asset_id)
+                logger.warning(
+                    "Deal asset not found for processing",
+                    extra={
+                        "event": "deal_asset_not_found_for_processing",
+                        "organisation_id": str(self.organisation_id),
+                        "asset_id": asset_id,
+                    },
+                )
                 return None
 
             if asset.status == DealAssetStatus.ACTIVE.value and asset.checksum:
-                logger.info("Deal asset %s already processed", asset_id)
+                logger.info(
+                    "Deal asset already processed",
+                    extra={
+                        "event": "deal_asset_already_processed",
+                        "organisation_id": str(self.organisation_id),
+                        "asset_id": asset_id,
+                    },
+                )
                 return None
 
             if not asset.storage_path:
-                logger.warning("Deal asset %s has no storage_path", asset_id)
+                logger.warning(
+                    "Deal asset has no storage path",
+                    extra={
+                        "event": "deal_asset_missing_storage_path",
+                        "organisation_id": str(self.organisation_id),
+                        "asset_id": asset_id,
+                    },
+                )
                 return None
 
             return AssetData(
@@ -127,7 +153,15 @@ class DealAssetPostUploadService:
             if data.storage_path and not checksum:
                 checksum = run_async(self.storage.compute_checksum(data.storage_path))
         except Exception:
-            logger.exception("Checksum computation failed for asset %s", data.asset_id)
+            logger.exception(
+                "Checksum computation failed for asset",
+                extra={
+                    "event": "deal_asset_checksum_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "asset_id": data.asset_id,
+                    "deal_id": data.deal_id,
+                },
+            )
 
         # Generate thumbnails for supported mime types
         try:
@@ -145,7 +179,15 @@ class DealAssetPostUploadService:
                     thumbnail_medium_path = created.get("thumb_medium")
         except Exception:
             # Thumbnails are optional — don't fail the whole upload
-            logger.exception("Thumbnail generation failed for asset %s", data.asset_id)
+            logger.exception(
+                "Thumbnail generation failed for asset",
+                extra={
+                    "event": "deal_asset_thumbnail_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "asset_id": data.asset_id,
+                    "deal_id": data.deal_id,
+                },
+            )
 
         return ProcessingResult(
             checksum=checksum,
@@ -162,7 +204,14 @@ class DealAssetPostUploadService:
         for session in acquire_org_session(self.org_uuid):
             asset = session.get(DealAsset, asset_id)
             if not asset:
-                logger.warning("Deal asset %s not found for finalization", asset_id)
+                logger.warning(
+                    "Deal asset not found for finalization",
+                    extra={
+                        "event": "deal_asset_not_found_for_finalize",
+                        "organisation_id": str(self.organisation_id),
+                        "asset_id": asset_id,
+                    },
+                )
                 return
 
             if result.checksum:

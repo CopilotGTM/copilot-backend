@@ -247,6 +247,15 @@ class StakeholderAnalysisService:
             analysis.stance,
             analysis.decision_power,
             analysis.temperature,
+            extra={
+                "event": "stakeholder_analysis_result_saved",
+                "organisation_id": str(self.organisation_id),
+                "stakeholder_id": str(stakeholder.stakeholder_id),
+                "deal_id": str(stakeholder.deal_id),
+                "stance": str(analysis.stance),
+                "decision_power": str(analysis.decision_power),
+                "temperature": str(analysis.temperature),
+            },
         )
 
     async def analyze_all_stakeholders_for_deal(
@@ -272,7 +281,16 @@ class StakeholderAnalysisService:
         async for session in acquire_org_async_session(self.organisation_id):
             deal = await get_deal(session, self.organisation_id, deal_id)
             if not deal:
-                logger.warning("Deal %s not found in org %s", deal_id, self.organisation_id)
+                logger.warning(
+                    "Deal %s not found in org %s",
+                    deal_id,
+                    self.organisation_id,
+                    extra={
+                        "event": "stakeholder_analysis_deal_not_found",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                    },
+                )
                 return {}
         # Session released
 
@@ -282,13 +300,28 @@ class StakeholderAnalysisService:
 
         stakeholders = await self.get_stakeholders_for_deal(deal_id)
         if not stakeholders:
-            logger.info("No stakeholders found for deal %s", deal_id)
+            logger.info(
+                "No stakeholders found for deal %s",
+                deal_id,
+                extra={
+                    "event": "stakeholder_analysis_no_stakeholders",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
             return {}
 
         logger.info(
             "Running stakeholder analysis for %d stakeholders in deal %s",
             len(stakeholders),
             deal_id,
+            extra={
+                "event": "stakeholder_analysis_started",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_count": len(stakeholders),
+                "generate_insights": generate_insights,
+            },
         )
 
         # Phase 2: Call agent (tools gather all data — meetings, emails, notes, etc.)
@@ -329,6 +362,13 @@ class StakeholderAnalysisService:
                         "No analysis result for stakeholder %s (%s)",
                         stakeholder.stakeholder_id,
                         stakeholder.email,
+                        extra={
+                            "event": "stakeholder_analysis_missing_result",
+                            "organisation_id": str(self.organisation_id),
+                            "deal_id": str(deal_id),
+                            "stakeholder_id": str(stakeholder.stakeholder_id),
+                            "stakeholder_email": stakeholder.email,
+                        },
                     )
                     results[stakeholder.stakeholder_id] = None
 
@@ -342,6 +382,12 @@ class StakeholderAnalysisService:
                         "Added %d stage-gated stakeholder insights for deal %s",
                         len(insights),
                         deal_id,
+                        extra={
+                            "event": "stakeholder_analysis_stage_gated_insights_added",
+                            "organisation_id": str(self.organisation_id),
+                            "deal_id": str(deal_id),
+                            "insight_count": len(insights),
+                        },
                     )
 
             await session.commit()
@@ -389,6 +435,11 @@ class StakeholderAnalysisService:
             "Processing stakeholder analysis for %d deals in org %s",
             len(deals),
             self.organisation_id,
+            extra={
+                "event": "stakeholder_analysis_batch_started",
+                "organisation_id": str(self.organisation_id),
+                "deals_to_process": len(deals),
+            },
         )
 
         for deal in deals:
@@ -404,6 +455,12 @@ class StakeholderAnalysisService:
                     deal.deal_id,
                     e,
                     exc_info=True,
+                    extra={
+                        "event": "stakeholder_analysis_batch_error",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal.deal_id),
+                        "error": str(e),
+                    },
                 )
                 # Count all stakeholders as skipped on error
                 stakeholder_count = len(await self.get_stakeholders_for_deal(deal.deal_id))
@@ -511,6 +568,14 @@ class StakeholderAnalysisService:
             stakeholder.stakeholder_id,
             snapshot["stance"],
             snapshot["engagement_score"],
+            extra={
+                "event": "stakeholder_analysis_snapshot_saved",
+                "organisation_id": str(self.organisation_id),
+                "stakeholder_id": str(stakeholder.stakeholder_id),
+                "deal_id": str(stakeholder.deal_id),
+                "stance": snapshot["stance"],
+                "engagement_score": snapshot["engagement_score"],
+            },
         )
         return True
 
@@ -536,5 +601,15 @@ class StakeholderAnalysisService:
         result = await session.execute(stmt)
         count = result.rowcount
         if count > 0:
-            logger.info("Expired %d old insights for deal %s", count, deal_id)
+            logger.info(
+                "Expired %d old insights for deal %s",
+                count,
+                deal_id,
+                extra={
+                    "event": "stakeholder_analysis_old_insights_expired",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "expired_count": count,
+                },
+            )
         return count

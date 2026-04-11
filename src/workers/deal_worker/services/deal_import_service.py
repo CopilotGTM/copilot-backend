@@ -1216,6 +1216,13 @@ class DealImportProcessingService:
             deal.deal_id,
             pipeline.name,
             stage.name if stage else "none",
+            extra={
+                "event": "deal_import_reassign_pipeline",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal.deal_id),
+                "pipeline_name": str(pipeline.name),
+                "stage": stage.name if stage else "none",
+            },
         )
 
     @staticmethod

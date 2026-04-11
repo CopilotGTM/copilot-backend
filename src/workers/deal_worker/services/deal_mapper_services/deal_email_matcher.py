@@ -332,6 +332,13 @@ class DealEmailMatcher:
                     "Email discovery limit reached for deal %s, stakeholder %s set to PENDING",
                     deal_id,
                     participant_email,
+                    extra={
+                        "event": "deal_email_discovery_limit_reached",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "stakeholder_email": participant_email,
+                        "approval_status": approval_status.value,
+                    },
                 )
 
         return discovered
@@ -357,6 +364,12 @@ class DealEmailMatcher:
                         "Failed to dispatch research for stakeholder %s",
                         stakeholder_id,
                         exc_info=True,
+                        extra={
+                            "event": "deal_email_research_dispatch_failed",
+                            "organisation_id": str(self.organisation_id),
+                            "stakeholder_id": str(stakeholder_id),
+                            "deal_id": str(deal_id),
+                        },
                     )
         finally:
             self._pending_research.clear()
@@ -393,7 +406,15 @@ class DealEmailMatcher:
         result = await session.execute(stmt)
         deals = result.scalars().all()
 
-        logger.info(f"Building stakeholder maps for {len(deals)} active deals")
+        logger.info(
+            "Building stakeholder maps for %d active deals",
+            len(deals),
+            extra={
+                "event": "deal_email_maps_build_started",
+                "organisation_id": str(self.organisation_id),
+                "active_deals": len(deals),
+            },
+        )
 
         for deal in deals:
             info = DealStakeholderInfo(
@@ -425,8 +446,17 @@ class DealEmailMatcher:
                 self._contact_email_to_deals[email].add(deal.deal_id)
 
         logger.info(
-            f"Stakeholder maps built: {len(self._team_email_to_deals)} team emails, "
-            f"{len(self._contact_email_to_deals)} contact emails across {len(self._deal_info)} deals"
+            "Stakeholder maps built: %d team emails, %d contact emails across %d deals",
+            len(self._team_email_to_deals),
+            len(self._contact_email_to_deals),
+            len(self._deal_info),
+            extra={
+                "event": "deal_email_maps_built",
+                "organisation_id": str(self.organisation_id),
+                "team_emails": len(self._team_email_to_deals),
+                "contact_emails": len(self._contact_email_to_deals),
+                "deals": len(self._deal_info),
+            },
         )
 
     def _collect_team_emails(self, deal: CRMDeal, info: DealStakeholderInfo) -> None:
@@ -518,7 +548,15 @@ class DealEmailMatcher:
         result = await session.execute(stmt)
         emails = list(result.scalars().all())
 
-        logger.info(f"Found {len(emails)} unprocessed emails to match")
+        logger.info(
+            "Found %d unprocessed emails to match",
+            len(emails),
+            extra={
+                "event": "deal_email_unprocessed_count",
+                "organisation_id": str(self.organisation_id),
+                "count": len(emails),
+            },
+        )
         return emails
 
     def _match_email_to_deals(self, email: Email) -> list[EmailMatchResult]:
@@ -744,7 +782,15 @@ class DealEmailMatcher:
         # Create new association using INSERT ... ON CONFLICT DO NOTHING
         # This handles race conditions when multiple tasks process the same org
         if not email.internet_message_id:
-            logger.warning("Email %s has no internet_message_id, skipping", email.email_id)
+            logger.warning(
+                "Email %s has no internet_message_id, skipping",
+                email.email_id,
+                extra={
+                    "event": "deal_email_missing_message_id",
+                    "organisation_id": str(self.organisation_id),
+                    "email_id": str(email.email_id),
+                },
+            )
             return None
 
         association = DealEmailAssociation(
@@ -836,14 +882,28 @@ class DealEmailMatcher:
             await self._build_stakeholder_maps(session)
 
             if not self._deal_info:
-                logger.info(f"No active deals found for organisation {self.organisation_id}")
+                logger.info(
+                    "No active deals found for organisation %s",
+                    self.organisation_id,
+                    extra={
+                        "event": "deal_email_no_active_deals",
+                        "organisation_id": str(self.organisation_id),
+                    },
+                )
                 return stats
 
             # Step 2: Get unprocessed emails
             emails = await self._get_unprocessed_emails(session)
 
             if not emails:
-                logger.info(f"No unprocessed emails found for organisation {self.organisation_id}")
+                logger.info(
+                    "No unprocessed emails found for organisation %s",
+                    self.organisation_id,
+                    extra={
+                        "event": "deal_email_no_unprocessed_emails",
+                        "organisation_id": str(self.organisation_id),
+                    },
+                )
                 return stats
 
             # Preload integration types for this batch (avoid N+1 queries)
@@ -920,11 +980,24 @@ class DealEmailMatcher:
         stats["deals_matched_ids"] = list(deals_matched)  # Return actual deal IDs
 
         logger.info(
-            f"Email matching completed for org {self.organisation_id}: "
-            f"{stats['emails_processed']} processed, {stats['emails_matched']} matched, "
-            f"{stats['associations_created']} associations created, "
-            f"{stats['calendar_invites_skipped']} calendar invites skipped, "
-            f"{stats['stakeholders_discovered']} stakeholders discovered"
+            "Email matching completed for org %s: %d processed, %d matched, "
+            "%d associations created, %d calendar invites skipped, %d stakeholders discovered",
+            self.organisation_id,
+            stats["emails_processed"],
+            stats["emails_matched"],
+            stats["associations_created"],
+            stats["calendar_invites_skipped"],
+            stats["stakeholders_discovered"],
+            extra={
+                "event": "deal_email_matching_completed",
+                "organisation_id": str(self.organisation_id),
+                "emails_processed": stats["emails_processed"],
+                "emails_matched": stats["emails_matched"],
+                "associations_created": stats["associations_created"],
+                "calendar_invites_skipped": stats["calendar_invites_skipped"],
+                "stakeholders_discovered": stats["stakeholders_discovered"],
+                "deals_with_matches": stats["deals_with_matches"],
+            },
         )
 
         return stats
@@ -972,7 +1045,16 @@ class DealEmailMatcher:
         deal = result.scalars().first()
 
         if not deal:
-            logger.warning(f"Deal {deal_id} not found in org {self.organisation_id}")
+            logger.warning(
+                "Deal %s not found in org %s",
+                deal_id,
+                self.organisation_id,
+                extra={
+                    "event": "deal_email_process_deal_not_found",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
             return stats
 
         # Build info for this single deal
@@ -985,7 +1067,15 @@ class DealEmailMatcher:
         info.company_domains = self._collect_company_domains(deal)
 
         if not info.team_emails or not info.contact_emails:
-            logger.info(f"No stakeholders for deal {deal_id}, skipping email matching")
+            logger.info(
+                "No stakeholders for deal %s, skipping email matching",
+                deal_id,
+                extra={
+                    "event": "deal_email_process_deal_no_stakeholders",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
             return stats
 
         # Store in lookup maps for matching
@@ -1004,7 +1094,15 @@ class DealEmailMatcher:
         emails = await self._get_emails_for_stakeholders(session, all_stakeholder_emails)
 
         if not emails:
-            logger.info(f"No emails found for deal {deal_id} stakeholders")
+            logger.info(
+                "No emails found for deal %s stakeholders",
+                deal_id,
+                extra={
+                    "event": "deal_email_process_deal_no_emails",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
             return stats
 
         # Preload integration types
@@ -1053,11 +1151,25 @@ class DealEmailMatcher:
         await self._dispatch_pending_research()
 
         logger.info(
-            f"Email matching for deal {deal_id}: "
-            f"{stats['emails_processed']} processed, {stats['emails_matched']} matched, "
-            f"{stats['associations_created']} associations created, "
-            f"{stats['calendar_invites_skipped']} calendar invites skipped, "
-            f"{stats['stakeholders_discovered']} stakeholders discovered"
+            "Email matching for deal %s: %d processed, %d matched, "
+            "%d associations created, %d calendar invites skipped, "
+            "%d stakeholders discovered",
+            deal_id,
+            stats["emails_processed"],
+            stats["emails_matched"],
+            stats["associations_created"],
+            stats["calendar_invites_skipped"],
+            stats["stakeholders_discovered"],
+            extra={
+                "event": "deal_email_matching_for_deal_completed",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "emails_processed": stats["emails_processed"],
+                "emails_matched": stats["emails_matched"],
+                "associations_created": stats["associations_created"],
+                "calendar_invites_skipped": stats["calendar_invites_skipped"],
+                "stakeholders_discovered": stats["stakeholders_discovered"],
+            },
         )
 
         return stats

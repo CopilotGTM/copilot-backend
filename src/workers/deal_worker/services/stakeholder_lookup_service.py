@@ -178,6 +178,11 @@ class StakeholderLookupService:
             "Building stakeholder lookup maps for %d deals (org=%s)",
             len(deals),
             self.organisation_id,
+            extra={
+                "event": "stakeholder_lookup_maps_build_started",
+                "organisation_id": str(self.organisation_id),
+                "deals": len(deals),
+            },
         )
 
         # Build maps for each deal
@@ -190,6 +195,14 @@ class StakeholderLookupService:
             maps.total_team_emails,
             maps.total_contact_emails,
             len(maps.domain_to_deals),
+            extra={
+                "event": "stakeholder_lookup_maps_build_completed",
+                "organisation_id": str(self.organisation_id),
+                "deals": maps.total_deals,
+                "team_emails": maps.total_team_emails,
+                "contact_emails": maps.total_contact_emails,
+                "domains": len(maps.domain_to_deals),
+            },
         )
 
         return maps

@@ -34,6 +34,12 @@ app.conf.update(
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
 )
 
+WORKER_COMPONENT = resolve_celery_component(app.main)
+
+
+def _is_current_worker_signal(sender) -> bool:
+    return getattr(getattr(sender, "app", None), "main", None) == app.main
+
 # Log broker connection details for debugging (mask password)
 broker_url_masked = config.broker_url
 if config.redis_password:
@@ -51,20 +57,41 @@ logger.debug(f"Chat worker default queue: {config.task_default_queue}")
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
-    logger.info("Chat worker starting. Initializing Redis connection pool...")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Chat worker starting",
+        extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
+    )
     initialize_redis_pool()
-    logger.info("Chat worker is ready. Redis connection pool initialized.")
+    logger.info(
+        "Chat worker ready",
+        extra={"event": "worker_ready", "worker_component": WORKER_COMPONENT},
+    )
 
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
-    logger.info("Chat worker shutting down. Closing Redis connection pool.")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Chat worker shutting down",
+        extra={"event": "worker_shutdown", "worker_component": WORKER_COMPONENT},
+    )
     try:
         close_redis_pool()
-        logger.info("Redis connection pool closed successfully")
-    except Exception as e:
-        logger.error(f"Error closing Redis connection pool: {e}")
+        logger.info(
+            "Redis connection pool closed",
+            extra={"event": "redis_pool_closed", "worker_component": WORKER_COMPONENT},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to close Redis connection pool",
+            extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
+        )
 
 
 # Explicitly import task modules to ensure registration

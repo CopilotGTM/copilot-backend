@@ -85,7 +85,7 @@ def _create_integrations_client() -> Celery:
         if config.redis_password
         else config.broker_url
     )
-    logger.info("Integrations Celery client initialized", extra={"broker": masked_broker})
+    logger.debug("Integrations Celery client initialized", extra={"broker": masked_broker})
 
     return client
 

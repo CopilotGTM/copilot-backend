@@ -35,6 +35,7 @@ All dashboards use `service_name` as the primary stream selector (OTEL label).
 
 ## Related Documentation
 
+- [Logging Architecture](../Technical%20Documentation/logging-architecture.md)
 - [Dashboard Plan](../Technical%20Documentation/grafana-dashboard-plan.md)
 - [Logging Remediation Plan](../Technical%20Documentation/logging-remediation-plan.md)
 - [Investigation Queries](../Technical%20Documentation/logging-investigation-queries.md)

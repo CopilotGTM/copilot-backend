@@ -99,7 +99,10 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
         }
     """
     started_at = datetime.now(UTC).isoformat()
-    logger.info("Tier 1: Triggering timeline sync for all organizations")
+    logger.info(
+        "Tier 1: Triggering timeline sync for all organisations",
+        extra={"event": "timeline_sync_all_orgs_started"},
+    )
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         org_ids: list[UUID] = []
@@ -111,7 +114,13 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
             org_ids = [row[0] for row in result.all()]
 
         if not org_ids:
-            logger.warning("No approved organizations found for timeline sync")
+            logger.warning(
+                "No approved organisations found for timeline sync",
+                extra={
+                    "event": "timeline_sync_all_orgs_no_organisations",
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "started_at": started_at,
@@ -119,7 +128,13 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
                 "summary": {"total_orgs": 0, "orgs_triggered": 0, "orgs_skipped": 0},
             }
 
-        logger.info("Found %d approved organization(s) for timeline sync", len(org_ids))
+        logger.info(
+            "Found approved organisations for timeline sync",
+            extra={
+                "event": "timeline_sync_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
+        )
 
         orgs_triggered = 0
         orgs_skipped = 0
@@ -131,7 +146,15 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
                 )
                 orgs_triggered += 1
             except Exception as e:
-                logger.error("Failed to dispatch timeline sync for org %s: %s", org_id, e)
+                logger.error(
+                    "Failed to dispatch timeline sync for organisation",
+                    extra={
+                        "event": "timeline_sync_org_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
+                    exc_info=True,
+                )
                 orgs_skipped += 1
 
         return {
@@ -148,7 +171,14 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
     try:
         return run_async(_dispatch_all_orgs())
     except Exception as e:
-        logger.error("Timeline sync all-orgs failed: %s", e, exc_info=True)
+        logger.error(
+            "Timeline sync all-orgs dispatch failed",
+            extra={
+                "event": "timeline_sync_all_orgs_failed",
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         return {
             "status": "failed",
             "started_at": started_at,
@@ -208,10 +238,13 @@ def sync_org_timeline_task(
     """
     started_at = datetime.now(UTC).isoformat()
     logger.info(
-        "Tier 2: Starting org-wide timeline sync for org %s (deals=%s, batch_size=%d)",
-        organisation_id,
-        len(deal_ids) if deal_ids else "all",
-        batch_size,
+        "Tier 2: Starting org-wide timeline sync",
+        extra={
+            "event": "timeline_sync_org_started",
+            "organisation_id": organisation_id,
+            "batch_size": batch_size,
+            "requested_deal_count": len(deal_ids) if deal_ids else 0,
+        },
     )
 
     org_uuid = UUID(organisation_id)
@@ -238,7 +271,15 @@ def sync_org_timeline_task(
     try:
         return run_async(_run())
     except Exception as e:
-        logger.error("Org timeline sync failed for %s: %s", organisation_id, e, exc_info=True)
+        logger.error(
+            "Org timeline sync failed",
+            extra={
+                "event": "timeline_sync_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e, countdown=300) from e
         return {
@@ -304,7 +345,14 @@ def sync_deal_timeline_task(
         }
     """
     started_at = datetime.now(UTC).isoformat()
-    logger.info("Tier 3: Starting timeline sync for deal %s in org %s", deal_id, organisation_id)
+    logger.info(
+        "Tier 3: Starting timeline sync for deal",
+        extra={
+            "event": "timeline_sync_deal_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+        },
+    )
 
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -326,7 +374,16 @@ def sync_deal_timeline_task(
     try:
         return run_async(_run())
     except Exception as e:
-        logger.error("Timeline sync failed for deal %s: %s", deal_id, e, exc_info=True)
+        logger.error(
+            "Timeline sync failed for deal",
+            extra={
+                "event": "timeline_sync_deal_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
         return {
@@ -369,7 +426,14 @@ def exclude_timeline_event_task(
     Returns:
         Dictionary with success status
     """
-    logger.info("Excluding timeline event %s", timeline_event_id)
+    logger.info(
+        "Excluding timeline event",
+        extra={
+            "event": "timeline_event_exclusion_started",
+            "organisation_id": organisation_id,
+            "timeline_event_id": timeline_event_id,
+        },
+    )
     org_uuid = UUID(organisation_id)
 
     async def _run() -> dict[str, Any]:
@@ -386,7 +450,16 @@ def exclude_timeline_event_task(
     try:
         return run_async(_run())
     except Exception as e:
-        logger.error("Failed to exclude timeline event %s: %s", timeline_event_id, e, exc_info=True)
+        logger.error(
+            "Failed to exclude timeline event",
+            extra={
+                "event": "timeline_event_exclusion_failed",
+                "organisation_id": organisation_id,
+                "timeline_event_id": timeline_event_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e, countdown=30) from e
         return {"success": False, "timeline_event_id": timeline_event_id, "error": str(e)}

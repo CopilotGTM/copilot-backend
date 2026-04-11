@@ -184,6 +184,12 @@ class TranscriptFetchTaskService:
             event.event_id,
             event.title[:50] if event.title else "No title",
             event.online_meeting_provider,
+            extra={
+                "event": "transcript_fetch_event_started",
+                "organisation_id": str(self.organisation_id),
+                "event_id": str(event.event_id),
+                "provider": event.online_meeting_provider,
+            },
         )
 
         # Create TranscriptService without session - it acquires its own
@@ -202,6 +208,15 @@ class TranscriptFetchTaskService:
             fetch_status.integrations_tried,
             fetch_status.fetched_with,
             fetch_status.error[:100] if fetch_status.error else None,
+            extra={
+                "event": "transcript_fetch_event_completed",
+                "organisation_id": str(self.organisation_id),
+                "event_id": str(event.event_id),
+                "status": fetch_status.status,
+                "integrations_tried": fetch_status.integrations_tried,
+                "fetched_with": fetch_status.fetched_with,
+                "error": fetch_status.error[:500] if fetch_status.error else None,
+            },
         )
 
         return {
@@ -241,6 +256,12 @@ class TranscriptFetchTaskService:
                     event.event_id,
                     str(e),
                     exc_info=True,
+                    extra={
+                        "event": "transcript_fetch_event_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "event_id": str(event.event_id),
+                        "error": str(e),
+                    },
                 )
                 results.append(
                     {
@@ -250,7 +271,17 @@ class TranscriptFetchTaskService:
                     }
                 )
 
-        logger.info("  Processed %d/%d meetings", len(results), total)
+        logger.info(
+            "  Processed %d/%d meetings",
+            len(results),
+            total,
+            extra={
+                "event": "transcript_fetch_meetings_processed",
+                "organisation_id": str(self.organisation_id),
+                "total_meetings": total,
+                "processed_meetings": len(results),
+            },
+        )
         return results
 
     async def _get_open_deals(self, session: AsyncSession) -> list[UUID]:
@@ -367,6 +398,12 @@ class TranscriptFetchTaskService:
                 "  Fetching transcripts for %d meeting(s) in deal %s",
                 len(events),
                 deal_id,
+                extra={
+                    "event": "transcript_fetch_deal_started",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "meetings_to_fetch": len(events),
+                },
             )
 
             processing_results = await self._process_meetings_sequential(events)
@@ -388,16 +425,42 @@ class TranscriptFetchTaskService:
                 result.transcripts_pending,
                 result.transcripts_not_available,
                 result.transcripts_failed,
+                extra={
+                    "event": "transcript_fetch_deal_summary",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "meetings_found": result.meetings_found,
+                    "transcripts_fetched": result.transcripts_fetched,
+                    "transcripts_pending": result.transcripts_pending,
+                    "transcripts_not_available": result.transcripts_not_available,
+                    "transcripts_failed": result.transcripts_failed,
+                },
             )
         else:
-            logger.info("  No meetings need transcript fetch for deal %s", deal_id)
+            logger.info(
+                "  No meetings need transcript fetch for deal %s",
+                deal_id,
+                extra={
+                    "event": "transcript_fetch_deal_no_meetings",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
 
         # Phase 3: ALWAYS trigger pipeline for this deal (unconditionally)
         # The pipeline has its own query (_get_events_needing_summary) that finds
         # READY transcripts needing summaries - independent of transcript fetch results.
         # This ensures summaries are generated even if transcripts were fetched in previous runs.
         # Pipeline: meeting summaries (oldest first) -> parallel risk+stakeholder -> deal memory
-        logger.info("  Triggering meeting summary pipeline for deal %s", deal_id)
+        logger.info(
+            "  Triggering meeting summary pipeline for deal %s",
+            deal_id,
+            extra={
+                "event": "transcript_fetch_deal_pipeline_triggered",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+            },
+        )
         result.pipeline_triggered = True
         summary_service = MeetingSummaryService(self.organisation_id)
         pipeline_result = await summary_service.process_deal_pipeline(deal_id)
@@ -416,6 +479,17 @@ class TranscriptFetchTaskService:
             pipeline_result.deal_memory_triggered,
             pipeline_result.risk_blocker_triggered,
             pipeline_result.stakeholder_analysis_triggered,
+            extra={
+                "event": "transcript_fetch_pipeline_completed",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "jobs_created": pipeline_result.jobs_created,
+                "jobs_skipped": pipeline_result.jobs_skipped,
+                "tasks_triggered": pipeline_result.tasks_triggered,
+                "deal_memory_triggered": pipeline_result.deal_memory_triggered,
+                "risk_blocker_triggered": pipeline_result.risk_blocker_triggered,
+                "stakeholder_triggered": pipeline_result.stakeholder_analysis_triggered,
+            },
         )
 
         # Phase 4: Check for upcoming meetings needing prep (within 2 days)
@@ -438,6 +512,15 @@ class TranscriptFetchTaskService:
                 prep_result.task_triggered,
                 prep_result.skipped_pending_summaries,
                 prep_result.event_id,
+                extra={
+                    "event": "transcript_fetch_deal_prep_summary",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "meeting_found": prep_result.meeting_found,
+                    "task_triggered": prep_result.task_triggered,
+                    "skipped_pending_summaries": prep_result.skipped_pending_summaries,
+                    "event_id": str(prep_result.event_id) if prep_result.event_id else None,
+                },
             )
 
         return result
@@ -479,6 +562,11 @@ class TranscriptFetchTaskService:
                 "Reset %d meeting(s) from FETCHING to PENDING for org %s",
                 reset_count,
                 self.organisation_id,
+                extra={
+                    "event": "transcript_fetch_meetings_reset",
+                    "organisation_id": str(self.organisation_id),
+                    "count": reset_count,
+                },
             )
 
         return reset_count
@@ -507,13 +595,25 @@ class TranscriptFetchTaskService:
         # Session released
 
         if not deal_ids:
-            logger.info("No deals need transcript fetch for org %s", self.organisation_id)
+            logger.info(
+                "No deals need transcript fetch for org %s",
+                self.organisation_id,
+                extra={
+                    "event": "transcript_fetch_no_deals",
+                    "organisation_id": str(self.organisation_id),
+                },
+            )
             return result
 
         logger.info(
             "Found %d deals needing transcript fetch for org %s",
             len(deal_ids),
             self.organisation_id,
+            extra={
+                "event": "transcript_fetch_deals_found",
+                "organisation_id": str(self.organisation_id),
+                "deals_found": len(deal_ids),
+            },
         )
 
         # Phase 2: Process each deal sequentially
@@ -524,6 +624,13 @@ class TranscriptFetchTaskService:
                 idx,
                 len(deal_ids),
                 deal_id,
+                extra={
+                    "event": "transcript_fetch_deal_start",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "deal_index": idx,
+                    "deal_total": len(deal_ids),
+                },
             )
             deal_result = await self.process_deal(deal_id)
             result.deal_results.append(deal_result)
@@ -537,6 +644,18 @@ class TranscriptFetchTaskService:
                 deal_result.transcripts_pending,
                 deal_result.transcripts_not_available,
                 deal_result.transcripts_failed,
+                extra={
+                    "event": "transcript_fetch_deal_completed",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "deal_index": idx,
+                    "deal_total": len(deal_ids),
+                    "meetings_found": deal_result.meetings_found,
+                    "transcripts_fetched": deal_result.transcripts_fetched,
+                    "transcripts_pending": deal_result.transcripts_pending,
+                    "transcripts_not_available": deal_result.transcripts_not_available,
+                    "transcripts_failed": deal_result.transcripts_failed,
+                },
             )
             result.deals_processed += 1
             result.meetings_found += deal_result.meetings_found
@@ -586,6 +705,24 @@ class TranscriptFetchTaskService:
             result.prep_jobs_created,
             result.prep_jobs_skipped,
             result.prep_waiting_for_summaries,
+            extra={
+                "event": "transcript_fetch_all_completed",
+                "organisation_id": str(self.organisation_id),
+                "deals_processed": result.deals_processed,
+                "meetings_found": result.meetings_found,
+                "transcripts_fetched": result.transcripts_fetched,
+                "transcripts_pending": result.transcripts_pending,
+                "transcripts_not_available": result.transcripts_not_available,
+                "transcripts_failed": result.transcripts_failed,
+                "pipelines_triggered": result.pipelines_triggered,
+                "deal_memories_triggered": result.deal_memories_triggered,
+                "risk_blockers_triggered": result.risk_blockers_triggered,
+                "stakeholder_analyses_triggered": result.stakeholder_analyses_triggered,
+                "fetching_reset": result.fetching_reset,
+                "prep_jobs_created": result.prep_jobs_created,
+                "prep_jobs_skipped": result.prep_jobs_skipped,
+                "prep_waiting_for_summaries": result.prep_waiting_for_summaries,
+            },
         )
 
         return result

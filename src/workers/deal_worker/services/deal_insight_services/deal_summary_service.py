@@ -146,7 +146,15 @@ class DealSummaryService:
         async for master_session in acquire_master_async_session():
             org_name = await get_organisation_name(master_session, self.organisation_id)
 
-        logger.info("Starting deal summary generation for deal %s", deal_id)
+        logger.info(
+            "Starting deal summary generation for deal %s",
+            deal_id,
+            extra={
+                "event": "deal_summary_started",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+            },
+        )
 
         self._publish_progress("Starting AI analysis...", "preparing", 0.2)
 
@@ -190,6 +198,14 @@ class DealSummaryService:
             if crm_deal:
                 crm_deal.deal_summary_data = wrapped_result
                 await session.commit()
-                logger.info("Saved deal summary to CRMDeal %s", deal_id)
+                logger.info(
+                    "Saved deal summary to CRMDeal %s",
+                    deal_id,
+                    extra={
+                        "event": "deal_summary_saved",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                    },
+                )
 
         return wrapped_result

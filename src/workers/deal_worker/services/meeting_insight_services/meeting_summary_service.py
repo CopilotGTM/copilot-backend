@@ -248,6 +248,14 @@ class MeetingSummaryService:
                 self.event_id,
                 online_meeting_id,
                 online_meeting_provider,
+                extra={
+                    "event": "meeting_summary_no_transcript_record",
+                    "organisation_id": str(self.organisation_id),
+                    "event_id": str(self.event_id),
+                    "deal_id": str(self.deal_id),
+                    "online_meeting_id": str(online_meeting_id) if online_meeting_id else None,
+                    "online_meeting_provider": online_meeting_provider,
+                },
             )
             raise NonRetryableJobError(
                 "No transcript available for this meeting. The meeting may not have been "
@@ -260,6 +268,14 @@ class MeetingSummaryService:
                 "Meeting record exists but no transcript. Status=%s, message=%s",
                 meeting.status,
                 meeting.status_message,
+                extra={
+                    "event": "meeting_summary_transcript_missing",
+                    "organisation_id": str(self.organisation_id),
+                    "event_id": str(self.event_id),
+                    "deal_id": str(self.deal_id),
+                    "meeting_status": str(meeting.status),
+                    "status_message": meeting.status_message,
+                },
             )
 
             # if meeting.status == MeetingStatus.FAILED:
@@ -285,7 +301,18 @@ class MeetingSummaryService:
 
         self._publish_progress("Checking stakeholders...", "Getting Stakeholders", 0.2)
 
-        logger.info("Preparing summary for meeting %s (deal %s)", self.event_id, self.deal_id)
+        logger.info(
+            "Preparing summary for meeting %s (deal %s)",
+            self.event_id,
+            self.deal_id,
+            extra={
+                "event": "meeting_summary_started",
+                "organisation_id": str(self.organisation_id),
+                "event_id": str(self.event_id),
+                "deal_id": str(self.deal_id),
+                "attendee_count": len(attendee_roster),
+            },
+        )
 
         # Build input for agent
         current_dt = datetime.now(UTC)
@@ -444,12 +471,24 @@ class MeetingSummaryService:
                     "Triggered parallel insight pipeline for deal %s: risk_blocker + stakeholder -> deal_memory=%s",
                     deal_id,
                     deal_memory_job_id,
+                    extra={
+                        "event": "meeting_summary_insight_pipeline_triggered",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "deal_memory_job_id": str(deal_memory_job_id),
+                    },
                 )
             except Exception as e:
                 logger.error(
                     "Failed to trigger deal insight pipeline: deal=%s error=%s",
                     deal_id,
                     str(e),
+                    extra={
+                        "event": "meeting_summary_insight_pipeline_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "error": str(e),
+                    },
                 )
 
     async def _deal_needs_memory(self, deal_id: UUID) -> bool:
@@ -542,6 +581,11 @@ class MeetingSummaryService:
                     "No pending meeting summaries for deal %s, but deal memory is missing. "
                     "Triggering deal insight pipeline directly.",
                     deal_id,
+                    extra={
+                        "event": "meeting_summary_no_pending_summaries_memory_missing",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                    },
                 )
                 await self._trigger_deal_insight_pipeline(deal_id, result)
             else:
@@ -552,6 +596,12 @@ class MeetingSummaryService:
             "Processing %d events for deal %s (creating jobs, chaining tasks)",
             len(events),
             deal_id,
+            extra={
+                "event": "meeting_summary_pipeline_started",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "events_found": len(events),
+            },
         )
 
         # Create jobs and collect job IDs for task chain
@@ -646,12 +696,28 @@ class MeetingSummaryService:
                 result.stakeholder_analysis_triggered,
                 result.jobs_created,
                 result.jobs_skipped,
+                extra={
+                    "event": "meeting_summary_task_chain_triggered",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "tasks_triggered": result.tasks_triggered,
+                    "jobs_created": result.jobs_created,
+                    "jobs_skipped": result.jobs_skipped,
+                    "event_count": len(job_ids),
+                    "deal_memory_job_id": str(deal_memory_job_id) if deal_memory_job_id else None,
+                },
             )
         except Exception as e:
             logger.error(
                 "Failed to trigger task chain: deal=%s error=%s",
                 deal_id,
                 str(e),
+                extra={
+                    "event": "meeting_summary_task_chain_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "error": str(e),
+                },
             )
 
         # For backwards compat

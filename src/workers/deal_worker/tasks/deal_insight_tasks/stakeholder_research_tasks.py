@@ -222,14 +222,23 @@ def retry_pending_research_org(self: Task, organisation_id: str):
                         dispatched += 1
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s", s_id, exc_info=True
+                        "Failed to dispatch research for stakeholder",
+                        extra={
+                            "event": "stakeholder_research_retry_dispatch_failed",
+                            "organisation_id": organisation_id,
+                            "stakeholder_id": str(s_id),
+                        },
+                        exc_info=True,
                     )
 
             logger.info(
-                "Stakeholder research retry org=%s found=%d dispatched=%d",
-                organisation_id,
-                len(stakeholder_infos),
-                dispatched,
+                "Stakeholder research retry completed for organisation",
+                extra={
+                    "event": "stakeholder_research_retry_completed",
+                    "organisation_id": organisation_id,
+                    "found_count": len(stakeholder_infos),
+                    "dispatched_count": dispatched,
+                },
             )
             return {
                 "status": "completed",
@@ -240,9 +249,12 @@ def retry_pending_research_org(self: Task, organisation_id: str):
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Stakeholder research retry failed for org %s: %s",
-            organisation_id,
-            exc,
+            "Stakeholder research retry failed for organisation",
+            extra={
+                "event": "stakeholder_research_retry_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
         raise self.retry(exc=exc, countdown=120) from exc
@@ -273,7 +285,14 @@ def trigger_retry_pending_research_all_orgs():
                 retry_pending_research_org.delay(organisation_id=str(org.organisation_id))
                 dispatched += 1
             except Exception as e:
-                logger.warning("Failed to dispatch retry for org %s: %s", org.organisation_id, e)
+                logger.warning(
+                    "Failed to dispatch retry for organisation",
+                    extra={
+                        "event": "stakeholder_research_retry_dispatch_org_failed",
+                        "organisation_id": str(org.organisation_id),
+                        "failure_reason": str(e),
+                    },
+                )
 
         return {"status": "completed", "orgs_dispatched": dispatched}
 
