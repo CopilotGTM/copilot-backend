@@ -262,7 +262,9 @@ def export_single_org_data(
 
     # Export messaging_deal_links (message-level only)
     print("    Exporting messaging_deal_links (message-level)...", end=" ", flush=True)
-    count = export_message_deal_links(engine, base_dir / "messaging_deal_links_messages.json", org_id, schema)
+    count = export_message_deal_links(
+        engine, base_dir / "messaging_deal_links_messages.json", org_id, schema
+    )
     counts["messaging_deal_links"] = count
     print(f"{count} records")
 
@@ -336,19 +338,23 @@ def export_all_data(
             for table, count in org_counts.items():
                 total_counts[table] += count
 
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "counts": org_counts,
-                "total_records": sum(org_counts.values()),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "counts": org_counts,
+                    "total_records": sum(org_counts.values()),
+                }
+            )
         except Exception as e:
             print(f"    ERROR: {e}")
-            org_summaries.append({
-                "org_id": org_id_str,
-                "schema": org_schema,
-                "error": str(e),
-            })
+            org_summaries.append(
+                {
+                    "org_id": org_id_str,
+                    "schema": org_schema,
+                    "error": str(e),
+                }
+            )
 
     # Write overall summary
     summary = {
@@ -422,7 +428,9 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
     return counts
 
 
-def delete_messaging_messages_data(engine: Engine, org_id: str | None, schema: str | None) -> dict[str, int]:
+def delete_messaging_messages_data(
+    engine: Engine, org_id: str | None, schema: str | None
+) -> dict[str, int]:
     """Delete all messaging messages data in the correct order (respecting FK constraints)."""
 
     # If org_id and schema are provided, delete for single org

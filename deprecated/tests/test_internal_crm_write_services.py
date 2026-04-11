@@ -124,7 +124,11 @@ async def test_add_participants_skips_duplicate_in_request_with_null_role() -> N
         deal_id,
         [
             {"participant_type": CRMParticipantType.CONTACT, "related_id": related_local_id},
-            {"participant_type": "contact", "related_id": related_local_id, "relationship_role": ""},
+            {
+                "participant_type": "contact",
+                "related_id": related_local_id,
+                "relationship_role": "",
+            },
         ],
     )
 

@@ -145,7 +145,11 @@ async def _fetch_google_event(
                 return None
             if exc.response.status_code == 429:
                 retry_after = exc.response.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after and retry_after.isdigit() else float(attempt + 1)
+                delay = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else float(attempt + 1)
+                )
                 await asyncio.sleep(delay)
                 continue
             raise
@@ -170,7 +174,11 @@ async def _fetch_outlook_event(
                     break
                 if exc.response.status_code == 429:
                     retry_after = exc.response.headers.get("Retry-After")
-                    delay = float(retry_after) if retry_after and retry_after.isdigit() else float(attempt + 1)
+                    delay = (
+                        float(retry_after)
+                        if retry_after and retry_after.isdigit()
+                        else float(attempt + 1)
+                    )
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -285,6 +293,7 @@ async def process_org(
                 provider_config_key = metadata.get("provider_config_key")
                 if not isinstance(provider_config_key, str) or not provider_config_key.strip():
                     from src.infra.config.nango_provider_mapping import to_nango_provider_key
+
                     provider_config_key = to_nango_provider_key(int_type)
 
                 is_google = int_type in GOOGLE_TYPES
@@ -298,9 +307,13 @@ async def process_org(
 
                 try:
                     if is_google:
-                        token = await google_get_access_token(nango, connection_id, provider_config_key)
+                        token = await google_get_access_token(
+                            nango, connection_id, provider_config_key
+                        )
                     else:
-                        token = await outlook_get_access_token(nango, connection_id, provider_config_key)
+                        token = await outlook_get_access_token(
+                            nango, connection_id, provider_config_key
+                        )
                 except Exception as e:
                     print(f"    ERROR getting token: {e}")
                     stats.api_errors += len(events)
@@ -323,7 +336,9 @@ async def process_org(
                             elif is_outlook:
                                 details = await _fetch_outlook_event(client, provider_event_id)
                             else:
-                                print(f"    {event.event_id}: unsupported provider {int_type}, skipping")
+                                print(
+                                    f"    {event.event_id}: unsupported provider {int_type}, skipping"
+                                )
                                 stats.still_missing += 1
                                 continue
                         except Exception as e:
@@ -349,7 +364,9 @@ async def process_org(
                             stats.still_missing += 1
                             continue
 
-                        _apply_hydration(event, details, shared_uid, provider_name, anchor, orig_start)
+                        _apply_hydration(
+                            event, details, shared_uid, provider_name, anchor, orig_start
+                        )
                         session.add(event)
                         stats.hydrated += 1
                         print(f"    {event.event_id}: hydrated → {shared_uid[:50]}...")

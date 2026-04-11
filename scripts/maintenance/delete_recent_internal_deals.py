@@ -153,9 +153,7 @@ def get_internal_integration_ids(conn: Connection, schema: str, org_id: str) -> 
           AND integration_type = :integration_type
         """
     )
-    rows = conn.execute(
-        query, {"org_id": org_id, "integration_type": INTERNAL_CRM_TYPE}
-    ).fetchall()
+    rows = conn.execute(query, {"org_id": org_id, "integration_type": INTERNAL_CRM_TYPE}).fetchall()
     return [row[0] for row in rows]
 
 
@@ -498,7 +496,10 @@ def count_deal_custom_field_definitions(conn: Connection, *, schema: str, org_id
           AND COALESCE(is_predefined, FALSE) = FALSE
         """
     )
-    return int(conn.execute(stmt, {"org_id": org_id, "entity_type": CUSTOM_FIELD_ENTITY_DEAL}).scalar_one() or 0)
+    return int(
+        conn.execute(stmt, {"org_id": org_id, "entity_type": CUSTOM_FIELD_ENTITY_DEAL}).scalar_one()
+        or 0
+    )
 
 
 def delete_deal_custom_field_definitions(conn: Connection, *, schema: str, org_id: str) -> int:
@@ -518,7 +519,9 @@ def print_deal_preview(deals: list[dict[str, Any]]) -> None:
     print("\nTarget deals:")
     for deal in deals[:20]:
         created_at = deal.get("created_at")
-        created_str = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+        created_str = (
+            created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+        )
         print(
             f"  - {deal['deal_id']} | {deal.get('name') or '<unnamed>'} | "
             f"created_at={created_str} | is_deleted={deal.get('is_deleted')}"
@@ -590,8 +593,10 @@ def run_preview(
                     deal_columns=deal_columns,
                 )
 
-    if integration_ids and table_exists(conn, schema, "crm_contacts") and table_exists(
-        conn, schema, "crm_deal_participants"
+    if (
+        integration_ids
+        and table_exists(conn, schema, "crm_contacts")
+        and table_exists(conn, schema, "crm_deal_participants")
     ):
         counts["orphan_provisional_contacts"] = count_orphan_provisional_contacts(
             conn,
@@ -600,8 +605,10 @@ def run_preview(
             integration_ids=integration_ids,
             cutoff=cutoff,
         )
-    if integration_ids and table_exists(conn, schema, "crm_companies") and table_exists(
-        conn, schema, "crm_deal_participants"
+    if (
+        integration_ids
+        and table_exists(conn, schema, "crm_companies")
+        and table_exists(conn, schema, "crm_deal_participants")
     ):
         counts["orphan_provisional_companies"] = count_orphan_provisional_companies(
             conn,
@@ -683,8 +690,10 @@ def execute_delete(
             deal_columns=["deal_id"],
         )
 
-    if integration_ids and table_exists(conn, schema, "crm_contacts") and table_exists(
-        conn, schema, "crm_deal_participants"
+    if (
+        integration_ids
+        and table_exists(conn, schema, "crm_contacts")
+        and table_exists(conn, schema, "crm_deal_participants")
     ):
         deleted_counts["orphan_provisional_contacts"] = delete_orphan_provisional_contacts(
             conn,
@@ -693,8 +702,10 @@ def execute_delete(
             integration_ids=integration_ids,
             cutoff=cutoff,
         )
-    if integration_ids and table_exists(conn, schema, "crm_companies") and table_exists(
-        conn, schema, "crm_deal_participants"
+    if (
+        integration_ids
+        and table_exists(conn, schema, "crm_companies")
+        and table_exists(conn, schema, "crm_deal_participants")
     ):
         deleted_counts["orphan_provisional_companies"] = delete_orphan_provisional_companies(
             conn,

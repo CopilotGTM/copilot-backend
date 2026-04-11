@@ -155,12 +155,16 @@ def _extract_identity(payload: dict | None) -> EventIdentity | None:
             date_time = original_start.get("dateTime")
             if isinstance(date_time, str) and date_time:
                 parsed = _parse_iso_datetime(date_time)
-                return EventIdentity("google", google_uid, _format_occurrence_anchor(parsed), parsed)
+                return EventIdentity(
+                    "google", google_uid, _format_occurrence_anchor(parsed), parsed
+                )
 
             date_value = original_start.get("date")
             if isinstance(date_value, str) and date_value:
                 parsed = _parse_iso_date(date_value)
-                return EventIdentity("google", google_uid, _format_occurrence_anchor(parsed), parsed)
+                return EventIdentity(
+                    "google", google_uid, _format_occurrence_anchor(parsed), parsed
+                )
 
         return EventIdentity("google", google_uid, "", None)
 
@@ -225,7 +229,12 @@ def _pick_winner(
     artifacts_by_event_id: dict[UUID, EventArtifacts],
 ) -> tuple[CalendarEvent, list[CalendarEvent]]:
     scored = [
-        (e, _event_score(e, all_associations, artifacts_by_event_id.get(e.event_id, EventArtifacts())))
+        (
+            e,
+            _event_score(
+                e, all_associations, artifacts_by_event_id.get(e.event_id, EventArtifacts())
+            ),
+        )
         for e in events
     ]
     scored.sort(key=lambda x: (-x[1], x[0].created_at))
@@ -248,7 +257,9 @@ async def _load_event_artifacts(
     artifacts_by_event_id: dict[UUID, EventArtifacts] = {
         meeting.calendar_event_id: EventArtifacts(
             has_meeting=True,
-            meeting_status=meeting.status if isinstance(meeting.status, str) else meeting.status.value,
+            meeting_status=meeting.status
+            if isinstance(meeting.status, str)
+            else meeting.status.value,
             has_full_transcript=bool(meeting.full_transcript),
             transcript_segments=0,
         )
@@ -279,9 +290,15 @@ async def _load_event_artifacts(
     return artifacts_by_event_id
 
 
-async def _find_duplicate_groups(session, organisation_id: UUID) -> tuple[list[DuplicateGroup], int]:
+async def _find_duplicate_groups(
+    session, organisation_id: UUID
+) -> tuple[list[DuplicateGroup], int]:
     groups: list[DuplicateGroup] = []
-    stmt = select(CalendarEvent).options(_SAFE_LOAD).where(col(CalendarEvent.organisation_id) == organisation_id)
+    stmt = (
+        select(CalendarEvent)
+        .options(_SAFE_LOAD)
+        .where(col(CalendarEvent.organisation_id) == organisation_id)
+    )
     result = await session.execute(stmt)
     all_events = result.scalars().all()
 
@@ -306,14 +323,18 @@ async def _find_duplicate_groups(session, organisation_id: UUID) -> tuple[list[D
     return groups, missing_identity
 
 
-async def _merge_user_states(session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats) -> None:
+async def _merge_user_states(
+    session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats
+) -> None:
     stmt = select(col(CalendarEventUserState.integration_id)).where(
         col(CalendarEventUserState.event_id) == winner.event_id,
     )
     result = await session.execute(stmt)
     winner_integration_ids = {row[0] for row in result.all()}
 
-    stmt = select(CalendarEventUserState).where(col(CalendarEventUserState.event_id) == loser.event_id)
+    stmt = select(CalendarEventUserState).where(
+        col(CalendarEventUserState.event_id) == loser.event_id
+    )
     result = await session.execute(stmt)
     loser_states = result.scalars().all()
 
@@ -344,7 +365,9 @@ async def _delete_loser_deal_associations(
         stats.associations_deleted += 1
 
 
-async def _merge_meetings(session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats) -> None:
+async def _merge_meetings(
+    session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats
+) -> None:
     stmt = select(Meeting).where(col(Meeting.calendar_event_id) == winner.event_id)
     result = await session.execute(stmt)
     winner_meeting = result.scalar_one_or_none()
@@ -358,7 +381,9 @@ async def _merge_meetings(session, winner: CalendarEvent, loser: CalendarEvent, 
 
     if winner_meeting:
         await session.execute(
-            delete(TranscriptSegment).where(col(TranscriptSegment.meeting_id) == loser_meeting.meeting_id)
+            delete(TranscriptSegment).where(
+                col(TranscriptSegment.meeting_id) == loser_meeting.meeting_id
+            )
         )
         await session.delete(loser_meeting)
         stats.meetings_deleted += 1
@@ -368,23 +393,37 @@ async def _merge_meetings(session, winner: CalendarEvent, loser: CalendarEvent, 
         stats.meetings_repointed += 1
 
 
-async def _repoint_deal_jobs(session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats) -> None:
-    stmt = update(DealJobs).where(col(DealJobs.event_id) == loser.event_id).values(event_id=winner.event_id)
+async def _repoint_deal_jobs(
+    session, winner: CalendarEvent, loser: CalendarEvent, stats: DedupStats
+) -> None:
+    stmt = (
+        update(DealJobs)
+        .where(col(DealJobs.event_id) == loser.event_id)
+        .values(event_id=winner.event_id)
+    )
     result = await session.execute(stmt)
     stats.deal_jobs_repointed += result.rowcount or 0
 
 
 async def _delete_loser(session, loser: CalendarEvent) -> None:
-    await session.execute(delete(CalendarAttendee).where(col(CalendarAttendee.event_id) == loser.event_id))
-    await session.execute(delete(CalendarEventUserState).where(col(CalendarEventUserState.event_id) == loser.event_id))
+    await session.execute(
+        delete(CalendarAttendee).where(col(CalendarAttendee.event_id) == loser.event_id)
+    )
+    await session.execute(
+        delete(CalendarEventUserState).where(col(CalendarEventUserState.event_id) == loser.event_id)
+    )
     await session.delete(loser)
 
 
 async def _find_orphaned_events(session, organisation_id: UUID) -> list[CalendarEvent]:
     subquery = select(col(CalendarEventUserState.event_id)).distinct()
-    stmt = select(CalendarEvent).options(_SAFE_LOAD).where(
-        col(CalendarEvent.organisation_id) == organisation_id,
-        col(CalendarEvent.event_id).notin_(subquery),
+    stmt = (
+        select(CalendarEvent)
+        .options(_SAFE_LOAD)
+        .where(
+            col(CalendarEvent.organisation_id) == organisation_id,
+            col(CalendarEvent.event_id).notin_(subquery),
+        )
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -395,9 +434,7 @@ async def _has_identity_columns(session) -> bool:
     result = await session.execute(
         select(func.count())
         .select_from(sa.text("information_schema.columns"))
-        .where(
-            sa.text("table_name = 'calendar_events' AND column_name = 'occurrence_anchor'")
-        )
+        .where(sa.text("table_name = 'calendar_events' AND column_name = 'occurrence_anchor'"))
     )
     return (result.scalar() or 0) > 0
 
@@ -410,10 +447,16 @@ def _apply_identity(event: CalendarEvent, identity: EventIdentity) -> bool:
     if hasattr(event, "provider") and event.provider != identity.provider:
         event.provider = identity.provider
         changed = True
-    if hasattr(event, "occurrence_anchor") and event.occurrence_anchor != identity.occurrence_anchor:
+    if (
+        hasattr(event, "occurrence_anchor")
+        and event.occurrence_anchor != identity.occurrence_anchor
+    ):
         event.occurrence_anchor = identity.occurrence_anchor
         changed = True
-    if hasattr(event, "original_start_at") and event.original_start_at != identity.original_start_at:
+    if (
+        hasattr(event, "original_start_at")
+        and event.original_start_at != identity.original_start_at
+    ):
         event.original_start_at = identity.original_start_at
         changed = True
     if changed:
@@ -446,7 +489,9 @@ async def process_org(organisation_id: UUID, execute: bool) -> DedupStats:
         if groups:
             print(f"  Found {len(groups)} duplicate group(s)")
         if missing_identity:
-            print(f"  WARNING: {missing_identity} event(s) have no shared UID identity and will be skipped")
+            print(
+                f"  WARNING: {missing_identity} event(s) have no shared UID identity and will be skipped"
+            )
 
         for group in groups:
             print(
@@ -456,7 +501,9 @@ async def process_org(organisation_id: UUID, execute: bool) -> DedupStats:
             )
 
             event_ids = [e.event_id for e in group.events]
-            stmt = select(CalendarEventDealAssociation).where(col(CalendarEventDealAssociation.event_id).in_(event_ids))
+            stmt = select(CalendarEventDealAssociation).where(
+                col(CalendarEventDealAssociation.event_id).in_(event_ids)
+            )
             result = await session.execute(stmt)
             all_associations = list(result.scalars().all())
             artifacts_by_event_id = await _load_event_artifacts(session, event_ids)
@@ -484,7 +531,9 @@ async def process_org(organisation_id: UUID, execute: bool) -> DedupStats:
         if orphaned:
             print(f"  Found {len(orphaned)} orphaned event(s) with no user_states")
             for event in orphaned:
-                print(f"    Orphan: {event.event_id} title={event.title} external_id={event.external_id}")
+                print(
+                    f"    Orphan: {event.event_id} title={event.title} external_id={event.external_id}"
+                )
 
         if execute:
             has_new_cols = await _has_identity_columns(session)
@@ -501,7 +550,9 @@ async def get_all_org_ids() -> list[UUID]:
     from src.domain.models.master_tables.organisation import Organisation
 
     async for session in acquire_master_async_session():
-        stmt = select(col(Organisation.organisation_id)).where(col(Organisation.status) == "APPROVED")
+        stmt = select(col(Organisation.organisation_id)).where(
+            col(Organisation.status) == "APPROVED"
+        )
         result = await session.execute(stmt)
         return [row[0] for row in result.all()]
     return []
@@ -580,7 +631,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Deduplicate calendar events stored with mailbox-specific IDs"
     )
-    parser.add_argument("--execute", action="store_true", help="Actually apply changes (default: dry run)")
+    parser.add_argument(
+        "--execute", action="store_true", help="Actually apply changes (default: dry run)"
+    )
     parser.add_argument(
         "--org-id",
         type=lambda value: str(UUID(value)),

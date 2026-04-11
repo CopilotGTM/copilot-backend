@@ -125,9 +125,7 @@ async def ensure_internal_crm(targets: list[TargetOrg], user_id: UUID) -> None:
 
         try:
             async for session in acquire_org_async_session(target.organisation_id):
-                setup_service = InternalCRMSetupService(
-                    session, target.organisation_id, user_id
-                )
+                setup_service = InternalCRMSetupService(session, target.organisation_id, user_id)
                 status = await setup_service.get_status()
                 if status:
                     print(

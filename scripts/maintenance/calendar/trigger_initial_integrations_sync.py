@@ -126,7 +126,9 @@ def _family_enabled(integration_type: IntegrationType, families: set[str]) -> bo
     return False
 
 
-def _build_dispatches(organisation_id: UUID, integration: KnowledgeIntegration) -> list[DispatchPlan]:
+def _build_dispatches(
+    organisation_id: UUID, integration: KnowledgeIntegration
+) -> list[DispatchPlan]:
     integration_type = integration.integration_type
     if isinstance(integration_type, str):
         integration_type = IntegrationType(integration_type)
@@ -146,8 +148,14 @@ def _build_dispatches(organisation_id: UUID, integration: KnowledgeIntegration) 
         return [
             DispatchPlan("integrations.sync_crm_users_integration", dict(base_kwargs)),
             DispatchPlan("integrations.sync_crm_pipelines_integration", dict(base_kwargs)),
-            DispatchPlan("integrations.sync_crm_contacts_integration", {**base_kwargs, "force_full_sync": True}),
-            DispatchPlan("integrations.sync_crm_companies_integration", {**base_kwargs, "force_full_sync": True}),
+            DispatchPlan(
+                "integrations.sync_crm_contacts_integration",
+                {**base_kwargs, "force_full_sync": True},
+            ),
+            DispatchPlan(
+                "integrations.sync_crm_companies_integration",
+                {**base_kwargs, "force_full_sync": True},
+            ),
             DispatchPlan(
                 "integrations.sync_crm_deals_integration",
                 {**base_kwargs, "force_full_sync": True, "skip_enrichment": False},
@@ -241,7 +249,9 @@ async def _prepare_org(
                     plan.resets.append("cleared last_sync_error")
                     if execute:
                         integration.last_sync_error = None
-                folder_stmt = select(EmailFolder).where(col(EmailFolder.integration_id) == integration.integration_id)
+                folder_stmt = select(EmailFolder).where(
+                    col(EmailFolder.integration_id) == integration.integration_id
+                )
                 folder_result = await session.execute(folder_stmt)
                 folders = list(folder_result.scalars().all())
                 folder_reset_needed = False

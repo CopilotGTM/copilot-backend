@@ -118,7 +118,9 @@ async def _count_by_foreign_key(session, model, column_name: str, ids: list[UUID
 
 async def _process_org(organisation_id: UUID, execute: bool, stats: RunStats) -> None:
     async for session in acquire_org_async_session(organisation_id):
-        event_stmt = select(CalendarEvent).where(col(CalendarEvent.organisation_id) == organisation_id)
+        event_stmt = select(CalendarEvent).where(
+            col(CalendarEvent.organisation_id) == organisation_id
+        )
         event_result = await session.execute(event_stmt)
         all_events = event_result.scalars().all()
         series_events = [event for event in all_events if _is_series_event(event)]
@@ -127,12 +129,18 @@ async def _process_org(organisation_id: UUID, execute: bool, stats: RunStats) ->
         stats.orgs_processed += 1
         stats.events_matched += len(series_events)
 
-        meeting_stmt = select(Meeting.meeting_id).where(col(Meeting.calendar_event_id).in_(event_ids))
+        meeting_stmt = select(Meeting.meeting_id).where(
+            col(Meeting.calendar_event_id).in_(event_ids)
+        )
         meeting_result = await session.execute(meeting_stmt)
         meeting_ids = [row[0] for row in meeting_result.all()]
 
-        attendee_count = await _count_by_foreign_key(session, CalendarAttendee, "event_id", event_ids)
-        user_state_count = await _count_by_foreign_key(session, CalendarEventUserState, "event_id", event_ids)
+        attendee_count = await _count_by_foreign_key(
+            session, CalendarAttendee, "event_id", event_ids
+        )
+        user_state_count = await _count_by_foreign_key(
+            session, CalendarEventUserState, "event_id", event_ids
+        )
         association_count = await _count_by_foreign_key(
             session, CalendarEventDealAssociation, "event_id", event_ids
         )
@@ -174,16 +182,24 @@ async def _process_org(organisation_id: UUID, execute: bool, stats: RunStats) ->
         if event_ids:
             await session.execute(delete(DealJobs).where(col(DealJobs.event_id).in_(event_ids)))
             await session.execute(
-                delete(CalendarEventDealAssociation).where(col(CalendarEventDealAssociation.event_id).in_(event_ids))
+                delete(CalendarEventDealAssociation).where(
+                    col(CalendarEventDealAssociation.event_id).in_(event_ids)
+                )
             )
             await session.execute(
                 delete(CalendarAttendee).where(col(CalendarAttendee.event_id).in_(event_ids))
             )
             await session.execute(
-                delete(CalendarEventUserState).where(col(CalendarEventUserState.event_id).in_(event_ids))
+                delete(CalendarEventUserState).where(
+                    col(CalendarEventUserState.event_id).in_(event_ids)
+                )
             )
-            await session.execute(delete(Meeting).where(col(Meeting.calendar_event_id).in_(event_ids)))
-            await session.execute(delete(CalendarEvent).where(col(CalendarEvent.event_id).in_(event_ids)))
+            await session.execute(
+                delete(Meeting).where(col(Meeting.calendar_event_id).in_(event_ids))
+            )
+            await session.execute(
+                delete(CalendarEvent).where(col(CalendarEvent.event_id).in_(event_ids))
+            )
 
         await session.commit()
 

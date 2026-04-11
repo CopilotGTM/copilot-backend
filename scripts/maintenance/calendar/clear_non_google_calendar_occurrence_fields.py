@@ -78,7 +78,8 @@ def _payload_has_supported_anchor(event: CalendarEvent) -> bool:
 
     google_original = payload.get("originalStartTime")
     if isinstance(google_original, dict) and (
-        isinstance(google_original.get("dateTime"), str) or isinstance(google_original.get("date"), str)
+        isinstance(google_original.get("dateTime"), str)
+        or isinstance(google_original.get("date"), str)
     ):
         return True
 

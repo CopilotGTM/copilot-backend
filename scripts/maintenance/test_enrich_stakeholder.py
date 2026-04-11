@@ -86,7 +86,9 @@ async def test_apollo_search(name: str, company: str | None = None) -> dict | No
                 print(f"  Employment History ({len(history)} entries):")
                 for entry in history[:3]:
                     current = " (current)" if entry.get("current") else ""
-                    print(f"      - {entry.get('title', 'N/A')} at {entry.get('company', 'N/A')}{current}")
+                    print(
+                        f"      - {entry.get('title', 'N/A')} at {entry.get('company', 'N/A')}{current}"
+                    )
 
             return result
         else:
@@ -122,7 +124,9 @@ async def test_apollo_profile(linkedin_url: str) -> dict | None:
             if history:
                 latest = history[0]
                 current = " (current)" if latest.get("current") else ""
-                print(f"      Latest Role: {latest.get('title', 'N/A')} at {latest.get('company', 'N/A')}{current}")
+                print(
+                    f"      Latest Role: {latest.get('title', 'N/A')} at {latest.get('company', 'N/A')}{current}"
+                )
 
             return result
         else:
@@ -421,13 +425,19 @@ def main() -> None:
 
     print("\nUsage examples:")
     print("  # Test Apollo API search:")
-    print('  python -m scripts.maintenance.test_enrich_stakeholder --test-api --search-name "John Smith" --search-company "Acme"')
+    print(
+        '  python -m scripts.maintenance.test_enrich_stakeholder --test-api --search-name "John Smith" --search-company "Acme"'
+    )
     print("")
     print("  # Test profile enrichment by LinkedIn URL:")
-    print("  python -m scripts.maintenance.test_enrich_stakeholder --test-api --linkedin-url https://linkedin.com/in/someone")
+    print(
+        "  python -m scripts.maintenance.test_enrich_stakeholder --test-api --linkedin-url https://linkedin.com/in/someone"
+    )
     print("")
     print("  # Test full workflow with database:")
-    print("  python -m scripts.maintenance.test_enrich_stakeholder --org-id <UUID> --email john@example.com")
+    print(
+        "  python -m scripts.maintenance.test_enrich_stakeholder --org-id <UUID> --email john@example.com"
+    )
 
 
 if __name__ == "__main__":
