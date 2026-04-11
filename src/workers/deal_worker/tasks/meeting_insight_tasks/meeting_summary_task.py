@@ -66,14 +66,22 @@ async def _dispatch_insight_pipeline_for_manual_summary(
                 str(deal_memory_job_id),
             )
             logger.info(
-                "Dispatched insight pipeline after manual summary: deal=%s memory_job=%s",
-                deal_id,
-                deal_memory_job_id,
+                "Dispatched insight pipeline after manual summary",
+                extra={
+                    "event": "meeting_summary_insight_pipeline_dispatched",
+                    "organisation_id": str(organisation_id),
+                    "deal_id": str(deal_id),
+                    "job_id": str(deal_memory_job_id),
+                },
             )
     except Exception:
         logger.exception(
-            "Failed to dispatch insight pipeline after manual summary: deal=%s",
-            deal_id,
+            "Failed to dispatch insight pipeline after manual summary",
+            extra={
+                "event": "meeting_summary_insight_pipeline_dispatch_failed",
+                "organisation_id": str(organisation_id),
+                "deal_id": str(deal_id),
+            },
         )
 
 
@@ -93,7 +101,14 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
     Returns:
         Dictionary with job completion status
     """
-    logger.info("Processing meeting summary job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Processing meeting summary job",
+        extra={
+            "event": "meeting_summary_job_processing",
+            "organisation_id": str(organisation_id),
+            "job_id": str(job_id),
+        },
+    )
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -137,11 +152,15 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         )
 
         logger.info(
-            "Loaded meeting summary job: job=%s deal=%s event=%s automated=%s",
-            job_id,
-            deal_id,
-            event_id,
-            is_automated,
+            "Loaded meeting summary job",
+            extra={
+                "event": "meeting_summary_job_loaded",
+                "organisation_id": str(org_uuid),
+                "job_id": str(job_uuid),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+                "automated": is_automated,
+            },
         )
 
         # Create publisher for SSE updates
@@ -155,15 +174,31 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             publisher=publisher,
         )
         try:
-            logger.info("Generating meeting summary for job %s", job_id)
+            logger.info(
+                "Generating meeting summary",
+                extra={
+                    "event": "meeting_summary_generating",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "automated": is_automated,
+                },
+            )
             result = await service.generate()
 
         except NonRetryableJobError as e:
             logger.info(
-                "Meeting summary job permanently failed %s: %s (code=%s)",
-                job_id,
-                str(e),
-                e.error_code,
+                "Meeting summary job permanently failed",
+                extra={
+                    "event": "meeting_summary_job_failed_permanently",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "error_code": e.error_code,
+                    "automated": is_automated,
+                },
             )
 
             async for session in acquire_org_async_session(org_uuid):
@@ -185,7 +220,17 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             }
 
         except Exception as e:
-            logger.error("Meeting summary job failed %s: %s", job_id, e, exc_info=True)
+            logger.exception(
+                "Meeting summary job failed",
+                extra={
+                    "event": "meeting_summary_job_failed",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "automated": is_automated,
+                },
+            )
 
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
@@ -219,7 +264,17 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         publisher.publish_result(result)
         publisher.publish_finalize("done")
 
-        logger.info("Meeting summary job completed: %s", job_id)
+        logger.info(
+            "Meeting summary job completed",
+            extra={
+                "event": "meeting_summary_job_completed",
+                "organisation_id": str(org_uuid),
+                "job_id": str(job_uuid),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+                "automated": is_automated,
+            },
+        )
 
         # Trigger insight pipeline for non-automated jobs (e.g. manual transcript uploads).
         # Automated pipeline jobs already have the insight chain wired by process_deal_pipeline.
@@ -236,12 +291,26 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
     try:
         return run_async(_run())
     except NonRetryableJobError:
-        logger.warning("NonRetryableJobError escaped _run() for job %s", job_id)
+        logger.warning(
+            "NonRetryableJobError escaped meeting summary task",
+            extra={
+                "event": "meeting_summary_task_nonretryable_escape",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         return {
             "status": "failed",
             "job_id": job_id,
             "retryable": False,
         }
     except Exception as e:
-        logger.error("Meeting summary task failed %s: %s", job_id, e, exc_info=True)
+        logger.exception(
+            "Meeting summary task failed",
+            extra={
+                "event": "meeting_summary_task_failed",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

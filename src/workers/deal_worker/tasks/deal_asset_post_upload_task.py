@@ -29,7 +29,11 @@ def deal_asset_post_upload(self, organisation_id: str, asset_id: str):  # noqa: 
     """
     logger.info(
         "Deal asset post-upload task started",
-        extra={"organisation_id": organisation_id, "asset_id": asset_id},
+        extra={
+            "event": "deal_asset_post_upload_task_started",
+            "organisation_id": organisation_id,
+            "asset_id": asset_id,
+        },
     )
 
     service = DealAssetPostUploadService(organisation_id)
@@ -38,10 +42,18 @@ def deal_asset_post_upload(self, organisation_id: str, asset_id: str):  # noqa: 
     if success:
         logger.info(
             "Deal asset post-upload completed",
-            extra={"organisation_id": organisation_id, "asset_id": asset_id},
+            extra={
+                "event": "deal_asset_post_upload_task_completed",
+                "organisation_id": organisation_id,
+                "asset_id": asset_id,
+            },
         )
     else:
         logger.warning(
             "Deal asset post-upload failed",
-            extra={"organisation_id": organisation_id, "asset_id": asset_id},
+            extra={
+                "event": "deal_asset_post_upload_task_failed",
+                "organisation_id": organisation_id,
+                "asset_id": asset_id,
+            },
         )

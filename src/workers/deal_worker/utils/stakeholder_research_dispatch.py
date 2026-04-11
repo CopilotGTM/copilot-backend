@@ -53,7 +53,13 @@ async def dispatch_stakeholder_research_async(
         stakeholder = await session.get(DealStakeholder, stakeholder_id)
         if not stakeholder:
             logger.warning(
-                "dispatch_stakeholder_research: stakeholder %s not found", stakeholder_id
+                "dispatch_stakeholder_research: stakeholder %s not found",
+                stakeholder_id,
+                extra={
+                    "event": "stakeholder_research_dispatch_not_found",
+                    "organisation_id": str(organisation_id),
+                    "stakeholder_id": str(stakeholder_id),
+                },
             )
             return None
 

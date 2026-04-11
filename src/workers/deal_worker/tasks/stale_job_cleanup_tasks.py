@@ -54,7 +54,10 @@ def cleanup_stale_deal_jobs_all_orgs_task() -> dict[str, Any]:
 
     Scheduled to run every hour via Celery Beat.
     """
-    logger.info("Starting stale deal job cleanup coordinator for all organizations")
+    logger.info(
+        "Starting stale deal job cleanup coordinator for all organisations",
+        extra={"event": "stale_job_cleanup_all_orgs_started"},
+    )
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         org_ids: list[UUID] = []
@@ -70,7 +73,14 @@ def cleanup_stale_deal_jobs_all_orgs_task() -> dict[str, Any]:
         # Session released here (fresh session pattern)
 
         if not org_ids:
-            logger.info("No approved organizations found")
+            logger.info(
+                "No approved organisations found for stale job cleanup",
+                extra={
+                    "event": "stale_job_cleanup_no_organisations",
+                    "organisation_count": 0,
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "orgs_found": 0,
@@ -79,8 +89,11 @@ def cleanup_stale_deal_jobs_all_orgs_task() -> dict[str, Any]:
             }
 
         logger.info(
-            "Found %d approved organizations, dispatching deal stale job cleanup tasks",
-            len(org_ids),
+            "Found approved organisations for stale job cleanup coordinator",
+            extra={
+                "event": "stale_job_cleanup_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
         )
 
         # Dispatch Tier 2 for each organization
@@ -99,15 +112,22 @@ def cleanup_stale_deal_jobs_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch stale deal job cleanup for org %s: %s",
-                    org_id,
-                    e,
+                    "Failed to dispatch stale deal job cleanup for organisation",
+                    extra={
+                        "event": "stale_job_cleanup_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
+                    exc_info=True,
                 )
 
         logger.info(
-            "Stale deal job cleanup coordinator completed: dispatched %d/%d org tasks",
-            len(org_tasks),
-            len(org_ids),
+            "Stale deal job cleanup coordinator completed",
+            extra={
+                "event": "stale_job_cleanup_all_orgs_completed",
+                "dispatched_org_count": len(org_tasks),
+                "target_org_count": len(org_ids),
+            },
         )
 
         return {
@@ -147,7 +167,13 @@ def cleanup_stale_deal_jobs_org_task(
     Returns:
         dict with cleanup results
     """
-    logger.info("Starting stale deal job cleanup for org=%s", organisation_id)
+    logger.info(
+        "Starting stale deal job cleanup for organisation",
+        extra={
+            "event": "stale_job_cleanup_org_started",
+            "organisation_id": organisation_id,
+        },
+    )
 
     try:
         org_uuid = UUID(organisation_id)
@@ -155,10 +181,13 @@ def cleanup_stale_deal_jobs_org_task(
         result = service.cleanup_stale_jobs()
 
         logger.info(
-            "Stale deal job cleanup completed for org=%s: found=%d, marked_failed=%d",
-            organisation_id,
-            result.get("total_stale_jobs_found", 0),
-            result.get("total_jobs_marked_failed", 0),
+            "Stale deal job cleanup completed for organisation",
+            extra={
+                "event": "stale_job_cleanup_org_completed",
+                "organisation_id": organisation_id,
+                "stale_jobs_found": result.get("total_stale_jobs_found", 0),
+                "jobs_marked_failed": result.get("total_jobs_marked_failed", 0),
+            },
         )
 
         return {
@@ -168,9 +197,12 @@ def cleanup_stale_deal_jobs_org_task(
 
     except Exception as exc:
         logger.error(
-            "Stale deal job cleanup failed for org=%s: %s",
-            organisation_id,
-            exc,
+            "Stale deal job cleanup failed for organisation",
+            extra={
+                "event": "stale_job_cleanup_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -178,11 +210,14 @@ def cleanup_stale_deal_jobs_org_task(
         if self.request.retries < self.max_retries:
             countdown = 60 * (2**self.request.retries)  # 60s, 120s
             logger.info(
-                "Retrying stale deal job cleanup for org=%s in %d seconds (attempt %d/%d)",
-                organisation_id,
-                countdown,
-                self.request.retries + 1,
-                self.max_retries,
+                "Retrying stale deal job cleanup for organisation",
+                extra={
+                    "event": "stale_job_cleanup_org_retrying",
+                    "organisation_id": organisation_id,
+                    "retry_countdown_seconds": countdown,
+                    "attempt": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                },
             )
             raise self.retry(exc=exc, countdown=countdown) from exc
 

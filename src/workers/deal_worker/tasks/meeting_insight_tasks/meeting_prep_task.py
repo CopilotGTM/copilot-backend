@@ -51,7 +51,14 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
     Returns:
         Dictionary with job completion status
     """
-    logger.info("Processing meeting prep job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Processing meeting prep job",
+        extra={
+            "event": "meeting_prep_job_processing",
+            "organisation_id": str(organisation_id),
+            "job_id": str(job_id),
+        },
+    )
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -85,11 +92,15 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
             )
 
             logger.info(
-                "Loaded meeting prep job: job=%s deal=%s event=%s automated=%s",
-                job_id,
-                deal_id,
-                event_id,
-                is_automated,
+                "Loaded meeting prep job",
+                extra={
+                    "event": "meeting_prep_job_loaded",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "automated": is_automated,
+                },
             )
         # Session released
 
@@ -104,15 +115,31 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
             publisher=publisher,
         )
         try:
-            logger.info("Generating meeting prep for job %s", job_id)
+            logger.info(
+                "Generating meeting prep",
+                extra={
+                    "event": "meeting_prep_generating",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "automated": is_automated,
+                },
+            )
             result = await service.generate()
 
         except NonRetryableJobError as e:
             logger.info(
-                "Meeting prep job permanently failed %s: %s (code=%s)",
-                job_id,
-                str(e),
-                e.error_code,
+                "Meeting prep job permanently failed",
+                extra={
+                    "event": "meeting_prep_job_failed_permanently",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "error_code": e.error_code,
+                    "automated": is_automated,
+                },
             )
 
             async for session in acquire_org_async_session(org_uuid):
@@ -134,7 +161,17 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
             }
 
         except Exception as e:
-            logger.error("Meeting prep job failed %s: %s", job_id, e, exc_info=True)
+            logger.exception(
+                "Meeting prep job failed",
+                extra={
+                    "event": "meeting_prep_job_failed",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "automated": is_automated,
+                },
+            )
 
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
@@ -168,7 +205,17 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
         publisher.publish_result(result)
         publisher.publish_finalize("done")
 
-        logger.info("Meeting prep job completed: %s", job_id)
+        logger.info(
+            "Meeting prep job completed",
+            extra={
+                "event": "meeting_prep_job_completed",
+                "organisation_id": str(org_uuid),
+                "job_id": str(job_uuid),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+                "automated": is_automated,
+            },
+        )
         return {
             "status": "completed",
             "job_id": job_id,
@@ -178,12 +225,26 @@ def process_meeting_prep(self: Task, organisation_id: str, job_id: str):
     try:
         return run_async(_run())
     except NonRetryableJobError:
-        logger.warning("NonRetryableJobError escaped _run() for job %s", job_id)
+        logger.warning(
+            "NonRetryableJobError escaped meeting prep task",
+            extra={
+                "event": "meeting_prep_task_nonretryable_escape",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         return {
             "status": "failed",
             "job_id": job_id,
             "retryable": False,
         }
     except Exception as e:
-        logger.error("Meeting prep task failed %s: %s", job_id, e, exc_info=True)
+        logger.exception(
+            "Meeting prep task failed",
+            extra={
+                "event": "meeting_prep_task_failed",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

@@ -83,7 +83,14 @@ def fetch_meeting_transcripts_org_task(
     # Acquire distributed lock
     lock_key = f"task_lock:fetch_meeting_transcripts_org:{organisation_id}"
     if not acquire_task_lock(lock_key, ttl=660):
-        logger.info("Transcript fetch: Skipping org %s - already running", organisation_id)
+        logger.info(
+            "Transcript fetch job already running for organisation",
+            extra={
+                "event": "transcript_fetch_org_already_running",
+                "organisation_id": organisation_id,
+                "failure_reason": "already_running",
+            },
+        )
         return {
             "status": "skipped",
             "reason": "already_running",
@@ -92,7 +99,10 @@ def fetch_meeting_transcripts_org_task(
             "completed_at": datetime.now(UTC).isoformat(),
         }
 
-    logger.info("Transcript fetch: Starting for org %s", organisation_id)
+    logger.info(
+        "Starting transcript fetch for organisation",
+        extra={"event": "transcript_fetch_org_started", "organisation_id": organisation_id},
+    )
 
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
@@ -126,7 +136,13 @@ def fetch_meeting_transcripts_org_task(
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Transcript fetch failed for org %s: %s", organisation_id, str(exc), exc_info=True
+            "Transcript fetch failed for organisation",
+            extra={
+                "event": "transcript_fetch_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
+            exc_info=True,
         )
 
         if self.request.retries < self.max_retries:
@@ -160,7 +176,10 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
     started_at = datetime.now(UTC).isoformat()
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
-        logger.info("Tier 1: Starting transcript fetch for all organizations")
+        logger.info(
+            "Starting transcript fetch dispatch for all organisations",
+            extra={"event": "transcript_fetch_all_orgs_started"},
+        )
 
         # Query approved organizations
         org_ids: list[UUID] = []
@@ -175,7 +194,13 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
             org_ids = [row[0] for row in result.all()]  # list of organisation_id UUIDs
 
         if not org_ids:
-            logger.warning("No approved organizations found for transcript fetch")
+            logger.warning(
+                "No approved organisations found for transcript fetch",
+                extra={
+                    "event": "transcript_fetch_all_orgs_no_organisations",
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "started_at": started_at,
@@ -184,7 +209,13 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
                 "org_tasks": [],
             }
 
-        logger.info("Found %d approved organization(s) for transcript fetch", len(org_ids))
+        logger.info(
+            "Found approved organisations for transcript fetch dispatch",
+            extra={
+                "event": "transcript_fetch_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
+        )
 
         # Dispatch Tier 2 tasks
         org_tasks = []
@@ -210,9 +241,12 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch transcript fetch for org %s: %s",
-                    org_id,
-                    str(e),
+                    "Failed to dispatch transcript fetch task for organisation",
+                    extra={
+                        "event": "transcript_fetch_org_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
                     exc_info=True,
                 )
                 org_tasks.append(
@@ -225,10 +259,13 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
                 orgs_skipped += 1
 
         logger.info(
-            "Transcript fetch dispatch complete: triggered=%d skipped=%d total=%d",
-            orgs_triggered,
-            orgs_skipped,
-            len(org_ids),
+            "Transcript fetch dispatch completed",
+            extra={
+                "event": "transcript_fetch_all_orgs_dispatch_completed",
+                "triggered_orgs": orgs_triggered,
+                "skipped_orgs": orgs_skipped,
+                "total_orgs": len(org_ids),
+            },
         )
 
         return {
@@ -246,7 +283,14 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
     try:
         return run_async(_dispatch_all_orgs())
     except Exception as e:
-        logger.error("Transcript fetch all-orgs failed: %s", str(e), exc_info=True)
+        logger.error(
+            "Transcript fetch all-orgs dispatch failed",
+            extra={
+                "event": "transcript_fetch_all_orgs_failed",
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         return {
             "status": "failed",
             "started_at": started_at,

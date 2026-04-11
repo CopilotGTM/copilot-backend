@@ -92,7 +92,7 @@ def _create_organization_client() -> Celery:
         worker_hijack_root_logger=False,
     )
 
-    logger.info(
+    logger.debug(
         "Organization Celery client initialized (broker=%s)",
         config.broker_url.replace(config.redis_password, "****")
         if config.redis_password

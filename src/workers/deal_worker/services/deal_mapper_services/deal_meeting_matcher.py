@@ -453,6 +453,13 @@ class DealMeetingMatcher:
                     "Calendar discovery limit reached for deal %s, stakeholder %s set to PENDING",
                     deal.deal_id,
                     email,
+                    extra={
+                        "event": "deal_meeting_discovery_limit_reached",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal.deal_id),
+                        "attendee_email": email,
+                        "approval_status": approval_status.value,
+                    },
                 )
 
         return discovered
@@ -478,6 +485,12 @@ class DealMeetingMatcher:
                         "Failed to dispatch research for stakeholder %s",
                         stakeholder_id,
                         exc_info=True,
+                        extra={
+                            "event": "deal_meeting_research_dispatch_failed",
+                            "organisation_id": str(self.organisation_id),
+                            "stakeholder_id": str(stakeholder_id),
+                            "deal_id": str(deal_id),
+                        },
                     )
         finally:
             self._pending_research.clear()
@@ -525,7 +538,16 @@ class DealMeetingMatcher:
             result = await session.execute(stmt)
             deals = list(result.scalars().all())
 
-        logger.info(f"Processing {len(deals)} open deals for organisation {self.organisation_id}")
+        logger.info(
+            "Processing %d open deals for organisation %s",
+            len(deals),
+            self.organisation_id,
+            extra={
+                "event": "deal_meeting_process_organisation_started",
+                "organisation_id": str(self.organisation_id),
+                "open_deals": len(deals),
+            },
+        )
 
         if not deals:
             return stats
@@ -577,7 +599,16 @@ class DealMeetingMatcher:
         deal = result.scalars().first()
 
         if not deal:
-            logger.warning(f"Deal {deal_id} not found in org {self.organisation_id}")
+            logger.warning(
+                "Deal %s not found in org %s",
+                deal_id,
+                self.organisation_id,
+                extra={
+                    "event": "deal_meeting_process_deal_not_found",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                },
+            )
             return {"deals_processed": 0, "meetings_linked": 0, "cancelled": 0}
 
         # Collect customer domains from deal participants
@@ -690,10 +721,26 @@ class DealMeetingMatcher:
         await self._cleanup_orphaned_associations(session, deal, contact_emails)
 
         logger.info(
-            f"Linked {linked_count} meetings for deal {deal.deal_id} "
-            f"(organizer={organizer_count}, attendee={attendee_count}, "
-            f"discovered={discovered}, "
-            f"team_emails={len(team_emails)}, contact_emails={len(contact_emails)})"
+            "Linked %d meetings for deal %s (organizer=%d, attendee=%d, "
+            "discovered=%d, team_emails=%d, contact_emails=%d)",
+            linked_count,
+            deal.deal_id,
+            organizer_count,
+            attendee_count,
+            discovered,
+            len(team_emails),
+            len(contact_emails),
+            extra={
+                "event": "deal_meeting_linking_completed",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal.deal_id),
+                "linked_count": linked_count,
+                "organizer_count": organizer_count,
+                "attendee_count": attendee_count,
+                "discovered": discovered,
+                "team_emails": len(team_emails),
+                "contact_emails": len(contact_emails),
+            },
         )
 
         return linked_count
@@ -1051,6 +1098,12 @@ class DealMeetingMatcher:
                 "Deactivated %d orphaned associations for deal %s",
                 count,
                 deal.deal_id,
+                extra={
+                    "event": "deal_meeting_orphaned_associations_deactivated",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal.deal_id),
+                    "orphaned_associations": count,
+                },
             )
 
         return count
@@ -1101,14 +1154,30 @@ class DealMeetingMatcher:
             assoc.status = AssociationStatus.CANCELLED
             updated_count += 1
             logger.info(
-                f"Marked cancelled event association: event_id={assoc.event_id}, "
-                f"deal_id={assoc.deal_id}"
+                "Marked cancelled event association: event_id=%s, deal_id=%s",
+                assoc.event_id,
+                assoc.deal_id,
+                extra={
+                    "event": "deal_meeting_association_cancelled",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(assoc.deal_id),
+                    "event_id": str(assoc.event_id),
+                    "association_id": str(assoc.association_id),
+                },
             )
 
         if updated_count > 0:
             logger.info(
-                f"Marked {updated_count} associations as CANCELLED "
-                f"(org={self.organisation_id}, deal={deal_id})"
+                "Marked %d associations as CANCELLED (org=%s, deal=%s)",
+                updated_count,
+                self.organisation_id,
+                deal_id,
+                extra={
+                    "event": "deal_meeting_cancelled_associations_completed",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id) if deal_id else None,
+                    "cancelled_associations": updated_count,
+                },
             )
 
         return updated_count

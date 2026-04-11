@@ -88,8 +88,12 @@ def match_calendar_to_deals_org_task(
     lock_key = f"task_lock:match_calendar_to_deals_org:{organisation_id}"
     if not acquire_task_lock(lock_key, ttl=660):  # TTL matches time_limit
         logger.info(
-            "Task 2 (org): Skipping - another task already running for org %s",
-            organisation_id,
+            "Task 2 (org): Skipping - another task already running for organisation",
+            extra={
+                "event": "calendar_matching_org_already_running",
+                "organisation_id": organisation_id,
+                "failure_reason": "already_running",
+            },
         )
         return {
             "status": "skipped",
@@ -100,8 +104,8 @@ def match_calendar_to_deals_org_task(
         }
 
     logger.info(
-        "Task 2 (org): Matching calendar events to deals for org %s",
-        organisation_id,
+        "Task 2 (org): Matching calendar events to deals for organisation",
+        extra={"event": "calendar_matching_org_started", "organisation_id": organisation_id},
     )
 
     async def _run() -> dict[str, Any]:
@@ -125,9 +129,12 @@ def match_calendar_to_deals_org_task(
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Task 2 (org) failed for org %s: %s",
-            organisation_id,
-            str(exc),
+            "Task 2 (org) failed for organisation",
+            extra={
+                "event": "calendar_matching_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -189,9 +196,12 @@ def match_calendar_to_deals_task(
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
-        "Task 2 (deal): Re-matching calendar events for deal %s in org %s",
-        deal_id,
-        organisation_id,
+        "Task 2 (deal): Re-matching calendar events for deal",
+        extra={
+            "event": "calendar_matching_deal_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+        },
     )
 
     async def _run() -> dict[str, Any]:
@@ -227,9 +237,13 @@ def match_calendar_to_deals_task(
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Task 2 (deal) failed for deal %s: %s",
-            deal_id,
-            str(exc),
+            "Task 2 (deal) failed for deal",
+            extra={
+                "event": "calendar_matching_deal_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -286,7 +300,10 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         """Query orgs and dispatch Tier 2 tasks."""
-        logger.info("Tier 1: Starting calendar matching for all organizations")
+        logger.info(
+            "Tier 1: Starting calendar matching for all organisations",
+            extra={"event": "calendar_matching_all_orgs_started"},
+        )
 
         # Query all approved organizations from master DB
         org_ids: list[UUID] = []
@@ -298,7 +315,13 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
             org_ids = [row[0] for row in result.all()]
 
         if not org_ids:
-            logger.warning("No approved organizations found for calendar matching")
+            logger.warning(
+                "No approved organisations found for calendar matching",
+                extra={
+                    "event": "calendar_matching_all_orgs_no_organisations",
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "started_at": started_at,
@@ -311,7 +334,13 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
                 "org_tasks": [],
             }
 
-        logger.info("Found %d approved organization(s) for calendar matching", len(org_ids))
+        logger.info(
+            "Found approved organisations for calendar matching",
+            extra={
+                "event": "calendar_matching_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
+        )
 
         # Dispatch Tier 2 task for each organization
         org_tasks = []
@@ -338,9 +367,12 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch calendar matching for org %s: %s",
-                    org_id,
-                    str(e),
+                    "Failed to dispatch calendar matching for organisation",
+                    extra={
+                        "event": "calendar_matching_org_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
                     exc_info=True,
                 )
                 org_tasks.append(
@@ -355,10 +387,13 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Calendar matching dispatch complete: triggered=%d skipped=%d total=%d",
-            orgs_triggered,
-            orgs_skipped,
-            len(org_ids),
+            "Calendar matching dispatch complete",
+            extra={
+                "event": "calendar_matching_all_orgs_completed",
+                "triggered_orgs": orgs_triggered,
+                "skipped_orgs": orgs_skipped,
+                "total_orgs": len(org_ids),
+            },
         )
 
         return {
@@ -377,8 +412,11 @@ def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
         return run_async(_dispatch_all_orgs())
     except Exception as e:
         logger.error(
-            "Calendar matching all-orgs failed: error=%s",
-            str(e),
+            "Calendar matching all-orgs failed",
+            extra={
+                "event": "calendar_matching_all_orgs_failed",
+                "failure_reason": str(e),
+            },
             exc_info=True,
         )
         return {

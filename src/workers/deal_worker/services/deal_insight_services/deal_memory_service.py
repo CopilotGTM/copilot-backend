@@ -216,6 +216,13 @@ class DealMemoryService:
             "created" if is_initial else "updated",
             deal_id,
             token_count,
+            extra={
+                "event": "deal_memory_saved",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "status": "created" if is_initial else "updated",
+                "token_count": token_count,
+            },
         )
         return content
 

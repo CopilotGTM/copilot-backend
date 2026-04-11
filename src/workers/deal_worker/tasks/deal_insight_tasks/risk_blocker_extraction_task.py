@@ -73,10 +73,14 @@ def extract_deal_risks_blockers_task(
         Dictionary with extraction results
     """
     logger.info(
-        "Starting risk/blocker extraction for deal %s in org %s (job=%s)",
-        deal_id,
-        organisation_id,
-        job_id,
+        "Starting risk/blocker extraction",
+        extra={
+            "event": "risk_blocker_extraction_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "job_id": job_id,
+            "force": force,
+        },
     )
 
     async def _run() -> dict[str, Any]:
@@ -127,14 +131,26 @@ def extract_deal_risks_blockers_task(
 
     try:
         result = run_async(_run())
-        logger.info("Risk/blocker extraction completed for deal %s: %s", deal_id, result)
+        logger.info(
+            "Risk/blocker extraction completed",
+            extra={
+                "event": "risk_blocker_extraction_completed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "job_id": job_id,
+            },
+        )
         return result
     except Exception as exc:
         logger.error(
-            "Risk/blocker extraction failed for deal %s in org %s: %s",
-            deal_id,
-            organisation_id,
-            exc,
+            "Risk/blocker extraction failed",
+            extra={
+                "event": "risk_blocker_extraction_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "job_id": job_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
         raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
@@ -156,7 +172,10 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
     Returns:
         Dictionary with count of triggered jobs
     """
-    logger.info("Starting risk/blocker extraction trigger for all orgs")
+    logger.info(
+        "Starting risk/blocker extraction trigger for all organisations",
+        extra={"event": "risk_blocker_extraction_trigger_started"},
+    )
 
     async def _run() -> dict[str, int]:
         provider = get_async_provider()
@@ -208,17 +227,33 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
 
             except Exception as e:
                 logger.warning(
-                    "Failed to trigger extraction for org %s: %s",
-                    org.organisation_id,
-                    e,
+                    "Failed to trigger extraction for organisation",
+                    extra={
+                        "event": "risk_blocker_extraction_org_trigger_failed",
+                        "organisation_id": str(org.organisation_id),
+                        "failure_reason": str(e),
+                    },
                 )
 
         return {"triggered_jobs": triggered_count}
 
     try:
         result = run_async(_run())
-        logger.info("Extraction trigger completed: %s", result)
+        logger.info(
+            "Extraction trigger completed",
+            extra={
+                "event": "risk_blocker_extraction_trigger_completed",
+                "triggered_jobs": result.get("triggered_jobs"),
+            },
+        )
         return result
     except Exception as exc:
-        logger.error("Extraction trigger failed: %s", exc, exc_info=True)
+        logger.error(
+            "Extraction trigger failed",
+            extra={
+                "event": "risk_blocker_extraction_trigger_failed",
+                "failure_reason": str(exc),
+            },
+            exc_info=True,
+        )
         raise

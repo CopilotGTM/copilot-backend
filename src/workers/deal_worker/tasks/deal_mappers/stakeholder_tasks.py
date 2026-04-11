@@ -87,9 +87,15 @@ def sync_deal_stakeholders_task(
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
-        "Task 1: Syncing stakeholders for deal %s (change_type=%s)",
-        deal_id,
-        change_type,
+        "Task 1: Syncing stakeholders for deal",
+        extra={
+            "event": "stakeholder_sync_deal_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "change_type": change_type,
+            "integration_id": integration_id,
+            "integration_type": integration_type,
+        },
     )
 
     async def _run() -> dict[str, Any]:
@@ -109,11 +115,16 @@ def sync_deal_stakeholders_task(
             rematching_triggered = True
 
         logger.info(
-            "Task 1 complete: deal=%s created=%d updated=%d deactivated=%d",
-            deal_id,
-            result.created,
-            result.updated,
-            result.deactivated,
+            "Task 1 complete: synced stakeholders for deal",
+            extra={
+                "event": "stakeholder_sync_deal_completed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "change_type": change_type,
+                "created_stakeholders": result.created,
+                "updated_stakeholders": result.updated,
+                "deactivated_stakeholders": result.deactivated,
+            },
         )
 
         return {
@@ -136,7 +147,17 @@ def sync_deal_stakeholders_task(
         return run_async(_run())
 
     except Exception as exc:
-        logger.error("Task 1 failed for deal %s: %s", deal_id, str(exc), exc_info=True)
+        logger.error(
+            "Task 1 failed for deal",
+            extra={
+                "event": "stakeholder_sync_deal_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "change_type": change_type,
+                "failure_reason": str(exc),
+            },
+            exc_info=True,
+        )
 
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
@@ -186,8 +207,12 @@ def sync_all_deals_stakeholders_org_task(
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
-        "Org-level stakeholder sync starting: org=%s",
-        organisation_id,
+        "Org-level stakeholder sync starting",
+        extra={
+            "event": "stakeholder_sync_org_started",
+            "organisation_id": organisation_id,
+            "trigger_deal_matching": trigger_deal_matching,
+        },
     )
 
     async def _run() -> dict[str, Any]:
@@ -215,15 +240,22 @@ def sync_all_deals_stakeholders_org_task(
                 match_email_to_deals_org_task.delay(organisation_id)
                 deal_matching_triggered = True
                 logger.info(
-                    "Triggered calendar/email matching for org %s",
-                    organisation_id,
+                    "Triggered calendar/email matching for organisation",
+                    extra={
+                        "event": "stakeholder_sync_org_matching_triggered",
+                        "organisation_id": organisation_id,
+                        "deal_matching_triggered": True,
+                    },
                 )
             except Exception as e:
                 result.errors.append(f"Failed to trigger deal matching: {str(e)}")
                 logger.warning(
-                    "Failed to trigger deal matching for org %s: %s",
-                    organisation_id,
-                    str(e),
+                    "Failed to trigger deal matching for organisation",
+                    extra={
+                        "event": "stakeholder_sync_org_matching_failed",
+                        "organisation_id": organisation_id,
+                        "failure_reason": str(e),
+                    },
                 )
 
         # Determine overall status
@@ -254,9 +286,12 @@ def sync_all_deals_stakeholders_org_task(
 
     except Exception as exc:
         logger.error(
-            "Org-level stakeholder sync failed for org %s: %s",
-            organisation_id,
-            str(exc),
+            "Org-level stakeholder sync failed",
+            extra={
+                "event": "stakeholder_sync_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -312,7 +347,10 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         """Query orgs and dispatch Tier 2 tasks."""
-        logger.info("Tier 1: Starting stakeholder sync for all organizations")
+        logger.info(
+            "Tier 1: Starting stakeholder sync for all organisations",
+            extra={"event": "stakeholder_sync_all_orgs_started"},
+        )
 
         # Query all approved organizations from master DB
         org_ids: list[UUID] = []
@@ -324,7 +362,13 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
             org_ids = [row[0] for row in result.all()]
 
         if not org_ids:
-            logger.warning("No approved organizations found for stakeholder sync")
+            logger.warning(
+                "No approved organisations found for stakeholder sync",
+                extra={
+                    "event": "stakeholder_sync_all_orgs_no_organisations",
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "started_at": started_at,
@@ -337,7 +381,13 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
                 "org_tasks": [],
             }
 
-        logger.info("Found %d approved organization(s) for stakeholder sync", len(org_ids))
+        logger.info(
+            "Found approved organisations for stakeholder sync",
+            extra={
+                "event": "stakeholder_sync_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
+        )
 
         # Dispatch Tier 2 task for each organization
         org_tasks = []
@@ -364,9 +414,12 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch stakeholder sync for org %s: %s",
-                    org_id,
-                    str(e),
+                    "Failed to dispatch stakeholder sync for organisation",
+                    extra={
+                        "event": "stakeholder_sync_org_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
                     exc_info=True,
                 )
                 org_tasks.append(
@@ -381,10 +434,13 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Stakeholder sync dispatch complete: triggered=%d skipped=%d total=%d",
-            orgs_triggered,
-            orgs_skipped,
-            len(org_ids),
+            "Stakeholder sync dispatch complete",
+            extra={
+                "event": "stakeholder_sync_all_orgs_completed",
+                "triggered_orgs": orgs_triggered,
+                "skipped_orgs": orgs_skipped,
+                "total_orgs": len(org_ids),
+            },
         )
 
         return {
@@ -403,8 +459,11 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
         return run_async(_dispatch_all_orgs())
     except Exception as e:
         logger.error(
-            "Stakeholder all-orgs sync failed: error=%s",
-            str(e),
+            "Stakeholder all-orgs sync failed",
+            extra={
+                "event": "stakeholder_sync_all_orgs_failed",
+                "failure_reason": str(e),
+            },
             exc_info=True,
         )
         return {

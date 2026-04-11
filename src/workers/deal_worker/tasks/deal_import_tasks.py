@@ -59,7 +59,11 @@ def _mark_job_failed(organisation_id: UUID, job_id: UUID, error_message: str) ->
 def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
     logger.info(
         "Deal import job started",
-        extra={"organisation_id": organisation_id, "job_id": job_id},
+        extra={
+            "event": "deal_import_job_started",
+            "organisation_id": organisation_id,
+            "job_id": job_id,
+        },
     )
 
     async def _run():
@@ -113,6 +117,7 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         logger.info(
             "Deal import job completed",
             extra={
+                "event": "deal_import_job_completed",
                 "organisation_id": organisation_id,
                 "job_id": job_id,
                 "created_count": result_data.get("created_count", 0),
@@ -128,6 +133,7 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         logger.info(
             "Deal import job failed",
             extra={
+                "event": "deal_import_job_failed",
                 "organisation_id": organisation_id,
                 "job_id": job_id,
                 "failure_reason": error_message,
@@ -144,6 +150,7 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         logger.error(
             "Deal import task failed",
             extra={
+                "event": "deal_import_task_failed",
                 "organisation_id": organisation_id,
                 "job_id": job_id,
                 "failure_reason": str(exc),
@@ -157,6 +164,7 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
             logger.error(
                 "Deal import job reached max retries",
                 extra={
+                    "event": "deal_import_job_max_retries_reached",
                     "organisation_id": organisation_id,
                     "job_id": job_id,
                     "failure_reason": error_message,

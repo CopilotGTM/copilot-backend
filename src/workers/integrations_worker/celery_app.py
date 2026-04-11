@@ -25,24 +25,51 @@ tasks_module = "src.workers.integrations_worker.tasks"
 # Create the Celery app for the Integrations Worker
 app = create_celery_app("integrations_worker", config, tasks_module)
 
+WORKER_COMPONENT = resolve_celery_component(app.main)
+
+
+def _is_current_worker_signal(sender) -> bool:
+    return getattr(getattr(sender, "app", None), "main", None) == app.main
+
 
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
-    logger.info("Integrations worker starting, initializing Redis connection pool")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Integrations worker starting",
+        extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
+    )
     initialize_redis_pool()
-    logger.info("Integrations worker ready", extra={"event": "worker_ready"})
+    logger.info(
+        "Integrations worker ready",
+        extra={"event": "worker_ready", "worker_component": WORKER_COMPONENT},
+    )
 
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
-    logger.info("Integrations worker shutting down", extra={"event": "worker_shutdown"})
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Integrations worker shutting down",
+        extra={"event": "worker_shutdown", "worker_component": WORKER_COMPONENT},
+    )
     try:
         close_redis_pool()
-        logger.info("Redis connection pool closed", extra={"event": "redis_pool_closed"})
-    except Exception as e:
-        logger.error("Error closing Redis connection pool", extra={"error": str(e)})
+        logger.info(
+            "Redis connection pool closed",
+            extra={"event": "redis_pool_closed", "worker_component": WORKER_COMPONENT},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to close Redis connection pool",
+            extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
+        )
 
 
 # Explicitly import task modules to ensure registration

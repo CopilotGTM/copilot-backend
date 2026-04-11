@@ -48,25 +48,52 @@ app.conf.update(
     result_persistent=True,  # Persist results to backend
 )
 
+WORKER_COMPONENT = resolve_celery_component(app.main)
+
+
+def _is_current_worker_signal(sender) -> bool:
+    return getattr(getattr(sender, "app", None), "main", None) == app.main
+
 
 # Add signal handlers for debugging and resource management
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
-    logger.info("Knowledge worker starting. Initializing Redis connection pool...")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Knowledge worker starting",
+        extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
+    )
     initialize_redis_pool()
-    logger.info("Knowledge worker is ready. Redis connection pool initialized.")
+    logger.info(
+        "Knowledge worker ready",
+        extra={"event": "worker_ready", "worker_component": WORKER_COMPONENT},
+    )
 
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
-    logger.info("Knowledge worker shutting down. Closing Redis connection pool.")
+    if not _is_current_worker_signal(sender):
+        return
+
+    logger.info(
+        "Knowledge worker shutting down",
+        extra={"event": "worker_shutdown", "worker_component": WORKER_COMPONENT},
+    )
     try:
         close_redis_pool()
-        logger.info("Redis connection pool closed successfully")
-    except Exception as e:
-        logger.error(f"Error closing Redis connection pool: {e}")
+        logger.info(
+            "Redis connection pool closed",
+            extra={"event": "redis_pool_closed", "worker_component": WORKER_COMPONENT},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to close Redis connection pool",
+            extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
+        )
 
 
 # Explicitly import task modules to ensure registration

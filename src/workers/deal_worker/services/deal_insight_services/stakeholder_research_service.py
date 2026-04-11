@@ -170,6 +170,12 @@ class StakeholderResearchService:
                 "Stakeholder %s: copied research from email=%s, skipping agent",
                 stakeholder_id,
                 email,
+                extra={
+                    "event": "stakeholder_research_cache_hit",
+                    "organisation_id": str(self.organisation_id),
+                    "stakeholder_id": str(stakeholder_id),
+                    "email": email,
+                },
             )
             return recent.stakeholder_research
 
@@ -242,6 +248,13 @@ class StakeholderResearchService:
                 "Stakeholder %s enrichment error, will retry later: %s",
                 stakeholder_id,
                 result.error_detail,
+                extra={
+                    "event": "stakeholder_research_agent_error",
+                    "organisation_id": str(self.organisation_id),
+                    "stakeholder_id": str(stakeholder_id),
+                    "error": result.error_detail,
+                    "deal_id": str(ctx.deal_id),
+                },
             )
             raise StakeholderResearchError(
                 f"Enrichment failed: {result.error_detail}",
@@ -256,7 +269,17 @@ class StakeholderResearchService:
             # but store NULL instead of junk text.
             values["stakeholder_research"] = None
             await self._write_values(stakeholder_id, values)
-            logger.info("Stakeholder %s: no public profile found", stakeholder_id)
+            logger.info(
+                "Stakeholder %s: no public profile found",
+                stakeholder_id,
+                extra={
+                    "event": "stakeholder_research_not_found",
+                    "organisation_id": str(self.organisation_id),
+                    "stakeholder_id": str(stakeholder_id),
+                    "deal_id": str(ctx.deal_id),
+                    "contact_id": str(ctx.contact_id) if ctx.contact_id else None,
+                },
+            )
             return ""
 
         # status == "found" — persist identity fields + the LLM-written markdown
@@ -299,7 +322,17 @@ class StakeholderResearchService:
         if ctx.contact_id:
             await self._fill_contact_identity(ctx.contact_id, result)
 
-        logger.info("Stakeholder %s research completed", stakeholder_id)
+        logger.info(
+            "Stakeholder %s research completed",
+            stakeholder_id,
+            extra={
+                "event": "stakeholder_research_completed",
+                "organisation_id": str(self.organisation_id),
+                "stakeholder_id": str(stakeholder_id),
+                "deal_id": str(ctx.deal_id),
+                "contact_id": str(ctx.contact_id) if ctx.contact_id else None,
+            },
+        )
         return markdown
 
     async def _write_values(
@@ -364,6 +397,13 @@ class StakeholderResearchService:
                 len(values),
                 contact_id,
                 ", ".join(values.keys()),
+                extra={
+                    "event": "stakeholder_research_contact_update",
+                    "organisation_id": str(self.organisation_id),
+                    "contact_id": str(contact_id),
+                    "stakeholder_id": str(stakeholder_id),
+                    "filled_fields": list(values.keys()),
+                },
             )
             return
 

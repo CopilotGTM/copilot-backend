@@ -1,8 +1,10 @@
 import logging
 from typing import Any
 
-from celery import Celery
+from celery import Celery, current_app
 from celery.signals import (
+    beat_embedded_init,
+    beat_init,
     task_failure,
     task_postrun,
     task_prerun,
@@ -12,12 +14,35 @@ from celery.signals import (
 
 from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
 from src.infra.observability.sentry import init_sentry
-from src.infra.utils.logger import get_logger
+from src.infra.utils.logger import get_logger, resolve_celery_component
 
 init_sentry()
 
 _signals_registered = False
-_otel_service_name_suffix = ""
+
+
+def _resolve_signal_app_name(sender: Any | None = None) -> str | None:
+    app = getattr(sender, "app", None)
+    app_name = getattr(app, "main", None)
+    if app_name:
+        return str(app_name)
+
+    try:
+        current_app_name = getattr(current_app, "main", None)
+    except Exception:
+        current_app_name = None
+
+    if current_app_name:
+        return str(current_app_name)
+
+    return None
+
+
+def _resolve_runtime_service_name_suffix(sender: Any | None = None) -> str:
+    app_name = _resolve_signal_app_name(sender)
+    if not app_name:
+        return ""
+    return f"-{resolve_celery_component(app_name)}"
 
 
 def _register_observability_signals() -> None:
@@ -45,16 +70,28 @@ def _register_observability_signals() -> None:
         _clear_sync_db_provider_cache()
 
     @worker_process_init.connect(weak=False)
-    def _init_otel_after_fork(**kwargs):  # noqa: ARG001
+    def _init_otel_after_fork(sender=None, **kwargs):  # noqa: ARG001
         from src.infra.observability.otel import init_otel
 
-        init_otel(service_name_suffix=_otel_service_name_suffix)
+        init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
 
     @worker_ready.connect(weak=False)
-    def _init_otel_in_main_process(**kwargs):  # noqa: ARG001
+    def _init_otel_in_main_process(sender=None, **kwargs):  # noqa: ARG001
         from src.infra.observability.otel import init_otel
 
-        init_otel(service_name_suffix=_otel_service_name_suffix)
+        init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
+
+    @beat_init.connect(weak=False)
+    def _init_otel_for_beat(sender=None, **kwargs):  # noqa: ARG001
+        from src.infra.observability.otel import init_otel
+
+        init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
+
+    @beat_embedded_init.connect(weak=False)
+    def _init_otel_for_embedded_beat(sender=None, **kwargs):  # noqa: ARG001
+        from src.infra.observability.otel import init_otel
+
+        init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
 
     @task_prerun.connect(weak=False)
     def _task_prerun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
@@ -114,9 +151,6 @@ def _register_observability_signals() -> None:
 
 def create_celery_app(worker_name, config, tasks_module):
     """Factory function to create a Celery app for a specific worker."""
-    global _otel_service_name_suffix
-    _otel_service_name_suffix = f"-{worker_name}"
-
     _register_observability_signals()
 
     celery_app = Celery(

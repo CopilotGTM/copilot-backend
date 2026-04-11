@@ -62,10 +62,13 @@ def analyze_deal_stakeholders_task(
         Dictionary with processing statistics
     """
     logger.info(
-        "Starting stakeholder analysis for deal %s in org %s (job=%s)",
-        deal_id,
-        organisation_id,
-        job_id,
+        "Starting stakeholder analysis",
+        extra={
+            "event": "stakeholder_analysis_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "job_id": job_id,
+        },
     )
 
     async def _run() -> dict[str, int]:
@@ -116,14 +119,26 @@ def analyze_deal_stakeholders_task(
 
     try:
         result = run_async(_run())
-        logger.info("Stakeholder analysis completed for deal %s: %s", deal_id, result)
+        logger.info(
+            "Stakeholder analysis completed",
+            extra={
+                "event": "stakeholder_analysis_completed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "job_id": job_id,
+            },
+        )
         return result
     except Exception as exc:
         logger.error(
-            "Stakeholder analysis failed for deal %s in org %s: %s",
-            deal_id,
-            organisation_id,
-            exc,
+            "Stakeholder analysis failed",
+            extra={
+                "event": "stakeholder_analysis_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "job_id": job_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
         raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc

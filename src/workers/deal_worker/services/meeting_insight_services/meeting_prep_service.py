@@ -188,7 +188,17 @@ class MeetingPrepService:
 
         self._publish_progress("Preparing AI briefing...", "Analysing", 0.25)
 
-        logger.info("Preparing briefing for deal %s, event %s", self.deal_id, self.event_id)
+        logger.info(
+            "Preparing briefing for deal %s, event %s",
+            self.deal_id,
+            self.event_id,
+            extra={
+                "event": "meeting_prep_started",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(self.deal_id),
+                "event_id": str(self.event_id),
+            },
+        )
 
         # Build input for agent
         current_dt = datetime.now(UTC)
@@ -422,6 +432,12 @@ class MeetingPrepService:
             "Found upcoming meeting needing prep: deal=%s event=%s",
             deal_id,
             event_id,
+            extra={
+                "event": "meeting_prep_upcoming_found",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+            },
         )
 
         # Check if all past meeting summaries are complete
@@ -430,6 +446,12 @@ class MeetingPrepService:
             logger.info(
                 "Skipping prep for deal %s - past meeting summaries still pending",
                 deal_id,
+                extra={
+                    "event": "meeting_prep_skipped_pending_summaries",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                },
             )
             result.skipped_pending_summaries = True
             return result
@@ -460,6 +482,13 @@ class MeetingPrepService:
                 deal_id,
                 event_id,
                 job_id,
+                extra={
+                    "event": "meeting_prep_job_created",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "job_id": str(job_id),
+                },
             )
 
         # Trigger the Celery task
@@ -478,6 +507,13 @@ class MeetingPrepService:
                         deal_id,
                         event_id,
                         job_id,
+                        extra={
+                            "event": "meeting_prep_task_triggered",
+                            "organisation_id": str(self.organisation_id),
+                            "deal_id": str(deal_id),
+                            "event_id": str(event_id),
+                            "job_id": str(job_id),
+                        },
                     )
             except Exception as e:
                 logger.error(
@@ -485,6 +521,13 @@ class MeetingPrepService:
                     deal_id,
                     event_id,
                     str(e),
+                    extra={
+                        "event": "meeting_prep_task_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "event_id": str(event_id),
+                        "error": str(e),
+                    },
                 )
 
         return result

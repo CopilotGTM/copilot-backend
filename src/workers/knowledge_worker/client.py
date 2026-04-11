@@ -92,7 +92,7 @@ def _create_knowledge_client() -> Celery:
         worker_hijack_root_logger=False,
     )
 
-    logger.info(
+    logger.debug(
         "Knowledge Celery client initialized (broker=%s)",
         config.broker_url.replace(config.redis_password, "****")
         if config.redis_password

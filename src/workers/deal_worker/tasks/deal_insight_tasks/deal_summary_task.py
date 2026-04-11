@@ -55,7 +55,10 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
     Returns:
         Dictionary with job completion status
     """
-    logger.info("Processing deal summary job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Processing deal summary job",
+        extra={"event": "deal_summary_job_started", "organisation_id": organisation_id, "job_id": job_id},
+    )
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -89,11 +92,15 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
         except DealSummaryError as e:
             # Non-retryable business errors
             logger.info(
-                "Deal summary job failed %s: %s (code=%s, retryable=%s)",
-                job_id,
-                e.message,
-                e.error_code,
-                e.retryable,
+                "Deal summary job failed with business error",
+                extra={
+                    "event": "deal_summary_job_business_failed",
+                    "organisation_id": organisation_id,
+                    "job_id": job_id,
+                    "error_code": e.error_code,
+                    "retryable": e.retryable,
+                    "failure_reason": e.message,
+                },
             )
 
             async for session in acquire_org_async_session(org_uuid):
@@ -118,7 +125,16 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
             }
 
         except Exception as e:
-            logger.error("Deal summary job failed %s: %s", job_id, e, exc_info=True)
+            logger.error(
+                "Deal summary job failed",
+                extra={
+                    "event": "deal_summary_job_failed",
+                    "organisation_id": organisation_id,
+                    "job_id": job_id,
+                    "failure_reason": str(e),
+                },
+                exc_info=True,
+            )
 
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
@@ -152,7 +168,10 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
         publisher.publish_result(result)
         publisher.publish_finalize("done")
 
-        logger.info("Deal summary job completed: %s", job_id)
+        logger.info(
+            "Deal summary job completed",
+            extra={"event": "deal_summary_job_completed", "organisation_id": organisation_id, "job_id": job_id},
+        )
         return {
             "status": "completed",
             "job_id": job_id,
@@ -171,6 +190,15 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
             }
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
     except Exception as e:
-        logger.error("Deal summary task failed %s: %s", job_id, e, exc_info=True)
+        logger.error(
+            "Deal summary task failed",
+            extra={
+                "event": "deal_summary_task_failed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         # Exponential backoff: 60, 120, 240 seconds
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

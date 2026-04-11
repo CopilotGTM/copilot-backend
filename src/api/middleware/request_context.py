@@ -20,7 +20,7 @@ def _resolve_access_success_level() -> int:
     if raw_level:
         return getattr(logging, raw_level.upper(), logging.INFO)
 
-    return logging.INFO if os.getenv("ENV", "dev") == "local" else logging.WARNING
+    return logging.WARNING if os.getenv("ENV", "dev") == "prod" else logging.INFO
 
 
 def _sync_access_logger_level() -> None:

@@ -39,7 +39,14 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
         organisation_id: The organisation ID (as string for JSON serialization)
         job_id: The job ID to process (as string for JSON serialization)
     """
-    logger.info("Processing transcript upload job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Processing transcript upload job",
+        extra={
+            "event": "transcript_upload_job_processing",
+            "organisation_id": str(organisation_id),
+            "job_id": str(job_id),
+        },
+    )
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -78,10 +85,14 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
             await session.commit()
 
         logger.info(
-            "Loaded transcript upload job: job=%s deal=%s event=%s",
-            job_id,
-            deal_id,
-            event_id,
+            "Loaded transcript upload job",
+            extra={
+                "event": "transcript_upload_job_loaded",
+                "organisation_id": str(org_uuid),
+                "job_id": str(job_uuid),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+            },
         )
 
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str)
@@ -99,10 +110,15 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
 
         except TranscriptUploadError as e:
             logger.info(
-                "Transcript upload job permanently failed %s: %s (code=%s)",
-                job_id,
-                str(e),
-                e.error_code,
+                "Transcript upload job permanently failed",
+                extra={
+                    "event": "transcript_upload_job_failed_permanently",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                    "error_code": e.error_code,
+                },
             )
 
             async for session in acquire_org_async_session(org_uuid):
@@ -124,7 +140,16 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
             }
 
         except Exception as e:
-            logger.error("Transcript upload job failed %s: %s", job_id, e, exc_info=True)
+            logger.exception(
+                "Transcript upload job failed",
+                extra={
+                    "event": "transcript_upload_job_failed",
+                    "organisation_id": str(org_uuid),
+                    "job_id": str(job_uuid),
+                    "deal_id": str(deal_id),
+                    "event_id": str(event_id),
+                },
+            )
 
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
@@ -148,7 +173,16 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
         publisher.publish_result(result)
         publisher.publish_finalize("done")
 
-        logger.info("Transcript upload job completed: %s", job_id)
+        logger.info(
+            "Transcript upload job completed",
+            extra={
+                "event": "transcript_upload_job_completed",
+                "organisation_id": str(org_uuid),
+                "job_id": str(job_uuid),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+            },
+        )
         return {
             "status": "completed",
             "job_id": job_id,
@@ -158,12 +192,26 @@ def process_transcript_upload(self: Task, organisation_id: str, job_id: str):
     try:
         return run_async(_run())
     except TranscriptUploadError:
-        logger.warning("TranscriptUploadError escaped _run() for job %s", job_id)
+        logger.warning(
+            "TranscriptUploadError escaped transcript upload task",
+            extra={
+                "event": "transcript_upload_task_nonretryable_escape",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         return {
             "status": "failed",
             "job_id": job_id,
             "retryable": False,
         }
     except Exception as e:
-        logger.error("Transcript upload task failed %s: %s", job_id, e, exc_info=True)
+        logger.exception(
+            "Transcript upload task failed",
+            extra={
+                "event": "transcript_upload_task_failed",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+            },
+        )
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

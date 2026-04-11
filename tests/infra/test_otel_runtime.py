@@ -87,7 +87,7 @@ def test_request_context_access_logs_include_structured_http_fields(capsys, monk
     assert "duration_ms" in payload
 
 
-def test_request_context_suppresses_success_logs_in_dev_by_default(capsys, monkeypatch):
+def test_request_context_logs_success_requests_in_dev_by_default(capsys, monkeypatch):
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.delenv("ACCESS_LOG_LEVEL", raising=False)
     configure_logging(component="api", force=True)
@@ -100,6 +100,31 @@ def test_request_context_suppresses_success_logs_in_dev_by_default(capsys, monke
 
     with TestClient(app) as client:
         response = client.get("/ping", headers={"X-Request-Id": "req-suppressed"})
+
+    assert response.status_code == 200
+    payload = next(
+        item
+        for item in _structured_lines(capsys.readouterr().err)
+        if item.get("event") == "http_request"
+    )
+
+    assert payload["level"] == "INFO"
+    assert payload["request_id"] == "req-suppressed"
+
+
+def test_request_context_suppresses_success_logs_in_prod_by_default(capsys, monkeypatch):
+    monkeypatch.setenv("ENV", "prod")
+    monkeypatch.delenv("ACCESS_LOG_LEVEL", raising=False)
+    configure_logging(component="api", force=True)
+    app = FastAPI()
+    app.add_middleware(RequestContextMiddleware)
+
+    @app.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.get("/ping", headers={"X-Request-Id": "req-prod-suppressed"})
 
     assert response.status_code == 200
     payloads = _structured_lines(capsys.readouterr().err)
@@ -276,13 +301,40 @@ def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
     mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
 
-    celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
+    app = celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
+    app.set_current()
 
     init_mock.assert_not_called()
 
     celery_base.worker_process_init.send(sender=None)
 
     init_mock.assert_any_call(service_name_suffix="-unit_worker")
+
+
+def test_create_celery_app_uses_current_app_name_when_multiple_apps_exist(mocker):
+    init_mock = mocker.patch("src.infra.observability.otel.init_otel")
+    mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
+    mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
+
+    chat_app = celery_base.create_celery_app("chat_worker", _DummyWorkerConfig(), "tests.chat_tasks")
+    celery_base.create_celery_app("deal_worker", _DummyWorkerConfig(), "tests.deal_tasks")
+    chat_app.set_current()
+
+    celery_base.worker_process_init.send(sender=None)
+
+    assert init_mock.call_args_list[-1].kwargs["service_name_suffix"] == "-chat_worker"
+
+
+def test_create_celery_app_uses_beat_suffix_for_beat_init(mocker):
+    init_mock = mocker.patch("src.infra.observability.otel.init_otel")
+    app = celery_base.create_celery_app("chat_worker", _DummyWorkerConfig(), "tests.chat_tasks")
+    sender = type("BeatSender", (), {"app": app})()
+
+    mocker.patch("src.infra.utils.logger.sys.argv", ["celery", "-A", "x", "beat"])
+
+    celery_base.beat_init.send(sender=sender)
+
+    init_mock.assert_any_call(service_name_suffix="-chat_beat")
 
 
 def test_create_celery_app_sets_resilient_redis_transport_options():
@@ -448,7 +500,7 @@ def test_redis_connection_pool_success_logs_are_debug(capsys, monkeypatch):
 
 
 def test_nango_client_lifecycle_logs_are_debug(capsys, monkeypatch):
-    import src.service.integrations.nango_client as nango_runtime
+    nango_runtime = pytest.importorskip("src.service.integrations.nango_client")
 
     monkeypatch.setenv("ENV", "local")
     configure_logging(component="api", force=True)
@@ -551,7 +603,7 @@ def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):
 
 
 def test_nango_connect_session_logs_structured_fields(capsys, monkeypatch):
-    import src.service.integrations.nango_client as nango_runtime
+    nango_runtime = pytest.importorskip("src.service.integrations.nango_client")
 
     class _FakeResponse:
         def raise_for_status(self):

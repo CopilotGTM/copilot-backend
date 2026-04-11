@@ -93,8 +93,12 @@ def match_email_to_deals_org_task(
     lock_key = f"task_lock:match_email_to_deals_org:{organisation_id}"
     if not acquire_task_lock(lock_key, ttl=660):  # TTL matches time_limit
         logger.info(
-            "Task 3 (org): Skipping - another task already running for org %s",
-            organisation_id,
+            "Task 3 (org): Skipping - another task already running for organisation",
+            extra={
+                "event": "email_matching_org_already_running",
+                "organisation_id": organisation_id,
+                "failure_reason": "already_running",
+            },
         )
         return {
             "status": "skipped",
@@ -105,8 +109,8 @@ def match_email_to_deals_org_task(
         }
 
     logger.info(
-        "Task 3 (org): Matching emails to deals for org %s",
-        organisation_id,
+        "Task 3 (org): Matching emails to deals for organisation",
+        extra={"event": "email_matching_org_started", "organisation_id": organisation_id},
     )
 
     async def _run() -> dict[str, Any]:
@@ -171,17 +175,24 @@ def match_email_to_deals_org_task(
 
             except Exception as e:
                 logger.warning(
-                    "Failed to trigger pipeline for deal %s: %s",
-                    deal_uuid,
-                    str(e),
+                    "Failed to trigger pipeline for deal after email match",
+                    extra={
+                        "event": "email_matching_org_pipeline_trigger_failed",
+                        "organisation_id": organisation_id,
+                        "deal_id": str(deal_uuid),
+                        "failure_reason": str(e),
+                    },
                 )
 
         logger.info(
-            "Task 3 (org): Triggered %d deal pipelines for deals with new email matches "
-            "(jobs_created=%d, jobs_skipped=%d)",
-            pipelines_triggered,
-            jobs_created,
-            jobs_skipped,
+            "Task 3 (org): Triggered email match pipelines",
+            extra={
+                "event": "email_matching_org_completed",
+                "organisation_id": organisation_id,
+                "pipelines_triggered": pipelines_triggered,
+                "jobs_created": jobs_created,
+                "jobs_skipped": jobs_skipped,
+            },
         )
 
         return {
@@ -202,9 +213,12 @@ def match_email_to_deals_org_task(
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Task 3 (org) failed for org %s: %s",
-            organisation_id,
-            str(exc),
+            "Task 3 (org) failed for organisation",
+            extra={
+                "event": "email_matching_org_failed",
+                "organisation_id": organisation_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -257,9 +271,12 @@ def match_email_to_deals_task(
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
-        "Task 3 (deal): Re-matching emails for deal %s in org %s",
-        deal_id,
-        organisation_id,
+        "Task 3 (deal): Re-matching emails for deal",
+        extra={
+            "event": "email_matching_deal_started",
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+        },
     )
 
     async def _run() -> dict[str, Any]:
@@ -295,9 +312,13 @@ def match_email_to_deals_task(
         return run_async(_run())
     except Exception as exc:
         logger.error(
-            "Task 3 (deal) failed for deal %s: %s",
-            deal_id,
-            str(exc),
+            "Task 3 (deal) failed for deal",
+            extra={
+                "event": "email_matching_deal_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "failure_reason": str(exc),
+            },
             exc_info=True,
         )
 
@@ -354,7 +375,10 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         """Query orgs and dispatch Tier 2 tasks."""
-        logger.info("Tier 1: Starting email matching for all organizations")
+        logger.info(
+            "Tier 1: Starting email matching for all organisations",
+            extra={"event": "email_matching_all_orgs_started"},
+        )
 
         # Query all approved organizations from master DB
         org_ids: list[UUID] = []
@@ -366,7 +390,13 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
             org_ids = [row[0] for row in result.all()]
 
         if not org_ids:
-            logger.warning("No approved organizations found for email matching")
+            logger.warning(
+                "No approved organisations found for email matching",
+                extra={
+                    "event": "email_matching_all_orgs_no_organisations",
+                    "status": "no_organisations",
+                },
+            )
             return {
                 "status": "completed",
                 "started_at": started_at,
@@ -379,7 +409,13 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
                 "org_tasks": [],
             }
 
-        logger.info("Found %d approved organization(s) for email matching", len(org_ids))
+        logger.info(
+            "Found approved organisations for email matching",
+            extra={
+                "event": "email_matching_all_orgs_found",
+                "organisation_count": len(org_ids),
+            },
+        )
 
         # Dispatch Tier 2 task for each organization
         org_tasks = []
@@ -406,9 +442,12 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch email matching for org %s: %s",
-                    org_id,
-                    str(e),
+                    "Failed to dispatch email matching for organisation",
+                    extra={
+                        "event": "email_matching_org_dispatch_failed",
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
                     exc_info=True,
                 )
                 org_tasks.append(
@@ -423,10 +462,13 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
         completed_at = datetime.now(UTC).isoformat()
 
         logger.info(
-            "Email matching dispatch complete: triggered=%d skipped=%d total=%d",
-            orgs_triggered,
-            orgs_skipped,
-            len(org_ids),
+            "Email matching dispatch complete",
+            extra={
+                "event": "email_matching_all_orgs_completed",
+                "triggered_orgs": orgs_triggered,
+                "skipped_orgs": orgs_skipped,
+                "total_orgs": len(org_ids),
+            },
         )
 
         return {
@@ -445,8 +487,11 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
         return run_async(_dispatch_all_orgs())
     except Exception as e:
         logger.error(
-            "Email matching all-orgs failed: error=%s",
-            str(e),
+            "Email matching all-orgs failed",
+            extra={
+                "event": "email_matching_all_orgs_failed",
+                "failure_reason": str(e),
+            },
             exc_info=True,
         )
         return {

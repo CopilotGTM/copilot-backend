@@ -92,7 +92,7 @@ def _create_chat_client() -> Celery:
         worker_hijack_root_logger=False,
     )
 
-    logger.info(
+    logger.debug(
         "Chat Celery client initialized (broker=%s)",
         config.broker_url.replace(config.redis_password, "****")
         if config.redis_password
