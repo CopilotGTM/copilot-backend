@@ -7,7 +7,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ printf "%s-%s" $root.Release.Name $job.name | trunc 52 | trimSuffix "-" }}
+  name: {{ printf "%s-%s" $root.Release.Name (default $job.name $job.resourceName) | trunc 52 | trimSuffix "-" }}
   labels:
     app.kubernetes.io/instance: {{ $root.Release.Name }}
     app.kubernetes.io/name: integrations-cronjob

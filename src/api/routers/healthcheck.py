@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from src.infra.secrets.manager import secrets_manager
 from src.infra.utils.logger import get_logger
+from src.workers.deal_worker.scheduler_heartbeat import (
+    get_scheduler_health as get_deal_scheduler_health,
+)
 from src.workers.integrations_worker.scheduler_heartbeat import get_scheduler_health
+from src.workers.knowledge_worker.scheduler_heartbeat import (
+    get_scheduler_health as get_knowledge_scheduler_health,
+)
 
 logger = get_logger()
 
@@ -112,7 +118,14 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
 
         overall_healthy = True
         integrations_scheduler = get_scheduler_health()
-        overall_healthy = overall_healthy and integrations_scheduler["healthy"]
+        deal_scheduler = get_deal_scheduler_health()
+        knowledge_scheduler = get_knowledge_scheduler_health()
+        overall_healthy = (
+            overall_healthy
+            and integrations_scheduler["healthy"]
+            and deal_scheduler["healthy"]
+            and knowledge_scheduler["healthy"]
+        )
         health_response = {
             "status": "healthy" if overall_healthy else "unhealthy",
             "application": {"status": "healthy", "service": "Copilot Backend"},
@@ -121,6 +134,8 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
                 "provider": provider_info,
             },
             "integrations_scheduler": integrations_scheduler,
+            "deal_scheduler": deal_scheduler,
+            "knowledge_scheduler": knowledge_scheduler,
             "overall_healthy": overall_healthy,
         }
 
@@ -183,6 +198,28 @@ async def integrations_scheduler_healthcheck(authorized: bool = Depends(verify_i
     """Report freshness of fixed integrations schedules."""
 
     scheduler_health = get_scheduler_health()
+    if scheduler_health["healthy"]:
+        return scheduler_health
+
+    raise HTTPException(status_code=503, detail=scheduler_health)
+
+
+@healthcheck_router.get("/health/deal-scheduler")
+async def deal_scheduler_healthcheck(authorized: bool = Depends(verify_internal_access)):
+    """Report freshness of fixed deal schedules."""
+
+    scheduler_health = get_deal_scheduler_health()
+    if scheduler_health["healthy"]:
+        return scheduler_health
+
+    raise HTTPException(status_code=503, detail=scheduler_health)
+
+
+@healthcheck_router.get("/health/knowledge-scheduler")
+async def knowledge_scheduler_healthcheck(authorized: bool = Depends(verify_internal_access)):
+    """Report freshness of fixed knowledge schedules."""
+
+    scheduler_health = get_knowledge_scheduler_health()
     if scheduler_health["healthy"]:
         return scheduler_health
 

@@ -197,13 +197,10 @@ knowledge-upload-worker:
     scaleDownDelay: 180
     scaleUpDelay: 4
 
-# Knowledge Beat Scheduler (Celery Beat for scheduled knowledge tasks)
-# Runs periodic tasks defined in KnowledgeWorkerConfig.beat_schedule:
-# - knowledge.cleanup_stale_jobs_all_orgs: Every hour at :00
-#   - Marks PENDING jobs older than 2 hours as FAILED
-#   - Marks IN_PROGRESS jobs older than 24 hours as FAILED
+# Legacy Celery Beat config for knowledge worker.
+# Fixed knowledge schedules are owned by Kubernetes CronJobs below.
 knowledge-beat:
-  enabled: true
+  enabled: false
   replicaCount: 1
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
@@ -384,6 +381,29 @@ integrationsCronJobs:
     - name: sync-email-all-orgs
       schedule: "*/30 * * * *"
 
+knowledgeCronJobs:
+  enabled: true
+  timeZone: "Etc/UTC"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 900
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 900
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+  jobs:
+    - name: cleanup-stale-knowledge-jobs
+      schedule: "0,30 * * * *"
+    - name: cleanup-stale-db-connections-every-10-min
+      resourceName: cleanup-stale-db-connections
+      schedule: "*/10 * * * *"
+
 # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
 deal-worker:
   enabled: true
@@ -416,15 +436,40 @@ deal-worker:
     scaleDownDelay: 300
     scaleUpDelay: 10
 
-# Deal Beat Scheduler (Celery Beat for scheduled deal tasks)
-# Runs periodic tasks defined in DealWorkerConfig.beat_schedule:
-# - deal.trigger_deal_meeting_processing_all_orgs: Every hour at :00
-# - deal.trigger_deal_email_processing_all_orgs: Every hour at :00
-# - stakeholder.trigger_analysis_all_orgs: Every hour at :00
-# - risk_blocker.trigger_extraction_all_orgs: Daily at 10:00 AM IST
-# - deal.trigger_timeline_sync_all_orgs: Daily at 6:00 PM
-deal-beat:
+dealCronJobs:
   enabled: true
+  timeZone: "Etc/UTC"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 900
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 900
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "192Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+  jobs:
+    - name: deal-mapping
+      schedule: "3,18,33,48 * * * *"
+    - name: timeline-sync
+      schedule: "10,25,40,55 * * * *"
+    - name: transcript-fetch-pipeline
+      schedule: "5,35 * * * *"
+    - name: stale-deal-job-cleanup
+      schedule: "45 * * * *"
+    - name: deal-memory-backfill
+      schedule: "10 */3 * * *"
+    - name: stakeholder-research-retry
+      schedule: "20 * * * *"
+
+# Legacy Celery Beat config for deal worker.
+# Fixed deal schedules are owned by Kubernetes CronJobs below.
+deal-beat:
+  enabled: false
   replicaCount: 1
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"

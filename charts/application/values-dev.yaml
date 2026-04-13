@@ -37,6 +37,7 @@ knowledge-upload-worker:
       memory: "1Gi"
 
 knowledge-beat:
+  enabled: false
   # Actual usage: 1m CPU, 225Mi memory
   resources:
     requests:
@@ -78,6 +79,7 @@ deal-worker:
       memory: "1Gi"
 
 deal-beat:
+  enabled: false
   # Actual usage: 0m CPU, 141Mi memory
   resources:
     requests:
