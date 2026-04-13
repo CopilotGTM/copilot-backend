@@ -57,7 +57,11 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
     """
     logger.info(
         "Processing deal summary job",
-        extra={"event": "deal_summary_job_started", "organisation_id": organisation_id, "job_id": job_id},
+        extra={
+            "event": "deal_summary_job_started",
+            "organisation_id": organisation_id,
+            "job_id": job_id,
+        },
     )
 
     async def _run():
@@ -170,7 +174,11 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
 
         logger.info(
             "Deal summary job completed",
-            extra={"event": "deal_summary_job_completed", "organisation_id": organisation_id, "job_id": job_id},
+            extra={
+                "event": "deal_summary_job_completed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+            },
         )
         return {
             "status": "completed",
