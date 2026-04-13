@@ -127,6 +127,12 @@ class AgentConfig:
     ROUTER_DEBUG: bool = os.getenv("AGENT_ROUTER_DEBUG", "false").lower() == "true"
     ROUTER_TIMEOUT: int = int(os.getenv("AGENT_ROUTER_TIMEOUT", "30"))
 
+    # Voice Realtime Agent - tool-free conversational agent for live voice sessions
+    VOICE_REALTIME_MODEL: str = os.getenv("AGENT_VOICE_REALTIME_MODEL", "gpt-realtime-mini")
+    VOICE_REALTIME_VOICE: str = os.getenv("AGENT_VOICE_REALTIME_VOICE", "alloy")
+    VOICE_REALTIME_DEBUG: bool = os.getenv("AGENT_VOICE_REALTIME_DEBUG", "false").lower() == "true"
+    VOICE_REALTIME_TIMEOUT: int = int(os.getenv("AGENT_VOICE_REALTIME_TIMEOUT", "120"))
+
     # ==========================================================================
     # HELPER METHODS
     # ==========================================================================
@@ -148,6 +154,11 @@ class AgentConfig:
         ),
         "general_agent": ("GENERAL_MODEL", "GENERAL_DEBUG", "GENERAL_TIMEOUT"),
         "router_agent": ("ROUTER_MODEL", "ROUTER_DEBUG", "ROUTER_TIMEOUT"),
+        "voice_realtime_agent": (
+            "VOICE_REALTIME_MODEL",
+            "VOICE_REALTIME_DEBUG",
+            "VOICE_REALTIME_TIMEOUT",
+        ),
         "deal_memory_agent": (
             "DEAL_MEMORY_MODEL",
             "DEAL_MEMORY_DEBUG",

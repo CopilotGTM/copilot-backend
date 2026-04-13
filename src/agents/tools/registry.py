@@ -162,6 +162,18 @@ REMINDER_MANAGEMENT_TOOLS = {
     ToolName.CANCEL_REMINDER,
 }
 
+VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
+    ToolName.CREATE_DEAL,
+    ToolName.ADD_DEAL_NOTE,
+    ToolName.ADD_STAKEHOLDER,
+    ToolName.UPDATE_DEAL_STAGE,
+    ToolName.CREATE_TASK,
+    ToolName.CREATE_REMINDER,
+    ToolName.LIST_REMINDERS,
+    ToolName.CANCEL_REMINDER,
+    ToolName.ENRICH_STAKEHOLDER,
+}
+
 
 # =============================================================================
 # CHANNEL-SPECIFIC TOOLS
@@ -193,70 +205,77 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
 # IMPORTANT: Agent names must match the actual class names exactly.
 # =============================================================================
 
+GENERAL_AGENT_TOOLS: set[ToolName] = {
+    # Search tools
+    ToolName.SEARCH_INTERNAL_KNOWLEDGE,
+    ToolName.SEARCH_INTERNET,
+    # Deal tools
+    ToolName.SEARCH_DEALS,
+    ToolName.LIST_DEALS,
+    ToolName.GET_DEAL_DETAILS,
+    ToolName.GET_DEAL_SUMMARY,
+    ToolName.GET_DEAL_MEMORY,
+    ToolName.GET_DEAL_CHANGE_HISTORY,
+    ToolName.GET_PIPELINE_DETAILS,
+    # Stakeholder tools
+    ToolName.LIST_DEAL_STAKEHOLDERS,
+    ToolName.GET_STAKEHOLDER_DETAILS,
+    ToolName.GET_EXISTING_RISKS_BLOCKERS,
+    # Meeting tools
+    ToolName.LIST_DEAL_MEETINGS,
+    ToolName.LIST_MEETINGS_BY_DATE,
+    ToolName.GET_MEETING_DETAILS,
+    ToolName.GET_MEETING_SUMMARY,
+    ToolName.GET_MEETING_TRANSCRIPT,
+    ToolName.GET_MEETING_DEAL_CONTEXT,
+    # Contact tools
+    ToolName.SEARCH_CONTACTS,
+    # Communication tools
+    ToolName.LIST_DEAL_EMAILS,
+    ToolName.GET_EMAIL_DETAILS,
+    ToolName.READ_CHAT_ATTACHMENT,
+    ToolName.LIST_DEAL_NOTES,
+    ToolName.LIST_DEAL_CHANNEL_MESSAGES,
+    ToolName.CREATE_VISUALIZATION_CARD,
+    # Research tools
+    ToolName.SEARCH_WIKIPEDIA,
+    ToolName.GET_STOCK_INFO,
+    ToolName.GET_COMPANY_FINANCIALS,
+    ToolName.CRAWL_WEBPAGE,
+    ToolName.SEARCH_ARXIV,
+    ToolName.EXTRACT_NEWS_ARTICLE,
+    ToolName.RESEARCH_LINKEDIN_PROFILE,
+    ToolName.ENRICH_LINKEDIN_PROFILE,
+    # Stakeholder tools (write)
+    ToolName.ENRICH_STAKEHOLDER,
+    # Teams tools
+    ToolName.FETCH_TEAMS_CHAT_MESSAGES,
+    # CRM write tools (channel-only)
+    ToolName.CREATE_DEAL,
+    ToolName.ADD_DEAL_NOTE,
+    ToolName.ADD_STAKEHOLDER,
+    ToolName.UPDATE_DEAL_STAGE,
+    # Task tools (channel-only)
+    ToolName.CREATE_TASK,
+    # Reminder tools (channel-only)
+    ToolName.CREATE_REMINDER,
+    ToolName.LIST_REMINDERS,
+    ToolName.CANCEL_REMINDER,
+}
+
 AGENT_TOOLS: dict[str, set[ToolName]] = {
     # -------------------------------------------------------------------------
     # GeneralAgent - Chat Agent
     # Location: src/agents/workflows/general/agent.py
     # Purpose: Primary chat interface that handles user queries in the chat UI.
     # -------------------------------------------------------------------------
-    "GeneralAgent": {
-        # Search tools
-        ToolName.SEARCH_INTERNAL_KNOWLEDGE,
-        ToolName.SEARCH_INTERNET,
-        # Deal tools
-        ToolName.SEARCH_DEALS,
-        ToolName.LIST_DEALS,
-        ToolName.GET_DEAL_DETAILS,
-        ToolName.GET_DEAL_SUMMARY,
-        ToolName.GET_DEAL_MEMORY,
-        ToolName.GET_DEAL_CHANGE_HISTORY,
-        ToolName.GET_PIPELINE_DETAILS,
-        # Stakeholder tools
-        ToolName.LIST_DEAL_STAKEHOLDERS,
-        ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.GET_EXISTING_RISKS_BLOCKERS,
-        # Meeting tools
-        ToolName.LIST_DEAL_MEETINGS,
-        ToolName.LIST_MEETINGS_BY_DATE,
-        ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_SUMMARY,
-        ToolName.GET_MEETING_TRANSCRIPT,
-        ToolName.GET_MEETING_DEAL_CONTEXT,
-        # Contact tools
-        ToolName.SEARCH_CONTACTS,
-        # Communication tools
-        ToolName.LIST_DEAL_EMAILS,
-        ToolName.GET_EMAIL_DETAILS,
-        ToolName.READ_CHAT_ATTACHMENT,
-        ToolName.LIST_DEAL_NOTES,
-        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
-        ToolName.CREATE_VISUALIZATION_CARD,  # Send visualization summary card
-        # Research tools
-        ToolName.SEARCH_WIKIPEDIA,
-        ToolName.GET_STOCK_INFO,
-        ToolName.GET_COMPANY_FINANCIALS,
-        ToolName.CRAWL_WEBPAGE,
-        ToolName.SEARCH_ARXIV,
-        ToolName.EXTRACT_NEWS_ARTICLE,
-        ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
-        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
-        # Stakeholder tools (write)
-        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
-        # Teams tools
-        ToolName.FETCH_TEAMS_CHAT_MESSAGES,  # Fetch group chat history when @mentioned
-        # CRM write tools (channel-only)
-        ToolName.CREATE_DEAL,  # Send interactive deal creation form
-        ToolName.ADD_DEAL_NOTE,  # Send interactive note form for existing deal
-        ToolName.ADD_STAKEHOLDER,  # Send interactive stakeholder form
-        ToolName.UPDATE_DEAL_STAGE,  # Send interactive stage update form
-        # Task tools (channel-only)
-        ToolName.CREATE_TASK,  # Create a CRM task from chat
-        # Reminder tools (channel-only)
-        ToolName.CREATE_REMINDER,  # Create scheduled reminder or agentic alert
-        ToolName.LIST_REMINDERS,  # List active reminders
-        ToolName.CANCEL_REMINDER,  # Cancel a reminder
-    },
+    "GeneralAgent": set(GENERAL_AGENT_TOOLS),
     # -------------------------------------------------------------------------
+    # VoiceRealtimeAgent - Realtime voice workflow
+    # Location: src/agents/workflows/voice_realtime/agent.py
+    # Purpose: Voice-first realtime workflow that reuses the GeneralAgent tool profile.
+    # -------------------------------------------------------------------------
+    "VoiceRealtimeAgent": set(GENERAL_AGENT_TOOLS) - VOICE_REALTIME_WRITE_EXCLUDED_TOOLS,
     # BriefingAgent - Meeting Briefing Agent
     # Location: src/agents/workflows/briefing/agent.py
     # Purpose: Generates comprehensive meeting prep briefings before calls.
@@ -896,8 +915,10 @@ __all__ = [
     "ToolName",
     "ToolRegistry",
     "AGENT_TOOLS",
+    "GENERAL_AGENT_TOOLS",
     "TOOL_CATEGORIES",
     "REMINDER_MANAGEMENT_TOOLS",
+    "VOICE_REALTIME_WRITE_EXCLUDED_TOOLS",
     "get_excluded_tools_for_context",
     "get_tools_for_agent",
 ]

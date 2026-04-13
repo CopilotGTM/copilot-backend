@@ -115,6 +115,18 @@ class UserAuthErrors:
     LOGOUT_FAILED = "An unexpected error occurred during logout."
 
 
+class RealtimeErrors:
+    REALTIME_NOT_CONFIGURED = "Realtime service is not configured."
+    SESSION_BOOTSTRAP_FAILED = "Failed to create realtime session."
+    INVALID_SESSION_RESPONSE = "Realtime provider returned an invalid session response."
+    SESSION_BOOTSTRAP_UNAVAILABLE = "Realtime service is temporarily unavailable."
+    VOICE_SESSION_NOT_FOUND = "Voice chat session not found."
+    INVALID_RUNTIME_CONFIG = "Realtime runtime configuration is invalid."
+    EXPIRED_RUNTIME_CONFIG = "Realtime runtime configuration has expired."
+    CALL_ATTACH_FAILED = "Failed to attach realtime call."
+    CALL_ALREADY_ATTACHED = "Realtime call is already attached to another session."
+
+
 class SupabaseErrors:
     # Configuration / validation
     MISSING_CONFIG = "Missing required Supabase configuration: {}"

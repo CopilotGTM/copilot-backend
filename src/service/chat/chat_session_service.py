@@ -130,6 +130,7 @@ class ChatSessionService:
         *,
         limit: int = 20,
         cursor: str | None = None,
+        chat_type: str | None = None,
     ) -> tuple[list[ChatSession], str | None]:
         filters = [
             col(ChatSession.user_id) == self.user_id,
@@ -137,6 +138,9 @@ class ChatSessionService:
             col(ChatSession.is_deleted).is_(False),
             col(ChatSession.chat_type) != ChatType.TEAMS_CHAT,
         ]
+
+        if chat_type:
+            filters.append(col(ChatSession.chat_type) == chat_type)
 
         if cursor:
             ts, sid = decode_cursor(cursor)

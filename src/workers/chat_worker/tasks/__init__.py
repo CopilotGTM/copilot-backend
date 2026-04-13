@@ -6,6 +6,7 @@ from . import (
     reminder_tasks,
     stale_job_cleanup_tasks,
     test_tasks,
+    voice_realtime,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "reminder_tasks",
     "stale_job_cleanup_tasks",
     "test_tasks",
+    "voice_realtime",
 ]

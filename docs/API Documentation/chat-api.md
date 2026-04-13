@@ -7,6 +7,7 @@ This document covers all Chat-related APIs including chat sessions, messages, at
 ```text
 /users/chats           # Chat sessions and messages
 /users/chats/upload    # Attachment uploads
+/users/realtime        # Voice realtime session bootstrap
 ```
 
 ---
@@ -41,6 +42,7 @@ All endpoints return a consistent envelope:
 ## Integration Overview
 
 - For a unified flow with uploads and SSE, see: `docs/API Documentation/chat-apis-integration-diagram.md`
+- For the dedicated voice realtime API contract, see: `docs/API Documentation/voice-realtime-api.md`
 
 ### Agent Execution Notes
 
@@ -208,6 +210,48 @@ export interface FavoriteChat {
   favorite: boolean;
 }
 
+// Voice realtime
+export type RealtimeDevicePlatform = "android" | "ios" | "web";
+export type RealtimeConversationMode = "push_to_talk";
+export type RealtimeTurnMode = "push_to_talk";
+
+export interface UserRealtimeSessionRequest {
+  device: {
+    platform: RealtimeDevicePlatform;
+    app_version: string;
+  };
+  conversation_mode: RealtimeConversationMode;
+  chat_session_id?: UUID | null; // reuse an existing VOICE_CHAT session
+}
+
+export interface UserRealtimeSessionResponse {
+  session_id: string; // Azure realtime session id
+  ephemeral_key: string; // short-lived client secret from Azure
+  endpoint: string; // Azure WebRTC call endpoint
+  model: string;
+  voice: string;
+  expires_at: string; // ISO8601
+  turn_mode: RealtimeTurnMode;
+  chat_session_id: UUID; // backend ChatSession id for transcript persistence
+}
+
+export interface VoiceTurnEntry {
+  realtime_item_id: string; // Azure conversation item id; used for deduplication
+  speaker: "user" | "assistant";
+  text: string;
+  turn_index: number;
+}
+
+export interface PersistVoiceTurnsRequest {
+  chat_session_id: UUID;
+  turns: VoiceTurnEntry[];
+}
+
+export interface PersistVoiceTurnsResponse {
+  persisted_count: number;
+  message_ids: UUID[];
+}
+
 // Messages
 export interface SendMessageRequest {
   session_id: UUID;
@@ -262,6 +306,12 @@ export interface ChatSessionOut {
 export interface ChatSessionsPage {
   items: ChatSessionOut[];
   cursor?: string | null; // opaque
+}
+
+export interface VoiceRealtimeFlowSummary {
+  chat_session_id: UUID;
+  session_id: string;
+  expires_at: string;
 }
 
 // Messages
@@ -575,12 +625,18 @@ PATCH /users/chats/rename_chat
 ### Endpoint
 
 ```http
-GET /users/chats/list_chats?limit=20&cursor=<opaque>
+GET /users/chats/list_chats?limit=20&cursor=<opaque>&chat_type=<CHAT_TYPE>
 ```
 
 ### Description
 
 Returns your chat sessions ordered by recency. Use `cursor` from the previous response to fetch the next page.
+
+Query params:
+
+- `limit` — page size, `1..100`
+- `cursor` — opaque pagination cursor from the previous response
+- `chat_type` — optional exact filter, for example `VOICE_CHAT` to return only voice sessions
 
 ### Success Response (200)
 
@@ -670,6 +726,281 @@ PATCH /users/chats/favorite_chat
 - 404 Not Found — "Chat session not found"
 - 400 Bad Request — validation issues
 - 500 Internal Server Error — "Unable to update favorite state"
+
+---
+
+# Voice Realtime Endpoints
+
+These endpoints support the mobile voice experience. The backend issues a short-lived Azure
+realtime client secret, stores or reuses a backend `chat_session_id`, returns a backend-authored
+`runtime_config`, persists completed voice turns, and then exposes the transcript through the
+existing chat list/message APIs.
+
+## Voice Realtime Flow
+
+1. Call `POST /users/realtime/session` to create or resume a voice session and receive an Azure
+   `ephemeral_key` plus `runtime_config`.
+2. Connect the mobile client directly to Azure using the returned `endpoint` and `ephemeral_key`.
+3. Once the live `call_id` is available, call `POST /users/realtime/calls/attach` with the
+   backend-authored `runtime_config`.
+4. After each completed voice turn, call `POST /users/chats/voice/turns` to persist transcript
+   entries.
+5. Call `GET /users/chats/list_chats?chat_type=VOICE_CHAT` to show prior voice sessions.
+6. Call `GET /users/chats/messages/list?session_id=<chat_session_id>` to fetch the persisted
+   transcript and assistant results.
+
+## 6A) Create Voice Realtime Session
+
+### Endpoint
+
+```http
+POST /users/realtime/session
+```
+
+### Description
+
+Creates a short-lived Azure realtime client secret for an authenticated user and returns the
+backend `chat_session_id` that the client must use for transcript persistence and history retrieval.
+
+The response also includes `runtime_config`, which contains the backend-owned voice prompt and the
+realtime tool contract that the backend voice worker applies once the live call is attached.
+
+If `chat_session_id` is omitted, the backend creates a new `ChatSession` with `chat_type = VOICE_CHAT`.
+
+If `chat_session_id` is provided, the backend reuses that existing session id and returns a fresh Azure realtime session for resume/reconnect scenarios.
+
+### Authentication
+
+- Required — Bearer token
+
+### Request Body
+
+```json
+{
+  "device": {
+    "platform": "android",
+    "app_version": "1.0.0"
+  },
+  "conversation_mode": "push_to_talk",
+  "chat_session_id": null
+}
+```
+
+### Request Fields
+
+- `device.platform` — `"android" | "ios" | "web"`
+- `device.app_version` — app build/version string used for telemetry
+- `conversation_mode` — currently only `"push_to_talk"`
+- `chat_session_id` — optional backend chat session UUID to resume an existing voice transcript
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Realtime session created successfully.",
+  "data": {
+    "session_id": "azure-session-abc123",
+    "ephemeral_key": "ek_abc123",
+    "endpoint": "https://example.openai.azure.com/openai/v1/realtime/calls",
+    "model": "gpt-realtime-mini",
+    "voice": "alloy",
+    "expires_at": "2026-04-11T10:45:00Z",
+    "turn_mode": "push_to_talk",
+    "chat_session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "runtime_config": {
+      "chat_session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "control_mode": "backend_sideband",
+      "tool_policy": "guardrailed_auto",
+      "allowed_tools": [
+        "get_deal_details",
+        "get_meeting_summary",
+        "list_deal_notes",
+        "search_internal_knowledge"
+      ],
+      "session_update": {
+        "type": "session.update",
+        "session": {
+          "modalities": ["text", "audio"],
+          "instructions": "You are Kai, CopilotGTM's AI sales assistant...",
+          "tools": [
+            {
+              "type": "function",
+              "name": "search_internal_knowledge",
+              "description": "Search organisation knowledge and documents.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+              }
+            }
+          ],
+          "audio": {
+            "input": {
+              "format": {
+                "type": "audio/pcm",
+                "sample_rate_hz": 16000
+              },
+              "transcription": {
+                "model": "whisper-1"
+              }
+            },
+            "output": {
+              "format": {
+                "type": "audio/pcm",
+                "sample_rate_hz": 24000
+              },
+              "voice": "alloy"
+            }
+          },
+          "turn_detection": null
+        }
+      },
+      "issued_at": "2026-04-13T09:00:00Z",
+      "expires_at": "2026-04-13T10:00:00Z",
+      "signature": "8f7d0f3f..."
+    }
+  }
+}
+```
+
+### Notes
+
+- `session_id` is the Azure realtime session id, not the backend chat session id.
+- `ephemeral_key` is short-lived and is meant only for direct client-to-Azure realtime connection setup.
+- `endpoint` is the Azure WebRTC calls endpoint the mobile app should connect to.
+- `chat_session_id` is the backend session id that must be used in `POST /users/chats/voice/turns` and later `GET /users/chats/messages/list`.
+- `turn_mode` currently always resolves to `"push_to_talk"`.
+- `runtime_config.control_mode` currently resolves to `"backend_sideband"`.
+- The frontend must not author its own voice prompt or execute backend tools locally.
+- The frontend hands the live `call_id` plus `runtime_config` back to `POST /users/realtime/calls/attach`, and the backend voice worker applies `runtime_config.session_update`.
+
+### Error Responses
+
+- 500 Internal Server Error — "Realtime service is not configured."
+- 502 Bad Gateway — "Failed to create realtime session."
+- 502 Bad Gateway — "Realtime provider returned an invalid session response."
+- 503 Service Unavailable — "Realtime service is temporarily unavailable."
+
+### Example cURL
+
+```bash
+curl -X POST "$BASE_URL/users/realtime/session" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device": {
+      "platform": "android",
+      "app_version": "1.0.0"
+    },
+    "conversation_mode": "push_to_talk",
+    "chat_session_id": null
+  }'
+```
+
+---
+
+## 6B) Persist Voice Turns
+
+### Endpoint
+
+```http
+POST /users/chats/voice/turns
+```
+
+### Description
+
+Persists completed voice turns into the existing chat message store so the transcript can be listed with the normal chat APIs.
+
+The endpoint is idempotent at the turn level. If the same `realtime_item_id` is sent again for the same session, that turn is skipped instead of creating a duplicate `ChatMessage`.
+
+### Authentication
+
+- Required — Bearer token
+
+### Request Body
+
+```json
+{
+  "chat_session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "turns": [
+    {
+      "realtime_item_id": "item_user_001",
+      "speaker": "user",
+      "text": "How is the Acme deal looking?",
+      "turn_index": 0
+    },
+    {
+      "realtime_item_id": "item_assistant_001",
+      "speaker": "assistant",
+      "text": "The Acme deal is currently in negotiation and the main blocker is pricing.",
+      "turn_index": 1
+    }
+  ]
+}
+```
+
+### Persistence Rules
+
+- The backend verifies that `chat_session_id` belongs to the authenticated user, the authenticated organisation, is not deleted, and has `chat_type = VOICE_CHAT`.
+- Each stored turn becomes a regular `ChatMessage`.
+- Stored message `content` includes:
+  - `text`
+  - `source = "voice_transcription"`
+  - `realtime_item_id`
+- Stored message `extra` includes `turn_index`.
+- If the session title is still `"Voice Session"`, the backend renames it from the first persisted user utterance, truncated to 60 characters.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Persisted 2 voice turns.",
+  "data": {
+    "persisted_count": 2,
+    "message_ids": [
+      "11111111-1111-1111-1111-111111111111",
+      "22222222-2222-2222-2222-222222222222"
+    ]
+  }
+}
+```
+
+### Error Responses
+
+- 404 Not Found — "Voice chat session not found."
+- 500 Internal Server Error — "Failed to persist voice turns."
+
+### Example cURL
+
+```bash
+curl -X POST "$BASE_URL/users/chats/voice/turns" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chat_session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "turns": [
+      {
+        "realtime_item_id": "item_user_001",
+        "speaker": "user",
+        "text": "How is the Acme deal looking?",
+        "turn_index": 0
+      },
+      {
+        "realtime_item_id": "item_assistant_001",
+        "speaker": "assistant",
+        "text": "The Acme deal is currently in negotiation and the main blocker is pricing.",
+        "turn_index": 1
+      }
+    ]
+  }'
+```
 
 ---
 
@@ -963,6 +1294,7 @@ Notes:
 
 - Each message includes a `feedback_score` field showing user feedback: `1` (thumbs up), `-1` (thumbs down), or `null` (no feedback)
 - Feedback scores are set via the `POST /messages/feedback` endpoint
+- Voice transcript results are read from this same endpoint. For `VOICE_CHAT` sessions, persisted user and assistant turns appear here after `POST /users/chats/voice/turns` succeeds.
 
 ### Success Response (200)
 
@@ -1704,6 +2036,16 @@ Popular options:
 6. [Optional] User provides feedback via `POST /users/chats/messages/feedback` with thumbs up/down
 7. Once attachment `completed`, include the `attachment_id` in chat message payloads and/or fetch a download URL when user clicks download
 8. Message lists return `thumbnail_small_url` for rendering previews
+
+## Voice Realtime Frontend Flow
+
+1. `POST /users/realtime/session` to get `{ ephemeral_key, endpoint, chat_session_id, runtime_config }`
+2. Connect the mobile client directly to Azure Realtime using the returned `endpoint` and `ephemeral_key`
+3. Once the live `call_id` is available, call `POST /users/realtime/calls/attach` with the signed `runtime_config`
+4. Do not apply `runtime_config.session_update` from the frontend
+5. After each completed user/assistant turn, `POST /users/chats/voice/turns` with the shared `chat_session_id`
+6. Use `GET /users/chats/list_chats?chat_type=VOICE_CHAT` to show prior voice sessions
+7. Use `GET /users/chats/messages/list?session_id=<chat_session_id>` to render the persisted transcript and assistant results
 
 ---
 

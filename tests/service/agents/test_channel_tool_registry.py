@@ -1,7 +1,14 @@
 from uuid import uuid4
 
 from src.agents.context import AgentContext
-from src.agents.tools.registry import CHANNEL_ONLY_TOOLS, ToolName, get_excluded_tools_for_context
+from src.agents.tools.registry import (
+    AGENT_TOOLS,
+    CHANNEL_ONLY_TOOLS,
+    VOICE_REALTIME_WRITE_EXCLUDED_TOOLS,
+    ToolName,
+    ToolRegistry,
+    get_excluded_tools_for_context,
+)
 
 
 def test_slack_supported_crm_tools_are_available_on_slack_and_teams() -> None:
@@ -40,3 +47,20 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
         ToolName.LIST_REMINDERS,
         ToolName.CANCEL_REMINDER,
     }
+
+
+def test_voice_realtime_agent_excludes_backend_write_tools() -> None:
+    assert AGENT_TOOLS["VoiceRealtimeAgent"].isdisjoint(VOICE_REALTIME_WRITE_EXCLUDED_TOOLS)
+    assert ToolName.SEARCH_INTERNAL_KNOWLEDGE in AGENT_TOOLS["VoiceRealtimeAgent"]
+
+
+def test_voice_realtime_agent_web_channel_filters_channel_only_tools() -> None:
+    context = AgentContext(organisation_id=uuid4(), channel="web")
+    registry = ToolRegistry(context, lambda: None)
+
+    tools = registry.get_tools_for_agent("VoiceRealtimeAgent", channel="web")
+    tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+    assert ToolName.SEARCH_INTERNAL_KNOWLEDGE.value in tool_names
+    assert ToolName.CREATE_DEAL.value not in tool_names
+    assert ToolName.CREATE_TASK.value not in tool_names
