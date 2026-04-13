@@ -358,9 +358,13 @@ integrations-worker:
 
 integrationsCronJobs:
   enabled: true
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 5
-  backoffLimit: 2
+  timeZone: "Etc/UTC"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 900
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 900
   resources:
     requests:
       cpu: "50m"

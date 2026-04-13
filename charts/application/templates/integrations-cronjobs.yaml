@@ -14,12 +14,16 @@ metadata:
     app.kubernetes.io/component: {{ $job.name }}
 spec:
   schedule: {{ $job.schedule | quote }}
+  timeZone: {{ $root.Values.integrationsCronJobs.timeZone | quote }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: {{ $root.Values.integrationsCronJobs.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ $root.Values.integrationsCronJobs.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ $root.Values.integrationsCronJobs.startingDeadlineSeconds }}
   jobTemplate:
     spec:
       backoffLimit: {{ $root.Values.integrationsCronJobs.backoffLimit }}
+      activeDeadlineSeconds: {{ $root.Values.integrationsCronJobs.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ $root.Values.integrationsCronJobs.ttlSecondsAfterFinished }}
       template:
         metadata:
           labels:
