@@ -396,8 +396,6 @@ function Deploy-WithHelm {
         "--set", "knowledge-upload-worker.image.repository=$knowledgeRepo",
         "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
-        "--set", "knowledge-beat.image.repository=$knowledgeRepo",
-        "--set", "knowledge-beat.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.image.repository=$lightRepo",
         "--set", "organization-worker.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.autoscaling.enabled=true",
@@ -409,8 +407,6 @@ function Deploy-WithHelm {
         "--set", "deal-worker.image.repository=$lightRepo",
         "--set", "deal-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.autoscaling.enabled=true",
-        "--set", "deal-beat.image.repository=$lightRepo",
-        "--set", "deal-beat.image.tag=$IMAGE_TAG",
         "--set", "integrations-beat.image.repository=$integrationsRepo",
         "--set", "integrations-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
@@ -463,17 +459,13 @@ function Deploy-WithHelm {
         "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "deal-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "knowledge-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "knowledge-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
@@ -503,26 +495,26 @@ function Deploy-WithHelm {
     # Wait a moment for pods to be created
     Start-Sleep -Seconds 10
     
-    # Force restart worker pods to ensure they pick up latest values
-    Write-Host "Restarting worker deployments to ensure latest values are applied..."
-    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-chat-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-organization-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-integrations-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-deal-worker -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-deal-beat -n $NAMESPACE
-    kubectl rollout restart deployment copilot-backend-knowledge-beat -n $NAMESPACE
+    $workerDeployments = @(
+        "copilot-backend-knowledge-extract-worker",
+        "copilot-backend-knowledge-upload-worker",
+        "copilot-backend-chat-worker",
+        "copilot-backend-organization-worker",
+        "copilot-backend-integrations-worker",
+        "copilot-backend-deal-worker"
+    )
 
-    Write-Host "Waiting for rollouts to complete..."
-    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-knowledge-beat -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-chat-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-integrations-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-deal-worker -n $NAMESPACE --timeout=300s
-    kubectl rollout status deployment copilot-backend-deal-beat -n $NAMESPACE --timeout=300s
+    Write-Host "Restarting worker deployments to ensure latest values are applied..."
+    foreach ($deployment in $workerDeployments) {
+        kubectl get deployment $deployment -n $NAMESPACE *> $null
+        if ($LASTEXITCODE -eq 0) {
+            kubectl rollout restart deployment $deployment -n $NAMESPACE
+            kubectl rollout status deployment $deployment -n $NAMESPACE --timeout=300s
+        }
+        else {
+            Write-Warning "Skipping missing deployment: $deployment"
+        }
+    }
     
     Write-Success "Worker restarts completed"
     
