@@ -94,6 +94,7 @@ deal-beat:
       memory: "512Mi"
 
 integrations-beat:
+  enabled: false
   resources:
     requests:
       cpu: "50m"

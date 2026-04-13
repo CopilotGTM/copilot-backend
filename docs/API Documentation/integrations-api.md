@@ -1074,6 +1074,16 @@ Each channel refresh creates an `IntegrationSyncHistory` record that can be quer
 - **Polling Restrictions:** Microsoft recommends polling once per day for resource changes
 - **Manual Refresh:** This endpoint is for user-initiated refreshes and is not subject to the once-per-day polling rule
 
+### Scheduler Ownership
+
+The fixed integrations schedules are now owned by Kubernetes CronJobs that enqueue the existing Tier 1 Celery tasks. This replaces the previous `integrations-beat` deployment for:
+
+- token refresh
+- messaging channel refresh
+- deal message sync
+- calendar reconciliation sync
+- email sync
+
 ---
 
 ## TypeScript Interface

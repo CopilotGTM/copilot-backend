@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from src.infra.secrets.manager import secrets_manager
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.scheduler_heartbeat import get_scheduler_health
 
 logger = get_logger()
 
@@ -110,13 +111,16 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
             provider_info = {}
 
         overall_healthy = True
+        integrations_scheduler = get_scheduler_health()
+        overall_healthy = overall_healthy and integrations_scheduler["healthy"]
         health_response = {
-            "status": "healthy",
+            "status": "healthy" if overall_healthy else "unhealthy",
             "application": {"status": "healthy", "service": "Copilot Backend"},
             "secret_management": {
                 "secret_manager": {"healthy": True, "metrics": metrics},
                 "provider": provider_info,
             },
+            "integrations_scheduler": integrations_scheduler,
             "overall_healthy": overall_healthy,
         }
 
@@ -172,3 +176,14 @@ async def secrets_healthcheck(authorized: bool = Depends(verify_internal_access)
                 "recommendations": ["Check secret management system configuration and logs"],
             },
         ) from e
+
+
+@healthcheck_router.get("/health/integrations-scheduler")
+async def integrations_scheduler_healthcheck(authorized: bool = Depends(verify_internal_access)):
+    """Report freshness of fixed integrations schedules."""
+
+    scheduler_health = get_scheduler_health()
+    if scheduler_health["healthy"]:
+        return scheduler_health
+
+    raise HTTPException(status_code=503, detail=scheduler_health)

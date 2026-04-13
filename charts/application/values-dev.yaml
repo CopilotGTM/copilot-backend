@@ -85,6 +85,7 @@ deal-beat:
       memory: "192Mi"
 
 integrations-beat:
+  enabled: false
   # Actual usage: 0m CPU, 104Mi memory
   resources:
     requests:
