@@ -1,4 +1,3 @@
-from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -215,52 +214,5 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             # CRM sync tasks (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
         }
 
-        # Celery Beat schedule for periodic tasks.
-        # Organization:
-        #   1. Maintenance (token refresh, shared housekeeping)
-        #   2. Communication/messaging workloads (US business-hour focus)
-        # Note: CRM sync (HubSpot, Salesforce) deprecated — schedule removed
-
-        _maintenance_schedule = {
-            "refresh-tokens": {
-                "task": "integrations.refresh_tokens",
-                "schedule": crontab(minute=0, hour="*/4"),  # Every 4 hours
-                "kwargs": {"buffer_hours": 2},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-        }
-
-        _communication_schedule = {
-            # Channel sync: Once daily (Microsoft Graph polling limit)
-            "sync-messaging-channels-all-orgs": {
-                "task": "integrations.sync_messaging_channels_all_orgs",
-                "schedule": crontab(minute=0, hour=6),  # Once daily at 6 AM UTC
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            "sync-deal-messages-all-orgs": {
-                "task": "integrations.sync_deal_messages_all_orgs",
-                "schedule": crontab(minute="0,30"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            # Calendar: every 15 minutes around the clock
-            "sync-calendar-events": {
-                "task": CALENDAR_SYNC_TASK,
-                "schedule": crontab(minute="*/15"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            # Email: every 30 minutes around the clock
-            "sync-email-all-orgs": {
-                "task": "integrations.sync_email_all_orgs",
-                "schedule": crontab(minute="0,30"),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-        }
-
-        self.beat_schedule = {
-            **_maintenance_schedule,
-            **_communication_schedule,
-        }
+        # Fixed integrations schedules are owned by Kubernetes CronJobs.
+        self.beat_schedule = {}

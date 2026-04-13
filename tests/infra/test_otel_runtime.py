@@ -316,7 +316,9 @@ def test_create_celery_app_uses_current_app_name_when_multiple_apps_exist(mocker
     mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
     mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
 
-    chat_app = celery_base.create_celery_app("chat_worker", _DummyWorkerConfig(), "tests.chat_tasks")
+    chat_app = celery_base.create_celery_app(
+        "chat_worker", _DummyWorkerConfig(), "tests.chat_tasks"
+    )
     celery_base.create_celery_app("deal_worker", _DummyWorkerConfig(), "tests.deal_tasks")
     chat_app.set_current()
 

@@ -1,4 +1,3 @@
-from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -106,51 +105,8 @@ class DealWorkerConfig(BaseWorkerConfig):
             **self._route_tasks(deal_jobs_queue_tasks, "deal_jobs"),
         }
 
-        # Celery Beat schedule for periodic tasks
-        self.beat_schedule = {
-            # Every 15 min: Stakeholder sync → triggers calendar + email matching
-            "deal-mapping": {
-                "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
-                "schedule": crontab(minute="3,18,33,48"),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # Every 15 min: Timeline sync - fill gaps from missed inline creation
-            "timeline-sync": {
-                "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(minute="10,25,40,55"),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # Every 30 min: Transcript fetch and meeting summary pipeline
-            # After fetching transcripts, automatically triggers:
-            # - Meeting summaries (sequential, oldest first)
-            # - Deal summaries (after all meeting summaries complete)
-            "transcript-fetch-pipeline": {
-                "task": "deal.trigger_transcript_fetch_all_orgs",
-                "schedule": crontab(minute="5,35"),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # Hourly: Stale deal job cleanup
-            # Marks stuck PENDING/IN_PROGRESS deal jobs as FAILED
-            "stale-deal-job-cleanup": {
-                "task": "deal.cleanup_stale_jobs_all_orgs",
-                "schedule": crontab(minute=45),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # Every 3 hours: Deal memory backfill — build memory for deals that have data but no memory
-            "deal-memory-backfill": {
-                "task": "deal_memory.trigger_backfill_all_orgs",
-                "schedule": crontab(minute=10, hour="*/3"),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # Hourly: Retry stakeholder research for un-researched stakeholders
-            # Picks up stakeholders that were never researched or where enrichment
-            # errored (quality gate leaves last_researched_at NULL on tool failures)
-            "stakeholder-research-retry": {
-                "task": "stakeholder_research.trigger_retry_all_orgs",
-                "schedule": crontab(minute=20),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-        }
+        # Fixed deal schedules are owned by Kubernetes CronJobs.
+        self.beat_schedule = {}
 
     @staticmethod
     def _route_tasks(tasks, queue):
