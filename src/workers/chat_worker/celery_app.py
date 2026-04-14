@@ -40,6 +40,7 @@ WORKER_COMPONENT = resolve_celery_component(app.main)
 def _is_current_worker_signal(sender) -> bool:
     return getattr(getattr(sender, "app", None), "main", None) == app.main
 
+
 # Log broker connection details for debugging (mask password)
 broker_url_masked = config.broker_url
 if config.redis_password:

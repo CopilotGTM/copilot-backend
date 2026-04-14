@@ -72,7 +72,11 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
     """
     logger.info(
         "Processing deal memory job",
-        extra={"event": "deal_memory_job_started", "organisation_id": organisation_id, "job_id": job_id},
+        extra={
+            "event": "deal_memory_job_started",
+            "organisation_id": organisation_id,
+            "job_id": job_id,
+        },
     )
 
     # Prevent concurrent execution for the same job (retries can stack)
@@ -170,7 +174,11 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
 
         logger.info(
             "Deal memory job completed",
-            extra={"event": "deal_memory_job_completed", "organisation_id": organisation_id, "job_id": job_id},
+            extra={
+                "event": "deal_memory_job_completed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+            },
         )
         return {
             "status": "completed",
