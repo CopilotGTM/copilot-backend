@@ -608,52 +608,6 @@ stages:
                   displayName: 'Clean up previous startup Job and Pods'
 
                 - script: |
-                    set -euo pipefail
-
-                    required_vars=(
-                      HELM_RELEASE_NAME
-                      CHART_PATH
-                      ACR_LOGIN_SERVER
-                      BUILD_BUILDID
-                      DATABASE_HOST
-                      DATABASE_USER
-                      DATABASE_PORT
-                      DATABASE_NAME
-                      DATABASE_PASSWORD
-                      REDIS_HOST
-                      REDIS_PORT
-                      REDIS_PASSWORD
-                      AZURE_OPENAI_API_KEY
-                      AZURE_OPENAI_ENDPOINT
-                      AZURE_EMBEDDER_OPENAI_API_KEY
-                      AZURE_EMBEDDER_OPENAI_ENDPOINT
-                      AZURE_EMBEDDER_DEPLOYMENT
-                      CLOUD_PROVIDER
-                      APPLICATION_STORAGE_NAME
-                      ORGANISATION_STORAGE_NAME
-                      APPLICATION_REGION
-                      DATABASE_SSL_MODE
-                      ENV
-                      AZURE_KEY_VAULT_URL
-                      AZURE_MASTER_KEY_VAULT_URL
-                      AZURE_RESOURCE_GROUP
-                      AZURE_SUBSCRIPTION_ID
-                      APP_NAME
-                      SENTRY_DSN
-                      SENTRY_TRACES_SAMPLE_RATE
-                      WORKLOAD_IDENTITY_BACKEND_CLIENT_ID
-                      WORKLOAD_IDENTITY_API_TENANT_ID
-                      WORKLOAD_IDENTITY_WORKERS_CLIENT_ID
-                      WORKLOAD_IDENTITY_WORKERS_TENANT_ID
-                    )
-
-                    for var_name in "${required_vars[@]}"; do
-                      if [ -z "${!var_name:-}" ]; then
-                        echo "Missing required pipeline variable: $var_name" >&2
-                        exit 1
-                      fi
-                    done
-
                     EXTRA_HELM_ARGS=""
                     if [ "$(ENABLE_FLOWER)" = "true" ]; then
                       EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
@@ -665,8 +619,8 @@ stages:
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       -f "$CHART_PATH/values-dev.yaml" \
                       --namespace copilotgtm \
-                      --set api.workloadIdentity.clientId="$WORKLOAD_IDENTITY_BACKEND_CLIENT_ID" \
-                      --set api.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_API_TENANT_ID" \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
                       --set global.redis.host="$REDIS_HOST" \
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
@@ -701,48 +655,48 @@ stages:
                       --set deal-worker.autoscaling.enabled=true \
                       --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-beat.image.tag="$BUILD_BUILDID" \
-                      --set api.secrets.DATABASE_HOST="$DATABASE_HOST" \
-                      --set api.secrets.DATABASE_USER="$DATABASE_USER" \
-                      --set api.secrets.DATABASE_PORT="$DATABASE_PORT" \
-                      --set api.secrets.DATABASE_NAME="$DATABASE_NAME" \
-                      --set api.secrets.DATABASE_PASSWORD="$DATABASE_PASSWORD" \
-                      --set api.secrets.REDIS_HOST="$REDIS_HOST" \
-                      --set api.secrets.REDIS_PORT="$REDIS_PORT" \
-                      --set api.secrets.REDIS_PASSWORD="$REDIS_PASSWORD" \
-                      --set api.secrets.AZURE_OPENAI_API_KEY="$AZURE_OPENAI_API_KEY" \
-                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$AZURE_OPENAI_ENDPOINT" \
-                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$AZURE_EMBEDDER_OPENAI_API_KEY" \
-                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$AZURE_EMBEDDER_OPENAI_ENDPOINT" \
-                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$AZURE_EMBEDDER_DEPLOYMENT" \
-                      --set api.secrets.CLOUD_PROVIDER="$CLOUD_PROVIDER" \
-                      --set api.secrets.APPLICATION_STORAGE_NAME="$APPLICATION_STORAGE_NAME" \
-                      --set api.secrets.ORGANISATION_STORAGE_NAME="$ORGANISATION_STORAGE_NAME" \
-                      --set api.secrets.APPLICATION_REGION="$APPLICATION_REGION" \
-                      --set api.secrets.DATABASE_SSL_MODE="$DATABASE_SSL_MODE" \
-                      --set api.secrets.ENV="$ENV" \
-                      --set api.secrets.AZURE_KEY_VAULT_URL="$AZURE_KEY_VAULT_URL" \
-                      --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$AZURE_MASTER_KEY_VAULT_URL" \
-                      --set api.secrets.AZURE_RESOURCE_GROUP="$AZURE_RESOURCE_GROUP" \
-                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" \
-                      --set api.secrets.APP_NAME="$APP_NAME" \
-                      --set api.secrets.SENTRY_DSN="$SENTRY_DSN" \
-                      --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$SENTRY_TRACES_SAMPLE_RATE" \
-                      --set knowledge-extract-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set knowledge-upload-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set organization-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set chat-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set chat-beat.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set integrations-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set deal-worker.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set integrations-beat.workloadIdentity.clientId="$WORKLOAD_IDENTITY_WORKERS_CLIENT_ID" \
-                      --set knowledge-extract-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set knowledge-upload-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set organization-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set chat-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set chat-beat.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set integrations-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set deal-worker.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID" \
-                      --set integrations-beat.workloadIdentity.tenantId="$WORKLOAD_IDENTITY_WORKERS_TENANT_ID"
+                      --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
+                      --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
+                      --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
+                      --set api.secrets.DATABASE_NAME="$(DATABASE_NAME)" \
+                      --set api.secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
+                      --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
+                      --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
+                      --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
+                      --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
+                      --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
+                      --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
+                      --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
+                      --set api.secrets.ENV="$(ENV)" \
+                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$(AZURE_MASTER_KEY_VAULT_URL)" \
+                      --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
+                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      --set api.secrets.APP_NAME="$(APP_NAME)" \
+                      --set api.secrets.SENTRY_DSN="$(SENTRY_DSN)" \
+                      --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$(SENTRY_TRACES_SAMPLE_RATE)" \
+                      --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
                   displayName: Helm Upgrade/Install (Dev)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
