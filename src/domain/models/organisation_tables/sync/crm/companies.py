@@ -43,9 +43,10 @@ class CRMCompany(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised company record.",
     )
-    external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider-supplied unique identifier for the company.",
+    external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider-supplied unique identifier for the company. Null for internal-only company records.",
     )
     # Core details
     name: str | None = Field(default=None, description="Company name as stored in the CRM.")

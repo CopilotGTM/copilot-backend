@@ -147,9 +147,10 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
         sa_column=Column(String(32), nullable=False),
         description="Type of the source object (deal, contact, company, etc.).",
     )
-    from_external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider ID of the source object.",
+    from_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider ID of the source object. Null for internal-only associations resolved by local IDs.",
     )
     from_local_id: UUID | None = Field(
         default=None,
@@ -164,9 +165,10 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
         sa_column=Column(String(32), nullable=False),
         description="Type of the target object (deal, contact, company, etc.).",
     )
-    to_external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider ID of the target object.",
+    to_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider ID of the target object. Null for internal-only associations resolved by local IDs.",
     )
     to_local_id: UUID | None = Field(
         default=None,

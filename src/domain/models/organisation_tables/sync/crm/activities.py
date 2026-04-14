@@ -110,7 +110,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     - Backwards-compatible `deal_id`/`deal_external_id` for deal-specific queries
     - Attendee/participant storage in `attendees` JSONB
     - Rich metadata in `properties`, `metrics`, `data_payload`
-    - User-created notes: integration_id=NULL with unique external_id per org
+    - Internal-only activities may leave `external_id` null until mirrored to a provider
 
     Migration note: This replaces the former `crm_deal_tasks` table, with the
     table renamed to `crm_activities` and new polymorphic columns added.
@@ -126,7 +126,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             unique=True,
             postgresql_where=text("integration_id IS NOT NULL"),
         ),
-        # Unique constraint for user-created activities (integration_id IS NULL)
+        # Unique constraint for internal/user-created activities when an external ID exists
         Index(
             "uq_crm_activity_external_user",
             "organisation_id",
@@ -168,9 +168,10 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the activity record.",
     )
-    external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider-supplied unique identifier for the activity.",
+    external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider-supplied unique identifier for the activity. Null for internal-only activities.",
     )
 
     # ─────────────────────────────────────────────────────────────────────────

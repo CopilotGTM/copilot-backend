@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, String, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -18,7 +18,13 @@ class CRMUser(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_users"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_user_external"),
+        Index(
+            "uq_crm_user_external",
+            "integration_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
         Index("ix_crm_user_org_email", "organisation_id", "email"),
         Index("ix_crm_user_active", "organisation_id", "is_active"),
     )
@@ -29,9 +35,10 @@ class CRMUser(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised user record.",
     )
-    external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider-supplied unique identifier for the user.",
+    external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider-supplied unique identifier for the user. Null for internal-only CRM users.",
     )
 
     # Primary details
