@@ -640,8 +640,6 @@ stages:
                       --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
                       --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
                       --set knowledge-upload-worker.autoscaling.enabled=true \
-                      --set knowledge-beat.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
-                      --set knowledge-beat.image.tag="$BUILD_BUILDID" \
                       --set integrations-worker.autoscaling.enabled=true \
                       --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set chat-worker.image.tag="$BUILD_BUILDID" \
@@ -655,8 +653,6 @@ stages:
                       --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.autoscaling.enabled=true \
-                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
-                      --set deal-beat.image.tag="$BUILD_BUILDID" \
                       --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
@@ -687,23 +683,19 @@ stages:
                       --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$(SENTRY_TRACES_SAMPLE_RATE)" \
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
-                      --set knowledge-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set chat-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
-                      --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
-                      --set knowledge-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
-                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
                   displayName: Helm Upgrade/Install (Dev)
                   env:
@@ -745,31 +737,32 @@ stages:
                 - script: |
                     kubectl get pods -n copilotgtm
                     kubectl get deployments -n copilotgtm
+                    kubectl get cronjobs -n copilotgtm
                     kubectl get scaledobjects -n copilotgtm
                   displayName: List AKS Deployments/Pods
 
                 - script: |
-                    echo "Restarting worker deployments to ensure latest values are applied..."
-                    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-knowledge-beat -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-chat-beat -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-integrations-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-deal-worker -n copilotgtm
-                    kubectl rollout restart deployment copilot-backend-deal-beat -n copilotgtm
+                    set -euo pipefail
 
-                    echo "Waiting for rollouts to complete..."
-                    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-knowledge-beat -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-chat-beat -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-integrations-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-deal-worker -n copilotgtm --timeout=300s
-                    kubectl rollout status deployment copilot-backend-deal-beat -n copilotgtm --timeout=300s
+                    restart_if_present() {
+                      local deployment_name="$1"
+
+                      if kubectl get deployment "$deployment_name" -n copilotgtm >/dev/null 2>&1; then
+                        kubectl rollout restart deployment "$deployment_name" -n copilotgtm
+                        kubectl rollout status deployment "$deployment_name" -n copilotgtm --timeout=300s
+                      else
+                        echo "Skipping missing deployment: $deployment_name"
+                      fi
+                    }
+
+                    echo "Restarting worker deployments to ensure latest values are applied..."
+                    restart_if_present copilot-backend-knowledge-extract-worker
+                    restart_if_present copilot-backend-knowledge-upload-worker
+                    restart_if_present copilot-backend-chat-worker
+                    restart_if_present copilot-backend-chat-beat
+                    restart_if_present copilot-backend-organization-worker
+                    restart_if_present copilot-backend-integrations-worker
+                    restart_if_present copilot-backend-deal-worker
                   displayName: Force restart workers
 
                 - task: Bash@3
