@@ -14,17 +14,19 @@
 | Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
 
-CRM integrations (HubSpot, Salesforce) are deprecated and excluded from active sync.
+HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture. CRM sync for both providers remains deferred and is not part of the active sync worker pipeline yet.
 
 ## OAuth Model
 
-CopilotGTM uses **first-party custom OAuth** for Google, Microsoft, and Slack. Each
+CopilotGTM uses **first-party custom OAuth** for Google, Microsoft, Slack, HubSpot, and Salesforce. Each
 environment (local, dev, prod) has its own provider app credentials, managed via Terraform/Key Vault.
 
 Credentials are stored in Azure Key Vault (`microsoft-integration-client-id`,
 `microsoft-integration-client-secret`, `google-integration-client-id`,
-`google-integration-client-secret`, `slack-client-id`, `slack-client-secret`) and loaded
-at runtime with a TTL cache.
+`google-integration-client-secret`, `slack-client-id`, `slack-client-secret`,
+`hubspot-integration-client-id`, `hubspot-integration-client-secret`,
+`salesforce-integration-client-id`, `salesforce-integration-client-secret`)
+and loaded at runtime with a TTL cache.
 
 ## Directory Structure
 
@@ -34,7 +36,9 @@ src/
     providers/
       token_resolution.py       # Token fetch, refresh, 401 retry, distributed lock
       google_provider.py        # Google OAuth: authorize, exchange, refresh
+      hubspot_provider.py       # HubSpot OAuth: authorize, exchange, refresh, revoke
       microsoft_provider.py     # Microsoft OAuth: authorize, exchange, refresh
+      salesforce_provider.py    # Salesforce OAuth: authorize, exchange, refresh, revoke
       slack_provider.py         # Slack OAuth: authorize, exchange, refresh, revoke
       provider_factory.py       # Route integration_type -> provider
     copilot_callback_service.py # OAuth callback handler (store tokens, trigger sync)
@@ -72,14 +76,17 @@ src/
 
 ```
 User clicks "Connect" in frontend
-  -> GET /users/integrations/copilot-oauth/connect?type=outlook_email
+  -> GET /users/integrations/copilot-oauth/connect?type=hubspot
   -> Provider generates authorization URL
-  -> User consents in Microsoft/Google
+  -> User consents in the provider
   -> Redirect to /users/integrations/copilot-oauth/callback
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
       2. Store tokens in KnowledgeIntegration.credentials
-      3. Dispatch Tier 3 sync task (immediate initial sync)
+      3. Dispatch initial sync only for providers with active sync support
+         HubSpot and Salesforce currently store
+         `initial_sync_status=not_implemented` in `connection_metadata`
+         instead of dispatching CRM sync
 
 Celery Beat (scheduled)
   -> Tier 1: all_orgs_task (fan out to orgs)

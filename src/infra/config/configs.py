@@ -799,6 +799,216 @@ class MicrosoftIntegrationConfig:
             )
 
 
+class HubSpotIntegrationConfig:
+    """Configuration for custom HubSpot OAuth flows.
+
+    Credentials are loaded from env vars (local dev) or Azure Key Vault
+    (production) with a configurable TTL cache — same pattern as
+    GoogleIntegrationConfig and MicrosoftIntegrationConfig.
+    """
+
+    # Key Vault secret names
+    SECRET_NAME_CLIENT_ID: str = "hubspot-integration-client-id"
+    SECRET_NAME_CLIENT_SECRET: str = "hubspot-integration-client-secret"
+
+    # Non-secret config — always from env
+    REDIRECT_URI: str = os.getenv("HUBSPOT_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
+    HUBSPOT_HTTP_TIMEOUT_SEC: float = float(os.getenv("HUBSPOT_HTTP_TIMEOUT_SEC", "10"))
+
+    # Cached credentials (populated from env or Key Vault)
+    _client_id: str | None = os.getenv("HUBSPOT_CLIENT_ID")
+    _client_secret: str | None = os.getenv("HUBSPOT_CLIENT_SECRET")
+    _credentials_from_env: bool = bool(
+        os.getenv("HUBSPOT_CLIENT_ID") and os.getenv("HUBSPOT_CLIENT_SECRET")
+    )
+    _credentials_ttl_hours: float = float(os.getenv("HUBSPOT_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    @property
+    def hubspot_client_id(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_id or ""
+
+    @property
+    def hubspot_client_secret(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_secret or ""
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return (client_id, client_secret), loading from Key Vault if needed.
+
+        Env vars take precedence — when HUBSPOT_CLIENT_ID and
+        HUBSPOT_CLIENT_SECRET are set, Key Vault is skipped entirely.
+        """
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+
+        if not self._is_expired():
+            return self._client_id or "", self._client_secret or ""
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._client_id or "", self._client_secret or ""
+            await self._load_from_vault()
+
+        return self._client_id or "", self._client_secret or ""
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading HubSpot OAuth credentials from Key Vault (TTL refresh)")
+        self._client_id = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_ID)
+        self._client_secret = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self._client_id and self._client_secret:
+            logger.info(
+                "HubSpot OAuth credentials cached (TTL=%.1fh)",
+                self._credentials_ttl_hours,
+            )
+        else:
+            logger.error(
+                "HubSpot OAuth credentials missing from Key Vault (client_id=%s, client_secret=%s)",
+                bool(self._client_id),
+                bool(self._client_secret),
+            )
+
+    def validate(self, *, enabled: bool = True) -> None:
+        """Fail fast when HubSpot custom OAuth is enabled without core credentials."""
+        if not enabled:
+            return
+
+        missing = [
+            name
+            for name, value in {
+                "HUBSPOT_CLIENT_ID": self._client_id,
+                "HUBSPOT_CLIENT_SECRET": self._client_secret,
+                "HUBSPOT_REDIRECT_URI": self.REDIRECT_URI,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Missing HubSpot custom OAuth configuration: " + ", ".join(sorted(missing))
+            )
+
+
+class SalesforceIntegrationConfig:
+    """Configuration for custom Salesforce OAuth flows.
+
+    Credentials are loaded from env vars (local dev) or Azure Key Vault
+    (production) with a configurable TTL cache — same pattern as the
+    other first-party custom OAuth providers.
+    """
+
+    SECRET_NAME_CLIENT_ID: str = "salesforce-integration-client-id"
+    SECRET_NAME_CLIENT_SECRET: str = "salesforce-integration-client-secret"
+
+    REDIRECT_URI: str = os.getenv("SALESFORCE_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
+    SALESFORCE_HTTP_TIMEOUT_SEC: float = float(os.getenv("SALESFORCE_HTTP_TIMEOUT_SEC", "10"))
+
+    _client_id: str | None = os.getenv("SALESFORCE_CLIENT_ID")
+    _client_secret: str | None = os.getenv("SALESFORCE_CLIENT_SECRET")
+    _credentials_from_env: bool = bool(
+        os.getenv("SALESFORCE_CLIENT_ID") and os.getenv("SALESFORCE_CLIENT_SECRET")
+    )
+    _credentials_ttl_hours: float = float(os.getenv("SALESFORCE_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    @property
+    def salesforce_client_id(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_id or ""
+
+    @property
+    def salesforce_client_secret(self) -> str:
+        """Sync access for backward compat — use get_credentials() in async code."""
+        return self._client_secret or ""
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return (client_id, client_secret), loading from Key Vault if needed."""
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+
+        if not self._is_expired():
+            return self._client_id or "", self._client_secret or ""
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._client_id or "", self._client_secret or ""
+            await self._load_from_vault()
+
+        return self._client_id or "", self._client_secret or ""
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Salesforce OAuth credentials from Key Vault (TTL refresh)")
+        self._client_id = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_ID)
+        self._client_secret = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self._client_id and self._client_secret:
+            logger.info(
+                "Salesforce OAuth credentials cached (TTL=%.1fh)",
+                self._credentials_ttl_hours,
+            )
+        else:
+            logger.error(
+                "Salesforce OAuth credentials missing from Key Vault "
+                "(client_id=%s, client_secret=%s)",
+                bool(self._client_id),
+                bool(self._client_secret),
+            )
+
+    def validate(self, *, enabled: bool = True) -> None:
+        """Fail fast when Salesforce custom OAuth is enabled without core credentials."""
+        if not enabled:
+            return
+
+        missing = [
+            name
+            for name, value in {
+                "SALESFORCE_CLIENT_ID": self._client_id,
+                "SALESFORCE_CLIENT_SECRET": self._client_secret,
+                "SALESFORCE_REDIRECT_URI": self.REDIRECT_URI,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Missing Salesforce custom OAuth configuration: " + ", ".join(sorted(missing))
+            )
+
+
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
@@ -1057,6 +1267,8 @@ rate_limit_config = RateLimitConfig()
 integration_sync_config = IntegrationSyncConfig()
 google_integration_config = GoogleIntegrationConfig()
 microsoft_integration_config = MicrosoftIntegrationConfig()
+hubspot_integration_config = HubSpotIntegrationConfig()
+salesforce_integration_config = SalesforceIntegrationConfig()
 apollo_config = ApolloConfig()
 teams_config = TeamsConfig()
 
