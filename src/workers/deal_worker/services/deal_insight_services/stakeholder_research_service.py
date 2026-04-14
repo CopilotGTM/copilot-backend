@@ -320,7 +320,7 @@ class StakeholderResearchService:
         # CRM data is the source of truth — only fill empty fields, otherwise
         # the next CRM sync would overwrite our changes.
         if ctx.contact_id:
-            await self._fill_contact_identity(ctx.contact_id, result)
+            await self._fill_contact_identity(ctx.contact_id, stakeholder_id, result)
 
         logger.info(
             "Stakeholder %s research completed",
@@ -356,6 +356,7 @@ class StakeholderResearchService:
     async def _fill_contact_identity(
         self,
         contact_id: UUID,
+        stakeholder_id: UUID,
         result: StakeholderResearchResult,
     ) -> None:
         """Fill missing identity fields on the linked CRM contact.

@@ -170,7 +170,7 @@ class TestDispatchInsightPipelineForManualSummary:
 
         async def failing_session_gen(org):
             raise RuntimeError("DB unavailable")
-            yield  # noqa: unreachable — makes this an async generator
+            yield
 
         with (
             patch(
