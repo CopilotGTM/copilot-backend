@@ -85,7 +85,6 @@ class DealsAccessService:
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
         owner_ids: Iterable[UUID] | None = None,
-        owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
@@ -100,7 +99,6 @@ class DealsAccessService:
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
             owner_ids: Optional list of internal owner IDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -131,8 +129,6 @@ class DealsAccessService:
 
         if owner_ids:
             stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
-        elif owner_external_ids:
-            stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
         if min_amount is not None:
             stmt = stmt.where(c.amount >= min_amount)
@@ -170,8 +166,6 @@ class DealsAccessService:
 
         if owner_ids:
             count_stmt = count_stmt.where(c.owner_id.in_(list(owner_ids)))
-        elif owner_external_ids:
-            count_stmt = count_stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
         if min_amount is not None:
             count_stmt = count_stmt.where(c.amount >= min_amount)
@@ -216,7 +210,6 @@ class DealsAccessService:
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
         owner_ids: Iterable[UUID] | None = None,
-        owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
@@ -233,7 +226,6 @@ class DealsAccessService:
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
             owner_ids: Optional list of internal owner IDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -263,8 +255,6 @@ class DealsAccessService:
 
             if owner_ids:
                 stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
-            elif owner_external_ids:
-                stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
             if min_amount is not None:
                 stmt = stmt.where(c.amount >= min_amount)
@@ -347,8 +337,8 @@ class DealsAccessService:
             stmt = (
                 select(
                     h_c.history_id,
-                    h_c.stage_external_id,
-                    h_c.from_stage_external_id,
+                    h_c.stage_id,
+                    h_c.from_stage_id,
                     h_c.entered_at,
                     h_c.exited_at,
                     h_c.amount_at_stage,
@@ -391,10 +381,10 @@ class DealsAccessService:
 
                 item = {
                     "history_id": row.history_id,
-                    "stage_external_id": row.stage_external_id,
+                    "stage_id": row.stage_id,
                     "stage_name": row.stage_name,
                     "stage_label": row.stage_label,
-                    "from_stage_external_id": row.from_stage_external_id,
+                    "from_stage_id": row.from_stage_id,
                     "entered_at": row.entered_at,
                     "exited_at": row.exited_at,
                     "duration_days": duration_days,
@@ -435,11 +425,11 @@ class DealsAccessService:
             logger.error("Failed to get pipeline stages for %s: %s", pipeline_id, e, exc_info=True)
             return []
 
-    async def get_company_by_external_id(self, external_id: str) -> CRMCompany | None:
-        """Retrieve a company by its external ID.
+    async def get_company_by_id(self, company_id: UUID) -> CRMCompany | None:
+        """Retrieve a company by its internal ID.
 
         Args:
-            external_id: The external ID of the company
+            company_id: The internal ID of the company
 
         Returns:
             CRMCompany object or None if not found
@@ -448,15 +438,13 @@ class DealsAccessService:
             # Use cast(Any, ...) to avoid Mypy errors with SQLModel fields in expressions
             c_model = cast(Any, CRMCompany)
             stmt = select(CRMCompany).where(
-                c_model.external_id == external_id,
+                c_model.company_id == company_id,
                 c_model.organisation_id == self.organisation_id,
             )
             res = await self.org_session.execute(stmt)
             return res.scalar_one_or_none()
         except Exception as e:
-            logger.error(
-                "Failed to get company by external_id %s: %s", external_id, e, exc_info=True
-            )
+            logger.error("Failed to get company by id %s: %s", company_id, e, exc_info=True)
             return None
 
     async def get_deals_stats(self) -> dict:
@@ -549,7 +537,7 @@ class DealsAccessService:
         Returns:
             Dictionary mapping deal_id to list of team members.
             Each team member dict contains:
-                - external_id: CRM user ID
+                - user_id: Internal user ID when linked
                 - name: Display name (if known)
                 - email: Email address (if known)
                 - role: Relationship role (collaborator, split_owner, etc.)
@@ -565,7 +553,7 @@ class DealsAccessService:
             stmt = (
                 select(
                     c.deal_id,
-                    c.related_external_id,
+                    c.related_local_id,
                     c.related_name,
                     c.related_email,
                     c.relationship_role,
@@ -594,7 +582,7 @@ class DealsAccessService:
                 if deal_id in team_by_deal:
                     team_by_deal[deal_id].append(
                         {
-                            "external_id": row.related_external_id,
+                            "user_id": row.related_local_id,
                             "name": row.related_name,
                             "email": row.related_email,
                             "role": row.relationship_role or "member",
@@ -642,7 +630,6 @@ class DealsAccessService:
                 conditions = [
                     c.owner_name.ilike(like_expr),
                     c.owner_email.ilike(like_expr),
-                    c.owner_external_id.ilike(like_expr),
                 ]
                 with contextlib.suppress(TypeError, ValueError):
                     conditions.append(c.owner_id == UUID(q))

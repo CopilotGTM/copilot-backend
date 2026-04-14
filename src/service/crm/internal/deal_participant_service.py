@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
@@ -90,7 +90,8 @@ class DealParticipantService:
             ) = await self._resolve_participant_entity(participant_type, related_id, integration_id)
 
             role_key = relationship_role or ""
-            request_key = (participant_type.value, related_external_id, role_key)
+            identity_key = str(related_local_id or related_external_id)
+            request_key = (participant_type.value, identity_key, role_key)
             if request_key in seen_keys:
                 skipped.append(
                     DealParticipantSkipped(
@@ -106,6 +107,7 @@ class DealParticipantService:
                 deal_id,
                 integration_id,
                 participant_type,
+                related_local_id,
                 related_external_id,
                 role_key,
             )
@@ -133,6 +135,7 @@ class DealParticipantService:
                     external_id=self._build_participant_external_id(
                         deal_id,
                         participant_type,
+                        related_local_id,
                         related_external_id,
                         relationship_role,
                     ),
@@ -154,7 +157,7 @@ class DealParticipantService:
                 "identity": {
                     "deal_id": str(deal_id),
                     "participant_type": str(participant_type),
-                    "related_external_id": related_external_id,
+                    "related_local_id": str(related_local_id) if related_local_id else None,
                     "relationship_role": relationship_role or "",
                 },
             }
@@ -167,7 +170,7 @@ class DealParticipantService:
 
             if participant_type == CRMParticipantType.COMPANY:
                 await self._maybe_apply_company_to_deal(
-                    deal, integration_id, related_external_id, related_local_id, now
+                    deal, integration_id, related_local_id, related_external_id, now
                 )
 
         return created, skipped, contact_participant_changed, integration_id
@@ -196,9 +199,12 @@ class DealParticipantService:
         participant.last_seen_at = now
         self.session.add(participant)
 
-        if (
-            participant.participant_type == CRMParticipantType.COMPANY
-            and participant.related_external_id == deal.company_external_id
+        if participant.participant_type == CRMParticipantType.COMPANY and (
+            participant.related_local_id == deal.company_id
+            or (
+                participant.related_local_id is None
+                and participant.related_external_id == deal.company_external_id
+            )
         ):
             await self._refresh_deal_company_after_removal(
                 deal=deal,
@@ -236,6 +242,7 @@ class DealParticipantService:
             deal_id,
             integration_id,
             participant_type,
+            participant.related_local_id,
             participant.related_external_id,
             role_key,
         )
@@ -253,6 +260,7 @@ class DealParticipantService:
         participant.external_id = self._build_participant_external_id(
             deal_id,
             participant_type,
+            participant.related_local_id,
             participant.related_external_id,
             new_role,
         )
@@ -265,7 +273,9 @@ class DealParticipantService:
             "identity": {
                 "deal_id": str(deal_id),
                 "participant_type": str(participant_type),
-                "related_external_id": participant.related_external_id,
+                "related_local_id": (
+                    str(participant.related_local_id) if participant.related_local_id else None
+                ),
                 "relationship_role": new_role or "",
             },
         }
@@ -296,7 +306,7 @@ class DealParticipantService:
         participant_type: CRMParticipantType,
         related_id: UUID,
         integration_id: UUID,
-    ) -> tuple[str, UUID | None, str | None, str | None]:
+    ) -> tuple[str | None, UUID | None, str | None, str | None]:
         if participant_type == CRMParticipantType.CONTACT:
             contact = await self.session.get(CRMContact, related_id)
             if not contact or contact.organisation_id != self.organisation_id:
@@ -342,16 +352,32 @@ class DealParticipantService:
         deal_id: UUID,
         integration_id: UUID,
         participant_type: CRMParticipantType,
-        related_external_id: str,
+        related_local_id: UUID | None,
+        related_external_id: str | None,
         role_key: str,
     ) -> CRMDealParticipant | None:
         c = cast(Any, CRMDealParticipant).__table__.c
+        if related_local_id is None and related_external_id is None:
+            raise DealParticipantServiceError("Participant identity missing", status_code=400)
+
+        if related_local_id is not None and related_external_id is not None:
+            related_match = or_(
+                c.related_local_id == related_local_id,
+                and_(
+                    c.related_local_id.is_(None),
+                    c.related_external_id == related_external_id,
+                ),
+            )
+        elif related_local_id is not None:
+            related_match = c.related_local_id == related_local_id
+        else:
+            related_match = c.related_external_id == related_external_id
         stmt = select(CRMDealParticipant).where(
             c.organisation_id == self.organisation_id,
             c.integration_id == integration_id,
             c.deal_id == deal_id,
             c.participant_type == participant_type.value,
-            c.related_external_id == related_external_id,
+            related_match,
             func.coalesce(c.relationship_role, "") == role_key,
         )
         result = await self.session.execute(stmt)
@@ -374,11 +400,17 @@ class DealParticipantService:
         self,
         deal: CRMDeal,
         integration_id: UUID,
-        related_external_id: str,
         related_local_id: UUID | None,
+        related_external_id: str | None,
         updated_at: datetime,
     ) -> None:
-        if deal.company_external_id and deal.company_external_id != related_external_id:
+        if deal.company_id and related_local_id and deal.company_id != related_local_id:
+            return
+        if (
+            deal.company_id is None
+            and deal.company_external_id
+            and deal.company_external_id != related_external_id
+        ):
             return
 
         company = None
@@ -390,6 +422,7 @@ class DealParticipantService:
             and company.integration_id == integration_id
             and not company.is_deleted
         ):
+            deal.company_id = company.company_id
             deal.company_external_id = company.external_id
             deal.company_name = company.name
             deal.company_domain = company.domain
@@ -420,14 +453,17 @@ class DealParticipantService:
         if replacement and replacement.related_local_id:
             company = await self.session.get(CRMCompany, replacement.related_local_id)
             if company and company.integration_id == integration_id and not company.is_deleted:
+                deal.company_id = company.company_id
                 deal.company_external_id = company.external_id
                 deal.company_name = company.name
                 deal.company_domain = company.domain
             else:
+                deal.company_id = None
                 deal.company_external_id = None
                 deal.company_name = None
                 deal.company_domain = None
         else:
+            deal.company_id = None
             deal.company_external_id = None
             deal.company_name = None
             deal.company_domain = None
@@ -441,13 +477,18 @@ class DealParticipantService:
     def _build_participant_external_id(
         deal_id: UUID,
         participant_type: CRMParticipantType,
-        related_external_id: str,
+        related_local_id: UUID | None,
+        related_external_id: str | None,
         relationship_role: str | None,
     ) -> str:
+        related_identity = str(related_local_id) if related_local_id else related_external_id
+        if related_identity is None:
+            raise DealParticipantServiceError("Participant identity missing", status_code=400)
+
         payload = {
             "deal_id": str(deal_id),
             "participant_type": participant_type.value,
-            "related_external_id": related_external_id,
+            "related_id": related_identity,
             "relationship_role": relationship_role or "",
         }
         name = json.dumps(payload, sort_keys=True, separators=(",", ":"))

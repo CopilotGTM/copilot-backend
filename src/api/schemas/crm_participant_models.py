@@ -42,7 +42,6 @@ class DealParticipantItem(BaseModel):
     participant_id: UUID
     deal_id: UUID
     participant_type: str
-    related_external_id: str
     related_local_id: UUID | None = None
     related_name: str | None = None
     related_email: str | None = None

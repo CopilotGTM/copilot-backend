@@ -44,7 +44,8 @@ class AccountsAccessService:
     """Service for accessing CRM accounts (companies) with filtering, pagination, and stats.
 
     Contacts are linked to accounts via email domain matching (ILIKE '%@domain'),
-    not an explicit FK. Deals are linked via company_external_id on CRMDeal.
+    not an explicit FK. Deals prefer the explicit company_id link and only fall
+    back to company_external_id for older synced rows that have not been backfilled.
     All queries enforce multi-tenant isolation via organisation_id.
     """
 
@@ -125,7 +126,8 @@ class AccountsAccessService:
         if page < 1:
             raise AccountsAccessServiceError("Page must be >= 1", status_code=400)
 
-        c = cast(Any, CRMCompany).__table__.c
+        company_table = cast(Any, CRMCompany).__table__
+        c = company_table.c
         co = cast(Any, CRMContact).__table__.c
         d = cast(Any, CRMDeal).__table__.c
 
@@ -142,19 +144,26 @@ class AccountsAccessService:
                     co.email.ilike(func.concat("%@", c.domain)),
                 ),
             )
-            .correlate(CRMCompany.__table__)
+            .correlate(company_table)
             .scalar_subquery()
         )
 
-        # Count deals per company by company_external_id
+        # Count deals per company by explicit company_id first, then external fallback
         deal_count_sub = (
             select(func.count(d.deal_id))
             .where(
                 d.organisation_id == self.organisation_id,
                 d.is_deleted.is_(False),
-                d.company_external_id == c.external_id,
+                or_(
+                    d.company_id == c.company_id,
+                    and_(
+                        d.company_id.is_(None),
+                        d.company_external_id.is_not(None),
+                        d.company_external_id == c.external_id,
+                    ),
+                ),
             )
-            .correlate(CRMCompany.__table__)
+            .correlate(company_table)
             .scalar_subquery()
         )
 
@@ -164,10 +173,17 @@ class AccountsAccessService:
             .where(
                 d.organisation_id == self.organisation_id,
                 d.is_deleted.is_(False),
-                d.company_external_id == c.external_id,
+                or_(
+                    d.company_id == c.company_id,
+                    and_(
+                        d.company_id.is_(None),
+                        d.company_external_id.is_not(None),
+                        d.company_external_id == c.external_id,
+                    ),
+                ),
                 d.deal_status == CRMDealStatus.OPEN.value,
             )
-            .correlate(CRMCompany.__table__)
+            .correlate(company_table)
             .scalar_subquery()
         )
 
@@ -245,21 +261,24 @@ class AccountsAccessService:
 
         # Batch-query deal counts per contact — only approved stakeholders
         contact_ids = [c.contact_id for c in contacts]
+        deal_counts: dict[UUID, int] = {}
         if contact_ids:
             count_stmt = (
-                select(DealStakeholder.contact_id, func.count())
+                select(col(DealStakeholder.contact_id), func.count())
                 .where(
                     col(DealStakeholder.contact_id).in_(contact_ids),
                     col(DealStakeholder.organisation_id) == self.organisation_id,
                     col(DealStakeholder.is_deleted).is_(False),
                     col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED.value,
                 )
-                .group_by(DealStakeholder.contact_id)
+                .group_by(col(DealStakeholder.contact_id))
             )
             count_res = await self.org_session.execute(count_stmt)
-            deal_counts: dict = dict(count_res.all())
-        else:
-            deal_counts = {}
+            for row in count_res.all():
+                contact_id = row[0]
+                if contact_id is None:
+                    continue
+                deal_counts[contact_id] = row[1]
 
         contact_dicts = [
             {
@@ -316,8 +335,8 @@ class AccountsAccessService:
         return list(res.scalars().all())
 
     async def get_account_deals(self, company_id: UUID) -> list[CRMDeal]:
-        """Return deals whose company_external_id matches the account's external_id."""
-        # Resolve company first to get its external_id and verify org ownership
+        """Return deals linked to the account by company_id, with external fallback."""
+        # Resolve company first to verify org ownership
         c = cast(Any, CRMCompany).__table__.c
         comp_stmt = select(CRMCompany).where(
             c.company_id == company_id,
@@ -326,14 +345,21 @@ class AccountsAccessService:
         )
         comp_res = await self.org_session.execute(comp_stmt)
         company = comp_res.scalars().first()
-        if not company or not company.external_id:
+        if not company:
             return []
 
         d = cast(Any, CRMDeal).__table__.c
         stmt = select(CRMDeal).where(
             d.organisation_id == self.organisation_id,
             d.is_deleted.is_(False),
-            d.company_external_id == company.external_id,
+            or_(
+                d.company_id == company.company_id,
+                and_(
+                    d.company_id.is_(None),
+                    d.company_external_id.is_not(None),
+                    d.company_external_id == company.external_id,
+                ),
+            ),
         )
         res = await self.org_session.execute(stmt)
         return list(res.scalars().all())

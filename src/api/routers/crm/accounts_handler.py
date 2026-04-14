@@ -296,7 +296,7 @@ async def get_account_deals(
     service: AccountsAccessService = Depends(get_accounts_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[list[AccountDealItem]]:
-    """Return deals linked to the account via company_external_id."""
+    """Return deals linked to the account via internal company_id."""
     try:
         deals = await service.get_account_deals(company_id)
 

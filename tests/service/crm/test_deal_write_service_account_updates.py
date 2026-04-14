@@ -218,8 +218,10 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
     )
 
     deal_id = uuid4()
+    company_id = uuid4()
     existing_deal = SimpleNamespace(
         deal_id=deal_id,
+        company_id=company_id,
         company_external_id="company-ext-1",
         company_name="Acme",
         company_domain="acme.com",
@@ -229,6 +231,7 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
         last_seen_at=None,
     )
     resolved_company = SimpleNamespace(
+        company_id=company_id,
         external_id="company-ext-1",
         name="Acme",
         domain="acme.com",
@@ -253,4 +256,52 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
 
     assert result is existing_deal
     service._replace_company_participant.assert_not_called()
-    service._has_active_company_participant.assert_awaited_once()
+    service._has_active_company_participant.assert_awaited_once_with(
+        deal=existing_deal,
+        company_id=company_id,
+        company_external_id="company-ext-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_clears_internal_link_when_only_fallback_values_exist() -> (
+    None
+):
+    session = _FakeOrgSession([])
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    deal_id = uuid4()
+    existing_deal = SimpleNamespace(
+        deal_id=deal_id,
+        company_name="Acme",
+        integration_id=uuid4(),
+        primary_contact_id=uuid4(),
+        primary_contact_external_id="contact-ext-1",
+        primary_contact_name="Old Contact",
+        primary_contact_email="old@example.com",
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+
+    service._load_internal_deal = AsyncMock(return_value=existing_deal)
+    service._upsert_contact_from_primary = AsyncMock(
+        return_value=(None, "New Contact", "new@example.com")
+    )
+
+    result = await service.update_primary_contact(
+        deal_id,
+        primary_contact_name="New Contact",
+        primary_contact_email="new@example.com",
+    )
+
+    assert result is existing_deal
+    assert existing_deal.primary_contact_id is None
+    assert existing_deal.primary_contact_external_id is None
+    assert existing_deal.primary_contact_name == "New Contact"
+    assert existing_deal.primary_contact_email == "new@example.com"

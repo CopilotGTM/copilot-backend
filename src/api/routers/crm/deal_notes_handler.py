@@ -82,12 +82,11 @@ def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
         source=source,
         is_user_created=is_user_created,
         author=NoteAuthor(
-            id=note.owner_external_id or "",
+            id=str(note.owner_id) if getattr(note, "owner_id", None) else None,
             name=note.owner_name,
             email=note.owner_email,
         ),
         metadata=NoteMetadata(
-            external_id=note.external_id if not is_user_created else None,
             synced_at=note.synced_at if not is_user_created else None,
         ),
     )

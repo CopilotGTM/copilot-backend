@@ -82,7 +82,6 @@ class TaskListItem(BaseModel):
     """Individual task item in a list response."""
 
     task_id: UUID
-    external_id: str
     subject: str | None
     body: str | None = None
     status: str | None
@@ -92,7 +91,7 @@ class TaskListItem(BaseModel):
     completed_date: datetime | None
     reminder_date: datetime | None
     # Assigned to (owner)
-    owner_external_id: str | None
+    owner_id: UUID | None
     owner_name: str | None
     owner_email: str | None
     # External assignee (non-app user)
@@ -100,7 +99,6 @@ class TaskListItem(BaseModel):
     external_assignee_name: str | None = None
     # Deal linkage
     deal_id: UUID | None
-    deal_external_id: str | None
     deal_name: str | None = Field(default=None, description="Denormalized deal name.")
     # Source and creator
     source: str | None = None
@@ -162,11 +160,9 @@ class TaskDetail(BaseModel):
 
     # Identity
     task_id: UUID
-    external_id: str
 
     # Deal linkage
     deal_id: UUID | None
-    deal_external_id: str | None
     deal_name: str | None = None
 
     # Core task fields
@@ -177,7 +173,7 @@ class TaskDetail(BaseModel):
     priority: str | None
 
     # Assignment (owner = who is assigned to do it)
-    owner_external_id: str | None
+    owner_id: UUID | None
     owner_name: str | None
     owner_email: str | None
 

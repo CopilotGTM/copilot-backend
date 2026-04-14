@@ -145,7 +145,7 @@ class TasksAccessService:
             stmt = stmt.where(c.source.in_(list(source)))
 
         if owner_user_id is not None:
-            stmt = stmt.where(c.owner_external_id == str(owner_user_id))
+            stmt = stmt.where(c.owner_id == owner_user_id)
 
         if created_by_user_id is not None:
             stmt = stmt.where(c.created_by_user_id == created_by_user_id)

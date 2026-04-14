@@ -11,7 +11,6 @@ class PipelineStageItem(BaseModel):
     """Pipeline stage details."""
 
     stage_id: UUID
-    external_id: str
     name: str
     label: str | None = None
     stage_state: str
@@ -26,7 +25,6 @@ class PipelineItem(BaseModel):
     """Pipeline summary with optional stages."""
 
     pipeline_id: UUID
-    external_id: str
     name: str
     label: str | None = None
     is_default: bool

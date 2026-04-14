@@ -20,7 +20,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 class DealTeamMember(BaseModel):
     """A team member associated with a deal (owner, collaborator, split_owner, etc.)."""
 
-    external_id: str = Field(description="CRM external ID of the user")
+    user_id: UUID | None = Field(None, description="Internal user ID when linked")
     name: str | None = Field(None, description="Display name of the team member")
     email: str | None = Field(None, description="Email address of the team member")
     role: str = Field(description="Role in the deal: owner, collaborator, split_owner, etc.")
@@ -35,10 +35,9 @@ class DealOwnerDetail(BaseModel):
     (e.g., multiple owners in some CRMs).
     """
 
-    external_id: str = Field(description="CRM external ID of the owner")
+    owner_id: UUID | None = Field(None, description="Internal owner ID for filtering and linking")
     name: str | None = Field(None, description="Display name of the owner")
     email: str | None = Field(None, description="Email address of the owner")
-    owner_id: UUID | None = Field(None, description="Internal owner ID for filtering and linking")
 
     model_config = {"from_attributes": True}
 
@@ -63,7 +62,6 @@ class DealListItem(BaseModel):
     """Individual deal item in a list response."""
 
     deal_id: UUID
-    external_id: str
     name: str | None
     amount: float | None
     currency: str | None
@@ -82,7 +80,7 @@ class DealListItem(BaseModel):
         default_factory=list,
         description="Owner details as a list (typically 0..1 items).",
     )
-    company_external_id: str | None
+    company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
     deal_health: str | None = Field(
@@ -173,7 +171,6 @@ class DealDetail(BaseModel):
 
     # Identity
     deal_id: UUID
-    external_id: str
     name: str | None
 
     # Deal value
@@ -188,12 +185,12 @@ class DealDetail(BaseModel):
     deal_status: str
     probability: float | None = None
     forecast_category: str | None = None
+    stage_id: UUID | None = None
     stage_name: str | None
     stage_label: str | None
-    stage_external_id: str | None = None
+    pipeline_id: UUID | None = None
     pipeline_name: str | None = None
     pipeline_label: str | None = None
-    pipeline_external_id: str | None = None
 
     # Timeline (frontend: Creation Date, Close Date, Deal Age, Last Communication)
     source_created_at: datetime | None
@@ -217,7 +214,7 @@ class DealDetail(BaseModel):
     )
 
     # Company/Industry
-    company_external_id: str | None = None
+    company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
     company_industry: str | None = Field(None, description="Industry of the associated company")
@@ -226,7 +223,7 @@ class DealDetail(BaseModel):
         None, description="LinkedIn URL of the associated company"
     )
     company_country: str | None = Field(None, description="Country of the associated company")
-    primary_contact_external_id: str | None = None
+    primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
 
@@ -642,7 +639,6 @@ class AvailableContactItem(BaseModel):
     """
 
     contact_id: UUID = Field(..., description="Internal contact identifier")
-    external_id: str = Field(..., description="CRM provider's contact identifier")
     email: str = Field(..., description="Primary email address (required for stakeholders)")
     first_name: str | None = Field(None, description="Contact's first name")
     last_name: str | None = Field(None, description="Contact's last name")
@@ -818,7 +814,6 @@ class ContactListItem(BaseModel):
     """Simplified contact model for selection lists."""
 
     contact_id: UUID
-    external_id: str
     first_name: str | None = None
     last_name: str | None = None
     email: str | None = None
@@ -841,7 +836,6 @@ class DealsListParams(NamedTuple):
     statuses: list[CRMDealStatus] | None
     pipeline_ids: list[UUID] | None
     owner_ids: list[UUID] | None
-    owner_external_ids: list[str] | None
     min_amount: float | None
     max_amount: float | None
     min_close_date: datetime | None

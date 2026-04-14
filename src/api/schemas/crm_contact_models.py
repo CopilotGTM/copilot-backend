@@ -23,7 +23,6 @@ class ContactListItem(BaseModel):
     """Single contact in a list response."""
 
     contact_id: UUID
-    external_id: str
     first_name: str | None
     last_name: str | None
     full_name: str | None

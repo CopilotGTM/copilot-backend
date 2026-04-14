@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 class NoteAuthor(BaseModel):
     """Note author information."""
 
-    id: str = Field(description="User ID or CRM user ID")
+    id: str | None = Field(default=None, description="Internal user ID when linked")
     name: str | None = Field(default=None, description="Author name")
     email: str | None = Field(default=None, description="Author email")
 
@@ -19,7 +19,6 @@ class NoteAuthor(BaseModel):
 class NoteMetadata(BaseModel):
     """Additional note metadata for CRM-synced notes."""
 
-    external_id: str | None = Field(default=None, description="CRM external ID if synced")
     synced_at: datetime | None = Field(default=None, description="Last sync time if CRM note")
 
 
