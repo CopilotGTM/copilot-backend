@@ -100,25 +100,35 @@ class DealWriteService:
         integration_id = integration.integration_id
 
         # Validate and get pipeline + stage
-        pipeline_id = payload.get("pipeline_id")
-        stage_id = payload.get("stage_id")
+        raw_pipeline_id = payload.get("pipeline_id")
+        raw_stage_id = payload.get("stage_id")
+
+        if raw_pipeline_id is not None and not isinstance(raw_pipeline_id, UUID):
+            raise DealWriteServiceError("Invalid pipeline_id", status_code=400)
+        if raw_stage_id is not None and not isinstance(raw_stage_id, UUID):
+            raise DealWriteServiceError("Invalid stage_id", status_code=400)
+
+        pipeline_id = raw_pipeline_id
+        stage_id = raw_stage_id
 
         if pipeline_id:
             pipeline = await self._load_pipeline(pipeline_id, integration_id)
         else:
             # Use default pipeline
-            pipeline = await self._get_default_pipeline(integration_id)
-            if not pipeline:
+            default_pipeline = await self._get_default_pipeline(integration_id)
+            if not default_pipeline:
                 raise DealWriteServiceError("No default pipeline found", status_code=500)
+            pipeline = default_pipeline
             pipeline_id = pipeline.pipeline_id
 
         if stage_id:
             stage = await self._load_stage(stage_id, pipeline_id, integration_id)
         else:
             # Use first stage of pipeline
-            stage = await self._get_first_stage(pipeline_id)
-            if not stage:
+            first_stage = await self._get_first_stage(pipeline_id)
+            if not first_stage:
                 raise DealWriteServiceError("No stages found in pipeline", status_code=500)
+            stage = first_stage
             stage_id = stage.stage_id
 
         # Handle owner assignment
@@ -685,8 +695,12 @@ class DealWriteService:
         target_state: str,
         stage_id: UUID | None,
     ) -> CRMDealStage:
+        pipeline_id = deal.pipeline_id
+        if pipeline_id is None:
+            raise DealWriteServiceError("Deal has no pipeline", status_code=500)
+
         if stage_id:
-            stage = await self._load_stage(stage_id, deal.pipeline_id, deal.integration_id)
+            stage = await self._load_stage(stage_id, pipeline_id, deal.integration_id)
             actual_state = self._normalize_stage_state(stage.stage_state)
             if actual_state != target_state:
                 raise DealWriteServiceError(
@@ -700,7 +714,7 @@ class DealWriteService:
             .where(
                 col(CRMDealStage.organisation_id) == self.organisation_id,
                 col(CRMDealStage.integration_id) == deal.integration_id,
-                col(CRMDealStage.pipeline_id) == deal.pipeline_id,
+                col(CRMDealStage.pipeline_id) == pipeline_id,
                 col(CRMDealStage.is_deleted).is_(False),
                 col(CRMDealStage.stage_state) == target_state,
             )
@@ -708,13 +722,13 @@ class DealWriteService:
             .limit(1)
         )
         result = await self.session.execute(stmt)
-        stage = result.scalar_one_or_none()
-        if not stage:
+        matching_stage = result.scalar_one_or_none()
+        if not matching_stage:
             raise DealWriteServiceError(
                 f"No stage found with state '{target_state}' for this deal pipeline",
                 status_code=404,
             )
-        return stage
+        return matching_stage
 
     def _apply_stage_update(self, *, deal: CRMDeal, stage: CRMDealStage, now: datetime) -> None:
         deal.stage_id = stage.stage_id
@@ -818,9 +832,9 @@ class DealWriteService:
             field not in account_payload
             for field in ("website", "linkedin_url", "industry", "country")
         )
-        if deal.company_external_id and needs_company_field_backfill:
+        if (deal.company_id or deal.company_external_id) and needs_company_field_backfill:
             existing_company = await self._get_current_company(
-                deal.company_external_id, deal.integration_id
+                deal.company_id, deal.company_external_id, deal.integration_id
             )
             if existing_company:
                 for field in ("website", "linkedin_url", "industry", "country"):
@@ -832,9 +846,15 @@ class DealWriteService:
                 account_payload, deal.integration_id, now
             )
             if company:
-                same_company = deal.company_external_id == company.external_id
+                same_company = (
+                    deal.company_id == company.company_id
+                    if deal.company_id is not None
+                    else deal.company_external_id == company.external_id
+                )
                 if same_company and await self._has_active_company_participant(
-                    deal=deal, company_external_id=company.external_id
+                    deal=deal,
+                    company_id=company.company_id,
+                    company_external_id=company.external_id,
                 ):
                     # Fast path for import replays: avoid participant-service churn when
                     # the company link is already present and only company fields changed.
@@ -877,6 +897,8 @@ class DealWriteService:
         if contact:
             await self._replace_primary_contact_participant(deal, contact, now)
         else:
+            deal.primary_contact_id = None
+            deal.primary_contact_external_id = None
             if fallback_name:
                 deal.primary_contact_name = fallback_name
             if fallback_email:
@@ -1154,34 +1176,34 @@ class DealWriteService:
             func.lower(CRMCompany.domain) == domain.lower(),
         )
         result = await self.session.execute(stmt)
-        company = result.scalars().first()
+        matched_company = result.scalars().first()
 
-        if company:
+        if matched_company:
             updated = False
             # Always update name when user provides one — fixes previously
             # corrupted records where name was set to the domain value.
-            if name and company.name != name:
-                company.name = name
+            if name and matched_company.name != name:
+                matched_company.name = name
                 updated = True
-            if website_provided and company.website != website:
-                company.website = website
+            if website_provided and matched_company.website != website:
+                matched_company.website = website
                 updated = True
-            if linkedin_provided and company.linkedin_url != linkedin_url:
-                company.linkedin_url = linkedin_url
+            if linkedin_provided and matched_company.linkedin_url != linkedin_url:
+                matched_company.linkedin_url = linkedin_url
                 updated = True
-            if industry_provided and company.industry != industry:
-                company.industry = industry
+            if industry_provided and matched_company.industry != industry:
+                matched_company.industry = industry
                 updated = True
-            if country_provided and company.country != country:
-                company.country = country
+            if country_provided and matched_company.country != country:
+                matched_company.country = country
                 updated = True
 
             if updated:
-                company.source_modified_at = now
-                company.synced_at = now
-                company.last_seen_at = now
-                self.session.add(company)
-            return company, None
+                matched_company.source_modified_at = now
+                matched_company.synced_at = now
+                matched_company.last_seen_at = now
+                self.session.add(matched_company)
+            return matched_company, None
 
         company_id = uuid4()
         company = CRMCompany(
@@ -1225,6 +1247,7 @@ class DealWriteService:
         ]
         await participant_service.add_participants(deal.deal_id, payloads)
 
+        deal.company_id = company.company_id
         deal.company_external_id = company.external_id
         deal.company_name = company.name
         deal.company_domain = company.domain
@@ -1247,10 +1270,11 @@ class DealWriteService:
             col(CRMDealParticipant.deal_id) == deal.deal_id,
             col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
             col(CRMDealParticipant.is_deleted).is_(False),
-            col(CRMDealParticipant.related_external_id) != company.external_id,
         )
         result = await self.session.execute(stmt)
         for participant in result.scalars().all():
+            if participant.related_local_id == company.company_id:
+                continue
             participant.is_deleted = True
             participant.source_modified_at = now
             participant.synced_at = now
@@ -1258,20 +1282,27 @@ class DealWriteService:
             self.session.add(participant)
 
     async def _has_active_company_participant(
-        self, *, deal: CRMDeal, company_external_id: str
+        self,
+        *,
+        deal: CRMDeal,
+        company_id: UUID | None,
+        company_external_id: str | None,
     ) -> bool:
-        stmt = (
-            select(CRMDealParticipant.participant_id)
-            .where(
-                col(CRMDealParticipant.organisation_id) == self.organisation_id,
-                col(CRMDealParticipant.integration_id) == deal.integration_id,
-                col(CRMDealParticipant.deal_id) == deal.deal_id,
-                col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
-                col(CRMDealParticipant.related_external_id) == company_external_id,
-                col(CRMDealParticipant.is_deleted).is_(False),
-            )
-            .limit(1)
-        )
+        filters = [
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+        ]
+        if company_id is not None:
+            filters.append(col(CRMDealParticipant.related_local_id) == company_id)
+        elif company_external_id is not None:
+            filters.append(col(CRMDealParticipant.related_external_id) == company_external_id)
+        else:
+            return False
+
+        stmt = select(col(CRMDealParticipant.participant_id)).where(*filters).limit(1)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
@@ -1279,6 +1310,9 @@ class DealWriteService:
         self, *, deal: CRMDeal, company: CRMCompany, now: datetime
     ) -> None:
         changed = False
+        if deal.company_id != company.company_id:
+            deal.company_id = company.company_id
+            changed = True
         if deal.company_external_id != company.external_id:
             deal.company_external_id = company.external_id
             changed = True
@@ -1309,10 +1343,11 @@ class DealWriteService:
             col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
             col(CRMDealParticipant.relationship_role) == "primary_contact",
             col(CRMDealParticipant.is_deleted).is_(False),
-            col(CRMDealParticipant.related_external_id) != contact.external_id,
         )
         result = await self.session.execute(stmt)
         for participant in result.scalars().all():
+            if participant.related_local_id == contact.contact_id:
+                continue
             participant.is_deleted = True
             participant.source_modified_at = now
             participant.synced_at = now
@@ -1326,7 +1361,16 @@ class DealWriteService:
         now: datetime,
     ) -> None:
         company = None
-        if deal.company_external_id:
+        if deal.company_id:
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == deal.integration_id,
+                col(CRMCompany.company_id) == deal.company_id,
+                col(CRMCompany.is_deleted).is_(False),
+            )
+            result = await self.session.execute(stmt)
+            company = result.scalars().first()
+        elif deal.company_external_id:
             stmt = select(CRMCompany).where(
                 col(CRMCompany.organisation_id) == self.organisation_id,
                 col(CRMCompany.integration_id) == deal.integration_id,
@@ -1400,6 +1444,7 @@ class DealWriteService:
         ]
         await participant_service.add_participants(deal.deal_id, payloads)
 
+        deal.primary_contact_id = contact.contact_id
         deal.primary_contact_external_id = contact.external_id
         deal.primary_contact_name = contact.full_name or deal.primary_contact_name
         deal.primary_contact_email = contact.email or deal.primary_contact_email
@@ -1475,15 +1520,24 @@ class DealWriteService:
         return deal
 
     async def _get_current_company(
-        self, company_external_id: str, integration_id: UUID
+        self,
+        company_id: UUID | None,
+        company_external_id: str | None,
+        integration_id: UUID,
     ) -> CRMCompany | None:
         """Fetch the company currently associated with a deal."""
-        stmt = select(CRMCompany).where(
+        filters = [
             col(CRMCompany.organisation_id) == self.organisation_id,
             col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.external_id) == company_external_id,
             col(CRMCompany.is_deleted).is_(False),
-        )
+        ]
+        if company_id is not None:
+            filters.append(col(CRMCompany.company_id) == company_id)
+        elif company_external_id is not None:
+            filters.append(col(CRMCompany.external_id) == company_external_id)
+        else:
+            return None
+        stmt = select(CRMCompany).where(*filters)
         result = await self.session.execute(stmt)
         return result.scalars().first()
 

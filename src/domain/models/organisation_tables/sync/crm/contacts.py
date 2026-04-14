@@ -22,6 +22,7 @@ class CRMContact(SyncedRecordMixin, table=True):
         Index("ix_crm_contact_org_email", "organisation_id", "email"),
         Index("ix_crm_contact_owner", "organisation_id", "owner_external_id"),
         Index("ix_crm_contact_lifecycle", "organisation_id", "lifecycle_stage"),
+        Index("ix_crm_contact_company_external", "organisation_id", "company_external_id"),
         Index("ix_crm_contact_company_id", "organisation_id", "company_id"),
     )
 
@@ -31,9 +32,10 @@ class CRMContact(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised contact record.",
     )
-    external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider-supplied unique identifier for the contact.",
+    external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider-supplied unique identifier for the contact. Null for internal-only contact records.",
     )
 
     # Core profile
@@ -45,6 +47,11 @@ class CRMContact(SyncedRecordMixin, table=True):
     )
     company_name: str | None = Field(
         default=None, description="Company string stored on the contact."
+    )
+    company_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider identifier for the linked company/account when supplied by the CRM.",
     )
     # Explicit FK to the linked account — takes precedence over domain matching
     company_id: UUID | None = Field(

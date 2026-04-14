@@ -80,7 +80,6 @@ async def list_contacts(
         items = [
             ContactListItem(
                 contact_id=row["contact"].contact_id,
-                external_id=row["contact"].external_id,
                 first_name=row["contact"].first_name,
                 last_name=row["contact"].last_name,
                 full_name=row["contact"].full_name,
@@ -148,7 +147,6 @@ async def create_contact(
 
         data = ContactListItem(
             contact_id=contact.contact_id,
-            external_id=contact.external_id,
             first_name=contact.first_name,
             last_name=contact.last_name,
             full_name=contact.full_name,
@@ -212,7 +210,6 @@ async def get_contact_detail(
 
         data = ContactDetail(
             contact_id=contact.contact_id,
-            external_id=contact.external_id,
             first_name=contact.first_name,
             last_name=contact.last_name,
             full_name=contact.full_name,
@@ -274,7 +271,6 @@ async def update_contact(
 
         data = ContactListItem(
             contact_id=contact.contact_id,
-            external_id=contact.external_id,
             first_name=contact.first_name,
             last_name=contact.last_name,
             full_name=contact.full_name,

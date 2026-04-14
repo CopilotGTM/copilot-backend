@@ -130,9 +130,6 @@ def get_deals_list_params(
     statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
     pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
     owner_ids: list[UUID] | None = Query(None, description="Filter by internal owner IDs"),
-    owner_external_ids: list[str] | None = Query(
-        None, description="Deprecated. Filter by owner external IDs"
-    ),
     min_amount: float | None = Query(None, description="Minimum deal amount"),
     max_amount: float | None = Query(None, description="Maximum deal amount"),
     min_close_date: datetime | None = Query(None, description="Minimum close date"),
@@ -146,7 +143,6 @@ def get_deals_list_params(
         statuses=statuses,
         pipeline_ids=pipeline_ids,
         owner_ids=owner_ids,
-        owner_external_ids=owner_external_ids,
         min_amount=min_amount,
         max_amount=max_amount,
         min_close_date=min_close_date,
@@ -269,13 +265,12 @@ async def _get_active_import_job_for_user(
 def _map_deal_write_response(deal) -> DealWriteResponse:
     return DealWriteResponse(
         deal_id=deal.deal_id,
-        external_id=deal.external_id,
         name=deal.name,
         pipeline_id=deal.pipeline_id,
         stage_id=deal.stage_id,
         deal_status=str(deal.deal_status),
         owner_user_id=deal.owner_id,
-        company_external_id=getattr(deal, "company_external_id", None),
+        company_id=getattr(deal, "company_id", None),
         company_name=getattr(deal, "company_name", None),
         company_domain=getattr(deal, "company_domain", None),
         created_at=deal.created_at,
@@ -474,7 +469,6 @@ async def list_deals(
             statuses=params.statuses,
             pipeline_ids=params.pipeline_ids,
             owner_ids=params.owner_ids,
-            owner_external_ids=params.owner_external_ids,
             min_amount=params.min_amount,
             max_amount=params.max_amount,
             min_close_date=params.min_close_date,
@@ -496,7 +490,6 @@ async def list_deals(
         items: list[DealListItem] = [
             DealListItem(
                 deal_id=deal.deal_id,
-                external_id=deal.external_id,
                 name=deal.name,
                 amount=deal.amount,
                 currency=_normalize_currency_code(deal.currency),
@@ -512,16 +505,15 @@ async def list_deals(
                 owner_details=(
                     [
                         DealOwnerDetail(
-                            external_id=str(deal.owner_external_id),
                             name=deal.owner_name,
                             email=deal.owner_email,
                             owner_id=deal.owner_id,
                         )
                     ]
-                    if getattr(deal, "owner_external_id", None)
+                    if any([getattr(deal, "owner_id", None), deal.owner_name, deal.owner_email])
                     else []
                 ),
-                company_external_id=deal.company_external_id,
+                company_id=deal.company_id,
                 company_name=getattr(deal, "company_name", None),
                 company_domain=getattr(deal, "company_domain", None),
                 deal_health=extract_deal_health(getattr(deal, "deal_summary_data", None)),
@@ -530,7 +522,7 @@ async def list_deals(
                 ),
                 deal_team=[
                     DealTeamMember(
-                        external_id=member["external_id"],
+                        user_id=member.get("user_id"),
                         name=member.get("name"),
                         email=member.get("email"),
                         role=member.get("role", "member"),
@@ -734,20 +726,19 @@ async def get_deal(
         owner_details = (
             [
                 DealOwnerDetail(
-                    external_id=str(deal.owner_external_id),
                     name=deal.owner_name,
                     email=deal.owner_email,
                     owner_id=deal.owner_id,
                 )
             ]
-            if getattr(deal, "owner_external_id", None)
+            if any([getattr(deal, "owner_id", None), deal.owner_name, deal.owner_email])
             else []
         )
 
         # Build deal_team list
         deal_team = [
             DealTeamMember(
-                external_id=member["external_id"],
+                user_id=member.get("user_id"),
                 name=member.get("name"),
                 email=member.get("email"),
                 role=member.get("role", "member"),
@@ -773,8 +764,8 @@ async def get_deal(
         company_website = None
         company_linkedin_url = None
         company_country = None
-        if deal.company_external_id:
-            company = await service.get_company_by_external_id(deal.company_external_id)
+        if deal.company_id:
+            company = await service.get_company_by_id(deal.company_id)
             if company:
                 company_industry = company.industry
                 company_website = company.website
@@ -860,7 +851,6 @@ async def get_deal(
         # Build streamlined response
         detail = DealDetail(
             deal_id=deal.deal_id,
-            external_id=deal.external_id,
             name=deal.name,
             amount=deal.amount,
             currency=_normalize_currency_code(deal.currency),
@@ -869,12 +859,12 @@ async def get_deal(
             deal_status=deal.deal_status,
             probability=deal.probability,
             forecast_category=deal.forecast_category,
+            stage_id=deal.stage_id,
             stage_name=deal.stage_name,
             stage_label=deal.stage_label,
-            stage_external_id=deal.stage_external_id,
+            pipeline_id=deal.pipeline_id,
             pipeline_name=deal.pipeline_name,
             pipeline_label=deal.pipeline_label,
-            pipeline_external_id=deal.pipeline_external_id,
             source_created_at=deal.source_created_at,
             close_date=deal.close_date,
             expected_close_date=deal.expected_close_date,
@@ -886,14 +876,14 @@ async def get_deal(
             deal_age_days=deal_age_days,
             owner_details=owner_details,
             deal_team=deal_team,
-            company_external_id=deal.company_external_id,
+            company_id=deal.company_id,
             company_name=deal.company_name,
             company_domain=deal.company_domain,
             company_industry=company_industry,
             company_website=company_website,
             company_linkedin_url=company_linkedin_url,
             company_country=company_country,
-            primary_contact_external_id=deal.primary_contact_external_id,
+            primary_contact_id=deal.primary_contact_id,
             primary_contact_name=deal.primary_contact_name,
             primary_contact_email=deal.primary_contact_email,
             deal_type=deal.deal_type,

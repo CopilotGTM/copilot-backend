@@ -26,7 +26,6 @@ class AccountDealItem(BaseModel):
 
 class AccountListItem(BaseModel):
     company_id: UUID
-    external_id: str
     name: str | None
     domain: str | None
     website: str | None

@@ -259,13 +259,12 @@ class DealWriteResponse(BaseModel):
     """Minimal response for deal write operations."""
 
     deal_id: UUID
-    external_id: str
     name: str | None
     pipeline_id: UUID | None
     stage_id: UUID | None
     deal_status: str
     owner_user_id: UUID | None
-    company_external_id: str | None = None
+    company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
     created_at: datetime

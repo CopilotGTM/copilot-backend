@@ -152,7 +152,7 @@ def send_organization_task_and_wait(
     kwargs: dict | None = None,
     queue: str = "organization",
     routing_key: str | None = None,
-    timeout: int = 120,  # noqa: S7483 - Celery API requires timeout parameter
+    timeout: int = 120,
     headers: dict | None = None,
 ):
     """
@@ -221,7 +221,7 @@ async def send_organization_task_and_wait_async(
     kwargs: dict | None = None,
     queue: str = "organization",
     routing_key: str | None = None,
-    timeout: int = 120,  # noqa: S7483 - Celery API requires timeout parameter
+    timeout: int = 120,
     headers: dict | None = None,
 ):
     """

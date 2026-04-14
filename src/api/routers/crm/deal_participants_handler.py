@@ -58,7 +58,6 @@ def _map_participant_item(participant) -> DealParticipantItem:
         participant_id=participant.participant_id,
         deal_id=participant.deal_id,
         participant_type=str(participant.participant_type),
-        related_external_id=participant.related_external_id,
         related_local_id=participant.related_local_id,
         related_name=participant.related_name,
         related_email=participant.related_email,

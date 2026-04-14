@@ -71,7 +71,6 @@ async def get_pipeline_write_service(
 def _build_stage_item(stage) -> PipelineStageItem:
     return PipelineStageItem(
         stage_id=stage.stage_id,
-        external_id=stage.external_id,
         name=stage.name,
         label=stage.label,
         stage_state=str(stage.stage_state),
@@ -84,7 +83,6 @@ def _build_stage_item(stage) -> PipelineStageItem:
 def _build_pipeline_item(pipeline, stages) -> PipelineItem:
     return PipelineItem(
         pipeline_id=pipeline.pipeline_id,
-        external_id=pipeline.external_id,
         name=pipeline.name,
         label=pipeline.label,
         is_default=pipeline.is_default,

@@ -31,6 +31,6 @@ async def use_tool_with_capabilities(
             description=description,
         )
         return result if result is not None else fallback_value
-    except Exception as exc:  # noqa: B902
+    except Exception as exc:
         logger.error(f"{tool_name} tool failed: {exc}", exc_info=True)
         return fallback_value

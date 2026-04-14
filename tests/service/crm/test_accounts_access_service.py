@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.service.crm.access.accounts_access_service import AccountsAccessService
 
 
@@ -43,3 +49,99 @@ def test_normalize_domain_strips_fragment() -> None:
 
 def test_normalize_domain_no_protocol() -> None:
     assert AccountsAccessService._normalize_domain("www.Acme.COM") == "acme.com"
+
+
+class _RowLikeCount:
+    """Minimal SQLAlchemy Row-like object for count query results."""
+
+    def __init__(self, contact_id, count: int) -> None:
+        self._values = (contact_id, count)
+
+    def __getitem__(self, index: int):
+        return self._values[index]
+
+    def __iter__(self):
+        return iter(self._values)
+
+
+def _mock_scalars_first(row):
+    mock_scalars = MagicMock()
+    mock_scalars.first.return_value = row
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    return mock_result
+
+
+def _mock_result_all(rows: list[object]):
+    mock_result = MagicMock()
+    mock_result.all.return_value = rows
+    return mock_result
+
+
+@pytest.mark.asyncio
+async def test_get_account_detail_maps_row_like_count_results() -> None:
+    organisation_id = uuid4()
+    company_id = uuid4()
+    contact_with_count_id = uuid4()
+    contact_without_count_id = uuid4()
+
+    mock_db = AsyncMock()
+    service = AccountsAccessService(org_session=mock_db, organisation_id=organisation_id)
+
+    company = MagicMock()
+    company.model_dump.return_value = {"company_id": company_id, "name": "Acme"}
+
+    contact_with_count = MagicMock(spec=CRMContact)
+    contact_with_count.contact_id = contact_with_count_id
+    contact_with_count.full_name = "Alice"
+    contact_with_count.email = "alice@acme.com"
+    contact_with_count.job_title = "VP"
+
+    contact_without_count = MagicMock(spec=CRMContact)
+    contact_without_count.contact_id = contact_without_count_id
+    contact_without_count.full_name = "Bob"
+    contact_without_count.email = "bob@acme.com"
+    contact_without_count.job_title = "Director"
+
+    open_deal = MagicMock(spec=CRMDeal)
+    open_deal.amount = 1250
+    open_deal.deal_status = CRMDealStatus.OPEN.value
+    open_deal.model_dump.return_value = {"deal_id": str(uuid4()), "amount": 1250}
+
+    won_deal = MagicMock(spec=CRMDeal)
+    won_deal.amount = 900
+    won_deal.deal_status = CRMDealStatus.WON.value
+    won_deal.model_dump.return_value = {"deal_id": str(uuid4()), "amount": 900}
+
+    mock_db.execute = AsyncMock(
+        side_effect=[
+            _mock_scalars_first(company),
+            _mock_result_all([_RowLikeCount(contact_with_count_id, 3)]),
+        ]
+    )
+    service.get_account_contacts = AsyncMock(
+        return_value=[contact_with_count, contact_without_count]
+    )
+    service.get_account_deals = AsyncMock(return_value=[open_deal, won_deal])
+
+    detail = await service.get_account_detail(company_id)
+
+    assert detail["contact_count"] == 2
+    assert detail["deal_count"] == 2
+    assert detail["pipeline_value"] == 1250.0
+    assert detail["contacts"] == [
+        {
+            "contact_id": contact_with_count_id,
+            "full_name": "Alice",
+            "email": "alice@acme.com",
+            "job_title": "VP",
+            "deal_count": 3,
+        },
+        {
+            "contact_id": contact_without_count_id,
+            "full_name": "Bob",
+            "email": "bob@acme.com",
+            "job_title": "Director",
+            "deal_count": 0,
+        },
+    ]
