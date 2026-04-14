@@ -2,12 +2,12 @@
 Calendar sync tasks following the three-tier architecture.
 
 This module provides:
-- sync_calendar_all_orgs_task (Tier 1): Global coordinator, triggered by Celery Beat
+- sync_calendar_all_orgs_task (Tier 1): Global coordinator, triggered by the scheduler
 - sync_calendar_org_task (Tier 2): Organization-level processor
 - sync_calendar_integration_task (Tier 3): Manual trigger for single integration
 
 Architecture:
-    Celery Beat (every 30 min)
+    Scheduler (every 15 min)
         |
     sync_calendar_all_orgs_task [Tier 1]
         |
@@ -16,7 +16,7 @@ Architecture:
     CalendarSyncService (direct call, for each integration)
 
 Usage:
-    # Scheduled sync (via Celery Beat config)
+    # Scheduled sync (via Kubernetes CronJob)
     "task": "integrations.sync_calendar_all_orgs"
 
     # Manual org sync

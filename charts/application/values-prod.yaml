@@ -40,6 +40,7 @@ knowledge-upload-worker:
       memory: "1.5Gi"
 
 knowledge-beat:
+  enabled: false
   resources:
     requests:
       cpu: "50m"
@@ -85,6 +86,7 @@ deal-worker:
       memory: "1.5Gi"
 
 deal-beat:
+  enabled: false
   resources:
     requests:
       cpu: "100m"
@@ -94,6 +96,7 @@ deal-beat:
       memory: "512Mi"
 
 integrations-beat:
+  enabled: false
   resources:
     requests:
       cpu: "50m"

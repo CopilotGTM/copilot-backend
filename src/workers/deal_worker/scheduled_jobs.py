@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ScheduledJob:
+    """Configuration for a fixed-schedule deal trigger."""
+
+    name: str
+    task_name: str
+    schedule: str
+    max_lag_seconds: int
+    queue: str = "deal"
+    routing_key: str = "deal"
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+SCHEDULED_JOBS: dict[str, ScheduledJob] = {
+    "deal-mapping": ScheduledJob(
+        name="deal-mapping",
+        task_name="stakeholder.sync_all_deals_stakeholders_all_orgs",
+        schedule="3,18,33,48 * * * *",
+        max_lag_seconds=20 * 60,
+    ),
+    "timeline-sync": ScheduledJob(
+        name="timeline-sync",
+        task_name="deal.trigger_timeline_sync_all_orgs",
+        schedule="10,25,40,55 * * * *",
+        max_lag_seconds=20 * 60,
+    ),
+    "transcript-fetch-pipeline": ScheduledJob(
+        name="transcript-fetch-pipeline",
+        task_name="deal.trigger_transcript_fetch_all_orgs",
+        schedule="5,35 * * * *",
+        max_lag_seconds=35 * 60,
+    ),
+    "stale-deal-job-cleanup": ScheduledJob(
+        name="stale-deal-job-cleanup",
+        task_name="deal.cleanup_stale_jobs_all_orgs",
+        schedule="45 * * * *",
+        max_lag_seconds=90 * 60,
+    ),
+    "deal-memory-backfill": ScheduledJob(
+        name="deal-memory-backfill",
+        task_name="deal_memory.trigger_backfill_all_orgs",
+        schedule="10 */3 * * *",
+        max_lag_seconds=4 * 60 * 60,
+    ),
+    "stakeholder-research-retry": ScheduledJob(
+        name="stakeholder-research-retry",
+        task_name="stakeholder_research.trigger_retry_all_orgs",
+        schedule="20 * * * *",
+        max_lag_seconds=90 * 60,
+    ),
+}
+
+
+def get_scheduled_job(job_name: str) -> ScheduledJob:
+    """Return the configured schedule definition for a named deal job."""
+
+    return SCHEDULED_JOBS[job_name]

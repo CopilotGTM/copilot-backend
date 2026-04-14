@@ -194,11 +194,16 @@ Always listen to both queues; otherwise AI workloads or deterministic jobs will 
 
 | Schedule | Task | Purpose |
 |----------|------|---------|
-| Every 3 hours | `deal.trigger_deal_meeting_processing_all_orgs` | Reconcile meetings <-> deals for every approved organisation. |
-| Daily @ 02:00 UTC | `stakeholder.trigger_analysis_all_orgs` | Refresh stakeholder intelligence snapshots from meeting transcripts. |
-| Hourly | (none) | - |
+| Every 15 minutes at `:03,:18,:33,:48` | `stakeholder.sync_all_deals_stakeholders_all_orgs` | Refresh stakeholder mappings and downstream matching for all approved organisations. |
+| Every 15 minutes at `:10,:25,:40,:55` | `deal.trigger_timeline_sync_all_orgs` | Reconcile timeline gaps caused by missed inline writes. |
+| Every 30 minutes at `:05,:35` | `deal.trigger_transcript_fetch_all_orgs` | Fetch transcripts and kick off the meeting/deal summary pipeline. |
+| Hourly at `:20` | `stakeholder_research.trigger_retry_all_orgs` | Retry stakeholder enrichment that previously failed or never completed. |
+| Hourly at `:45` | `deal.cleanup_stale_jobs_all_orgs` | Mark stale deal jobs as failed so they do not remain stuck indefinitely. |
+| Every 3 hours at `HH:10` | `deal_memory.trigger_backfill_all_orgs` | Backfill deal memory for organisations that have source data but no memory state. |
 
-Schedules live in `DealWorkerConfig.beat_schedule`; adjust there when adding new periodic jobs.
+Fixed schedules are triggered by Kubernetes CronJobs and dispatched through
+`src.workers.deal_worker.cron_dispatch`; update `scheduled_jobs.py` and the
+Helm `dealCronJobs` values together when adding or changing periodic jobs.
 
 ---
 

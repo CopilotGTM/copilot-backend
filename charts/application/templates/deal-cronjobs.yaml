@@ -1,0 +1,68 @@
+{{- if .Values.dealCronJobs.enabled }}
+{{- $root := . -}}
+{{- $worker := index .Values "deal-worker" -}}
+{{- $workloadIdentity := (index .Values "knowledge-extract-worker").workloadIdentity -}}
+{{- range $job := .Values.dealCronJobs.jobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-%s" $root.Release.Name (default $job.name $job.resourceName) | trunc 52 | trimSuffix "-" }}
+  labels:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/name: deal-cronjob
+    app.kubernetes.io/component: {{ $job.name }}
+spec:
+  schedule: {{ $job.schedule | quote }}
+  timeZone: {{ $root.Values.dealCronJobs.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $root.Values.dealCronJobs.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $root.Values.dealCronJobs.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ $root.Values.dealCronJobs.startingDeadlineSeconds }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $root.Values.dealCronJobs.backoffLimit }}
+      activeDeadlineSeconds: {{ $root.Values.dealCronJobs.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ $root.Values.dealCronJobs.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/instance: {{ $root.Release.Name }}
+            app.kubernetes.io/name: deal-cronjob
+            app.kubernetes.io/component: {{ $job.name }}
+            {{- if $workloadIdentity.clientId }}
+            azure.workload.identity/use: "true"
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ $worker.serviceAccount.name | default "copilot-workers" }}
+          containers:
+            - name: {{ $job.name }}
+              image: "{{ $worker.image.repository }}:{{ $worker.image.tag }}"
+              imagePullPolicy: {{ $worker.image.pullPolicy }}
+              command:
+                - python
+                - -m
+                - src.workers.deal_worker.cron_dispatch
+                - --job
+                - {{ $job.name }}
+              envFrom:
+                - secretRef:
+                    name: {{ $worker.config.secretName | default $root.Values.global.secretName }}
+              {{- if $workloadIdentity.clientId }}
+              env:
+                - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
+                  value: "*"
+                - name: AZURE_LOG_LEVEL
+                  value: "info"
+                - name: AZURE_CLIENT_ID
+                  value: {{ $workloadIdentity.clientId | quote }}
+                {{- if $workloadIdentity.tenantId }}
+                - name: AZURE_TENANT_ID
+                  value: {{ $workloadIdentity.tenantId | quote }}
+                {{- end }}
+              {{- end }}
+              resources:
+                {{- toYaml $root.Values.dealCronJobs.resources | nindent 16 }}
+{{- end }}
+{{- end }}
