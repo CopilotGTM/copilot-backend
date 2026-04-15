@@ -9,6 +9,7 @@ from src.agents.tools.registry import (
     ToolRegistry,
     get_excluded_tools_for_context,
 )
+from src.service.voice_realtime.tool_manifest import build_voice_allowed_tools
 
 
 def test_slack_supported_crm_tools_are_available_on_slack_and_teams() -> None:
@@ -52,6 +53,9 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
 def test_voice_realtime_agent_excludes_backend_write_tools() -> None:
     assert AGENT_TOOLS["VoiceRealtimeAgent"].isdisjoint(VOICE_REALTIME_WRITE_EXCLUDED_TOOLS)
     assert ToolName.SEARCH_INTERNAL_KNOWLEDGE in AGENT_TOOLS["VoiceRealtimeAgent"]
+    assert set(build_voice_allowed_tools()).issubset(
+        {tool_name.value for tool_name in AGENT_TOOLS["VoiceRealtimeAgent"]}
+    )
 
 
 def test_voice_realtime_agent_web_channel_filters_channel_only_tools() -> None:

@@ -948,12 +948,21 @@ The endpoint is idempotent at the turn level. If the same `realtime_item_id` is 
 ### Persistence Rules
 
 - The backend verifies that `chat_session_id` belongs to the authenticated user, the authenticated organisation, is not deleted, and has `chat_type = VOICE_CHAT`.
+- Every turn must include both `speaker` and `realtime_item_id`. The backend does not infer them.
 - Each stored turn becomes a regular `ChatMessage`.
-- Stored message `content` includes:
+- Stored message `message_type` is `GENERAL_MESSAGE`.
+- Stored message `content` is normalized to:
   - `text`
+- Stored message `extra` includes:
   - `source = "voice_transcription"`
   - `realtime_item_id`
-- Stored message `extra` includes `turn_index`.
+  - `turn_index`
+  - `audio_origin = "voice_realtime"`
+- User turns also store:
+  - `input_modality = "audio"`
+- Assistant turns also store:
+  - `parent_message_id` pointing to the latest persisted user voice turn in the same batch, when available
+  - `model_name` from the voice session properties when available
 - If the session title is still `"Voice Session"`, the backend renames it from the first persisted user utterance, truncated to 60 characters.
 
 ### Success Response (200)

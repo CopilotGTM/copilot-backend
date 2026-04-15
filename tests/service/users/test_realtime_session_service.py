@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.domain.models.user_models import (
     RealtimeControlMode,
     RealtimeConversationMode,
@@ -80,7 +81,7 @@ def _make_request() -> UserRealtimeSessionRequest:
             platform=RealtimeDevicePlatform.ANDROID,
             app_version="1.0.0",
         ),
-        conversation_mode=RealtimeConversationMode.PUSH_TO_TALK,
+        conversation_mode=RealtimeConversationMode.REALTIME,
     )
 
 
@@ -132,19 +133,36 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     assert result.endpoint == "https://example.openai.azure.com/openai/v1/realtime/calls"
     assert result.model == "gpt-realtime-mini"
     assert result.voice == "alloy"
-    assert result.turn_mode.value == "push_to_talk"
+    assert result.turn_mode.value == "server_vad"
     assert result.expires_at == datetime(2026, 4, 11, 10, 45, 0, tzinfo=UTC)
     assert result.runtime_config.control_mode.value == "backend_sideband"
     assert result.runtime_config.tool_policy.value == "guardrailed_auto"
     assert "search_internal_knowledge" in result.runtime_config.allowed_tools
     assert "create_deal" not in result.runtime_config.allowed_tools
     assert result.runtime_config.session_update["type"] == "session.update"
+    assert result.runtime_config.session_update["session"]["type"] == "realtime"
+    assert "modalities" not in result.runtime_config.session_update["session"]
+    assert result.runtime_config.session_update["session"]["output_modalities"] == ["audio"]
     assert result.runtime_config.session_update["session"]["instructions"].startswith("You are Kai")
     assert result.runtime_config.session_update["session"]["tools"]
     assert result.runtime_config.session_update["session"]["tools"][0]["type"] == "function"
     assert result.runtime_config.session_update["session"]["tools"][0]["name"] in (
         result.runtime_config.allowed_tools
     )
+    assert result.runtime_config.session_update["session"]["audio"]["input"]["format"] == {
+        "type": "audio/pcm",
+        "rate": 24000,
+    }
+    assert result.runtime_config.session_update["session"]["audio"]["output"]["format"] == {
+        "type": "audio/pcm",
+        "rate": 24000,
+    }
+    assert result.runtime_config.session_update["session"]["audio"]["input"]["turn_detection"] == {
+        "type": "server_vad",
+        "silence_duration_ms": 700,
+        "prefix_padding_ms": 300,
+    }
+    assert "turn_detection" not in result.runtime_config.session_update["session"]
     assert verify_runtime_config_signature(
         result.runtime_config,
         user_ids=user_ids,
@@ -172,6 +190,7 @@ def test_verify_runtime_config_signature_rejects_tampering() -> None:
         user_ids=user_ids,
         secret="super-secret-signing-key",
         org_name="Acme Corp",
+        conversation_mode=RealtimeConversationMode.REALTIME,
     )
 
     assert verify_runtime_config_signature(
@@ -276,6 +295,7 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
         user_ids=user_ids,
         secret="super-secret-signing-key",
         org_name="Acme Corp",
+        conversation_mode=RealtimeConversationMode.REALTIME,
     )
     attach_request = UserRealtimeCallAttachRequest(
         session_id="azure-session-123",
@@ -301,6 +321,7 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
             self.store.pop(key, None)
 
     dispatched: dict[str, object] = {}
+    created_job_id = uuid4()
 
     monkeypatch.setattr(
         realtime_module,
@@ -315,7 +336,7 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
     )
     monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
 
-    async def fake_send_chat_task_async(
+    async def fake_send_task_async(
         task_name, args=None, kwargs=None, queue="chat_messages", routing_key=None, headers=None
     ):
         dispatched["task_name"] = task_name
@@ -333,11 +354,22 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
         dispatched["stored_error"] = error
         dispatched["stored_call_id"] = call_id
 
-    monkeypatch.setattr(realtime_module, "send_chat_task_async", fake_send_chat_task_async)
+    async def fake_create_voice_job(*, chat_session_id, session_id, call_id, db=None):
+        dispatched["job_chat_session_id"] = chat_session_id
+        dispatched["job_session_id"] = session_id
+        dispatched["job_call_id"] = call_id
+
+        class FakeJob:
+            job_id = created_job_id
+
+        return FakeJob()
+
+    monkeypatch.setattr(realtime_module, "send_task_async", fake_send_task_async)
     monkeypatch.setattr(
         service, "_load_owned_voice_chat_session", fake_load_owned_voice_chat_session
     )
     monkeypatch.setattr(service, "_store_call_attachment", fake_store_call_attachment)
+    monkeypatch.setattr(service, "_create_voice_job", fake_create_voice_job)
 
     result = await service.attach_call(attach_request)
 
@@ -349,3 +381,104 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
     assert dispatched["args"][1] == str(user_ids.user_id)
     assert dispatched["args"][3] == chat_session_id
     assert dispatched["args"][5] == "call-123"
+    assert dispatched["args"][7] == str(created_job_id)
+    assert dispatched["job_chat_session_id"] == chat_session_id
+    assert dispatched["job_session_id"] == "azure-session-123"
+    assert dispatched["job_call_id"] == "call-123"
+
+
+@pytest.mark.asyncio
+async def test_attach_call_marks_created_job_failed_when_dispatch_fails(monkeypatch) -> None:
+    user_ids = _make_user_ids()
+    service = RealtimeSessionService(user_ids)
+    chat_session_id = str(uuid4())
+    runtime_config = realtime_module._build_runtime_config(
+        session_id="azure-session-123",
+        chat_session_id=chat_session_id,
+        voice="alloy",
+        expires_at=datetime(2099, 4, 11, 10, 45, 0, tzinfo=UTC),
+        user_ids=user_ids,
+        secret="super-secret-signing-key",
+        org_name="Acme Corp",
+        conversation_mode=RealtimeConversationMode.REALTIME,
+    )
+    attach_request = UserRealtimeCallAttachRequest(
+        session_id="azure-session-123",
+        call_id="call-123",
+        chat_session_id=chat_session_id,
+        runtime_config=runtime_config,
+    )
+
+    class FakeRedis:
+        def __init__(self):
+            self.store = {}
+
+        def set(self, key, value, nx=False, ex=None):
+            if nx and key in self.store:
+                return False
+            self.store[key] = value
+            return True
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def delete(self, key):
+            self.store.pop(key, None)
+
+    created_job_id = uuid4()
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        realtime_module,
+        "_get_runtime_config_secret",
+        lambda: "super-secret-signing-key",
+    )
+    monkeypatch.setattr(realtime_module, "get_redis_client", lambda: FakeRedis())
+    monkeypatch.setattr(
+        realtime_module.openai_config,
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
+
+    async def fake_send_task_async(*args, **kwargs):
+        raise RuntimeError("dispatch failed")
+
+    async def fake_load_owned_voice_chat_session(*, chat_session_id, db=None):
+        return object()
+
+    async def fake_store_call_attachment(
+        *, chat_session, session_id, call_id, status, error=None, db=None
+    ):
+        observed.setdefault("stored_statuses", []).append(status)
+        observed.setdefault("stored_errors", []).append(error)
+
+    async def fake_create_voice_job(*, chat_session_id, session_id, call_id, db=None):
+        class FakeJob:
+            job_id = created_job_id
+
+        return FakeJob()
+
+    async def fake_update_voice_job(
+        *, job_id, status, error_message=None, db=None, metadata_updates=None
+    ):
+        observed["failed_job_id"] = job_id
+        observed["failed_job_status"] = status
+        observed["failed_job_error"] = error_message
+        observed["failed_job_metadata"] = metadata_updates
+
+    monkeypatch.setattr(realtime_module, "send_task_async", fake_send_task_async)
+    monkeypatch.setattr(
+        service, "_load_owned_voice_chat_session", fake_load_owned_voice_chat_session
+    )
+    monkeypatch.setattr(service, "_store_call_attachment", fake_store_call_attachment)
+    monkeypatch.setattr(service, "_create_voice_job", fake_create_voice_job)
+    monkeypatch.setattr(service, "_update_voice_job", fake_update_voice_job)
+
+    with pytest.raises(RealtimeSessionServiceError) as exc_info:
+        await service.attach_call(attach_request)
+
+    assert exc_info.value.status_code == 502
+    assert observed["failed_job_id"] == created_job_id
+    assert observed["failed_job_status"] == JobStatus.FAILED
+    assert "dispatch failed" in observed["failed_job_error"]

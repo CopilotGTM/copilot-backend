@@ -12,10 +12,10 @@ from src.domain.models.user_models import (
     UserRealtimeRuntimeConfig,
 )
 from src.service.users.voice_realtime_contract import build_voice_realtime_tool_schemas
-from src.workers.chat_worker.services.voice_realtime_sideband_service import (
+from src.service.voice_realtime.runtime import VoiceRealtimeSidebandRuntime
+from src.service.voice_realtime.tool_executor import (
     BackendRealtimeToolExecutor,
     ToolExecutionResult,
-    VoiceRealtimeSidebandRuntime,
 )
 
 

@@ -9,9 +9,6 @@ from src.domain.models.user_models import UserRealtimeRuntimeConfig
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
-from src.workers.chat_worker.services.voice_realtime_sideband_service import (
-    VoiceRealtimeSidebandService,
-)
 
 logger = get_logger("chat_voice_realtime_task")
 
@@ -33,6 +30,7 @@ def voice_realtime_sideband(
     session_id: str,
     call_id: str,
     runtime_config: dict[str, object],
+    job_id: str | None = None,
 ):
     """Own one live voice sideband session inside the chat worker."""
 
@@ -45,6 +43,8 @@ def voice_realtime_sideband(
     )
 
     try:
+        from src.service.voice_realtime.runtime import VoiceRealtimeSidebandService
+
         service = VoiceRealtimeSidebandService(
             organisation_id=UUID(organisation_id),
             user_id=UUID(user_id),
@@ -53,6 +53,7 @@ def voice_realtime_sideband(
             session_id=session_id,
             call_id=call_id,
             runtime_config=UserRealtimeRuntimeConfig.model_validate(runtime_config),
+            job_id=UUID(job_id) if job_id else None,
         )
         run_async(service.run())
         logger.info("Voice realtime sideband completed call=%s", call_id)

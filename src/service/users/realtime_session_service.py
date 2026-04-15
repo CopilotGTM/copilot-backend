@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.agents.workflows.voice_realtime.prompts import get_voice_realtime_system_prompt
 from src.domain.models.organisation_tables.chat_session_models import ChatSession, ChatType
+from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
 from src.domain.models.user_models import (
     RealtimeControlMode,
+    RealtimeConversationMode,
     RealtimeToolPolicy,
     RealtimeTurnMode,
     UserRealtimeCallAttachRequest,
@@ -31,6 +33,7 @@ from src.infra.config.configs import openai_config
 from src.infra.config.constant import RealtimeErrors
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.redis_client import get_redis_client
+from src.infra.messaging.task_dispatcher import send_task_async
 from src.infra.utils.logger import get_logger
 from src.service.users.voice_realtime_contract import (
     VOICE_REALTIME_QUEUE,
@@ -38,7 +41,6 @@ from src.service.users.voice_realtime_contract import (
     build_voice_realtime_allowed_tools,
     build_voice_realtime_tool_schemas,
 )
-from src.workers.chat_worker.client import send_chat_task_async
 
 logger = get_logger(__name__)
 
@@ -203,7 +205,9 @@ class RealtimeSessionService:
             user_ids=self.user_ids,
             secret=_get_runtime_config_secret(),
             org_name="Our Organization",
+            conversation_mode=session_request.conversation_mode,
         )
+        turn_mode = _resolve_turn_mode(session_request.conversation_mode)
 
         logger.info(
             "Realtime session bootstrap succeeded",
@@ -229,7 +233,7 @@ class RealtimeSessionService:
             model=deployment,
             voice=voice,
             expires_at=expires_at,
-            turn_mode=RealtimeTurnMode.PUSH_TO_TALK,
+            turn_mode=turn_mode,
             chat_session_id=chat_session_id,
             runtime_config=runtime_config,
         )
@@ -281,11 +285,18 @@ class RealtimeSessionService:
             db=db,
         )
 
+        voice_job = await self._create_voice_job(
+            chat_session_id=attach_request.chat_session_id,
+            session_id=attach_request.session_id,
+            call_id=attach_request.call_id,
+            db=db,
+        )
+
         if not openai_config.AZURE_OPENAI_ENDPOINT or not openai_config.AZURE_OPENAI_API_KEY:
             raise RealtimeSessionServiceError(RealtimeErrors.REALTIME_NOT_CONFIGURED, 500)
 
         try:
-            await send_chat_task_async(
+            await send_task_async(
                 VOICE_REALTIME_TASK_NAME,
                 args=[
                     str(self.user_ids.organisation_id),
@@ -295,12 +306,20 @@ class RealtimeSessionService:
                     attach_request.session_id,
                     attach_request.call_id,
                     attach_request.runtime_config.model_dump(mode="json"),
+                    str(voice_job.job_id),
                 ],
                 queue=VOICE_REALTIME_QUEUE,
             )
         except Exception as exc:
             if redis_client.get(lock_key) == lock_owner:
                 redis_client.delete(lock_key)
+            await self._update_voice_job(
+                job_id=voice_job.job_id,
+                status=JobStatus.FAILED,
+                error_message=str(exc),
+                metadata_updates={"voice_sideband_status": "failed"},
+                db=db,
+            )
             await self._store_call_attachment(
                 chat_session=chat_session,
                 session_id=attach_request.session_id,
@@ -511,6 +530,110 @@ class RealtimeSessionService:
         db.add(chat_session)
         await db.commit()
 
+    async def _create_voice_job(
+        self,
+        *,
+        chat_session_id: str,
+        session_id: str,
+        call_id: str,
+        db: AsyncSession | None,
+    ) -> ChatMessageJob:
+        if db is not None:
+            return await self._persist_voice_job(
+                db,
+                chat_session_id=chat_session_id,
+                session_id=session_id,
+                call_id=call_id,
+            )
+
+        async for internal_db in acquire_org_async_session(self.user_ids.organisation_id):
+            return await self._persist_voice_job(
+                internal_db,
+                chat_session_id=chat_session_id,
+                session_id=session_id,
+                call_id=call_id,
+            )
+
+        raise RealtimeSessionServiceError(RealtimeErrors.CALL_ATTACH_FAILED, 502)
+
+    async def _persist_voice_job(
+        self,
+        db: AsyncSession,
+        *,
+        chat_session_id: str,
+        session_id: str,
+        call_id: str,
+    ) -> ChatMessageJob:
+        job = ChatMessageJob(
+            message_id=None,
+            job_type="voice_realtime_sideband",
+            chat_type=ChatType.VOICE_CHAT.value,
+            status=JobStatus.PENDING,
+            user_id=self.user_ids.user_id,
+            job_metadata={
+                "chat_session_id": chat_session_id,
+                "realtime_session_id": session_id,
+                "realtime_call_id": call_id,
+                "runtime_control_mode": RealtimeControlMode.BACKEND_SIDEBAND.value,
+                "voice_sideband_status": "queued",
+            },
+        )
+        db.add(job)
+        await db.flush()
+        await db.commit()
+        return job
+
+    async def _update_voice_job(
+        self,
+        *,
+        job_id: UUID,
+        status: JobStatus,
+        error_message: str | None = None,
+        metadata_updates: dict[str, object] | None = None,
+        db: AsyncSession | None,
+    ) -> None:
+        if db is not None:
+            await self._persist_voice_job_update(
+                db,
+                job_id=job_id,
+                status=status,
+                error_message=error_message,
+                metadata_updates=metadata_updates,
+            )
+            return
+
+        async for internal_db in acquire_org_async_session(self.user_ids.organisation_id):
+            await self._persist_voice_job_update(
+                internal_db,
+                job_id=job_id,
+                status=status,
+                error_message=error_message,
+                metadata_updates=metadata_updates,
+            )
+            return
+
+    async def _persist_voice_job_update(
+        self,
+        db: AsyncSession,
+        *,
+        job_id: UUID,
+        status: JobStatus,
+        error_message: str | None = None,
+        metadata_updates: dict[str, object] | None = None,
+    ) -> None:
+        job = await db.get(ChatMessageJob, job_id)
+        if job is None:
+            return
+
+        job.status = status
+        metadata = dict(job.job_metadata or {})
+        if metadata_updates:
+            metadata.update(metadata_updates)
+        job.job_metadata = metadata
+        job.error_message = error_message
+        db.add(job)
+        await db.commit()
+
 
 def _coerce_expires_at(value: int | float | str) -> datetime:
     """Normalize Azure expiry values into timezone-aware UTC datetimes."""
@@ -584,29 +707,32 @@ def _build_runtime_config(
     user_ids: UserIDs,
     secret: str,
     org_name: str,
+    conversation_mode: RealtimeConversationMode,
 ) -> UserRealtimeRuntimeConfig:
     issued_at = datetime.now(UTC)
     control_mode = RealtimeControlMode.BACKEND_SIDEBAND
     tool_policy = RealtimeToolPolicy.GUARDED_AUTO
     allowed_tools = _get_voice_allowed_tools()
     tool_schemas = _get_voice_tool_schemas()
+    turn_detection = _build_turn_detection(conversation_mode)
     session_update: dict[str, object] = {
         "type": "session.update",
         "session": {
-            "modalities": ["text", "audio"],
+            "type": "realtime",
+            "output_modalities": ["audio"],
             "instructions": get_voice_realtime_system_prompt(org_name),
             "tools": tool_schemas,
             "audio": {
                 "input": {
-                    "format": {"type": "audio/pcm", "sample_rate_hz": 16000},
+                    "format": {"type": "audio/pcm", "rate": 24000},
                     "transcription": {"model": "whisper-1"},
+                    "turn_detection": turn_detection,
                 },
                 "output": {
-                    "format": {"type": "audio/pcm", "sample_rate_hz": 24000},
+                    "format": {"type": "audio/pcm", "rate": 24000},
                     "voice": voice,
                 },
             },
-            "turn_detection": None,
         },
     }
     payload = _runtime_config_payload(
@@ -631,6 +757,24 @@ def _build_runtime_config(
         expires_at=expires_at,
         signature=signature,
     )
+
+
+def _resolve_turn_mode(conversation_mode: RealtimeConversationMode) -> RealtimeTurnMode:
+    if conversation_mode == RealtimeConversationMode.REALTIME:
+        return RealtimeTurnMode.SERVER_VAD
+    return RealtimeTurnMode.PUSH_TO_TALK
+
+
+def _build_turn_detection(
+    conversation_mode: RealtimeConversationMode,
+) -> dict[str, object] | None:
+    if conversation_mode == RealtimeConversationMode.REALTIME:
+        return {
+            "type": "server_vad",
+            "silence_duration_ms": 700,
+            "prefix_padding_ms": 300,
+        }
+    return None
 
 
 def verify_runtime_config_signature(

@@ -90,12 +90,14 @@ class RealtimeConversationMode(str, Enum):
     """Supported realtime conversation modes."""
 
     PUSH_TO_TALK = "push_to_talk"
+    REALTIME = "realtime"
 
 
 class RealtimeTurnMode(str, Enum):
     """Resolved turn mode returned to the client."""
 
     PUSH_TO_TALK = "push_to_talk"
+    SERVER_VAD = "server_vad"
 
 
 class RealtimeToolPolicy(str, Enum):

@@ -26,7 +26,7 @@ This worker handles chat-related background tasks, specifically attachment proce
 ### Start the worker
 
 ```powershell
-celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing,chat_messages --pool=solo
+celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing,chat_messages,voice_realtime --pool=solo
 ```
 
 ### Test connectivity

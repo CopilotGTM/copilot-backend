@@ -128,7 +128,7 @@ class AgentConfig:
     ROUTER_TIMEOUT: int = int(os.getenv("AGENT_ROUTER_TIMEOUT", "30"))
 
     # Voice Realtime Agent - tool-free conversational agent for live voice sessions
-    VOICE_REALTIME_MODEL: str = os.getenv("AGENT_VOICE_REALTIME_MODEL", "gpt-realtime-mini")
+    VOICE_REALTIME_MODEL: str = os.getenv("AGENT_VOICE_REALTIME_MODEL", "gpt-realtime-1.5")
     VOICE_REALTIME_VOICE: str = os.getenv("AGENT_VOICE_REALTIME_VOICE", "alloy")
     VOICE_REALTIME_DEBUG: bool = os.getenv("AGENT_VOICE_REALTIME_DEBUG", "false").lower() == "true"
     VOICE_REALTIME_TIMEOUT: int = int(os.getenv("AGENT_VOICE_REALTIME_TIMEOUT", "120"))
