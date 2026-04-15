@@ -447,6 +447,33 @@ async def forgot_password(
         )
 
 
+
+@router.get("/me", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
+async def get_current_user_profile(
+    response: FastAPIResponse,
+    current_user: User = Depends(user_auth),
+) -> GenericResponse[UserLoginResponse]:
+    """Return the current authenticated user profile for mobile session bootstrap."""
+    try:
+        return Response.success_response(
+            message="Current user fetched successfully",
+            data=UserLoginResponse(
+                email=current_user.email,
+                first_name=current_user.first_name,
+                last_name=current_user.last_name,
+                role=current_user.user_role,
+                state=UserLoginState.ACTIVE,
+                created_at=current_user.created_at,
+                email_verified=current_user.email_verified,
+                last_login_at=current_user.last_login_at,
+                timezone=current_user.timezone,
+            ),
+        )
+    except Exception as e:
+        logger.error("Error fetching current user profile: %s", str(e), exc_info=True)
+        return Response.internal_server_error_response(
+            message=UserAuthErrors.AUTHENTICATION_FAILED, data=None, response=response
+        )
 @router.post("/logout", response_model=GenericResponse[None], tags=["user_auth"])
 async def user_logout(
     logout_request: UserLogoutRequest,
@@ -472,3 +499,4 @@ async def user_logout(
         return Response.internal_server_error_response(
             UserAuthErrors.LOGOUT_FAILED, response=response
         )
+
