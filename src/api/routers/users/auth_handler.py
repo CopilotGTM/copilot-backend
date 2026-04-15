@@ -447,7 +447,6 @@ async def forgot_password(
         )
 
 
-
 @router.get("/me", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
 async def get_current_user_profile(
     response: FastAPIResponse,
@@ -474,6 +473,8 @@ async def get_current_user_profile(
         return Response.internal_server_error_response(
             message=UserAuthErrors.AUTHENTICATION_FAILED, data=None, response=response
         )
+
+
 @router.post("/logout", response_model=GenericResponse[None], tags=["user_auth"])
 async def user_logout(
     logout_request: UserLogoutRequest,
@@ -499,4 +500,3 @@ async def user_logout(
         return Response.internal_server_error_response(
             UserAuthErrors.LOGOUT_FAILED, response=response
         )
-
