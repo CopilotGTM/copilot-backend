@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, Column, Index, String, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -34,21 +35,47 @@ class CRMCustomFieldDataType(str, Enum):
     FORMULA = "formula"
 
 
+class CRMCustomFieldSource(str, Enum):
+    """Where a custom-field definition originates."""
+
+    INTERNAL = "internal"
+    PROVIDER = "provider"
+
+
 class CRMCustomFieldDefinition(TimestampMixin, table=True):
     """Organisation-scoped schema definition for custom CRM fields."""
 
     __tablename__ = "crm_custom_field_definitions"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_crm_custom_field_internal_key_state",
             "organisation_id",
             "entity_type",
             "key",
             "is_deleted",
-            name="uq_crm_custom_field_org_entity_key_state",
+            unique=True,
+            postgresql_where=text("field_source = 'internal'"),
+        ),
+        Index(
+            "uq_crm_custom_field_provider_key_state",
+            "integration_id",
+            "entity_type",
+            "provider_field_key",
+            "is_deleted",
+            unique=True,
+            postgresql_where=text("field_source = 'provider'"),
         ),
         Index(
             "ix_crm_custom_field_org_entity_active",
             "organisation_id",
+            "entity_type",
+            "field_source",
+            "is_active",
+            "is_deleted",
+        ),
+        Index(
+            "ix_crm_custom_field_integration_entity_active",
+            "integration_id",
             "entity_type",
             "is_active",
             "is_deleted",
@@ -56,6 +83,21 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
         CheckConstraint(
             "key ~ '^[a-z][a-z0-9_]{1,62}$'",
             name="ck_crm_custom_field_key_format",
+        ),
+        CheckConstraint(
+            "("
+            "field_source = 'internal' "
+            "AND integration_id IS NULL "
+            "AND provider_name IS NULL "
+            "AND provider_field_key IS NULL "
+            "AND is_provider_custom IS NULL"
+            ") OR ("
+            "field_source = 'provider' "
+            "AND integration_id IS NOT NULL "
+            "AND provider_name IS NOT NULL "
+            "AND provider_field_key IS NOT NULL"
+            ")",
+            name="ck_crm_custom_field_source_provenance",
         ),
     )
 
@@ -73,9 +115,35 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
         sa_column=Column(String(32), nullable=False, index=True),
         description="CRM entity this definition applies to (currently deal).",
     )
+    field_source: CRMCustomFieldSource = Field(
+        default=CRMCustomFieldSource.INTERNAL,
+        sa_column=Column(
+            String(16),
+            nullable=False,
+            server_default=text("'internal'"),
+            index=True,
+        ),
+        description="Whether the definition is owned by our internal CRM or mirrored from a provider.",
+    )
+    integration_id: UUID | None = Field(
+        default=None,
+        foreign_key="knowledge_integrations.integration_id",
+        index=True,
+        description="Owning integration for provider-backed field definitions. Null for internal fields.",
+    )
+    provider_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="Provider identifier for mirrored field definitions (for example hubspot).",
+    )
     key: str = Field(
         sa_column=Column(String(64), nullable=False),
         description="Stable machine key used in payloads, CSV mapping, and properties storage.",
+    )
+    provider_field_key: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Provider-native field key or property name for mirrored schema rows.",
     )
     label: str = Field(
         sa_column=Column(String(255), nullable=False),
@@ -95,6 +163,11 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
         description="Marks system-provided fields that should not be removed by tenant cleanup.",
+    )
+    is_provider_custom: bool | None = Field(
+        default=None,
+        sa_column=Column(Boolean, nullable=True),
+        description="Whether the external provider marks this field as custom rather than system-defined.",
     )
     is_active: bool = Field(
         default=True,
@@ -137,4 +210,19 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
         default=None,
         sa_column=Column(JSONB, nullable=True),
         description="Formula metadata for computed fields when formula evaluation is supported.",
+    )
+    data_payload: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+        description="Raw provider schema payload for mirrored fields, kept for replay and troubleshooting.",
+    )
+    source_modified_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Last modified timestamp reported by the provider for this field definition.",
+    )
+    last_seen_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time this schema row was observed during provider sync.",
     )

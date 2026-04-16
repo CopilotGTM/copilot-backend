@@ -14,7 +14,8 @@
 | Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
 
-HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture. CRM sync for both providers remains deferred and is not part of the active sync worker pipeline yet.
+HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
+HubSpot deal schema sync is now the first active CRM sync slice. Deal-record sync remains deferred.
 
 ## OAuth Model
 
@@ -46,6 +47,15 @@ src/
     email_sync_service.py       # Email folder/message upsert
     email_delta_sync_service.py # Email sync orchestrator (fresh session pattern)
     messaging_sync_service.py   # Teams/Slack channel/chat/message upsert (org-scoped)
+    crm/
+      __init__.py               # CRM integration helpers shared across provider syncs
+      common/
+        schema_types.py         # Provider-neutral CRM schema dataclasses
+        field_type_mapper.py    # HubSpot property type -> CRM field type mapping
+        field_registry_service.py # Provider-backed CRM field registry persistence
+      schema/
+        schema_sync_result.py    # Shared schema-sync counters/result
+        hubspot_deal_schema_service.py # HubSpot deal schema orchestration
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -64,6 +74,9 @@ src/
       messaging/
         teams.py                # Teams channels, chats, messages fetcher
         slack.py                # Slack channels, chats, messages fetcher
+      crm/
+        hubspot/
+          deal_schema_fetcher.py # HubSpot deal property schema fetcher
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
@@ -83,10 +96,11 @@ User clicks "Connect" in frontend
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
       2. Store tokens in KnowledgeIntegration.credentials
-      3. Dispatch initial sync only for providers with active sync support
-         HubSpot and Salesforce currently store
-         `initial_sync_status=not_implemented` in `connection_metadata`
-         instead of dispatching CRM sync
+      3. Store post-connect state only
+         HubSpot and Salesforce still store `initial_sync_status=not_implemented` in
+         `connection_metadata`
+         HubSpot deal schema sync exists as the first active CRM sync slice, but it is not
+         dispatched from the callback flow yet
 
 Celery Beat (scheduled)
   -> Tier 1: all_orgs_task (fan out to orgs)
