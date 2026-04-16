@@ -266,9 +266,6 @@ module "demo_pipeline" {
   branch_name        = var.demo_pipeline_branch
   yml_path           = var.demo_pipeline_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
-  pipeline_variables = {
-    APP_URL      = module.demo_frontend_app_service.custom_domain_url
-    WEB_APP_NAME = module.demo_frontend_app_service.app_service_name
-  }
+  pipeline_variables = {}
 }
 

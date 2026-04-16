@@ -167,13 +167,6 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 # gpu_node_taints      = ["dedicated=gpu:NoSchedule"]        # Default
 
 # -----------------------------------------------------------------
-# External Services
-# -----------------------------------------------------------------
-super_admin_email = "tech@copilotgtm.com"
-supabase_url      = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
-resend_email      = "noreply@team.copilotgtm.com" # Override from default
-
-# -----------------------------------------------------------------
 # Microsoft Teams Bot
 # -----------------------------------------------------------------
 # Messaging endpoint is managed via Azure DevOps Variable Group (copilot-infra-secrets-dev)
@@ -191,11 +184,6 @@ oauth_redirect_uris = [
 # Secrets (provided via TF_VAR_* environment variables)
 # -----------------------------------------------------------------
 # TF_VAR_azuredevops_pat           - Azure DevOps Personal Access Token
-# TF_VAR_supabase_anon_key         - Supabase Anonymous Key
-# TF_VAR_supabase_service_role_key - Supabase Service Role Key
-# TF_VAR_supabase_jwt_secret       - Supabase JWT Secret
-# TF_VAR_resend_api_key            - Resend Email API Key
-# TF_VAR_nango_secret              - Nango Integration Secret
 
 # -----------------------------------------------------------------
 # Demo Frontend & Demo Pipeline (Dev only)
