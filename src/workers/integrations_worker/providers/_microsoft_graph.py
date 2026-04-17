@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import IntegrationPermissionError
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -109,6 +110,20 @@ async def graph_api_request(
 
     async def _do() -> dict[str, Any]:
         response = await client.get(url, params=params)
+        if response.status_code == 403:
+            response_text = response.text.lower()
+            if (
+                "insufficient privileges" in response_text
+                or "required application permissions" in response_text
+                or "insufficient permissions" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    "Required Microsoft permissions were not granted. Please reconnect this integration.",
+                    status_code=403,
+                    provider="microsoft",
+                    endpoint=endpoint,
+                    response_summary=response.text,
+                )
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 
@@ -129,6 +144,20 @@ async def graph_api_request_url(
 
     async def _do() -> dict[str, Any]:
         response = await client.get(url)
+        if response.status_code == 403:
+            response_text = response.text.lower()
+            if (
+                "insufficient privileges" in response_text
+                or "required application permissions" in response_text
+                or "insufficient permissions" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    "Required Microsoft permissions were not granted. Please reconnect this integration.",
+                    status_code=403,
+                    provider="microsoft",
+                    endpoint=url,
+                    response_summary=response.text,
+                )
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 

@@ -49,6 +49,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.sync_health import SyncFailureType, classify_sync_error
 from src.workers.integrations_worker.providers.email import gmail_email, outlook_email
 
 logger = get_logger(__name__)
@@ -374,6 +375,8 @@ class EmailDeltaSyncService:
                 sync_data=sync_data,
             )
         except Exception as e:
+            if classify_sync_error(e) == SyncFailureType.AUTH_FAILED:
+                raise
             logger.error(
                 "Email sync failed",
                 extra={
@@ -746,6 +749,8 @@ class EmailDeltaSyncService:
             }
 
         except Exception as e:
+            if classify_sync_error(e) == SyncFailureType.AUTH_FAILED:
+                raise
             logger.error(
                 "Failed to sync folder messages",
                 extra={

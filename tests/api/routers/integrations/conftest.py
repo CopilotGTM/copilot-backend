@@ -276,11 +276,12 @@ class FakeCopilotCallbackService:
 
     def __init__(self):
         self.should_raise_value_error = False
+        self.value_error_message = "Invalid or expired state parameter"
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, str]:
         """Return a fake callback payload."""
         if self.should_raise_value_error:
-            raise ValueError("Invalid or expired state parameter")
+            raise ValueError(self.value_error_message)
         return {
             "integration_id": "test-integration",
             "connection_id": "test-connection",

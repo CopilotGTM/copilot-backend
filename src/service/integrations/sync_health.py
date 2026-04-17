@@ -28,6 +28,10 @@ from sqlmodel import col
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import (
+    IntegrationPermissionError,
+    is_insufficient_scope_error,
+)
 
 logger = get_logger(__name__)
 
@@ -67,18 +71,28 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
     """
     if isinstance(exc, AuthTokenRevokedError):
         return SyncFailureType.AUTH_FAILED
+    if isinstance(exc, IntegrationPermissionError):
+        return SyncFailureType.AUTH_FAILED
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        if status in (401, 403):
+        if status == 401:
             return SyncFailureType.AUTH_FAILED
+        if status == 403 and is_insufficient_scope_error(exc):
+            return SyncFailureType.AUTH_FAILED
+        if status == 403:
+            return SyncFailureType.PROVIDER_ERROR
         if status == 429:
             return SyncFailureType.RATE_LIMITED
         if 500 <= status < 600:
             return SyncFailureType.PROVIDER_ERROR
 
     msg = str(exc).lower()
-    if "invalid_grant" in msg or "token has been revoked" in msg:
+    if (
+        "invalid_grant" in msg
+        or "token has been revoked" in msg
+        or is_insufficient_scope_error(exc)
+    ):
         return SyncFailureType.AUTH_FAILED
 
     if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):

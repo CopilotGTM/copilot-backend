@@ -79,3 +79,27 @@ def test_copilot_callback_error_returns_popup_completion_html(
     assert "/integrations/oauth/popup-complete" in location
     assert "success=false" in location
     assert "Invalid+or+expired+state+parameter" in location
+
+
+def test_copilot_callback_preserves_backend_error_message(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Callback redirect should carry the backend rejection message through to the popup page."""
+    callback_service = integrations_dependency_overrides["copilot_callback_service"]
+    callback_service.should_raise_value_error = True
+    callback_service.value_error_message = (
+        "Personal email addresses are not allowed for integrations. "
+        "The connected account uses gmail.com, which is a personal email domain. "
+        "Please connect with your work email."
+    )
+
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback?code=abc&state=xyz",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "Personal+email+addresses+are+not+allowed+for+integrations." in location

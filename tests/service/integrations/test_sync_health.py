@@ -34,6 +34,21 @@ class TestClassifySyncError:
     def test_http_403(self):
         response = httpx.Response(403, request=httpx.Request("GET", "https://x.com"))
         exc = httpx.HTTPStatusError("403", request=response.request, response=response)
+        assert classify_sync_error(exc) == SyncFailureType.PROVIDER_ERROR
+
+    def test_http_403_insufficient_scope(self):
+        response = httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Request had insufficient authentication scopes.",
+                    "status": "PERMISSION_DENIED",
+                }
+            },
+            request=httpx.Request("GET", "https://x.com"),
+        )
+        exc = httpx.HTTPStatusError("403", request=response.request, response=response)
         assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
 
     def test_http_429(self):
@@ -57,6 +72,10 @@ class TestClassifySyncError:
 
     def test_token_revoked_in_message(self):
         exc = Exception("Token has been revoked by the user")
+        assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
+
+    def test_missing_scope_in_message(self):
+        exc = Exception("Slack conversations.history failed: missing_scope")
         assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
 
     def test_connect_error(self):
