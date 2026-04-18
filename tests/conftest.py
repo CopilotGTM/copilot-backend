@@ -13,6 +13,7 @@ from sqlmodel import Session, create_engine
 # This avoids overriding your configured credentials during tests.
 load_dotenv(override=False)
 os.environ.setdefault("ENV", "local")
+os.environ.setdefault("VOICE_REALTIME_API_ENABLED", "true")
 
 import fakeredis
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency

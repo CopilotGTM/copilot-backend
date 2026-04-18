@@ -353,6 +353,43 @@ def test_fastapi_lifespan_initializes_sentry_after_supabase_clients(mocker):
     assert call_order == ["admin", "user", "token", "sentry"]
 
 
+def _build_fresh_fastapi_app(mocker) -> FastAPI:
+    reload(app_state)
+    reload(fastapi_app)
+    mocker.patch("src.api.fastapi_app.instrument_fastapi_app")
+    return fastapi_app.create_fastapi_app()
+
+
+def _registered_paths(app: FastAPI) -> set[str]:
+    return {route.path for route in app.routes if hasattr(route, "path")}
+
+
+def test_create_fastapi_app_excludes_voice_realtime_routes_when_feature_flag_disabled(
+    mocker, monkeypatch
+):
+    monkeypatch.setenv("VOICE_REALTIME_API_ENABLED", "false")
+
+    app = _build_fresh_fastapi_app(mocker)
+    paths = _registered_paths(app)
+
+    assert "/users/realtime/session" not in paths
+    assert "/users/realtime/calls/attach" not in paths
+    assert "/users/chats/voice/turns" not in paths
+
+
+def test_create_fastapi_app_includes_voice_realtime_routes_when_feature_flag_enabled(
+    mocker, monkeypatch
+):
+    monkeypatch.setenv("VOICE_REALTIME_API_ENABLED", "true")
+
+    app = _build_fresh_fastapi_app(mocker)
+    paths = _registered_paths(app)
+
+    assert "/users/realtime/session" in paths
+    assert "/users/realtime/calls/attach" in paths
+    assert "/users/chats/voice/turns" in paths
+
+
 def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
     mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")

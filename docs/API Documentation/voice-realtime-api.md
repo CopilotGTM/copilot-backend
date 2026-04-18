@@ -2,6 +2,9 @@
 
 This document covers the dedicated APIs used by the mobile voice realtime experience: bootstrapping a short-lived Azure realtime session, attaching backend sideband control to the live call, persisting completed voice turns, and retrieving voice session history/results through the existing chat APIs.
 
+Route exposure is deployment-controlled via `VOICE_REALTIME_API_ENABLED`. In production this flag
+should remain `false`, which means these routes are not mounted and return `404 Not Found`.
+
 ## Base URLs
 
 ```text

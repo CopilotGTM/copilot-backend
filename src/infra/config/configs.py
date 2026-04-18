@@ -256,6 +256,11 @@ class AppConfig:
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    @property
+    def voice_realtime_api_enabled(self) -> bool:
+        """Feature flag for exposing the voice realtime HTTP routes."""
+        return os.getenv("VOICE_REALTIME_API_ENABLED", "false").lower() == "true"
+
 
 class OpenAIConfig:
     """Configuration for OpenAI services"""
