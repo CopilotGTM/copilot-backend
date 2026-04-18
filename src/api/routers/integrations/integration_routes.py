@@ -23,9 +23,9 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import (
     AvailableIntegration,
     AvailableIntegrationsResponse,
-    IntegrationResponse,
     RefreshChannelsResponse,
 )
+from src.api.schemas.integrations.response_builders import build_integration_response
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.constant import IntegrationErrors
@@ -66,21 +66,29 @@ async def list_available_integrations(
     try:
         # Pass user_id so the query returns ORG-scoped integrations (visible to all)
         # plus only this user's USER-scoped integrations (personal connections)
-        connected_integrations = await service.list_all_active_integrations(
+        visible_integrations = await service.list_available_integrations_for_user(
             user_id=user_ids.user_id,
         )
 
-        # Group connected integrations by type
-        connected_by_type = {}
-        for integration in connected_integrations:
-            int_type = integration.integration_type
-            if int_type not in connected_by_type:
-                connected_by_type[int_type] = []
-            connected_by_type[int_type].append(integration)
+        connected_by_type: dict[IntegrationType, list] = {}
+        action_required_by_type: dict[IntegrationType, list] = {}
+        total_connected = 0
+
+        for integration in visible_integrations:
+            projected = build_integration_response(integration)
+            int_type = projected.integration_type
+            if integration.is_active:
+                total_connected += 1
+                if int_type not in connected_by_type:
+                    connected_by_type[int_type] = []
+                connected_by_type[int_type].append(projected)
+            elif projected.action_required != "none":
+                if int_type not in action_required_by_type:
+                    action_required_by_type[int_type] = []
+                action_required_by_type[int_type].append(projected)
 
         # Build response with all available integrations
         integrations = []
-        total_connected = len(connected_integrations)
 
         # TODO(nikhil, 2026-Q2): Include a `can_manage` flag per integration so the
         # frontend can show read-only cards for org integrations when the user is not
@@ -94,7 +102,11 @@ async def list_available_integrations(
 
             # Get connected instances for this type
             connected_instances = connected_by_type.get(int_type, [])
+            action_required_instances = action_required_by_type.get(int_type, [])
             is_connected = len(connected_instances) > 0
+            has_action_required = bool(action_required_instances) or any(
+                instance.action_required != "none" for instance in connected_instances
+            )
 
             integrations.append(
                 AvailableIntegration(
@@ -106,9 +118,9 @@ async def list_available_integrations(
                     category_name=metadata.category_name,
                     availability_status=metadata.availability_status,
                     is_connected=is_connected,
-                    connected_integrations=[
-                        IntegrationResponse.model_validate(conn) for conn in connected_instances
-                    ],
+                    has_action_required=has_action_required,
+                    connected_integrations=connected_instances,
+                    action_required_integrations=action_required_instances,
                 )
             )
 

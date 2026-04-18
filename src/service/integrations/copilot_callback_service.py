@@ -302,6 +302,7 @@ class CopilotCallbackService:
         integration.name = metadata.name
         integration.connection_id = connection_id
         integration.is_active = True
+        integration.requires_reauth = False
         integration.last_sync_error = None
         integration.integration_email = integration_email
         self._apply_custom_token_payload(

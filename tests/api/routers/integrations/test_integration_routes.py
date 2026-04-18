@@ -133,6 +133,107 @@ def test_list_available_mixed_active_inactive(
     assert data["total_connected"] == 1
 
 
+def test_list_available_includes_requires_reauth_instances(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Expired integrations are returned as action-required, not as connected."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="gmail",
+            name="Expired Gmail",
+            is_active=False,
+            requires_reauth=True,
+            last_sync_status="auth_failed",
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    gmail = next((i for i in data["integrations"] if i["integration_type"] == "gmail"), None)
+    assert gmail is not None
+    assert gmail["is_connected"] is False
+    assert gmail["has_action_required"] is True
+    assert gmail["connected_integrations"] == []
+    assert len(gmail["action_required_integrations"]) == 1
+    assert gmail["action_required_integrations"][0]["requires_reauth"] is True
+    assert gmail["action_required_integrations"][0]["action_required"] == "reauth_expired"
+
+
+def test_list_available_marks_missing_scopes_as_additional_permissions(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Active integrations with outdated scopes stay connected but surface reconnect guidance."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="google_calendar",
+            name="Google Calendar",
+            is_active=True,
+            scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    calendar = next(
+        (i for i in data["integrations"] if i["integration_type"] == "google_calendar"),
+        None,
+    )
+    assert calendar is not None
+    assert calendar["is_connected"] is True
+    assert calendar["has_action_required"] is True
+    assert len(calendar["connected_integrations"]) == 1
+    connected = calendar["connected_integrations"][0]
+    assert connected["action_required"] == "additional_permissions"
+    assert connected["missing_scopes"] == [
+        "https://www.googleapis.com/auth/meetings.space.readonly"
+    ]
+    assert connected["missing_scope_labels"] == ["Google Meet access"]
+
+
+def test_list_available_excludes_manually_disconnected_integrations_from_action_required(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Manual disconnect should not generate reconnect-required UI state."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="slack",
+            name="Old Slack",
+            is_active=False,
+            requires_reauth=False,
+            last_sync_error="Integration disconnected by user",
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    slack = next((i for i in data["integrations"] if i["integration_type"] == "slack"), None)
+    assert slack is not None
+    assert slack["is_connected"] is False
+    assert slack["has_action_required"] is False
+    assert slack["action_required_integrations"] == []
+
+
 def test_refresh_channels_accepts_slack(
     client: TestClient,
     integrations_dependency_overrides,

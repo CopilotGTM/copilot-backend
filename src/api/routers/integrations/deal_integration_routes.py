@@ -26,11 +26,11 @@ from src.api.schemas.integrations import (
     ChannelLinkResponse,
     ChannelListResponse,
     EmptyResponse,
-    IntegrationResponse,
     LinkedChannel,
 )
+from src.api.schemas.integrations.response_builders import build_integration_response
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.integrations_metadata import (
     AvailabilityStatus,
     get_all_integration_metadata,
@@ -74,7 +74,7 @@ async def list_available_deal_integrations(
             extra={"deal_id": str(deal_id)},
         )
         # Get active integrations for the deal
-        connected_integrations = await service.list_all_active_integrations(
+        visible_integrations = await service.list_available_integrations_for_user(
             user_id=user_ids.user_id
         )
 
@@ -90,27 +90,36 @@ async def list_available_deal_integrations(
             linked_channels_by_type[int_type].append(channel)
 
         # Group connected integrations by type
-        connected_by_type: dict[str, list[KnowledgeIntegration]] = {}
-        for integration in connected_integrations:
-            int_type = integration.integration_type
+        connected_by_type: dict[IntegrationType, list] = {}
+        action_required_by_type: dict[IntegrationType, list] = {}
+        total_connected = 0
+        for integration in visible_integrations:
+            projected = build_integration_response(integration)
+            int_type = projected.integration_type
             if int_type not in connected_by_type:
                 connected_by_type[int_type] = []
-            connected_by_type[int_type].append(integration)
+            if integration.is_active:
+                total_connected += 1
+                connected_by_type[int_type].append(projected)
+            elif projected.action_required != "none":
+                action_required_by_type.setdefault(int_type, []).append(projected)
 
         # Only messaging integrations are relevant in deal context
         deal_integration_types = [IntegrationType.TEAMS, IntegrationType.SLACK]
         all_metadata = get_all_integration_metadata()
 
         integrations = []
-        total_connected = len(connected_integrations)
-
         for int_type in deal_integration_types:
             metadata = all_metadata.get(int_type)
             if not metadata or metadata.availability_status == AvailabilityStatus.DEPRECATED:
                 continue
 
             connected_instances = connected_by_type.get(int_type, [])
+            action_required_instances = action_required_by_type.get(int_type, [])
             is_connected = len(connected_instances) > 0
+            has_action_required = bool(action_required_instances) or any(
+                instance.action_required != "none" for instance in connected_instances
+            )
             type_linked_channels = linked_channels_by_type.get(int_type, [])
 
             integrations.append(
@@ -123,9 +132,9 @@ async def list_available_deal_integrations(
                     category_name=metadata.category_name,
                     availability_status=metadata.availability_status,
                     is_connected=is_connected,
-                    connected_integrations=[
-                        IntegrationResponse.model_validate(conn) for conn in connected_instances
-                    ],
+                    has_action_required=has_action_required,
+                    connected_integrations=connected_instances,
+                    action_required_integrations=action_required_instances,
                     linked_channels=[LinkedChannel(**ch) for ch in type_linked_channels],
                 )
             )

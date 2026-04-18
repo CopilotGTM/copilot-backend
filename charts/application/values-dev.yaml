@@ -18,6 +18,7 @@ api:
     REDIS_SSL_CERT_REQS: "CERT_REQUIRED"
     GOOGLE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     MICROSOFT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
+    SLACK_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
   autoscaling:
     minReplicas: 1
   # Actual usage: 6m CPU, 427Mi memory

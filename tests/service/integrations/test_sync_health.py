@@ -49,7 +49,7 @@ class TestClassifySyncError:
             request=httpx.Request("GET", "https://x.com"),
         )
         exc = httpx.HTTPStatusError("403", request=response.request, response=response)
-        assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
+        assert classify_sync_error(exc) == SyncFailureType.PERMISSION_REQUIRED
 
     def test_http_429(self):
         response = httpx.Response(429, request=httpx.Request("GET", "https://x.com"))
@@ -76,7 +76,7 @@ class TestClassifySyncError:
 
     def test_missing_scope_in_message(self):
         exc = Exception("Slack conversations.history failed: missing_scope")
-        assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
+        assert classify_sync_error(exc) == SyncFailureType.PERMISSION_REQUIRED
 
     def test_connect_error(self):
         exc = httpx.ConnectError("Connection refused")
@@ -244,6 +244,41 @@ async def test_record_sync_failure_auth_sets_requires_reauth():
     assert mock_integration.requires_reauth is True
     assert mock_integration.is_active is False
     assert mock_integration.last_sync_status == "auth_failed"
+
+
+@pytest.mark.asyncio
+async def test_record_sync_failure_permission_required_does_not_set_requires_reauth():
+    """Permission drift should surface action required without deactivating the integration."""
+    mock_integration = _make_mock_integration(consecutive_failures=1)
+    _, mock_acquire = _mock_session_with_integration(mock_integration)
+
+    response = httpx.Response(
+        403,
+        json={
+            "error": {
+                "code": 403,
+                "message": "Request had insufficient authentication scopes.",
+                "status": "PERMISSION_DENIED",
+            }
+        },
+        request=httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/labels"),
+    )
+    error = httpx.HTTPStatusError("403", request=response.request, response=response)
+
+    with patch(
+        "src.service.integrations.sync_health.acquire_org_async_session",
+        side_effect=mock_acquire,
+    ):
+        failure_type = await record_sync_failure(
+            organisation_id=uuid4(),
+            integration_id=uuid4(),
+            error=error,
+        )
+
+    assert failure_type == SyncFailureType.PERMISSION_REQUIRED
+    assert mock_integration.requires_reauth is False
+    assert mock_integration.is_active is True
+    assert mock_integration.last_sync_status == "permission_required"
 
 
 # ---------------------------------------------------------------------------

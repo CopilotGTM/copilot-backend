@@ -117,6 +117,26 @@ class IntegrationResponse(IntegrationBase):
     last_sync_error: str | None = None
     access_token_expires_at: datetime | None = None
     connection_metadata: dict[str, Any] = Field(default_factory=dict)
+    requires_reauth: bool = Field(
+        default=False,
+        description="True when the integration has expired and must be reconnected.",
+    )
+    action_required: str = Field(
+        default="none",
+        description="UI action state: none, reauth_expired, additional_permissions",
+    )
+    action_message: str | None = Field(
+        default=None,
+        description="User-facing guidance for reconnecting this integration",
+    )
+    missing_scopes: list[str] = Field(
+        default_factory=list,
+        description="Provider scopes currently required but missing from the stored grant",
+    )
+    missing_scope_labels: list[str] = Field(
+        default_factory=list,
+        description="Readable names for missing provider scopes",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -226,9 +246,17 @@ class AvailableIntegration(BaseModel):
     is_connected: bool = Field(
         default=False, description="Whether user has already connected this integration"
     )
+    has_action_required: bool = Field(
+        default=False,
+        description="Whether any visible integration instance needs the user to reconnect.",
+    )
     connected_integrations: list[IntegrationResponse] = Field(
         default_factory=list,
         description="List of user's connected instances of this integration type",
+    )
+    action_required_integrations: list[IntegrationResponse] = Field(
+        default_factory=list,
+        description="Inactive or reconnect-required instances that need user attention",
     )
     linked_channels: list[LinkedChannel] = Field(
         default_factory=list,

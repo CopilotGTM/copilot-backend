@@ -204,6 +204,7 @@ async def disconnect_integration(
         await service.revoke_custom_oauth_token(integration)
 
         integration.is_active = False
+        integration.requires_reauth = False
         integration.last_sync_error = "Integration disconnected by user"
         service.db.add(integration)
         await service.db.commit()

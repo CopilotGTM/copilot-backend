@@ -85,6 +85,40 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
     ),
 }
 
+_SCOPE_DISPLAY_LABELS: dict[str, str] = {
+    "https://www.googleapis.com/auth/gmail.readonly": "Gmail access",
+    "https://www.googleapis.com/auth/calendar.readonly": "Google Calendar access",
+    "https://www.googleapis.com/auth/meetings.space.readonly": "Google Meet access",
+    "channels:read": "Slack channel access",
+    "groups:read": "Slack private channel access",
+    "mpim:read": "Slack direct message access",
+    "channels:history": "Slack channel history access",
+    "groups:history": "Slack private channel history access",
+    "mpim:history": "Slack direct message history access",
+    "users:read": "Slack user access",
+    "users:read.email": "Slack user email access",
+    "team:read": "Slack workspace access",
+    "Mail.Read": "Outlook mail access",
+    "Calendars.Read": "Outlook calendar access",
+    "Chat.Read": "Microsoft Teams chat access",
+    "ChannelMessage.Read.All": "Microsoft Teams channel message access",
+    "Channel.ReadBasic.All": "Microsoft Teams channel access",
+    "ChannelSettings.Read.All": "Microsoft Teams channel settings access",
+    "ChannelSettings.ReadWrite.All": "Microsoft Teams channel settings access",
+    "Team.ReadBasic.All": "Microsoft Teams team access",
+    "User.Read.All": "Microsoft user directory access",
+    "Group.Read.All": "Microsoft group access",
+    "Directory.Read.All": "Microsoft directory access",
+    "Directory.ReadWrite.All": "Microsoft directory access",
+    "Group.ReadWrite.All": "Microsoft group access",
+    "OnlineMeetingTranscript.Read.All": "Online meeting transcript access",
+    "OnlineMeetings.Read": "Online meetings access",
+}
+
+
+def get_required_scopes(integration_type: IntegrationType) -> frozenset[str]:
+    return _REQUIRED_SCOPES.get(integration_type, frozenset())
+
 
 def parse_granted_scopes(
     scope_value: str | list[str] | None,
@@ -110,7 +144,7 @@ def get_missing_required_scopes(
     integration_type: IntegrationType,
     granted_scopes: list[str] | None,
 ) -> set[str]:
-    required_scopes = _REQUIRED_SCOPES.get(integration_type)
+    required_scopes = get_required_scopes(integration_type)
     if not required_scopes:
         return set()
 
@@ -123,3 +157,11 @@ def get_missing_required_scopes(
             missing_scopes.add(required_scope)
 
     return missing_scopes
+
+
+def get_scope_display_label(scope: str) -> str:
+    return _SCOPE_DISPLAY_LABELS.get(scope, scope)
+
+
+def get_missing_scope_labels(missing_scopes: set[str]) -> list[str]:
+    return [get_scope_display_label(scope) for scope in sorted(missing_scopes)]

@@ -83,6 +83,26 @@ When detected, raises `AuthTokenRevokedError` which sets `requires_reauth=True` 
 
 **Why providers re-raise raw HTTPStatusError**: `google_provider.py` and `microsoft_provider.py` do NOT wrap `HTTPStatusError` in a generic `Exception`. The raw response body must reach `_is_permanent_auth_error()` for AADSTS/invalid_grant detection to work.
 
+## Reconnect State Semantics
+
+See also: [reauth-and-permission-recovery.md](reauth-and-permission-recovery.md) for the full reconnect flow, frontend action-required model, and scope-drift handling.
+
+The integrations UI uses two different concepts:
+
+- `requires_reauth=True`
+  - persisted on `KnowledgeIntegration`
+  - reserved for expired/revoked/broken auth only
+  - set when token refresh or provider auth state is permanently invalid
+  - manual disconnect must leave this `False`
+
+- `additional permissions required`
+  - not persisted as a separate DB flag
+  - derived by comparing stored granted scopes (`knowledge_integrations.scopes`) with the
+    integration's current required scopes
+  - surfaced in `/users/integrations/available` as action-required state for active integrations
+
+This separation prevents normal scope drift from being treated like expired credentials.
+
 ## Per-Environment App Registrations
 
 Each environment has its own Microsoft Azure AD app registration (Terraform-managed via `modules/microsoft_oauth_app`):

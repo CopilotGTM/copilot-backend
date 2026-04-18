@@ -375,7 +375,10 @@ class EmailDeltaSyncService:
                 sync_data=sync_data,
             )
         except Exception as e:
-            if classify_sync_error(e) == SyncFailureType.AUTH_FAILED:
+            if classify_sync_error(e) in {
+                SyncFailureType.AUTH_FAILED,
+                SyncFailureType.PERMISSION_REQUIRED,
+            }:
                 raise
             logger.error(
                 "Email sync failed",
@@ -749,7 +752,10 @@ class EmailDeltaSyncService:
             }
 
         except Exception as e:
-            if classify_sync_error(e) == SyncFailureType.AUTH_FAILED:
+            if classify_sync_error(e) in {
+                SyncFailureType.AUTH_FAILED,
+                SyncFailureType.PERMISSION_REQUIRED,
+            }:
                 raise
             logger.error(
                 "Failed to sync folder messages",

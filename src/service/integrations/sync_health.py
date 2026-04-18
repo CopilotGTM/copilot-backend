@@ -44,6 +44,7 @@ class SyncFailureType(str, Enum):
     """Classification of sync failure for observability and circuit breaker routing."""
 
     AUTH_FAILED = "auth_failed"
+    PERMISSION_REQUIRED = "permission_required"
     RATE_LIMITED = "rate_limited"
     PROVIDER_ERROR = "provider_error"
     INTERNAL_ERROR = "internal_error"
@@ -72,14 +73,14 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
     if isinstance(exc, AuthTokenRevokedError):
         return SyncFailureType.AUTH_FAILED
     if isinstance(exc, IntegrationPermissionError):
-        return SyncFailureType.AUTH_FAILED
+        return SyncFailureType.PERMISSION_REQUIRED
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 401:
             return SyncFailureType.AUTH_FAILED
         if status == 403 and is_insufficient_scope_error(exc):
-            return SyncFailureType.AUTH_FAILED
+            return SyncFailureType.PERMISSION_REQUIRED
         if status == 403:
             return SyncFailureType.PROVIDER_ERROR
         if status == 429:
@@ -88,12 +89,10 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
             return SyncFailureType.PROVIDER_ERROR
 
     msg = str(exc).lower()
-    if (
-        "invalid_grant" in msg
-        or "token has been revoked" in msg
-        or is_insufficient_scope_error(exc)
-    ):
+    if "invalid_grant" in msg or "token has been revoked" in msg:
         return SyncFailureType.AUTH_FAILED
+    if is_insufficient_scope_error(exc):
+        return SyncFailureType.PERMISSION_REQUIRED
 
     if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
         return SyncFailureType.PROVIDER_ERROR
@@ -198,6 +197,13 @@ async def record_sync_failure(
             logger.warning(
                 "Auth failure — requires_reauth set, integration deactivated: "
                 "integration=%s org=%s error=%s",
+                integration_id,
+                organisation_id,
+                error_msg[:200],
+            )
+        elif failure_type == SyncFailureType.PERMISSION_REQUIRED:
+            logger.warning(
+                "Integration requires additional permissions: integration=%s org=%s error=%s",
                 integration_id,
                 organisation_id,
                 error_msg[:200],

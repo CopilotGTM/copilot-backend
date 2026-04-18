@@ -53,6 +53,54 @@ def test_deal_available_with_connected_slack(
     assert len(slack["connected_integrations"]) == 1
 
 
+def test_deal_available_includes_reauth_and_additional_permissions_state(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    """Deal integrations mirror the same reconnect/action-required semantics."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    deal_id = uuid4()
+
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="teams",
+            name="Expired Teams",
+            is_active=False,
+            requires_reauth=True,
+        )
+    )
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="slack",
+            name="Slack Workspace",
+            is_active=True,
+            scopes=["channels:read"],
+        )
+    )
+
+    resp = client.get(f"/users/integrations/deals/{deal_id}/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    teams = next(
+        (item for item in data["integrations"] if item["integration_type"] == "teams"), None
+    )
+    slack = next(
+        (item for item in data["integrations"] if item["integration_type"] == "slack"), None
+    )
+    assert teams is not None and slack is not None
+    assert teams["has_action_required"] is True
+    assert teams["action_required_integrations"][0]["action_required"] == "reauth_expired"
+    assert slack["has_action_required"] is True
+    assert slack["connected_integrations"][0]["action_required"] == "additional_permissions"
+
+
 def test_deal_available_groups_linked_channels_by_type(
     client: TestClient,
     integrations_dependency_overrides,
