@@ -50,6 +50,7 @@ logger = get_logger("async_db_provider")
 # pgbouncer handles backend pooling; these just cache TCP connections.
 _POOL_SIZE = int(database_config.DATABASE_POOL_SIZE)
 _MAX_OVERFLOW = int(database_config.DATABASE_MAX_OVERFLOW)
+_POOL_TIMEOUT = int(database_config.DATABASE_POOL_TIMEOUT_SEC)
 _POOL_RECYCLE = int(database_config.POOL_RECYCLE_SEC)
 
 
@@ -96,6 +97,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     echo=False,
                     pool_size=_POOL_SIZE,
                     max_overflow=_MAX_OVERFLOW,
+                    pool_timeout=_POOL_TIMEOUT,
                     pool_recycle=_POOL_RECYCLE,
                     pool_pre_ping=True,
                     connect_args={
@@ -168,6 +170,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 echo=False,
                 pool_size=_POOL_SIZE,
                 max_overflow=_MAX_OVERFLOW,
+                pool_timeout=_POOL_TIMEOUT,
                 pool_recycle=_POOL_RECYCLE,
                 pool_pre_ping=True,
                 connect_args={

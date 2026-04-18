@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import fakeredis
@@ -335,6 +336,23 @@ def client_with_user_auth(mocker, user_auth_test_data):
     mocker.patch(
         "src.infra.messaging.redis_client.get_redis_client",
         return_value=fakeredis.FakeRedis(),
+    )
+    mocker.patch("src.api.fastapi_app.initialize_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.close_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
+    mocker.patch(
+        "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.security.token_revocation.token_revocation_service.initialize",
+        new=AsyncMock(),
     )
 
     # Patch Supabase client
