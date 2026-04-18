@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 from pathlib import Path
@@ -135,3 +136,18 @@ def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:
 
     assert "copilot-backend-deal-beat" not in deployment_names
     assert "copilot-backend-knowledge-beat" not in deployment_names
+
+
+def test_api_secret_renders_sentry_settings_for_dev() -> None:
+    manifests = _render_all_manifests()
+    secret = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Secret" and doc["metadata"]["name"] == "copilot-backend-secret"
+    )
+
+    assert (
+        base64.b64decode(secret["data"]["SENTRY_DSN"]).decode()
+        == "https://d47183944100e4f69572365fd1634d16@o4511017432186880.ingest.us.sentry.io/4511017435070464"
+    )
+    assert base64.b64decode(secret["data"]["SENTRY_TRACES_SAMPLE_RATE"]).decode() == "0.2"

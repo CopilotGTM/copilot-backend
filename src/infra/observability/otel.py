@@ -10,6 +10,7 @@ Also bridges Python ``logging`` so every log record gets trace_id/span_id.
 from __future__ import annotations
 
 import logging
+import os
 
 
 class _OtelLogSanitizer(logging.Filter):
@@ -47,6 +48,7 @@ async def async_init_otel(service_name_suffix: str = "") -> None:
 
     # Load auth header from Key Vault before creating exporters
     await otel_config.load_headers()
+    await _prime_supabase_credentials()
 
     _otel_initialized = True
 
@@ -81,6 +83,8 @@ def init_otel(service_name_suffix: str = "") -> None:
                 "Could not load OTel headers from Key Vault in sync context"
             )
 
+    _prime_supabase_credentials_sync()
+
     _otel_initialized = True
 
     _setup_tracing(otel_config, service_name_suffix)
@@ -98,6 +102,44 @@ def _parse_headers(raw: str) -> dict[str, str]:
             k, v = pair.split("=", 1)
             headers[k.strip()] = v.strip()
     return headers
+
+
+async def _prime_supabase_credentials() -> None:
+    """Ensure Supabase URL is available before non-local httpx instrumentation."""
+    if os.getenv("ENV", "dev") == "local":
+        return
+
+    from src.infra.config.configs import supabase_config
+
+    if supabase_config.SUPABASE_URL:
+        return
+
+    try:
+        await supabase_config.get_credentials()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not load Supabase credentials before OpenTelemetry httpx instrumentation"
+        )
+
+
+def _prime_supabase_credentials_sync() -> None:
+    """Sync bridge for worker startup when Supabase credentials are not preloaded."""
+    if os.getenv("ENV", "dev") == "local":
+        return
+
+    from src.infra.config.configs import supabase_config
+
+    if supabase_config.SUPABASE_URL:
+        return
+
+    try:
+        from src.infra.utils.async_runner import run_async
+
+        run_async(supabase_config.get_credentials())
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not load Supabase credentials before OpenTelemetry httpx instrumentation"
+        )
 
 
 def _resource(otel_config, suffix: str):
@@ -197,26 +239,7 @@ def _auto_instrument() -> None:
     except Exception:
         logging.getLogger(__name__).debug("Failed to auto-instrument Celery", exc_info=True)
 
-    try:
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-
-        # Exclude Supabase auth calls — supabase-py uses http2=True internally
-        # and OTel's httpx patching breaks HTTP/2 framing
-        from src.infra.config.configs import supabase_config
-
-        excluded = supabase_config.SUPABASE_URL.rstrip("/") if supabase_config.SUPABASE_URL else ""
-        if excluded:
-            import os
-
-            existing = os.getenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", "")
-            combined = f"{existing},{excluded}" if existing else excluded
-            os.environ["OTEL_PYTHON_HTTPX_EXCLUDED_URLS"] = combined
-
-        HTTPXClientInstrumentor().instrument()
-    except ImportError:
-        logging.getLogger(__name__).debug("httpx instrumentation not installed")
-    except Exception:
-        logging.getLogger(__name__).debug("Failed to auto-instrument httpx", exc_info=True)
+    _instrument_httpx()
 
     try:
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
@@ -244,3 +267,31 @@ def _auto_instrument() -> None:
         logging.getLogger(__name__).debug("Redis instrumentation not installed")
     except Exception:
         logging.getLogger(__name__).debug("Failed to auto-instrument Redis", exc_info=True)
+
+
+def _instrument_httpx() -> None:
+    """Instrument httpx everywhere except local Supabase-auth runtimes."""
+    if os.getenv("ENV", "dev") == "local":
+        logging.getLogger(__name__).info(
+            "Skipping httpx OpenTelemetry instrumentation in local runtime"
+        )
+        return
+
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        # Exclude Supabase auth calls — supabase-py uses http2=True internally
+        # and OTel's httpx patching breaks HTTP/2 framing
+        from src.infra.config.configs import supabase_config
+
+        excluded = supabase_config.SUPABASE_URL.rstrip("/") if supabase_config.SUPABASE_URL else ""
+        if excluded:
+            existing = os.getenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", "")
+            combined = f"{existing},{excluded}" if existing else excluded
+            os.environ["OTEL_PYTHON_HTTPX_EXCLUDED_URLS"] = combined
+
+        HTTPXClientInstrumentor().instrument()
+    except ImportError:
+        logging.getLogger(__name__).debug("httpx instrumentation not installed")
+    except Exception:
+        logging.getLogger(__name__).debug("Failed to auto-instrument httpx", exc_info=True)

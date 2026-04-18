@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import reload
 
@@ -10,10 +12,14 @@ import src.infra.observability.sentry as sentry_runtime
 import src.infra.utils.app_state as app_state
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Client as HttpxClient
 from src.api.middleware.request_context import RequestContextMiddleware
 from src.infra.config.configs import otel_config, sentry_config
 from src.infra.utils.logger import configure_logging, get_logger, resolve_celery_component
 from src.workers.base import celery_base
+from supabase import Client as SupabaseClient
+from supabase import create_client as create_supabase_client
+from supabase.lib.client_options import SyncClientOptions
 
 
 @dataclass
@@ -25,6 +31,16 @@ class _DummyWorkerConfig:
 
 def _structured_lines(stderr: str) -> list[dict]:
     return [json.loads(line) for line in stderr.splitlines() if line.strip().startswith("{")]
+
+
+def _build_supabase_base_client() -> tuple[SupabaseClient, HttpxClient]:
+    transport = HttpxClient(verify=True, follow_redirects=True, http2=True)
+    client = create_supabase_client(
+        "https://example.supabase.co",
+        "anon-key",
+        options=SyncClientOptions(httpx_client=transport),
+    )
+    return client, transport
 
 
 def test_configure_logging_formats_stdlib_loggers_as_json(capsys, monkeypatch):
@@ -296,6 +312,47 @@ def test_create_fastapi_app_instruments_shared_app_instance(mocker):
     instrument_mock.assert_called_once_with(app_state.fastapp)
 
 
+def test_fastapi_lifespan_initializes_sentry_after_supabase_clients(mocker):
+    call_order: list[str] = []
+
+    mocker.patch("src.api.fastapi_app.initialize_redis_pool", side_effect=lambda: None)
+    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", side_effect=lambda: None)
+    mocker.patch("src.api.fastapi_app.async_init_otel", side_effect=lambda **kwargs: None)
+    mocker.patch("src.api.fastapi_app.close_redis_pool", side_effect=lambda: None)
+    mocker.patch("src.api.fastapi_app.close_async_redis_pool", side_effect=lambda: None)
+    mocker.patch("src.api.fastapi_app.init_sentry", side_effect=lambda: call_order.append("sentry"))
+
+    async def _admin_init():
+        call_order.append("admin")
+
+    async def _user_init():
+        call_order.append("user")
+
+    async def _token_init():
+        call_order.append("token")
+
+    mocker.patch(
+        "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
+        side_effect=_admin_init,
+    )
+    mocker.patch(
+        "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
+        side_effect=_user_init,
+    )
+    mocker.patch(
+        "src.infra.security.token_revocation.token_revocation_service.initialize",
+        side_effect=_token_init,
+    )
+
+    async def _run() -> None:
+        async with fastapi_app.lifespan(FastAPI()):
+            return None
+
+    asyncio.run(_run())
+
+    assert call_order == ["admin", "user", "token", "sentry"]
+
+
 def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
     mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
@@ -396,6 +453,74 @@ def test_init_otel_is_noop_when_disabled(mocker):
     assert otel_runtime._otel_initialized is False
 
 
+def test_async_init_otel_primes_supabase_credentials_before_instrumentation(mocker, monkeypatch):
+    import src.infra.observability.otel as otel_runtime
+    from src.infra.config.configs import supabase_config
+
+    call_order: list[str] = []
+    monkeypatch.setenv("ENV", "dev")
+
+    async def _load_headers():
+        call_order.append("headers")
+
+    async def _load_supabase():
+        call_order.append("supabase")
+        return ("https://example.supabase.co", "anon", "service", "jwt")
+
+    mocker.patch.object(otel_runtime, "_otel_initialized", False)
+    mocker.patch.object(otel_config, "OTEL_ENABLED", True)
+    mocker.patch.object(otel_config, "OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.com/otlp")
+    mocker.patch.object(otel_config, "load_headers", side_effect=_load_headers)
+    mocker.patch.object(supabase_config, "SUPABASE_URL", "")
+    mocker.patch.object(supabase_config, "get_credentials", side_effect=_load_supabase)
+    mocker.patch("src.infra.observability.otel._setup_tracing", side_effect=lambda *args: None)
+    mocker.patch("src.infra.observability.otel._setup_logging", side_effect=lambda *args: None)
+    mocker.patch(
+        "src.infra.observability.otel._auto_instrument",
+        side_effect=lambda: call_order.append("instrument"),
+    )
+
+    asyncio.run(otel_runtime.async_init_otel())
+
+    assert call_order == ["headers", "supabase", "instrument"]
+
+
+def test_instrument_httpx_skips_local_runtime(mocker, monkeypatch):
+    import src.infra.observability.otel as otel_runtime
+
+    monkeypatch.setenv("ENV", "local")
+    monkeypatch.delenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", raising=False)
+    mocker.patch.object(otel_config, "OTEL_ENABLED", True)
+    mocker.patch.object(otel_config, "OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.com/otlp")
+
+    instrument_mock = mocker.patch(
+        "opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor.instrument"
+    )
+
+    otel_runtime._instrument_httpx()
+
+    instrument_mock.assert_not_called()
+    assert "OTEL_PYTHON_HTTPX_EXCLUDED_URLS" not in os.environ
+
+
+def test_instrument_httpx_applies_supabase_exclusion_for_non_local_runtime(mocker, monkeypatch):
+    import src.infra.observability.otel as otel_runtime
+    from src.infra.config.configs import supabase_config
+
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.delenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", raising=False)
+    mocker.patch.object(supabase_config, "SUPABASE_URL", "https://example.supabase.co/")
+
+    instrument_mock = mocker.patch(
+        "opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor.instrument"
+    )
+
+    otel_runtime._instrument_httpx()
+
+    instrument_mock.assert_called_once()
+    assert os.environ["OTEL_PYTHON_HTTPX_EXCLUDED_URLS"] == "https://example.supabase.co"
+
+
 def test_get_logger_uses_root_pipeline_without_local_console_handlers():
     configure_logging(component="api", force=True)
 
@@ -437,16 +562,57 @@ def test_resolve_celery_component_distinguishes_beat_from_worker(mocker):
     assert resolve_celery_component("chat_worker") == "chat_worker"
 
 
-def test_init_sentry_is_noop_even_with_dsn_configured(mocker):
+def test_init_sentry_is_noop_when_dsn_missing(mocker):
     mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
-    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "")
 
     init_mock = mocker.patch("sentry_sdk.init")
 
     sentry_runtime.init_sentry()
 
     init_mock.assert_not_called()
+    assert sentry_runtime._sentry_initialized is False
+
+
+def test_init_sentry_initializes_sdk_with_expected_options(mocker):
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+    mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+    mocker.patch.object(sentry_config, "SENTRY_ENVIRONMENT", "prod")
+    mocker.patch.object(sentry_config, "SENTRY_SEND_DEFAULT_PII", True)
+    mocker.patch.object(sentry_config, "SENTRY_TRACES_SAMPLE_RATE", 0.35)
+
+    init_mock = mocker.patch("sentry_sdk.init")
+
+    sentry_runtime.init_sentry()
+
+    init_mock.assert_called_once()
+    kwargs = init_mock.call_args.kwargs
+    assert kwargs["dsn"] == "https://example@sentry.io/123"
+    assert kwargs["environment"] == "prod"
+    assert kwargs["send_default_pii"] is True
+    assert kwargs["traces_sample_rate"] == 0.35
+    assert any(isinstance(item, FastApiIntegration) for item in kwargs["integrations"])
+    assert any(isinstance(item, CeleryIntegration) for item in kwargs["integrations"])
     assert sentry_runtime._sentry_initialized is True
+
+
+def test_init_sentry_is_idempotent(mocker):
+    mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+
+    init_mock = mocker.patch("sentry_sdk.init")
+
+    sentry_runtime.init_sentry()
+    sentry_runtime.init_sentry()
+
+    init_mock.assert_called_once()
+
+
+def test_sentry_runtime_does_not_import_sdk_at_module_load():
+    assert "sentry_sdk" not in sentry_runtime.__dict__
 
 
 def test_configure_logging_suppresses_celery_internal_loggers():
@@ -576,12 +742,105 @@ def test_verify_token_logs_auth_failure_event(capsys, monkeypatch):
     assert payload["auth_operation"] == "verify_token"
 
 
+def test_supabase_user_client_sign_in_uses_startup_httpx_transport(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    request_client = mocker.Mock()
+    request_client.auth.sign_in_with_password.return_value.model_dump.return_value = {
+        "session": {"access_token": "token"}
+    }
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", return_value=request_client
+    )
+
+    base_client, transport = _build_supabase_base_client()
+    try:
+        client = supabase_runtime.SupabaseUserClient()
+        client.supabase_url = "https://example.supabase.co"
+        client.supabase_anon_key = "anon-key"
+        client.client = base_client
+        client._auth_httpx_client = transport
+
+        result = client.sign_in_with_password("user@example.com", "password123")
+
+        create_client_mock.assert_called_once()
+        options = create_client_mock.call_args.kwargs["options"]
+        assert options.httpx_client is transport
+        assert options.headers == base_client.options.headers
+        assert options.headers is not base_client.options.headers
+        request_client.auth.sign_in_with_password.assert_called_once()
+        assert result == {"session": {"access_token": "token"}}
+    finally:
+        transport.close()
+
+
+def test_supabase_user_client_verify_token_uses_startup_httpx_transport(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    request_client = mocker.Mock()
+    request_client.auth.get_user.return_value.model_dump.return_value = {"user": {"id": "user-1"}}
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", return_value=request_client
+    )
+
+    base_client, transport = _build_supabase_base_client()
+    try:
+        client = supabase_runtime.SupabaseUserClient()
+        client.supabase_url = "https://example.supabase.co"
+        client.supabase_anon_key = "anon-key"
+        client.client = base_client
+        client._auth_httpx_client = transport
+
+        result = client.verify_token("header.payload.signature")
+
+        create_client_mock.assert_called_once()
+        options = create_client_mock.call_args.kwargs["options"]
+        assert options.httpx_client is transport
+        request_client.auth.get_user.assert_called_once_with("header.payload.signature")
+        assert result == {"user": {"id": "user-1"}}
+    finally:
+        transport.close()
+
+
+def test_supabase_user_client_refresh_access_token_uses_startup_httpx_transport(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    request_client = mocker.Mock()
+    request_client.auth.refresh_session.return_value.model_dump.return_value = {
+        "session": {"access_token": "token", "refresh_token": "refresh"}
+    }
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", return_value=request_client
+    )
+
+    base_client, transport = _build_supabase_base_client()
+    try:
+        client = supabase_runtime.SupabaseUserClient()
+        client.supabase_url = "https://example.supabase.co"
+        client.supabase_anon_key = "anon-key"
+        client.client = base_client
+        client._auth_httpx_client = transport
+
+        result = client.refresh_access_token("refresh-token")
+
+        create_client_mock.assert_called_once()
+        options = create_client_mock.call_args.kwargs["options"]
+        assert options.httpx_client is transport
+        request_client.auth.refresh_session.assert_called_once_with("refresh-token")
+        assert result == {"session": {"access_token": "token", "refresh_token": "refresh"}}
+    finally:
+        transport.close()
+
+
 def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):
     import src.infra.secrets.manager as secrets_manager_runtime
 
     class _FailingProvider:
         async def get(self, name: str):
             raise RuntimeError(f"boom:{name}")
+
+        async def get_many(self, names: Iterable[str]) -> dict[str, str | None]:
+            return dict.fromkeys(names)
 
     monkeypatch.setenv("ENV", "dev")
     configure_logging(component="api", force=True)

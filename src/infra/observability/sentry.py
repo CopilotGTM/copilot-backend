@@ -1,19 +1,30 @@
-"""Sentry runtime hook shared by FastAPI and all Celery workers.
-
-Call ``init_sentry()`` once at process startup. Sentry is temporarily disabled
-for all processes, but the hook stays in place so it can be re-enabled without
-rewiring the app and worker startup paths.
-"""
+"""Sentry runtime hook shared by FastAPI and all Celery workers."""
 
 from __future__ import annotations
+
+from src.infra.config.configs import sentry_config
 
 _sentry_initialized = False
 
 
 def init_sentry() -> None:
-    """Temporarily disable Sentry initialization everywhere."""
+    """Initialize Sentry once when a DSN is configured for the process."""
     global _sentry_initialized
     if _sentry_initialized:
         return
 
+    if not sentry_config.SENTRY_DSN:
+        return
+
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+    sentry_sdk.init(
+        dsn=sentry_config.SENTRY_DSN,
+        environment=sentry_config.SENTRY_ENVIRONMENT,
+        send_default_pii=sentry_config.SENTRY_SEND_DEFAULT_PII,
+        traces_sample_rate=sentry_config.SENTRY_TRACES_SAMPLE_RATE,
+        integrations=[FastApiIntegration(), CeleryIntegration()],
+    )
     _sentry_initialized = True

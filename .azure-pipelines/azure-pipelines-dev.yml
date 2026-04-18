@@ -679,8 +679,6 @@ stages:
                       --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
                       --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
-                      --set api.secrets.SENTRY_DSN="$(SENTRY_DSN)" \
-                      --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$(SENTRY_TRACES_SAMPLE_RATE)" \
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
@@ -729,8 +727,6 @@ stages:
                     AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
                     AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
                     APP_NAME: $(APP_NAME)
-                    SENTRY_DSN: $(SENTRY_DSN)
-                    SENTRY_TRACES_SAMPLE_RATE: $(SENTRY_TRACES_SAMPLE_RATE)
                     WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
                     WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
 

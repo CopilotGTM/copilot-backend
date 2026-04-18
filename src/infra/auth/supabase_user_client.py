@@ -1,10 +1,12 @@
 import re
 from typing import Any, TypedDict, cast
 
+from httpx import Client as HttpxClient
 from src.infra.config.configs import supabase_config
 from src.infra.config.constant import SupabaseErrors
 from src.infra.utils.logger import get_logger
 from supabase import Client, create_client
+from supabase.lib.client_options import SyncClientOptions
 
 logger = get_logger()
 
@@ -53,6 +55,7 @@ class SupabaseUserClient:
         self.supabase_service_role_key: str = ""
         self.client: Client | None = None
         self.admin_client: Client | None = None
+        self._auth_httpx_client: HttpxClient | None = None
 
     async def initialize(self) -> None:
         """Load credentials from env or Key Vault and create Supabase clients.
@@ -66,7 +69,12 @@ class SupabaseUserClient:
 
         self._validate_config()
 
-        self.client = create_client(self.supabase_url, self.supabase_anon_key)
+        self._auth_httpx_client = HttpxClient(verify=True, follow_redirects=True, http2=True)
+        self.client = create_client(
+            self.supabase_url,
+            self.supabase_anon_key,
+            options=SyncClientOptions(httpx_client=self._auth_httpx_client),
+        )
         self.admin_client = create_client(self.supabase_url, self.supabase_service_role_key)
         logger.debug("Supabase User client initialized")
 
@@ -88,6 +96,58 @@ class SupabaseUserClient:
                 SupabaseErrors.MISSING_CONFIG.format(", ".join(missing_configs)),
                 status_code=500,
             )
+
+    def _validate_user_client_config(self) -> None:
+        """Validate only the configuration required for user-auth client creation."""
+        missing_configs = []
+
+        if not self.supabase_url:
+            missing_configs.append("SUPABASE_URL")
+        if not self.supabase_anon_key:
+            missing_configs.append("SUPABASE_ANON_KEY")
+
+        if missing_configs:
+            raise SupabaseAuthError(
+                SupabaseErrors.MISSING_CONFIG.format(", ".join(missing_configs)),
+                status_code=500,
+            )
+
+    def _require_user_base_client(self) -> Client:
+        """Return the initialized user client or raise a configuration error."""
+        if self.client is None:
+            raise SupabaseAuthError("Supabase user client is not initialized", status_code=500)
+        return self.client
+
+    def _require_admin_client(self) -> Client:
+        """Return the initialized admin client or raise a configuration error."""
+        if self.admin_client is None:
+            raise SupabaseAuthError("Supabase admin client is not initialized", status_code=500)
+        return self.admin_client
+
+    def _new_user_client(self) -> Client:
+        """Return a fresh auth client backed by the startup-time HTTP/2 transport."""
+        self._validate_user_client_config()
+        if self._auth_httpx_client is None:
+            raise SupabaseAuthError(
+                "Supabase user client is not initialized",
+                status_code=500,
+            )
+
+        base_client = self._require_user_base_client()
+        options = SyncClientOptions(
+            schema=base_client.options.schema,
+            headers=base_client.options.headers.copy(),
+            auto_refresh_token=base_client.options.auto_refresh_token,
+            persist_session=base_client.options.persist_session,
+            storage=SyncClientOptions().storage,
+            realtime=base_client.options.realtime,
+            httpx_client=self._auth_httpx_client,
+            postgrest_client_timeout=base_client.options.postgrest_client_timeout,
+            storage_client_timeout=base_client.options.storage_client_timeout,
+            function_client_timeout=base_client.options.function_client_timeout,
+            flow_type=base_client.options.flow_type,
+        )
+        return create_client(self.supabase_url, self.supabase_anon_key, options=options)
 
     def _validate_email(self, email: str) -> bool:
         """
@@ -190,7 +250,7 @@ class SupabaseUserClient:
             if not self._validate_password(password):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
-            response = self.client.auth.sign_in_with_password(
+            response = self._new_user_client().auth.sign_in_with_password(
                 {"email": email, "password": password}
             )
             logger.debug("User signed in successfully")
@@ -226,7 +286,7 @@ class SupabaseUserClient:
             redirect_url = f"{app_url}/reset-password"
 
             # Generate recovery link using admin client (doesn't send email)
-            response = self.admin_client.auth.admin.generate_link(
+            response = self._require_admin_client().auth.admin.generate_link(
                 {"type": "recovery", "email": email}
             )
 
@@ -278,7 +338,7 @@ class SupabaseUserClient:
             if metadata:
                 user_data["user_metadata"] = metadata
 
-            response = self.admin_client.auth.admin.create_user(cast(Any, user_data))
+            response = self._require_admin_client().auth.admin.create_user(cast(Any, user_data))
             logger.info(f"User created: {email}")
             return response.model_dump()
         except Exception as e:
@@ -308,11 +368,11 @@ class SupabaseUserClient:
 
             if global_signout:
                 # Sign out from all sessions globally
-                self.client.auth.sign_out({"scope": "global"})
+                self._new_user_client().auth.sign_out({"scope": "global"})
                 logger.info(f"User {user_id} signed out globally from all sessions")
             else:
                 # Sign out from current session only
-                self.client.auth.sign_out({"scope": "local"})
+                self._new_user_client().auth.sign_out({"scope": "local"})
                 logger.info(f"User {user_id} signed out from current session")
 
             return True
@@ -338,7 +398,7 @@ class SupabaseUserClient:
             if not self._validate_token(token):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
-            response = self.client.auth.get_user(token)
+            response = self._new_user_client().auth.get_user(token)
             if response is None:
                 raise SupabaseAuthError(
                     SupabaseErrors.TOKEN_VERIFICATION_FAILED.format("No user returned"),
@@ -374,7 +434,7 @@ class SupabaseUserClient:
             if not self._validate_token(refresh_token, is_refresh=True):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
-            response = self.client.auth.refresh_session(refresh_token)
+            response = self._new_user_client().auth.refresh_session(refresh_token)
             if response is None:
                 raise SupabaseAuthError(
                     SupabaseErrors.TOKEN_REFRESH_FAILED.format("No session returned"),
@@ -417,7 +477,9 @@ class SupabaseUserClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
             # Use the recovery token_hash to verify and reset password
-            response = self.client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+            response = self._new_user_client().auth.verify_otp(
+                {"token_hash": token_hash, "type": "recovery"}
+            )
 
             # If verification is successful, update the password
             if response:
@@ -428,7 +490,7 @@ class SupabaseUserClient:
 
                 if isinstance(user_id, str) and self._validate_user_id(user_id):
                     # Update password using admin client
-                    self.admin_client.auth.admin.update_user_by_id(
+                    self._require_admin_client().auth.admin.update_user_by_id(
                         user_id, {"password": new_password}
                     )
 
@@ -465,7 +527,7 @@ class SupabaseUserClient:
             if not self._validate_user_id(user_id):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_USER_ID, status_code=400)
 
-            response = self.admin_client.auth.admin.update_user_by_id(
+            response = self._require_admin_client().auth.admin.update_user_by_id(
                 user_id, {"user_metadata": metadata}
             )
             logger.info(f"Metadata updated for user: {user_id}")

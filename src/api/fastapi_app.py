@@ -30,7 +30,6 @@ from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import configure_logging
 
 configure_logging(component="api")
-init_sentry()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -117,6 +116,8 @@ async def lifespan(app: FastAPI):
     await supabase_user_client.initialize()
     await token_revocation_service.initialize()
     logger.info("Supabase clients initialized")
+
+    init_sentry()
 
     yield
 
