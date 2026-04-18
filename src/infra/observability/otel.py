@@ -48,6 +48,7 @@ async def async_init_otel(service_name_suffix: str = "") -> None:
 
     # Load auth header from Key Vault before creating exporters
     await otel_config.load_headers()
+    await _prime_supabase_credentials()
 
     _otel_initialized = True
 
@@ -82,6 +83,8 @@ def init_otel(service_name_suffix: str = "") -> None:
                 "Could not load OTel headers from Key Vault in sync context"
             )
 
+    _prime_supabase_credentials_sync()
+
     _otel_initialized = True
 
     _setup_tracing(otel_config, service_name_suffix)
@@ -99,6 +102,44 @@ def _parse_headers(raw: str) -> dict[str, str]:
             k, v = pair.split("=", 1)
             headers[k.strip()] = v.strip()
     return headers
+
+
+async def _prime_supabase_credentials() -> None:
+    """Ensure Supabase URL is available before non-local httpx instrumentation."""
+    if os.getenv("ENV", "dev") == "local":
+        return
+
+    from src.infra.config.configs import supabase_config
+
+    if supabase_config.SUPABASE_URL:
+        return
+
+    try:
+        await supabase_config.get_credentials()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not load Supabase credentials before OpenTelemetry httpx instrumentation"
+        )
+
+
+def _prime_supabase_credentials_sync() -> None:
+    """Sync bridge for worker startup when Supabase credentials are not preloaded."""
+    if os.getenv("ENV", "dev") == "local":
+        return
+
+    from src.infra.config.configs import supabase_config
+
+    if supabase_config.SUPABASE_URL:
+        return
+
+    try:
+        from src.infra.utils.async_runner import run_async
+
+        run_async(supabase_config.get_credentials())
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not load Supabase credentials before OpenTelemetry httpx instrumentation"
+        )
 
 
 def _resource(otel_config, suffix: str):

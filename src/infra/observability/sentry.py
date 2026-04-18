@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sentry_sdk
-from sentry_sdk.integrations.celery import CeleryIntegration
-from sentry_sdk.integrations.fastapi import FastApiIntegration
 from src.infra.config.configs import sentry_config
 
 _sentry_initialized = False
@@ -18,6 +15,10 @@ def init_sentry() -> None:
 
     if not sentry_config.SENTRY_DSN:
         return
+
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
 
     sentry_sdk.init(
         dsn=sentry_config.SENTRY_DSN,
