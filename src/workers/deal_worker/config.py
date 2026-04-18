@@ -48,8 +48,6 @@ class DealWorkerConfig(BaseWorkerConfig):
             "stakeholder.sync_all_deals_stakeholders_org",
             "stakeholder.sync_all_deals_stakeholders_all_orgs",
             # "stakeholder.trigger_analysis_all_orgs",  # Disabled — uses pipeline dispatch now
-            # Deal import
-            "deal_import_task.process",
             # Calendar matching
             "deal.match_calendar_to_deals_org",
             "deal.match_calendar_to_deals",

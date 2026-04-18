@@ -182,12 +182,7 @@ GET /users/crm/deals
   "status": "SUCCESS",
   "message": "Deals retrieved successfully",
   "data": {
-    "active_import_job": {
-      "job_id": "9f2c1b62-9d8a-4f1c-bac4-7f5b2a8f5b0b",
-      "job_type": "deal_import",
-      "status": "in_progress",
-      "stream_url": "/users/crm/deals/import/jobs/9f2c1b62-9d8a-4f1c-bac4-7f5b2a8f5b0b/events"
-    },
+    "active_import_job": null,
     "items": [
       {
         "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
@@ -225,7 +220,7 @@ GET /users/crm/deals
 | `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
 | `owner_details` | array | Owner list (typically 0..1). Use `owner_id` for filtering and linking. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`). Frontend should use this for icon/amount decoration. |
-| `active_import_job` | object \| null | Current user's active import job for SSE reconnection after refresh. Null when no import is active. |
+| `active_import_job` | object \| null | Reserved for the future import rebuild. Always `null` while CSV import is disabled. |
 
 ---
 
@@ -1080,7 +1075,7 @@ GET /users/crm/pipelines?include_stages=true
 9. **Owner filter options**: Use `/users/crm/deals/owners` and filter by `owner_ids`; do not derive options from the current page.
 10. **Close flow**: Use `POST /users/crm/deals/{deal_id}/close` and `POST /users/crm/deals/{deal_id}/reopen` for lifecycle transitions instead of generic edit.
 11. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code).
-12. **Import reconnect on refresh**: Read `data.active_import_job` from `GET /users/crm/deals`; when present, reconnect SSE using `stream_url` and continue showing import progress modal/state.
+12. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
 
 ---
 
@@ -1093,6 +1088,13 @@ GET /users/crm/pipelines?include_stages=true
 ---
 
 ## Deal Import (CSV)
+
+The previous CSV import flow has been removed. The endpoint names remain, but they
+all return `409 Conflict` with this message:
+
+```
+Deal CSV import is coming soon. The previous import flow has been removed.
+```
 
 ### Download Template
 
@@ -1132,11 +1134,16 @@ Body:
 GET /users/crm/deals/import/jobs/{job_id}/events
 ```
 
-See `docs/API Documentation/deals/crm-deals-import-api.md` for full request/response and SSE payloads.
+See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-state contract.
 
 ---
 
 ## Changelog
+
+### 2026-04-18
+
+1. Disabled all deal CSV import endpoints with a uniform `409 Conflict` "coming soon" response.
+2. Removed active import reconnect links from `GET /users/crm/deals`; `active_import_job` is now always `null`.
 
 ### 2026-02-26
 

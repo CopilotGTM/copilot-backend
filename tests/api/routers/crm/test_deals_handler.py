@@ -211,39 +211,49 @@ def test_list_deals_currency_normalization_handles_code_with_symbol(
     assert item["currency_symbol"] == "₹"
 
 
-def test_list_deals_includes_active_import_job_for_reconnect(
+def test_list_deals_hides_active_import_job_links(
     client: TestClient, deals_dependency_overrides, monkeypatch
 ):
     deals_service = deals_dependency_overrides["deals_service"]
-    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
-    user_id = deals_dependency_overrides["user_ids"]["user_id"]
-    deals_service.add_deal(create_deal(org_id, name="Reconnect Deal"))
-    deals_service.session = object()
-
-    active_job_id = uuid4()
-    stream_url = f"/users/crm/deals/import/jobs/{active_job_id}/events"
-    mock_active_import_job = AsyncMock(
-        return_value={
-            "job_id": active_job_id,
-            "job_type": "deal_import",
-            "status": "in_progress",
-            "stream_url": stream_url,
-        }
+    deal_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        integration_id=None,
+        name="Reconnect Deal",
+        amount=1000.0,
+        currency="USD",
+        deal_status=CRMDealStatus.OPEN,
+        probability=0.5,
+        close_date=None,
+        expected_close_date=None,
+        stage_name="Discovery",
+        stage_label="Discovery",
+        pipeline_name="Default",
+        pipeline_label="Default",
+        owner_name=None,
+        owner_email=None,
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        deal_summary_data=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        synced_at=datetime.now(UTC),
     )
+    deals_service.session = object()
+    deals_service.list_deals = AsyncMock(return_value=([deal], 1))
+    deals_service.get_deal_team_members_batch = AsyncMock(return_value={})
+
     monkeypatch.setattr(
-        "src.api.routers.crm.deals_handler._get_active_import_job_for_user",
-        mock_active_import_job,
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        AsyncMock(return_value={}),
     )
 
     resp = client.get("/users/crm/deals")
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert data["active_import_job"] is not None
-    assert data["active_import_job"]["job_id"] == str(active_job_id)
-    assert data["active_import_job"]["job_type"] == "deal_import"
-    assert data["active_import_job"]["status"] == "in_progress"
-    assert data["active_import_job"]["stream_url"] == stream_url
-    mock_active_import_job.assert_awaited_once_with(deals_service.session, org_id, user_id)
+    assert data["active_import_job"] is None
 
 
 # =============================================================================

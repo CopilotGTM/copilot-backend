@@ -1011,17 +1011,14 @@ Consolidated reference of all error responses across all 5 endpoints.
 
 ### Where deal values live
 
-Deal values for custom columns live inside `crm_deals.properties` (JSONB column, not nullable, server default `'{}'`). They are keyed by `field.key`. There is **no separate values table**. The deal-write path (and the bulk-import path) writes them as `properties[key] = parsed_value`.
+Deal values for custom columns live inside `crm_deals.properties` (JSONB column, not nullable, server default `'{}'`). They are keyed by `field.key`. There is **no separate values table**. The interactive deal-write path writes them as `properties[key] = parsed_value`.
 
 This is why the `key` is the load-bearing identifier and the `label` is purely display:
 
 ```python
-# How a value gets written (simplified, see deal_import_service.py:1302-1352)
+# How a value gets written (simplified)
 props: dict[str, Any] = {}
-for col_name, raw_value in row.items():
-    match = _CUSTOM_PREFIX_RE.match(col_name.strip())
-    if not match: continue
-    key = match.group(1)
+for key, raw_value in request.custom_properties.items():
     definition = custom_fields_by_key.get(key)
     props[key] = self._coerce_custom_value(key=key, raw_value=raw_value, definition=definition)
 deal.properties = props
@@ -1029,7 +1026,7 @@ deal.properties = props
 
 ### Service Layer
 
-Two services exist for custom columns. They serve different paths and the user owns the decision of when to retire the import-side service.
+Two services exist for custom columns.
 
 **`CustomFieldWriteService`** (`src/service/crm/internal/custom_field_write_service.py`) — **the UI-facing CRUD service** that this API uses.
 
@@ -1038,10 +1035,10 @@ Two services exist for custom columns. They serve different paths and the user o
 - **Owns its commits** — each public write method calls `flush()` then `commit()` then `refresh()` before returning. The handler does not need to commit.
 - **Errors**: raises `CustomFieldWriteServiceError(message, status_code)` for all rule violations.
 
-**`CustomFieldService`** (`src/service/crm/internal/custom_field_service.py`) — **the legacy bulk-import service**, used by `deal_import_handler.py:242-300`.
+**`CustomFieldService`** (`src/service/crm/internal/custom_field_service.py`) — a legacy helper retained for non-UI/internal CRM code paths.
 
-- Permissive: auto-creates definitions for unknown CSV columns, doesn't enforce the in-use guard, does not commit (caller-driven transaction control).
-- Will be retired in a future cleanup PR. Until then, leave it alone — the import handler still depends on it.
+- It is no longer part of the removed CSV import flow.
+- Keep new endpoint behavior anchored to `CustomFieldWriteService` unless a non-UI internal workflow explicitly needs the legacy helper semantics.
 
 ### The delete-in-use SQL
 

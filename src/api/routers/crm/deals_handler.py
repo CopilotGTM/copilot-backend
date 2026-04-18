@@ -34,7 +34,6 @@ from src.api.schemas.crm_deal_write_models import (
 from src.api.schemas.crm_models import (
     DealCustomColumnDefinition,
     DealDetail,
-    DealImportJobStatus,
     DealJobResponse,
     DealListItem,
     DealOwnerDetail,
@@ -47,7 +46,7 @@ from src.api.schemas.crm_models import (
     DealTeamMember,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDefinition,
     CRMCustomFieldEntity,
@@ -233,33 +232,6 @@ async def _get_integration_types_map(
         integration.integration_id: integration.integration_type == IntegrationType.INTERNAL_CRM
         for integration in integrations
     }
-
-
-async def _get_active_import_job_for_user(
-    session: AsyncSession, organisation_id: UUID, user_id: UUID
-) -> DealImportJobStatus | None:
-    """Return the latest active deal-import job for the current user, if any."""
-    stmt = (
-        select(DealJobs)
-        .where(
-            col(DealJobs.organisation_id) == organisation_id,
-            col(DealJobs.user_id) == user_id,
-            col(DealJobs.job_type) == DealJobType.DEAL_IMPORT,
-            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
-        )
-        .order_by(col(DealJobs.updated_at).desc(), col(DealJobs.created_at).desc())
-        .limit(1)
-    )
-    result = await session.execute(stmt)
-    job = result.scalars().first()
-    if not job or not job.job_id:
-        return None
-    return DealImportJobStatus(
-        job_id=job.job_id,
-        job_type=(job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)),
-        status=(job.status.value if hasattr(job.status, "value") else str(job.status)),
-        stream_url=f"/users/crm/deals/import/jobs/{job.job_id}/events",
-    )
 
 
 def _map_deal_write_response(deal) -> DealWriteResponse:
@@ -454,7 +426,6 @@ async def list_deals(
     response: FastAPIResponse,
     params: DealsListParams = Depends(get_deals_list_params),
     service: DealsAccessService = Depends(get_deals_access_service),
-    user_ids: UserIDs = Depends(get_current_user),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
@@ -538,17 +509,9 @@ async def list_deals(
         ]
 
         total_pages = (total_count + params.limit - 1) // params.limit if params.limit else 0
-        active_import_job = None
-        if hasattr(service, "session"):
-            active_import_job = await _get_active_import_job_for_user(
-                service.session,
-                service.organisation_id,
-                user_ids.user_id,
-            )
-
         page_response = DealsPage(
             items=items,
-            active_import_job=active_import_job,
+            active_import_job=None,
             page=params.page,
             limit=params.limit,
             total_count=total_count,

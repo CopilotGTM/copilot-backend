@@ -53,8 +53,6 @@ JOB_TYPE_THRESHOLDS: dict[DealJobType, dict[str, float]] = {
     # Content generation
     DealJobType.PROPOSAL_DRAFT: {"pending": 2, "in_progress": 0.58},
     DealJobType.EMAIL_DRAFT: {"pending": 2, "in_progress": 0.58},
-    # Deal import
-    DealJobType.DEAL_IMPORT: {"pending": 3, "in_progress": 0.58},
 }
 
 

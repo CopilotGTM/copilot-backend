@@ -107,7 +107,7 @@ class DealListItem(BaseModel):
 
 
 class DealImportJobStatus(BaseModel):
-    """Active deal import job details for SSE reconnection from list screens."""
+    """Reserved import job metadata for a future rebuilt import flow."""
 
     job_id: UUID = Field(..., description="Deal import job ID")
     job_type: str = Field(..., description="Job type (always `deal_import` for this payload)")
@@ -122,8 +122,7 @@ class DealsPage(BaseModel):
     active_import_job: DealImportJobStatus | None = Field(
         None,
         description=(
-            "Current user's active deal import job (if any). "
-            "Use this to reconnect to import SSE after page refresh."
+            "Reserved for the future deal import rebuild. Always null while CSV import is disabled."
         ),
     )
     page: int = Field(..., description="Current page number (1-indexed)")
