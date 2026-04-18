@@ -89,6 +89,26 @@ class SupabaseUserClient:
                 status_code=500,
             )
 
+    def _validate_user_client_config(self) -> None:
+        """Validate only the configuration required for user-auth client creation."""
+        missing_configs = []
+
+        if not self.supabase_url:
+            missing_configs.append("SUPABASE_URL")
+        if not self.supabase_anon_key:
+            missing_configs.append("SUPABASE_ANON_KEY")
+
+        if missing_configs:
+            raise SupabaseAuthError(
+                SupabaseErrors.MISSING_CONFIG.format(", ".join(missing_configs)),
+                status_code=500,
+            )
+
+    def _new_user_client(self) -> Client:
+        """Return a fresh auth client to avoid sharing session state across requests."""
+        self._validate_user_client_config()
+        return create_client(self.supabase_url, self.supabase_anon_key)
+
     def _validate_email(self, email: str) -> bool:
         """
         Validate email format using regex pattern.
@@ -190,7 +210,7 @@ class SupabaseUserClient:
             if not self._validate_password(password):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
-            response = self.client.auth.sign_in_with_password(
+            response = self._new_user_client().auth.sign_in_with_password(
                 {"email": email, "password": password}
             )
             logger.debug("User signed in successfully")
@@ -308,11 +328,11 @@ class SupabaseUserClient:
 
             if global_signout:
                 # Sign out from all sessions globally
-                self.client.auth.sign_out({"scope": "global"})
+                self._new_user_client().auth.sign_out({"scope": "global"})
                 logger.info(f"User {user_id} signed out globally from all sessions")
             else:
                 # Sign out from current session only
-                self.client.auth.sign_out({"scope": "local"})
+                self._new_user_client().auth.sign_out({"scope": "local"})
                 logger.info(f"User {user_id} signed out from current session")
 
             return True
@@ -338,7 +358,7 @@ class SupabaseUserClient:
             if not self._validate_token(token):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
-            response = self.client.auth.get_user(token)
+            response = self._new_user_client().auth.get_user(token)
             if response is None:
                 raise SupabaseAuthError(
                     SupabaseErrors.TOKEN_VERIFICATION_FAILED.format("No user returned"),
@@ -374,7 +394,7 @@ class SupabaseUserClient:
             if not self._validate_token(refresh_token, is_refresh=True):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
-            response = self.client.auth.refresh_session(refresh_token)
+            response = self._new_user_client().auth.refresh_session(refresh_token)
             if response is None:
                 raise SupabaseAuthError(
                     SupabaseErrors.TOKEN_REFRESH_FAILED.format("No session returned"),
@@ -417,7 +437,9 @@ class SupabaseUserClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
             # Use the recovery token_hash to verify and reset password
-            response = self.client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+            response = self._new_user_client().auth.verify_otp(
+                {"token_hash": token_hash, "type": "recovery"}
+            )
 
             # If verification is successful, update the password
             if response:

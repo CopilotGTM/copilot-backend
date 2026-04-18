@@ -14,6 +14,8 @@ api:
     ADMIN_APP_URL: "https://devadmin.copilotgtm.com"
     FROM_EMAIL: "noreply@team.copilotgtm.com"
     SUPER_ADMIN_EMAIL: "tech@copilotgtm.com"
+    SENTRY_DSN: "https://d47183944100e4f69572365fd1634d16@o4511017432186880.ingest.us.sentry.io/4511017435070464"
+    SENTRY_TRACES_SAMPLE_RATE: "0.2"
     OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp-gateway-prod-us-west-0.grafana.net/otlp"
     REDIS_SSL_CERT_REQS: "CERT_REQUIRED"
     GOOGLE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"

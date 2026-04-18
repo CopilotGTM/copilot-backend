@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from importlib import reload
 
@@ -396,6 +397,42 @@ def test_init_otel_is_noop_when_disabled(mocker):
     assert otel_runtime._otel_initialized is False
 
 
+def test_instrument_httpx_skips_local_runtime(mocker, monkeypatch):
+    import src.infra.observability.otel as otel_runtime
+
+    monkeypatch.setenv("ENV", "local")
+    monkeypatch.delenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", raising=False)
+    mocker.patch.object(otel_config, "OTEL_ENABLED", True)
+    mocker.patch.object(otel_config, "OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.com/otlp")
+
+    instrument_mock = mocker.patch(
+        "opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor.instrument"
+    )
+
+    otel_runtime._instrument_httpx()
+
+    instrument_mock.assert_not_called()
+    assert "OTEL_PYTHON_HTTPX_EXCLUDED_URLS" not in os.environ
+
+
+def test_instrument_httpx_applies_supabase_exclusion_for_non_local_runtime(mocker, monkeypatch):
+    import src.infra.observability.otel as otel_runtime
+    from src.infra.config.configs import supabase_config
+
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.delenv("OTEL_PYTHON_HTTPX_EXCLUDED_URLS", raising=False)
+    mocker.patch.object(supabase_config, "SUPABASE_URL", "https://example.supabase.co/")
+
+    instrument_mock = mocker.patch(
+        "opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor.instrument"
+    )
+
+    otel_runtime._instrument_httpx()
+
+    instrument_mock.assert_called_once()
+    assert os.environ["OTEL_PYTHON_HTTPX_EXCLUDED_URLS"] == "https://example.supabase.co"
+
+
 def test_get_logger_uses_root_pipeline_without_local_console_handlers():
     configure_logging(component="api", force=True)
 
@@ -437,16 +474,53 @@ def test_resolve_celery_component_distinguishes_beat_from_worker(mocker):
     assert resolve_celery_component("chat_worker") == "chat_worker"
 
 
-def test_init_sentry_is_noop_even_with_dsn_configured(mocker):
+def test_init_sentry_is_noop_when_dsn_missing(mocker):
     mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
-    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "")
 
     init_mock = mocker.patch("sentry_sdk.init")
 
     sentry_runtime.init_sentry()
 
     init_mock.assert_not_called()
+    assert sentry_runtime._sentry_initialized is False
+
+
+def test_init_sentry_initializes_sdk_with_expected_options(mocker):
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+    mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+    mocker.patch.object(sentry_config, "SENTRY_ENVIRONMENT", "prod")
+    mocker.patch.object(sentry_config, "SENTRY_SEND_DEFAULT_PII", True)
+    mocker.patch.object(sentry_config, "SENTRY_TRACES_SAMPLE_RATE", 0.35)
+
+    init_mock = mocker.patch("sentry_sdk.init")
+
+    sentry_runtime.init_sentry()
+
+    init_mock.assert_called_once()
+    kwargs = init_mock.call_args.kwargs
+    assert kwargs["dsn"] == "https://example@sentry.io/123"
+    assert kwargs["environment"] == "prod"
+    assert kwargs["send_default_pii"] is True
+    assert kwargs["traces_sample_rate"] == 0.35
+    assert any(isinstance(item, FastApiIntegration) for item in kwargs["integrations"])
+    assert any(isinstance(item, CeleryIntegration) for item in kwargs["integrations"])
     assert sentry_runtime._sentry_initialized is True
+
+
+def test_init_sentry_is_idempotent(mocker):
+    mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+
+    init_mock = mocker.patch("sentry_sdk.init")
+
+    sentry_runtime.init_sentry()
+    sentry_runtime.init_sentry()
+
+    init_mock.assert_called_once()
 
 
 def test_configure_logging_suppresses_celery_internal_loggers():
@@ -574,6 +648,73 @@ def test_verify_token_logs_auth_failure_event(capsys, monkeypatch):
     assert payload["message"] == "Token verification failed"
     assert payload["event"] == "auth_failure"
     assert payload["auth_operation"] == "verify_token"
+
+
+def test_supabase_user_client_sign_in_uses_fresh_client_per_call(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    auth_client = mocker.Mock()
+    auth_client.auth.sign_in_with_password.return_value.model_dump.return_value = {
+        "session": {"access_token": "token"}
+    }
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", side_effect=[auth_client]
+    )
+
+    client = supabase_runtime.SupabaseUserClient()
+    client.supabase_url = "https://example.supabase.co"
+    client.supabase_anon_key = "anon-key"
+    client.client = mocker.Mock()
+
+    result = client.sign_in_with_password("user@example.com", "password123")
+
+    create_client_mock.assert_called_once_with("https://example.supabase.co", "anon-key")
+    auth_client.auth.sign_in_with_password.assert_called_once()
+    assert result == {"session": {"access_token": "token"}}
+
+
+def test_supabase_user_client_verify_token_uses_fresh_client_per_call(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    auth_client = mocker.Mock()
+    auth_client.auth.get_user.return_value.model_dump.return_value = {"user": {"id": "user-1"}}
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", side_effect=[auth_client]
+    )
+
+    client = supabase_runtime.SupabaseUserClient()
+    client.supabase_url = "https://example.supabase.co"
+    client.supabase_anon_key = "anon-key"
+    client.client = mocker.Mock()
+
+    result = client.verify_token("header.payload.signature")
+
+    create_client_mock.assert_called_once_with("https://example.supabase.co", "anon-key")
+    auth_client.auth.get_user.assert_called_once_with("header.payload.signature")
+    assert result == {"user": {"id": "user-1"}}
+
+
+def test_supabase_user_client_refresh_access_token_uses_fresh_client_per_call(mocker):
+    import src.infra.auth.supabase_user_client as supabase_runtime
+
+    auth_client = mocker.Mock()
+    auth_client.auth.refresh_session.return_value.model_dump.return_value = {
+        "session": {"access_token": "token", "refresh_token": "refresh"}
+    }
+    create_client_mock = mocker.patch.object(
+        supabase_runtime, "create_client", side_effect=[auth_client]
+    )
+
+    client = supabase_runtime.SupabaseUserClient()
+    client.supabase_url = "https://example.supabase.co"
+    client.supabase_anon_key = "anon-key"
+    client.client = mocker.Mock()
+
+    result = client.refresh_access_token("refresh-token")
+
+    create_client_mock.assert_called_once_with("https://example.supabase.co", "anon-key")
+    auth_client.auth.refresh_session.assert_called_once_with("refresh-token")
+    assert result == {"session": {"access_token": "token", "refresh_token": "refresh"}}
 
 
 def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):

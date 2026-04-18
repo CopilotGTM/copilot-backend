@@ -96,6 +96,7 @@ class SentryConfig:
     SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
     SENTRY_ENVIRONMENT: str = os.getenv("ENV", "dev")
     SENTRY_SEND_DEFAULT_PII: bool = os.getenv("SENTRY_SEND_DEFAULT_PII", "true").lower() == "true"
+    SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
 
 
 class SupabaseConfig:
