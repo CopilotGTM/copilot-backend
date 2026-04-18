@@ -22,6 +22,7 @@ class ChatType(str, Enum):
     SLACK_CHAT = "SLACK_CHAT"
     TECHNICAL_DECK = "TECHNICAL_DECK"
     RFP_SHEET = "RFP_SHEET"
+    VOICE_CHAT = "VOICE_CHAT"
 
 
 class ChatSession(TimestampMixin, table=True):

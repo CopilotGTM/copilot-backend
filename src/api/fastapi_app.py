@@ -39,6 +39,7 @@ from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
+from src.api.routers.chat.voice_realtime_handler import router as voice_realtime_router
 from src.api.routers.chat_attachments.access_handler import (
     download_router as attachment_access_router,
 )
@@ -73,6 +74,8 @@ from src.api.routers.knowledge_base.upload_handler import (
 )
 from src.api.routers.reminders import reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
+from src.api.routers.users.realtime_handler import router as user_realtime_router
+from src.infra.config.configs import app_config
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..api.middleware.request_context import RequestContextMiddleware
@@ -89,6 +92,11 @@ logger = get_logger()
 
 # Suppress uvicorn's plain-text access log — replaced by our structured middleware
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+
+def _voice_realtime_api_enabled() -> bool:
+    """Read the deployment-controlled flag for exposing voice realtime routes."""
+    return app_config.voice_realtime_api_enabled
 
 
 @asynccontextmanager
@@ -180,6 +188,19 @@ def create_fastapi_app():
     fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
+    voice_realtime_api_enabled = _voice_realtime_api_enabled()
+    logger.info(
+        "Voice realtime API routes %s",
+        "enabled" if voice_realtime_api_enabled else "disabled",
+        extra={
+            "event": "voice_realtime_api_routes_configured",
+            "voice_realtime_api_enabled": voice_realtime_api_enabled,
+        },
+    )
+    if voice_realtime_api_enabled:
+        fastapp.include_router(
+            user_realtime_router, prefix="/users/realtime", tags=["user", "realtime"]
+        )
 
     # Knowledge base
     fastapp.include_router(
@@ -193,6 +214,13 @@ def create_fastapi_app():
     fastapp.include_router(chat_sessions_router, prefix="/users/chats", tags=["chats"])
     # Chat messages
     fastapp.include_router(chat_messages_router, prefix="/users/chats", tags=["chat_messages"])
+    # Voice realtime chat persistence
+    if voice_realtime_api_enabled:
+        fastapp.include_router(
+            voice_realtime_router,
+            prefix="/users/chats",
+            tags=["voice_realtime"],
+        )
 
     # attachment
     fastapp.include_router(upload_router, prefix="/users/chats/upload", tags=["uploads"])

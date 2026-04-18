@@ -143,6 +143,7 @@ async def list_chats(
     response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None, description="Opaque cursor from previous page"),
+    chat_type: str | None = Query(None, description="Filter by chat_type (e.g. VOICE_CHAT)"),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ChatSessionsPage]:
@@ -150,6 +151,7 @@ async def list_chats(
         items, next_cursor = await service.list_sessions(
             limit=limit,
             cursor=cursor,
+            chat_type=chat_type,
         )
         page = ChatSessionsPage(items=[_to_out(i) for i in items], cursor=next_cursor)
         return Response.success_response("Chats listed", data=page)

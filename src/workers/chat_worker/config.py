@@ -10,7 +10,8 @@ class ChatWorkerConfig(BaseWorkerConfig):
     def __init__(self):
         super().__init__()
 
-        # Chat worker needs longer time limits for agent responses with multiple tool calls
+        # Chat worker needs longer time limits for agent responses with multiple tool calls.
+        # Voice sideband sessions use task-level overrides because live calls run longer.
         self.task_time_limit = 600  # 10 minutes hard limit
         self.task_soft_time_limit = 540  # 9 minutes soft limit
 
@@ -29,6 +30,7 @@ class ChatWorkerConfig(BaseWorkerConfig):
             Queue("attachments", exchange=chat_exchange, routing_key="attachments"),
             Queue("chat_processing", exchange=chat_exchange, routing_key="chat_processing"),
             Queue("chat_messages", exchange=chat_exchange, routing_key="chat_messages"),
+            Queue("voice_realtime", exchange=chat_exchange, routing_key="voice_realtime"),
         )
 
         self.task_routes = {
@@ -48,6 +50,10 @@ class ChatWorkerConfig(BaseWorkerConfig):
             "chat.process_bot_message": {
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
+            },
+            "chat.voice_realtime_sideband": {
+                "queue": "voice_realtime",
+                "routing_key": "voice_realtime",
             },
             # Reminder scheduler tasks
             "chat.poll_due_reminders": {
