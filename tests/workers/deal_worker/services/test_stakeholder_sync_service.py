@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+    OrgStakeholderSyncResult,
+    StakeholderSyncResult,
     StakeholderSyncService,
 )
 
@@ -193,6 +197,38 @@ class _FakeSession:
         return _FakeExecuteResult(self._rows)
 
 
+class _FakeDealIdQueryResult:
+    def __init__(self, rows: list[tuple[object, ...]]):
+        self._rows = rows
+
+    def all(self) -> list[tuple[object, ...]]:
+        return self._rows
+
+
+class _FakeSyncSession:
+    def __init__(self, rows: list[tuple[object, ...]] | None = None):
+        self._rows = rows or []
+        self.commit = AsyncMock()
+        self.rollback = AsyncMock()
+
+    async def execute(self, _stmt):  # noqa: ANN001
+        return _FakeDealIdQueryResult(self._rows)
+
+
+def _session_generator_factory(
+    sessions: list[_FakeSyncSession],
+) -> callable:
+    queue = iter(sessions)
+
+    def _factory(_organisation_id) -> AsyncIterator[_FakeSyncSession]:  # noqa: ANN001
+        async def _generator() -> AsyncIterator[_FakeSyncSession]:
+            yield next(queue)
+
+        return _generator()
+
+    return _factory
+
+
 class TestRejectInternalStakeholders:
     @pytest.mark.asyncio
     async def test_rejects_internal_emails(self) -> None:
@@ -284,3 +320,69 @@ class TestRejectInternalStakeholders:
         assert s1.approval_status == ApprovalStatus.REJECTED
         assert s2.approval_status == ApprovalStatus.REJECTED
         assert s3.approval_status == ApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_sync_for_organisation_does_not_use_reserved_created_log_field(monkeypatch) -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+
+    initial_session = _FakeSyncSession(rows=[(deal_id,)])
+    deal_session = _FakeSyncSession()
+    monkeypatch.setattr(
+        stakeholder_sync_module,
+        "acquire_org_async_session",
+        _session_generator_factory([initial_session, deal_session]),
+    )
+
+    service._sync_deal_internal = AsyncMock(  # type: ignore[method-assign]
+        return_value=StakeholderSyncResult(
+            deal_id=deal_id,
+            created=2,
+            updated=1,
+            deactivated=1,
+            rejected=1,
+        )
+    )
+    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.sync_for_organisation()
+
+    assert isinstance(result, OrgStakeholderSyncResult)
+    assert result.successful_deals == 1
+    assert result.stakeholders_created == 2
+    deal_session.commit.assert_awaited_once()
+    deal_session.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_for_deal_does_not_use_reserved_created_log_field(monkeypatch) -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+
+    session = _FakeSyncSession()
+    monkeypatch.setattr(
+        stakeholder_sync_module,
+        "acquire_org_async_session",
+        _session_generator_factory([session]),
+    )
+
+    service._sync_deal_internal = AsyncMock(  # type: ignore[method-assign]
+        return_value=StakeholderSyncResult(
+            deal_id=deal_id,
+            created=3,
+            updated=1,
+            deactivated=1,
+            skipped=2,
+        )
+    )
+    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.sync_for_deal(deal_id)
+
+    assert result.created == 3
+    assert result.updated == 1
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()

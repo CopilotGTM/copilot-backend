@@ -65,14 +65,18 @@ async def get_email_details(
         assoc_c = cast(Any, DealEmailAssociation).__table__.c
 
         # Fetch the email
-        email_stmt = select(Email).where(
-            email_c.organisation_id == organisation_id,
-            email_c.internet_message_id == internet_message_id,
+        email_stmt = (
+            select(Email)
+            .where(
+                email_c.organisation_id == organisation_id,
+                email_c.internet_message_id == internet_message_id,
+            )
+            .order_by(email_c.received_at.desc(), email_c.email_id.desc())
         )
 
         try:
             result = await session.execute(email_stmt)
-            email = result.scalar_one_or_none()
+            email = result.scalars().first()
         except Exception as e:
             logger.exception(f"get_email_details: error fetching email: {e}")
             return None

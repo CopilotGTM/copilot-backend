@@ -33,6 +33,25 @@ def test_login_success(client_with_user_auth):
     assert "refresh_token" in body["data"]["tokens"]
 
 
+def test_login_success_updates_last_login_at(client_with_user_auth):
+    """Test successful active login persists a fresh last_login_at timestamp."""
+    client = client_with_user_auth["client"]
+    user = client_with_user_auth["user"]
+    previous_last_login_at = user.last_login_at
+
+    resp = client.post(
+        "/users/auth/login",
+        json={"email": "testuser@example.com", "password": "correctpassword"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["last_login_at"] is not None
+    assert user.last_login_at is not None
+    assert user.last_login_at > previous_last_login_at
+
+
 def test_login_uses_timezone_header_and_persists_profile(client_with_user_auth):
     """Test login captures the preferred user timezone from the request header."""
     client = client_with_user_auth["client"]
@@ -129,6 +148,39 @@ def test_login_password_change_required(client_with_user_auth):
     body = resp.json()
     assert body["data"]["state"] == "PASSWORD_CHANGE_REQUIRED"
     assert body["data"]["password_reset_link"] is not None
+
+
+def test_login_password_change_required_updates_last_login_at(client_with_user_auth):
+    """Test successful pending-setup login still records the most recent login time."""
+    client = client_with_user_auth["client"]
+    supabase_client = client_with_user_auth["supabase_client"]
+    master_session = client_with_user_auth["master_session"]
+
+    user, supabase_id = create_user(
+        email="newuser@example.com",
+        password="temppassword",
+        requires_password_change=True,
+    )
+    previous_last_login_at = user.last_login_at
+    master_session.add_user(user)
+    supabase_client.add_user(
+        email="newuser@example.com",
+        password="temppassword",
+        user_id=supabase_id,
+        requires_password_change=True,
+    )
+
+    resp = client.post(
+        "/users/auth/login",
+        json={"email": "newuser@example.com", "password": "temppassword"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["state"] == "PASSWORD_CHANGE_REQUIRED"
+    assert user.last_login_at is not None
+    assert user.last_login_at > previous_last_login_at
 
 
 def test_login_password_change_required_persists_timezone_header(client_with_user_auth):

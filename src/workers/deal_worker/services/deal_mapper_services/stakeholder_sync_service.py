@@ -243,10 +243,10 @@ class StakeholderSyncService:
                 "successful_deals": result.successful_deals,
                 "failed_deals": result.failed_deals,
                 "total_deals": result.total_deals,
-                "created": result.stakeholders_created,
-                "updated": result.stakeholders_updated,
-                "deactivated": result.stakeholders_deactivated,
-                "rejected": result.stakeholders_rejected,
+                "created_count": result.stakeholders_created,
+                "updated_count": result.stakeholders_updated,
+                "deactivated_count": result.stakeholders_deactivated,
+                "rejected_count": result.stakeholders_rejected,
             },
         )
 
@@ -284,10 +284,10 @@ class StakeholderSyncService:
                     "event": "stakeholder_sync_result",
                     "organisation_id": str(self.organisation_id),
                     "deal_id": str(deal_id),
-                    "created": result.created,
-                    "updated": result.updated,
-                    "deactivated": result.deactivated,
-                    "skipped": result.skipped,
+                    "created_count": result.created,
+                    "updated_count": result.updated,
+                    "deactivated_count": result.deactivated,
+                    "skipped_count": result.skipped,
                 },
             )
             await self._dispatch_pending_research()

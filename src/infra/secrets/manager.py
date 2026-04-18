@@ -21,14 +21,26 @@ class SecretsManager:
         self,
         provider: SecretProvider | None = None,
         *,
-        max_retries: int = 1,
-        initial_retry_delay: float = 0.5,
-        max_retry_delay: float = 2.0,
+        max_retries: int | None = None,
+        initial_retry_delay: float | None = None,
+        max_retry_delay: float | None = None,
     ) -> None:
         self.provider = provider or AzureKeyVaultSecretProvider()
-        self.max_retries = max_retries
-        self.initial_retry_delay = initial_retry_delay
-        self.max_retry_delay = max_retry_delay
+        self.max_retries = (
+            max_retries
+            if max_retries is not None
+            else int(secret_manager_config.SECRET_GET_MAX_RETRIES)
+        )
+        self.initial_retry_delay = (
+            initial_retry_delay
+            if initial_retry_delay is not None
+            else float(secret_manager_config.SECRET_GET_RETRY_INITIAL_DELAY_SEC)
+        )
+        self.max_retry_delay = (
+            max_retry_delay
+            if max_retry_delay is not None
+            else float(secret_manager_config.SECRET_GET_RETRY_MAX_DELAY_SEC)
+        )
         # Minimal counters
         self._provider_calls = 0
         self._provider_failures = 0

@@ -223,6 +223,7 @@ class DatabaseConfig:
     # App-side pool settings (caches TCP connections to pgbouncer)
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
+    DATABASE_POOL_TIMEOUT_SEC: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SEC", "60"))
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
 
     # Guard against hangs when DB/pgbouncer unavailable
@@ -804,8 +805,16 @@ class SecretManagerConfig:
         "AZURE_MASTER_KEY_VAULT_URL", os.getenv("AZURE_KEY_VAULT_URL")
     )
 
-    # New: bound individual secret fetch duration to avoid event-loop stalls
-    SECRET_GET_TIMEOUT_SEC: int = int(os.getenv("SECRET_GET_TIMEOUT_SEC", "8"))
+    # Bound individual secret fetch duration to avoid event-loop stalls while
+    # still allowing Azure Key Vault enough time to answer during transient slowness.
+    SECRET_GET_TIMEOUT_SEC: int = int(os.getenv("SECRET_GET_TIMEOUT_SEC", "20"))
+    SECRET_GET_MAX_RETRIES: int = int(os.getenv("SECRET_GET_MAX_RETRIES", "2"))
+    SECRET_GET_RETRY_INITIAL_DELAY_SEC: float = float(
+        os.getenv("SECRET_GET_RETRY_INITIAL_DELAY_SEC", "0.5")
+    )
+    SECRET_GET_RETRY_MAX_DELAY_SEC: float = float(
+        os.getenv("SECRET_GET_RETRY_MAX_DELAY_SEC", "4.0")
+    )
 
 
 class CloudInfraConfig:

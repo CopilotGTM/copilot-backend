@@ -106,13 +106,24 @@ async def user_login(
         if requires_password_change:
             # External call to Supabase — no DB session held
             try:
+                last_login_at = datetime.now(UTC)
                 if request_timezone:
                     async with master_async_session_scope() as session:
                         statement = select(User).where(UserTable.c.user_id == user_id)
                         result = await session.execute(statement)
                         user_obj = result.scalars().first()
                         if user_obj:
+                            user_obj.last_login_at = last_login_at
                             user_obj.timezone = request_timezone
+                            session.add(user_obj)
+                            await session.commit()
+                else:
+                    async with master_async_session_scope() as session:
+                        statement = select(User).where(UserTable.c.user_id == user_id)
+                        result = await session.execute(statement)
+                        user_obj = result.scalars().first()
+                        if user_obj:
+                            user_obj.last_login_at = last_login_at
                             session.add(user_obj)
                             await session.commit()
 
@@ -122,6 +133,7 @@ async def user_login(
 
                 response_data = UserLoginResponse(
                     state=UserLoginState.PENDING_SETUP,
+                    last_login_at=last_login_at,
                     timezone=effective_timezone,
                     password_reset_link=password_reset_link,
                 )
