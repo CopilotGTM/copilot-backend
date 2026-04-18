@@ -59,6 +59,10 @@ This directory contains the Terraform configuration for deploying a simplified, 
    - `gpt-5` (model `gpt-5`, version `2025-08-07`, SKU `GlobalStandard`)
    - `gpt-5-mini` (model `gpt-5-mini`, version `2025-08-07`, SKU `GlobalStandard`)
    - `gpt-5.2` (model `gpt-5.2`, version `2025-12-11`, SKU `GlobalStandard`)
+   - `gpt-5.4` (model `gpt-5.4`, version `2026-03-05`, SKU `GlobalStandard`)
+   - `gpt-realtime-1.5` (model `gpt-realtime-1.5`, version `2026-02-23`, SKU `GlobalStandard`)
+   - `gpt-4o-transcribe-diarize` (model `gpt-4o-transcribe-diarize`, version `2025-10-15`, SKU `GlobalStandard`)
+   - `gpt-4o-transcribe` (model `gpt-4o-transcribe`, version `2025-03-20`, SKU `GlobalStandard`)
    - `text-embedding-3-large` (model `text-embedding-3-large`, version `1`, SKU `Standard`)
 
 ## Token-per-minute (TPM) limits
