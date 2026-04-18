@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.deal_notes_handler import get_deal_notes_service
 from src.api.routers.crm.deal_timeline_handler import get_deal_timeline_service
 from src.api.routers.crm.deals_handler import (
@@ -1305,11 +1306,16 @@ def deals_dependency_overrides(client, test_user_ids, fake_deals_service, fake_d
         finally:
             await fake_deal_job_service.close()
 
+    async def _override_rate_limit():
+        return None
+
     from src.infra.utils.app_state import fastapp as app
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_deals_access_service] = _override_deals_service
     app.dependency_overrides[get_deal_job_service] = _override_job_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield {
         "deals_service": fake_deals_service,
         "job_service": fake_deal_job_service,
