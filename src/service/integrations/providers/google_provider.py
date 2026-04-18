@@ -69,7 +69,12 @@ class GoogleProvider(BaseIntegrationProvider):
         if self.integration_type == IntegrationType.GMAIL:
             base_scopes.append("https://www.googleapis.com/auth/gmail.readonly")
         elif self.integration_type == IntegrationType.GOOGLE_CALENDAR:
-            base_scopes.append("https://www.googleapis.com/auth/calendar.readonly")
+            base_scopes.extend(
+                [
+                    "https://www.googleapis.com/auth/calendar.readonly",
+                    "https://www.googleapis.com/auth/meetings.space.readonly",
+                ]
+            )
 
         return base_scopes
 

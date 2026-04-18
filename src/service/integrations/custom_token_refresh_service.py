@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType, Knowledg
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
+from src.service.integrations.scope_validation import parse_granted_scopes_from_token_payload
 
 logger = get_logger(__name__)
 
@@ -67,8 +68,8 @@ class CustomTokenRefreshService:
                     ),
                 )
             )
-            result = await session.execute(stmt)
-            integration_ids = [row[0] for row in result.all()]
+            query_result = await session.execute(stmt)
+            integration_ids = [row[0] for row in query_result.all()]
 
         if not integration_ids:
             logger.info("No integrations need token refresh for org: %s", self.organisation_id)
@@ -95,14 +96,14 @@ class CustomTokenRefreshService:
         deactivated = 0
 
         for integration_id in integration_ids:
-            result = await self._refresh_single_integration(integration_id)
-            integration_results.append(result)
+            refresh_result = await self._refresh_single_integration(integration_id)
+            integration_results.append(refresh_result)
 
-            if result.get("success"):
+            if refresh_result.get("success"):
                 successful += 1
             else:
                 failed += 1
-                if result.get("deactivated"):
+                if refresh_result.get("deactivated"):
                     deactivated += 1
 
         if failed == 0:
@@ -278,20 +279,6 @@ class CustomTokenRefreshService:
             return datetime.utcnow() + timedelta(seconds=int(expires_value))
         return datetime.utcnow() + timedelta(seconds=expires_value)
 
-    @staticmethod
-    def _parse_scopes(
-        token_payload: dict[str, Any],
-        fallback: list[str] | None = None,
-    ) -> list[str] | None:
-        scopes = token_payload.get("scope")
-        if isinstance(scopes, str):
-            parsed = [scope for scope in scopes.split(" ") if scope]
-            return parsed or fallback
-        if isinstance(scopes, list):
-            parsed = [scope for scope in scopes if isinstance(scope, str) and scope]
-            return parsed or fallback
-        return fallback
-
     def _apply_refreshed_token_payload(
         self,
         *,
@@ -313,12 +300,16 @@ class CustomTokenRefreshService:
             merged_credentials.get("refresh_token_expires_at")
             or merged_credentials.get("refresh_token_expires_in")
         )
-        integration.scopes = self._parse_scopes(merged_credentials, integration.scopes)
+        integration.scopes = parse_granted_scopes_from_token_payload(
+            merged_credentials, integration.scopes
+        )
 
     def _increment_failure_count(self, integration: KnowledgeIntegration) -> int:
         """Increment the failure count and return the new value."""
         metadata = dict(integration.connection_metadata or {})
         current_count = metadata.get("token_refresh_failures", 0)
+        if not isinstance(current_count, int):
+            current_count = 0
         new_count = current_count + 1
         metadata["token_refresh_failures"] = new_count
         metadata["last_refresh_failure_at"] = datetime.utcnow().isoformat()

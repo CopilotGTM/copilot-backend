@@ -18,6 +18,10 @@ from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
 from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
+from src.service.integrations.scope_validation import (
+    get_missing_required_scopes,
+    parse_granted_scopes_from_token_payload,
+)
 
 logger = get_logger(__name__)
 
@@ -57,18 +61,51 @@ class CopilotCallbackService:
         return datetime.utcnow() + timedelta(seconds=expires_value)
 
     @staticmethod
-    def _parse_scopes(
+    def _get_missing_scope_message(
+        integration_type: IntegrationType,
+        missing_scopes: set[str],
+    ) -> str:
+        if integration_type == IntegrationType.GMAIL:
+            return "Gmail permission was not granted. Please reconnect and allow Gmail access."
+
+        if integration_type == IntegrationType.GOOGLE_CALENDAR:
+            if "https://www.googleapis.com/auth/meetings.space.readonly" in missing_scopes:
+                return (
+                    "Google Meet permission was not granted. Please reconnect and allow "
+                    "Google Meet access."
+                )
+            if "https://www.googleapis.com/auth/calendar.readonly" in missing_scopes:
+                return (
+                    "Google Calendar permission was not granted. Please reconnect and allow "
+                    "Google Calendar access."
+                )
+            return (
+                "Google Calendar permissions were not granted. Please reconnect and allow "
+                "Google Calendar and Google Meet access."
+            )
+
+        if integration_type == IntegrationType.SLACK:
+            return "Slack permissions were not granted. Please reconnect and allow Slack access."
+
+        integration_name = INTEGRATION_METADATA[integration_type].name
+        return (
+            f"Required {integration_name} permissions were not granted. "
+            f"Please reconnect and allow {integration_name} access."
+        )
+
+    def _validate_required_scopes(
+        self,
+        integration_type: IntegrationType,
         token_payload: dict[str, Any],
-        fallback: list[str] | None = None,
-    ) -> list[str] | None:
-        scopes = token_payload.get("scope")
-        if isinstance(scopes, str):
-            parsed = [scope for scope in scopes.split(" ") if scope]
-            return parsed or fallback
-        if isinstance(scopes, list):
-            parsed = [scope for scope in scopes if isinstance(scope, str) and scope]
-            return parsed or fallback
-        return fallback
+    ) -> None:
+        missing_scopes = get_missing_required_scopes(
+            integration_type,
+            parse_granted_scopes_from_token_payload(token_payload, []),
+        )
+        if not missing_scopes:
+            return
+
+        raise ValueError(self._get_missing_scope_message(integration_type, missing_scopes))
 
     def _apply_custom_token_payload(
         self,
@@ -94,7 +131,9 @@ class CopilotCallbackService:
             credentials.get("refresh_token_expires_at")
             or credentials.get("refresh_token_expires_in")
         )
-        integration.scopes = self._parse_scopes(credentials, integration.scopes)
+        integration.scopes = parse_granted_scopes_from_token_payload(
+            credentials, integration.scopes
+        )
 
         metadata = dict(integration.connection_metadata or {})
         metadata["auth_backend"] = self._AUTH_BACKEND_CUSTOM
@@ -161,6 +200,7 @@ class CopilotCallbackService:
             access_token = tokens.get("access_token")
             if not access_token:
                 raise ValueError("Missing access_token from provider")
+            self._validate_required_scopes(integration_type, tokens)
 
             user_info = await provider.get_user_info(str(access_token))
             integration_email = str(user_info.get("email") or "").strip().lower()
@@ -171,7 +211,8 @@ class CopilotCallbackService:
             email_domain = integration_email.rsplit("@", 1)[-1]
             if email_domain in FREE_EMAIL_DOMAINS:
                 raise ValueError(
-                    f"Personal email addresses ({email_domain}) cannot be used. "
+                    f"Personal email addresses are not allowed for integrations. "
+                    f"The connected account uses {email_domain}, which is a personal email domain. "
                     "Please connect with your work email."
                 )
         except Exception as e:
@@ -261,6 +302,7 @@ class CopilotCallbackService:
         integration.name = metadata.name
         integration.connection_id = connection_id
         integration.is_active = True
+        integration.requires_reauth = False
         integration.last_sync_error = None
         integration.integration_email = integration_email
         self._apply_custom_token_payload(

@@ -15,7 +15,9 @@ from typing import Any
 
 import httpx
 
+from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import IntegrationPermissionError
 
 logger = get_logger(__name__)
 
@@ -46,6 +48,17 @@ __all__ = [
 _MAX_RETRIES = 3
 _BASE_BACKOFF_SEC = 1.0
 _MAX_BACKOFF_SEC = 30.0
+
+
+def _get_google_permission_message(integration_type: IntegrationType | None) -> str:
+    if integration_type == IntegrationType.GMAIL:
+        return "Gmail permission was not granted. Please reconnect and allow Gmail access."
+    if integration_type == IntegrationType.GOOGLE_CALENDAR:
+        return (
+            "Google Calendar permissions were not granted. Please reconnect and allow "
+            "Google Calendar and Google Meet access."
+        )
+    return "Required Google permissions were not granted. Please reconnect this integration."
 
 
 def _get_retry_after_seconds(response: httpx.Response) -> float | None:
@@ -120,12 +133,28 @@ async def _google_api_request(
     endpoint: str,
     *,
     params: dict[str, Any] | None = None,
+    integration_type: IntegrationType | None = None,
 ) -> dict[str, Any]:
     """Make a GET request to a Google API with 429 rate-limit retry."""
     url = f"{base_url}{endpoint}"
 
     async def _do() -> dict[str, Any]:
         response = await client.get(url, params=params)
+        if response.status_code == 403:
+            response_text = response.text.lower()
+            if (
+                "insufficientpermissions" in response_text
+                or "insufficient permissions" in response_text
+                or "insufficient authentication scopes" in response_text
+                or "access_token_scope_insufficient" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    _get_google_permission_message(integration_type),
+                    status_code=403,
+                    provider="google",
+                    endpoint=endpoint,
+                    response_summary=response.text,
+                )
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 
@@ -140,7 +169,13 @@ async def gmail_api_request(
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Make a GET request to the Gmail API with 429 rate-limit retry."""
-    return await _google_api_request(client, GMAIL_BASE_URL, endpoint, params=params)
+    return await _google_api_request(
+        client,
+        GMAIL_BASE_URL,
+        endpoint,
+        params=params,
+        integration_type=IntegrationType.GMAIL,
+    )
 
 
 async def calendar_api_request(
@@ -150,4 +185,10 @@ async def calendar_api_request(
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Make a GET request to the Google Calendar API with 429 rate-limit retry."""
-    return await _google_api_request(client, GOOGLE_CALENDAR_BASE_URL, endpoint, params=params)
+    return await _google_api_request(
+        client,
+        GOOGLE_CALENDAR_BASE_URL,
+        endpoint,
+        params=params,
+        integration_type=IntegrationType.GOOGLE_CALENDAR,
+    )

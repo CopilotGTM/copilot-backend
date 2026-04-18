@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import IntegrationPermissionError
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -96,7 +97,16 @@ async def _slack_api_request(
     if not isinstance(payload, dict):
         raise ValueError(f"Slack {method_name} returned an invalid payload")
     if not payload.get("ok"):
-        raise ValueError(f"Slack {method_name} failed: {payload.get('error', 'unknown_error')}")
+        error_code = str(payload.get("error", "unknown_error"))
+        if error_code == "missing_scope":
+            raise IntegrationPermissionError(
+                "Slack permissions were not granted. Please reconnect and allow Slack access.",
+                status_code=response.status_code,
+                provider="slack",
+                endpoint=method_name,
+                response_summary=error_code,
+            )
+        raise ValueError(f"Slack {method_name} failed: {error_code}")
     return payload
 
 

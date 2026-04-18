@@ -42,6 +42,8 @@ class FakeKnowledgeIntegration:
         last_sync_status: str | None = None,
         last_sync_error: str | None = None,
         access_token_expires_at: datetime | None = None,
+        scopes: list[str] | None = None,
+        requires_reauth: bool = False,
         connection_metadata: dict | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
@@ -61,6 +63,8 @@ class FakeKnowledgeIntegration:
         self.last_sync_status = last_sync_status
         self.last_sync_error = last_sync_error
         self.access_token_expires_at = access_token_expires_at
+        self.scopes = scopes
+        self.requires_reauth = requires_reauth
         self.connection_metadata = connection_metadata or {}
         self.created_at = created_at or datetime(2024, 1, 1, 0, 0, 0)
         self.updated_at = updated_at or datetime(2024, 1, 1, 0, 0, 0)
@@ -104,6 +108,12 @@ class FakeIntegrationService:
     ) -> list[FakeKnowledgeIntegration]:
         """List all active integrations."""
         return [i for i in self.integrations.values() if i.is_active]
+
+    async def list_available_integrations_for_user(
+        self, user_id: UUID | None = None
+    ) -> list[FakeKnowledgeIntegration]:
+        """List active integrations plus inactive ones that explicitly require re-auth."""
+        return [i for i in self.integrations.values() if i.is_active or i.requires_reauth]
 
     async def delete_integration_from_nango(
         self, connection_id: str, integration_type: str
@@ -276,11 +286,12 @@ class FakeCopilotCallbackService:
 
     def __init__(self):
         self.should_raise_value_error = False
+        self.value_error_message = "Invalid or expired state parameter"
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, str]:
         """Return a fake callback payload."""
         if self.should_raise_value_error:
-            raise ValueError("Invalid or expired state parameter")
+            raise ValueError(self.value_error_message)
         return {
             "integration_id": "test-integration",
             "connection_id": "test-connection",

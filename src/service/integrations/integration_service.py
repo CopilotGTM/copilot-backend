@@ -131,6 +131,43 @@ class IntegrationService:
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
+    async def list_available_integrations_for_user(
+        self,
+        user_id: UUID | None = None,
+    ) -> list[KnowledgeIntegration]:
+        """List integrations visible in the integrations UI.
+
+        Includes:
+        - active integrations
+        - inactive integrations explicitly marked requires_reauth
+
+        Excludes:
+        - manually disconnected inactive integrations
+        """
+        statement = select(KnowledgeIntegration).where(
+            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
+            or_(
+                cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
+                cast(col(KnowledgeIntegration.requires_reauth), Boolean).is_(True),
+            ),
+        )
+
+        if user_id:
+            statement = statement.where(
+                or_(
+                    col(KnowledgeIntegration.integration_scope) == IntegrationScope.ORGANIZATION,
+                    and_(
+                        col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        col(KnowledgeIntegration.created_by_user_id) == user_id,
+                    ),
+                )
+            )
+
+        statement = statement.order_by(col(KnowledgeIntegration.created_at).desc())
+
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
     async def revoke_custom_oauth_token(
         self,
         integration: KnowledgeIntegration,

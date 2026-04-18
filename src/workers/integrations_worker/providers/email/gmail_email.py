@@ -24,6 +24,10 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import (
+    is_insufficient_scope_error,
+    log_provider_api_error,
+)
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -386,8 +390,17 @@ async def _batch_get_messages(
                     f"/gmail/v1/users/me/messages/{msg_id}",
                     params={"format": "full"},
                 )
-            except Exception:
-                logger.warning("Failed to fetch Gmail message %s", msg_id)
+            except Exception as exc:
+                log_provider_api_error(
+                    logger,
+                    provider="gmail",
+                    operation="messages.get",
+                    exc=exc,
+                    endpoint=f"/gmail/v1/users/me/messages/{msg_id}",
+                    message_id=msg_id,
+                )
+                if is_insufficient_scope_error(exc):
+                    raise
                 return None
 
     results = await asyncio.gather(*[_get_one(mid) for mid in message_ids])
