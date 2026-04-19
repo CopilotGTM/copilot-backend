@@ -14,6 +14,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
+from src.infra.observability.otel import async_init_otel, instrument_fastapi_app
+from src.infra.observability.sentry import init_sentry
+from src.infra.utils.logger import configure_logging
 
 # Configure Python garbage collector to reduce pause times
 # This helps prevent health check timeouts caused by GC pauses
@@ -23,11 +26,8 @@ from dotenv import load_dotenv
 gc.set_threshold(50000, 500, 100)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-load_dotenv(BASE_DIR / ".env", override=True)
-
-from src.infra.observability.otel import async_init_otel, instrument_fastapi_app
-from src.infra.observability.sentry import init_sentry
-from src.infra.utils.logger import configure_logging
+if os.getenv("ENV", "local") == "local":
+    load_dotenv(BASE_DIR / ".env", override=False)
 
 configure_logging(component="api")
 
@@ -75,7 +75,7 @@ from src.api.routers.knowledge_base.upload_handler import (
 from src.api.routers.reminders import reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
-from src.infra.config.configs import app_config
+from src.infra.config.configs import app_config, security_secrets_config
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..api.middleware.request_context import RequestContextMiddleware
@@ -110,6 +110,11 @@ async def lifespan(app: FastAPI):
     initialize_redis_pool()  # Sync Redis pool
     await initialize_async_redis_pool()  # Async Redis pool
     logger.info("Redis connection pools initialized successfully")
+
+    await security_secrets_config.preload_required(
+        include_voice_realtime=_voice_realtime_api_enabled()
+    )
+    logger.info("Security signing secrets initialized")
 
     # Load OTel auth headers from Key Vault and initialize tracing
     await async_init_otel(service_name_suffix="-api")
@@ -148,7 +153,17 @@ def create_fastapi_app():
     # We use the shared instance from app_state so dependency_overrides work in tests
     fastapp.router.lifespan_context = lifespan
 
-    origins = os.getenv("ALLOW_ORIGIN_URL_AUTH", "*").split(",")
+    APP_ENV = os.getenv("ENV", "dev")
+    configured_origins = os.getenv("ALLOW_ORIGIN_URL_AUTH", "")
+    origins = [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
+    if not origins:
+        if APP_ENV == "local":
+            origins = list(app_config.BACKEND_CORS_ORIGINS)
+        else:
+            raise ValueError("ALLOW_ORIGIN_URL_AUTH must be set to explicit origins outside local")
+    if "*" in origins:
+        raise ValueError("Wildcard CORS origins are not allowed when credentials are enabled")
+
     fastapp.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -159,13 +174,13 @@ def create_fastapi_app():
 
     fastapp.add_middleware(RequestContextMiddleware)
 
-    APP_ENV = os.getenv("ENV", "dev")
     logger.info(f"App Environment: {APP_ENV}")
 
     # Add SessionMiddleware for session handling
+    session_secret = security_secrets_config.get_session_secret_sync()
     fastapp.add_middleware(
         SessionMiddleware,
-        secret_key=os.getenv("SESSION_SECRET", "supersecretkey"),
+        secret_key=session_secret,
         session_cookie="my_custom_session_cookie",
         max_age=3600,
         same_site="lax",
@@ -270,7 +285,6 @@ def create_fastapi_app():
     # Bot integrations (Teams, Slack, Zoom - no auth, uses provider-specific validation)
     # Endpoints:
     #   - POST /users/bots/auth/callback - Complete identity linking
-    #   - GET  /users/bots/auth/status - Check identity link status
     #   - POST /users/bots/teams/messages - Teams webhook
     #   - GET  /users/bots/teams/health - Teams health check
     fastapp.include_router(bots_router, prefix="/users/bots", tags=["bots"])

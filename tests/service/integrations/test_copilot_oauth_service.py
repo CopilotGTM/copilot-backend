@@ -60,6 +60,10 @@ async def test_initiate_oauth_flow_allows_beta_integration() -> None:
             return_value=FakeMetadata(availability_status="beta"),
         ),
         patch(
+            "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+            new=AsyncMock(return_value="oauth-signing-secret"),
+        ),
+        patch(
             "src.service.integrations.copilot_oauth_service.ProviderFactory.get_provider",
             return_value=fake_provider,
         ),
@@ -71,3 +75,32 @@ async def test_initiate_oauth_flow_allows_beta_integration() -> None:
 
     assert result == "https://example.com/oauth"
     fake_provider.get_authorization_url.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_and_decode_oauth_state_uses_runtime_secret() -> None:
+    user_ids = _make_user_ids()
+
+    with patch(
+        "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+        new=AsyncMock(return_value="oauth-signing-secret"),
+    ):
+        token = await CopilotOAuthService.generate_oauth_state(user_ids, IntegrationType.GMAIL)
+        decoded = await CopilotOAuthService.decode_oauth_state(token)
+
+    assert decoded["sub"] == str(user_ids.user_id)
+    assert decoded["org"] == str(user_ids.organisation_id)
+    assert decoded["type"] == IntegrationType.GMAIL.value
+    assert decoded["jti"]
+
+
+@pytest.mark.asyncio
+async def test_generate_oauth_state_requires_runtime_secret() -> None:
+    with (
+        patch(
+            "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+            new=AsyncMock(side_effect=RuntimeError("missing secret")),
+        ),
+        pytest.raises(RuntimeError, match="missing secret"),
+    ):
+        await CopilotOAuthService.generate_oauth_state(_make_user_ids(), IntegrationType.GMAIL)

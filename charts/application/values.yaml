@@ -109,6 +109,8 @@ api:
 
   # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
   secrets:
+    # Non-local deployments must set explicit CORS origins; wildcard origins are rejected in app code.
+    ALLOW_ORIGIN_URL_AUTH: ""
     # Voice realtime APIs are fail-closed by default and enabled per environment override.
     VOICE_REALTIME_API_ENABLED: "false"
 

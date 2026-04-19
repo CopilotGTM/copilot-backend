@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -29,7 +28,7 @@ from src.domain.models.user_models import (
 )
 from src.infra.auth.user_context import UserIDs
 from src.infra.config.agent_config import agent_config
-from src.infra.config.configs import openai_config
+from src.infra.config.configs import openai_config, security_secrets_config
 from src.infra.config.constant import RealtimeErrors
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.redis_client import get_redis_client
@@ -190,6 +189,7 @@ class RealtimeSessionService:
 
         expires_at = _coerce_expires_at(expires_at_raw)
         session_id = str(azure_session.get("id") or request_id)
+        runtime_config_secret = await _get_runtime_config_secret()
         chat_session_id = await self._resolve_chat_session_id(
             session_request=session_request,
             realtime_session_id=session_id,
@@ -203,7 +203,7 @@ class RealtimeSessionService:
             voice=voice,
             expires_at=expires_at,
             user_ids=self.user_ids,
-            secret=_get_runtime_config_secret(),
+            secret=runtime_config_secret,
             org_name="Our Organization",
             conversation_mode=session_request.conversation_mode,
         )
@@ -257,7 +257,7 @@ class RealtimeSessionService:
             user_ids=self.user_ids,
             session_id=attach_request.session_id,
             chat_session_id=attach_request.chat_session_id,
-            secret=_get_runtime_config_secret(),
+            secret=await _get_runtime_config_secret(),
         ):
             raise RealtimeSessionServiceError(RealtimeErrors.INVALID_RUNTIME_CONFIG, 400)
 
@@ -653,10 +653,18 @@ def _coerce_expires_at(value: int | float | str) -> datetime:
     raise RealtimeSessionServiceError(RealtimeErrors.INVALID_SESSION_RESPONSE, 502)
 
 
-def _get_runtime_config_secret() -> str:
-    return (
-        os.getenv("VOICE_REALTIME_CONFIG_SECRET") or os.getenv("SESSION_SECRET") or "supersecretkey"
-    )
+async def _get_runtime_config_secret() -> str:
+    try:
+        return await security_secrets_config.get_voice_realtime_config_secret()
+    except RuntimeError as exc:
+        logger.error(
+            "Realtime runtime signing secret unavailable",
+            extra={
+                "event": "realtime_runtime_config_secret_missing",
+                "reason": str(exc),
+            },
+        )
+        raise RealtimeSessionServiceError(RealtimeErrors.REALTIME_NOT_CONFIGURED, 500) from exc
 
 
 def _get_voice_allowed_tools() -> list[str]:

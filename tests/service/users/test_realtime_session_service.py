@@ -109,11 +109,11 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(realtime_module.agent_config, "VOICE_REALTIME_MODEL", "gpt-realtime-mini")
     monkeypatch.setattr(realtime_module.agent_config, "VOICE_REALTIME_VOICE", "alloy")
-    monkeypatch.setattr(
-        realtime_module,
-        "_get_runtime_config_secret",
-        lambda: "super-secret-signing-key",
-    )
+
+    async def fake_runtime_secret() -> str:
+        return "super-secret-signing-key"
+
+    monkeypatch.setattr(realtime_module, "_get_runtime_config_secret", fake_runtime_secret)
 
     async def fake_acquire_org_async_session(_organisation_id):
         yield FakeOrgSession()
@@ -213,6 +213,23 @@ def test_verify_runtime_config_signature_rejects_tampering() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_runtime_config_secret_requires_configured_secret(monkeypatch) -> None:
+    async def missing_secret() -> str:
+        raise RuntimeError("missing secret")
+
+    monkeypatch.setattr(
+        realtime_module.security_secrets_config,
+        "get_voice_realtime_config_secret",
+        missing_secret,
+    )
+
+    with pytest.raises(RealtimeSessionServiceError) as exc_info:
+        await realtime_module._get_runtime_config_secret()
+
+    assert exc_info.value.status_code == 500
+
+
+@pytest.mark.asyncio
 async def test_create_session_raises_for_missing_config(monkeypatch) -> None:
     monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_ENDPOINT", None)
     monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
@@ -252,6 +269,43 @@ async def test_create_session_maps_upstream_http_errors(monkeypatch) -> None:
         await service.create_session(_make_request())
 
     assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_runtime_signing_secret(monkeypatch) -> None:
+    fake_response = httpx.Response(
+        200,
+        request=httpx.Request(
+            "POST", "https://example.openai.azure.com/openai/v1/realtime/client_secrets"
+        ),
+        json={
+            "value": "ephemeral-secret",
+            "expires_at": "2026-04-11T10:45:00Z",
+            "session": {"id": "azure-session-123"},
+        },
+    )
+    fake_client = FakeAsyncClient(response=fake_response)
+
+    monkeypatch.setattr(realtime_module.httpx, "AsyncClient", lambda timeout: fake_client)
+    monkeypatch.setattr(
+        realtime_module.openai_config,
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(realtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(realtime_module.agent_config, "VOICE_REALTIME_MODEL", "gpt-realtime-mini")
+
+    async def missing_runtime_secret() -> str:
+        raise RealtimeSessionServiceError("missing runtime secret", 500)
+
+    monkeypatch.setattr(realtime_module, "_get_runtime_config_secret", missing_runtime_secret)
+
+    service = RealtimeSessionService(_make_user_ids())
+
+    with pytest.raises(RealtimeSessionServiceError) as exc_info:
+        await service.create_session(_make_request())
+
+    assert exc_info.value.status_code == 500
 
 
 @pytest.mark.asyncio
@@ -323,11 +377,10 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
     dispatched: dict[str, object] = {}
     created_job_id = uuid4()
 
-    monkeypatch.setattr(
-        realtime_module,
-        "_get_runtime_config_secret",
-        lambda: "super-secret-signing-key",
-    )
+    async def fake_runtime_secret() -> str:
+        return "super-secret-signing-key"
+
+    monkeypatch.setattr(realtime_module, "_get_runtime_config_secret", fake_runtime_secret)
     monkeypatch.setattr(realtime_module, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
         realtime_module.openai_config,
@@ -428,11 +481,10 @@ async def test_attach_call_marks_created_job_failed_when_dispatch_fails(monkeypa
     created_job_id = uuid4()
     observed: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        realtime_module,
-        "_get_runtime_config_secret",
-        lambda: "super-secret-signing-key",
-    )
+    async def fake_runtime_secret() -> str:
+        return "super-secret-signing-key"
+
+    monkeypatch.setattr(realtime_module, "_get_runtime_config_secret", fake_runtime_secret)
     monkeypatch.setattr(realtime_module, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
         realtime_module.openai_config,

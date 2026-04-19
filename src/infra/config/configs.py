@@ -1,5 +1,8 @@
 import asyncio
 import os
+import threading
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 from dotenv import load_dotenv
 
@@ -10,6 +13,34 @@ from ..utils.logger import get_logger
 from .constant import CONFIG_MAP
 
 logger = get_logger()
+T = TypeVar("T")
+
+
+def _run_coro_sync(coro: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine from sync startup code."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: T | None = None
+    error: BaseException | None = None
+
+    def _runner() -> None:
+        nonlocal result, error
+        try:
+            result = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover
+            error = exc
+
+    thread = threading.Thread(target=_runner, name="security-secret-loader", daemon=True)
+    thread.start()
+    thread.join()
+
+    if error is not None:
+        raise error
+
+    return result  # type: ignore[return-value]
 
 
 class OTelConfig:
@@ -251,7 +282,7 @@ class AppConfig:
     APP_URL: str = os.getenv("APP_URL", "")
 
     # Security settings
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "").strip()
 
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -260,6 +291,127 @@ class AppConfig:
     def voice_realtime_api_enabled(self) -> bool:
         """Feature flag for exposing the voice realtime HTTP routes."""
         return os.getenv("VOICE_REALTIME_API_ENABLED", "false").lower() == "true"
+
+
+class SecuritySecretsConfig:
+    """Runtime signing secrets sourced from env vars or Azure Key Vault."""
+
+    SECRET_NAME_SESSION_SECRET: str = "session-secret"
+    SECRET_NAME_OAUTH_STATE_SECRET: str = "oauth-state-secret-key"
+    SECRET_NAME_VOICE_REALTIME_CONFIG_SECRET: str = "voice-realtime-config-secret"
+
+    _session_secret: str = os.getenv("SESSION_SECRET", "").strip()
+    _oauth_state_secret: str = os.getenv("SECRET_KEY", "").strip()
+    _voice_realtime_config_secret: str = os.getenv("VOICE_REALTIME_CONFIG_SECRET", "").strip()
+
+    _session_secret_from_env: bool = bool(_session_secret)
+    _oauth_state_secret_from_env: bool = bool(_oauth_state_secret)
+    _voice_realtime_config_secret_from_env: bool = bool(_voice_realtime_config_secret)
+
+    _credentials_ttl_hours: float = float(os.getenv("SECURITY_SECRET_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def preload_required(self, *, include_voice_realtime: bool = False) -> None:
+        await self.get_session_secret()
+        await self.get_oauth_state_secret()
+        if include_voice_realtime:
+            await self.get_voice_realtime_config_secret()
+
+    async def get_session_secret(self) -> str:
+        await self._ensure_loaded(include_voice_realtime=False)
+        if self._session_secret:
+            return self._session_secret
+        raise RuntimeError(
+            "SESSION_SECRET unavailable from env or Key Vault secret "
+            f"'{self.SECRET_NAME_SESSION_SECRET}'"
+        )
+
+    def get_session_secret_sync(self) -> str:
+        return _run_coro_sync(self.get_session_secret())
+
+    async def get_oauth_state_secret(self) -> str:
+        await self._ensure_loaded(include_voice_realtime=False)
+        if self._oauth_state_secret:
+            return self._oauth_state_secret
+        raise RuntimeError(
+            "SECRET_KEY unavailable from env or Key Vault secret "
+            f"'{self.SECRET_NAME_OAUTH_STATE_SECRET}'"
+        )
+
+    async def get_voice_realtime_config_secret(self) -> str:
+        await self._ensure_loaded(include_voice_realtime=True)
+        if self._voice_realtime_config_secret:
+            return self._voice_realtime_config_secret
+        raise RuntimeError(
+            "VOICE_REALTIME_CONFIG_SECRET unavailable from env or Key Vault secret "
+            f"'{self.SECRET_NAME_VOICE_REALTIME_CONFIG_SECRET}'"
+        )
+
+    async def _ensure_loaded(self, *, include_voice_realtime: bool) -> None:
+        if not self._needs_refresh(include_voice_realtime=include_voice_realtime):
+            return
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._needs_refresh(include_voice_realtime=include_voice_realtime):
+                return
+            await self._load_from_vault(include_voice_realtime=include_voice_realtime)
+
+    def _needs_refresh(self, *, include_voice_realtime: bool) -> bool:
+        if not self._session_secret_from_env and not self._session_secret:
+            return True
+        if not self._oauth_state_secret_from_env and not self._oauth_state_secret:
+            return True
+        if (
+            include_voice_realtime
+            and not self._voice_realtime_config_secret_from_env
+            and not self._voice_realtime_config_secret
+        ):
+            return True
+        if self._credentials_loaded_at is None:
+            return True
+
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self, *, include_voice_realtime: bool) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading security signing secrets from Key Vault (TTL refresh)")
+
+        if not self._session_secret_from_env:
+            self._session_secret = (
+                await master_secrets_manager.get(self.SECRET_NAME_SESSION_SECRET) or ""
+            ).strip()
+        if not self._oauth_state_secret_from_env:
+            self._oauth_state_secret = (
+                await master_secrets_manager.get(self.SECRET_NAME_OAUTH_STATE_SECRET) or ""
+            ).strip()
+        if include_voice_realtime and not self._voice_realtime_config_secret_from_env:
+            self._voice_realtime_config_secret = (
+                await master_secrets_manager.get(self.SECRET_NAME_VOICE_REALTIME_CONFIG_SECRET)
+                or ""
+            ).strip()
+
+        self._credentials_loaded_at = time.time()
+        logger.info(
+            "Security signing secret cache refreshed (TTL=%.1fh)",
+            self._credentials_ttl_hours,
+            extra={
+                "event": "security_signing_secrets_cached",
+                "has_session_secret": bool(self._session_secret),
+                "has_oauth_state_secret": bool(self._oauth_state_secret),
+                "has_voice_realtime_config_secret": bool(self._voice_realtime_config_secret),
+                "voice_realtime_requested": include_voice_realtime,
+            },
+        )
 
 
 class OpenAIConfig:
@@ -1033,6 +1185,7 @@ class RateLimitConfig:
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
 app_config = AppConfig()
+security_secrets_config = SecuritySecretsConfig()
 openai_config = OpenAIConfig()
 embedder_config = EmbedderConfig()
 transcription_config = TranscriptionConfig()

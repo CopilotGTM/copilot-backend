@@ -65,8 +65,9 @@ class RedisConnectionManager:
             try:
                 from redis.connection import SSLConnection  # type: ignore
 
-                # Configure certificate requirements from env, default CERT_NONE
-                ssl_cert_reqs_str = os.environ.get("REDIS_SSL_CERT_REQS", "CERT_NONE")
+                # Production Redis connections must verify the peer certificate unless
+                # an operator explicitly weakens this via env for a controlled case.
+                ssl_cert_reqs_str = os.environ.get("REDIS_SSL_CERT_REQS", "CERT_REQUIRED")
                 ssl_cert_reqs_map = {
                     "CERT_NONE": ssl_mod.CERT_NONE,
                     "CERT_OPTIONAL": ssl_mod.CERT_OPTIONAL,
@@ -74,7 +75,7 @@ class RedisConnectionManager:
                 }
                 connection_params["connection_class"] = SSLConnection
                 connection_params["ssl_cert_reqs"] = ssl_cert_reqs_map.get(
-                    ssl_cert_reqs_str, ssl_mod.CERT_NONE
+                    ssl_cert_reqs_str, ssl_mod.CERT_REQUIRED
                 )
             except Exception:
                 # As a last resort, try the 'ssl' kwarg; some environments may still accept it.
