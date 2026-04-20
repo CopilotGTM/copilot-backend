@@ -5,7 +5,7 @@ from uuid import uuid4
 import jwt
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.auth.user_context import UserIDs
-from src.infra.config.configs import app_config
+from src.infra.config.configs import security_secrets_config
 from src.infra.config.integrations_metadata import (
     AvailabilityStatus,
     IntegrationMetadata,
@@ -15,6 +15,10 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
 
 logger = get_logger(__name__)
+
+
+async def _get_oauth_state_secret() -> str:
+    return await security_secrets_config.get_oauth_state_secret()
 
 
 class CopilotOAuthIntegrationUnavailableError(Exception):
@@ -48,7 +52,7 @@ class CopilotOAuthService:
             raise CopilotOAuthIntegrationUnavailableError(metadata.availability_status)
 
     @staticmethod
-    def generate_oauth_state(user_ids: UserIDs, integration_type: IntegrationType) -> str:
+    async def generate_oauth_state(user_ids: UserIDs, integration_type: IntegrationType) -> str:
         """Generate a signed JWT embedding user/org context into the OAuth state parameter.
 
         The provider returns this token unchanged in the callback, allowing the callback
@@ -71,26 +75,18 @@ class CopilotOAuthService:
             "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=15),
             "iat": datetime.datetime.now(datetime.UTC),
         }
-        encoded_jwt = jwt.encode(
-            payload,
-            app_config.SECRET_KEY,
-            algorithm="HS256",
-        )
+        encoded_jwt = jwt.encode(payload, await _get_oauth_state_secret(), algorithm="HS256")
         return encoded_jwt
 
     @staticmethod
-    def decode_oauth_state(state_token: str) -> dict[str, Any]:
+    async def decode_oauth_state(state_token: str) -> dict[str, Any]:
         """Decode and verify the OAuth state JWT from the provider callback.
 
         Raises:
             jwt.ExpiredSignatureError: If the 15-minute window has elapsed.
             jwt.InvalidTokenError: If the token is malformed or signature fails.
         """
-        decoded = jwt.decode(
-            state_token,
-            app_config.SECRET_KEY,
-            algorithms=["HS256"],
-        )
+        decoded = jwt.decode(state_token, await _get_oauth_state_secret(), algorithms=["HS256"])
         if isinstance(decoded, dict):
             return dict(decoded)
         return {}
@@ -120,7 +116,7 @@ class CopilotOAuthService:
         """
         self._ensure_integration_available(integration_type)
         provider = ProviderFactory.get_provider(integration_type)
-        state_token = self.generate_oauth_state(user_ids, integration_type)
+        state_token = await self.generate_oauth_state(user_ids, integration_type)
 
         auth_url = await provider.get_authorization_url(state_token)
 

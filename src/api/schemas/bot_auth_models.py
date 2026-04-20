@@ -19,15 +19,6 @@ class BotAuthCallbackResponse(BaseModel):
     provider: str | None = None
 
 
-class BotAuthStatusResponse(BaseModel):
-    """Response for bot auth status check."""
-
-    is_linked: bool
-    user_email: str | None = None
-    linked_at: str | None = None
-    provider: str | None = None
-
-
 class BotAuthValidateStateResponse(BaseModel):
     """Response for state token validation check."""
 

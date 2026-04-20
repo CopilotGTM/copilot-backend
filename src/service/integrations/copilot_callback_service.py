@@ -167,7 +167,7 @@ class CopilotCallbackService:
             ValueError: If state is invalid/expired, user mismatch, or token exchange fails.
         """
         try:
-            state_data = copilot_oauth_service.decode_oauth_state(state)
+            state_data = await copilot_oauth_service.decode_oauth_state(state)
         except Exception as e:
             logger.error("Invalid or expired OAuth state: %s", e)
             raise ValueError("Invalid or expired state parameter") from e

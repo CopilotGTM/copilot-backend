@@ -14,6 +14,9 @@ from sqlmodel import Session, create_engine
 load_dotenv(override=False)
 os.environ.setdefault("ENV", "local")
 os.environ.setdefault("VOICE_REALTIME_API_ENABLED", "true")
+os.environ.setdefault("SESSION_SECRET", "test-session-secret")
+os.environ.setdefault("SECRET_KEY", "test-oauth-state-secret")
+os.environ.setdefault("VOICE_REALTIME_CONFIG_SECRET", "test-voice-secret")
 
 import fakeredis
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency

@@ -1,5 +1,49 @@
 from __future__ import annotations
 
+import pytest
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
+from src.api.routers.healthcheck import verify_internal_access
+from starlette.requests import Request
+
+
+def _build_request(client_host: str) -> Request:
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/internal/healthcheck",
+        "headers": [],
+        "client": (client_host, 12345),
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
+@pytest.mark.asyncio
+async def test_verify_internal_access_rejects_internal_ip_without_configured_token(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("INTERNAL_HEALTH_TOKEN", raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_internal_access(_build_request("10.20.30.40"), credentials=None)
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_verify_internal_access_rejects_internal_ip_with_wrong_bearer_token(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("INTERNAL_HEALTH_TOKEN", "secret-token")
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="wrong-token")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_internal_access(_build_request("10.20.30.40"), credentials=credentials)
+
+    assert exc_info.value.status_code == 403
+
 
 def test_integrations_scheduler_health_endpoint_returns_scheduler_status(
     client,

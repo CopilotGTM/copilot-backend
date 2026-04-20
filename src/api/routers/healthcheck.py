@@ -1,4 +1,5 @@
 import os
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -38,52 +39,36 @@ async def public_health():
 
 
 async def verify_internal_access(
-    request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:
     """
     Verify that the request is authorized to access internal health endpoints.
 
-    This function checks for:
-    1. Internal health check token (for monitoring systems)
-    2. Request from internal cluster IP ranges
-    3. Kubernetes service account token (for internal pod access)
+    Internal health endpoints are protected exclusively by a shared bearer token.
+    Source IPs are not a trustworthy app-layer security boundary behind proxies
+    or ingress, so they are intentionally not considered here.
     """
-    # Check for internal health check token
     internal_token = os.getenv("INTERNAL_HEALTH_TOKEN")
-    if internal_token and credentials and credentials.credentials == internal_token:
+    if not internal_token:
+        logger.error("Internal health endpoint access attempted without INTERNAL_HEALTH_TOKEN set")
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Access denied",
+                "message": "Health check endpoints are restricted to internal access only",
+            },
+        )
+
+    if credentials and secrets.compare_digest(credentials.credentials, internal_token):
         return True
 
-    # Check if request is from internal cluster (Kubernetes internal networks)
-    client_ip = request.client.host if request.client else None
-    if client_ip:
-        # Common Kubernetes internal IP ranges
-        internal_ranges = [
-            "10.",  # Kubernetes cluster internal
-            "172.",  # Docker internal networks
-            "192.168.",  # Private networks
-            "127.0.0.1",  # Localhost
-        ]
-        if any(client_ip.startswith(prefix) for prefix in internal_ranges):
-            logger.info(f"Internal health check access from cluster IP: {client_ip}")
-            return True
-
-    # Check for Kubernetes service account token
-    if credentials and credentials.credentials:
-        # In a real environment, you'd validate the Kubernetes service account token
-        # For now, we'll accept any bearer token from internal IPs
-        if client_ip and any(
-            client_ip.startswith(prefix) for prefix in ["10.", "172.", "192.168."]
-        ):
-            return True
-
-    # Log unauthorized access attempts
-    logger.warning(f"Unauthorized health check access attempt from {client_ip}")
+    logger.warning("Unauthorized health check access attempt")
     raise HTTPException(
         status_code=403,
         detail={
             "error": "Access denied",
             "message": "Health check endpoints are restricted to internal access only",
-            "client_ip": client_ip,
         },
     )
 

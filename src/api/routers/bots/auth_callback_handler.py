@@ -11,8 +11,6 @@ Flow:
 5. Backend validates state, verifies token, creates identity mapping
 """
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +19,6 @@ from src.api.schemas.bot_auth_models import (
     BotAuthCallbackRequest,
     BotAuthCallbackResponse,
     BotAuthErrorResponse,
-    BotAuthStatusResponse,
     BotAuthValidateStateResponse,
 )
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
@@ -316,45 +313,4 @@ async def bot_auth_callback(
         message=message,
         user_email=user_email,
         provider=provider.value,
-    )
-
-
-@router.get(
-    "/status",
-    response_model=BotAuthStatusResponse,
-)
-async def bot_auth_status(
-    provider: str = Query(..., description="Provider name (teams, slack, etc.)"),
-    external_user_id: str = Query(..., description="User ID from external provider"),
-    external_tenant_id: str | None = Query(None, description="Tenant/workspace ID (optional)"),
-    session: AsyncSession = Depends(get_master_async_session),
-    identity_service: ExternalIdentityService = Depends(get_identity_service),
-) -> dict[str, Any]:
-    """Check if an external identity is linked to a CopilotGTM account.
-
-    This endpoint is used by bots to check if a user has already linked
-    their identity.
-
-    Args:
-        provider: Provider name (teams, slack, etc.)
-        external_user_id: User ID from external provider
-        external_tenant_id: Tenant/workspace ID (optional)
-
-    Returns:
-        Status dict with is_linked, user_email, linked_at, provider
-    """
-    # Validate provider
-    try:
-        provider_enum = ExternalIdentityProvider(provider.lower())
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid provider: {provider}. Supported: teams, slack, azure_ad, google, okta",
-        ) from e
-
-    return await identity_service.get_mapping_status(
-        session=session,
-        provider=provider_enum,
-        external_user_id=external_user_id,
-        external_tenant_id=external_tenant_id,
     )

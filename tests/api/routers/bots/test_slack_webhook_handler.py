@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock
 
+import pytest
 from src.service.bots.auth_validators.base import AuthValidationResult
 
 
@@ -91,3 +92,69 @@ def test_events_endpoint_still_processes_standard_json_events(client, monkeypatc
     assert response.status_code == 200
     assert process_event_mock.await_count == 1
     assert process_interaction_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_slack_oauth_callback_allows_org_install_without_state(monkeypatch) -> None:
+    from src.api.routers.bots import slack_webhook_handler
+
+    class _FakeSlackResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def json(self):
+            return {
+                "ok": True,
+                "team": {"id": "T123", "name": "Test Workspace"},
+                "access_token": "xoxb-test-token",
+                "bot_user_id": "U123",
+                "authed_user": {"id": "U999"},
+                "scope": "app_mentions:read",
+                "token_type": "bot",
+                "app_id": "A123",
+            }
+
+    class _FakeSlackClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def post(self, *args, **kwargs):
+            return _FakeSlackResponse()
+
+    monkeypatch.setattr(slack_webhook_handler.aiohttp, "ClientSession", _FakeSlackClientSession)
+    monkeypatch.setattr(
+        slack_webhook_handler.slack_config,
+        "get_credentials",
+        AsyncMock(return_value=("signing", "app", "client", "secret")),
+    )
+    monkeypatch.setattr(slack_webhook_handler.slack_config, "SLACK_AUTH_LOGIN_URL", "")
+    monkeypatch.setattr(
+        slack_webhook_handler.BotInstallationService,
+        "upsert_installation",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        slack_webhook_handler.SlackBotService,
+        "_open_dm",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        slack_webhook_handler.SlackBotService,
+        "_send_message",
+        AsyncMock(return_value=True),
+    )
+
+    response = await slack_webhook_handler.slack_oauth_callback(
+        code="test-auth-code",
+        error=None,
+        _state=None,
+        session=object(),
+    )
+
+    assert response.status_code == 200
