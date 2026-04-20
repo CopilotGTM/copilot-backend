@@ -200,6 +200,8 @@ class DealWriteService:
             primary_contact_name=payload.get("primary_contact_name"),
             primary_contact_email=payload.get("primary_contact_email"),
             source_created_at=payload.get("source_created_at") or now,
+            stage_entered_at=now,
+            stage_updated_at=now,
             last_activity_at=payload.get("last_activity_at"),
             source_modified_at=now,
             synced_at=now,
@@ -221,6 +223,7 @@ class DealWriteService:
             stage_id=stage.stage_id,
             stage_external_id=stage.external_id,
             entered_at=now,
+            source=created_via,
             synced_at=now,
             last_seen_at=now,
         )
@@ -587,8 +590,17 @@ class DealWriteService:
         stage = await self._load_stage(stage_id, deal.pipeline_id, deal.integration_id)
 
         now = datetime.now(UTC)
+        previous_stage_id = deal.stage_id
+        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
-        self._record_stage_history(deal=deal, stage=stage, now=now)
+        self._record_stage_history(
+            deal=deal,
+            stage=stage,
+            now=now,
+            from_stage_id=previous_stage_id,
+            from_stage_external_id=previous_stage_external_id,
+            source="api",
+        )
         await self.session.flush()
 
         logger.info("Moved deal %s to stage %s", deal.deal_id, stage.name)
@@ -627,8 +639,17 @@ class DealWriteService:
         if final_close_at.tzinfo is None:
             final_close_at = final_close_at.replace(tzinfo=UTC)
 
+        previous_stage_id = deal.stage_id
+        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
-        self._record_stage_history(deal=deal, stage=stage, now=now)
+        self._record_stage_history(
+            deal=deal,
+            stage=stage,
+            now=now,
+            from_stage_id=previous_stage_id,
+            from_stage_external_id=previous_stage_external_id,
+            source="api",
+        )
 
         deal.deal_status = CRMDealStatus(normalized_outcome)
         deal.close_date = final_close_at
@@ -669,8 +690,17 @@ class DealWriteService:
             stage_id=stage_id,
         )
         now = datetime.now(UTC)
+        previous_stage_id = deal.stage_id
+        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
-        self._record_stage_history(deal=deal, stage=stage, now=now)
+        self._record_stage_history(
+            deal=deal,
+            stage=stage,
+            now=now,
+            from_stage_id=previous_stage_id,
+            from_stage_external_id=previous_stage_external_id,
+            source="api",
+        )
 
         deal.deal_status = CRMDealStatus.OPEN
         deal.closed_won_at = None
@@ -734,12 +764,23 @@ class DealWriteService:
         deal.stage_id = stage.stage_id
         deal.stage_external_id = stage.external_id
         deal.stage_name = stage.name
+        deal.stage_entered_at = now
+        deal.stage_updated_at = now
         deal.source_modified_at = now
         deal.synced_at = now
         deal.last_seen_at = now
         self.session.add(deal)
 
-    def _record_stage_history(self, *, deal: CRMDeal, stage: CRMDealStage, now: datetime) -> None:
+    def _record_stage_history(
+        self,
+        *,
+        deal: CRMDeal,
+        stage: CRMDealStage,
+        now: datetime,
+        from_stage_id: UUID | None = None,
+        from_stage_external_id: str | None = None,
+        source: str | None = None,
+    ) -> None:
         history_id = uuid4()
         history = CRMDealStageHistory(
             history_id=history_id,
@@ -748,8 +789,11 @@ class DealWriteService:
             external_id=str(history_id),
             deal_id=deal.deal_id,
             stage_id=stage.stage_id,
+            from_stage_id=from_stage_id,
             stage_external_id=stage.external_id,
+            from_stage_external_id=from_stage_external_id,
             entered_at=now,
+            source=source,
             synced_at=now,
             last_seen_at=now,
         )
