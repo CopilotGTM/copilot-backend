@@ -114,6 +114,26 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 180,
         "retries": 0,
     },
+    # ── HubSpot record sync (phase 2: pipelines + stages) ──
+    "integrations.sync_hubspot_pipelines": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # Chain terminators — short, idempotent, owns initial_sync_status writes.
+    "integrations.mark_hubspot_initial_sync_succeeded": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_hubspot_initial_sync_failed": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
 }
 
 CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
@@ -229,6 +249,19 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             "integrations.sync_hubspot_deal_schema": {
                 "queue": "integrations_priority",  # Priority queue for manual / post-connect triggers
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 2: pipelines + stages)
+            "integrations.sync_hubspot_pipelines": {
+                "queue": "integrations_priority",  # Co-scheduled with the chain it belongs to
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_hubspot_initial_sync_succeeded": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_hubspot_initial_sync_failed": {
+                "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },
         }

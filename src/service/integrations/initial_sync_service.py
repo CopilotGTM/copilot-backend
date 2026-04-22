@@ -17,6 +17,9 @@ from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.hubspot_chain import (
+    build_hubspot_initial_sync_chain,
+)
 from src.workers.integrations_worker.client import send_integrations_task
 
 logger = get_logger(__name__)
@@ -84,6 +87,9 @@ class InitialSyncService:
             schema_sync = dict(metadata.get("schema_sync") or {})
             schema_sync["deals"] = {"status": "queued"}
             metadata["schema_sync"] = schema_sync
+            record_sync = dict(metadata.get("record_sync") or {})
+            record_sync["pipelines"] = {"status": "queued"}
+            metadata["record_sync"] = record_sync
             integration.connection_metadata = metadata
             return
 
@@ -134,7 +140,7 @@ class InitialSyncService:
                 return
 
             if integration_type == IntegrationType.HUBSPOT:
-                self._trigger_hubspot_schema_sync(org_id_str, int_id_str)
+                self._trigger_hubspot_initial_sync(org_id_str, int_id_str)
                 return
 
             if integration_type in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
@@ -185,14 +191,23 @@ class InitialSyncService:
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
-    def _trigger_hubspot_schema_sync(self, org_id_str: str, int_id_str: str) -> None:
-        """Trigger HubSpot deal schema sync (Tier 3)."""
-        send_integrations_task(
-            task_name="integrations.sync_hubspot_deal_schema",
-            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
-        )
+    def _trigger_hubspot_initial_sync(self, org_id_str: str, int_id_str: str) -> None:
+        """Dispatch the HubSpot post-connect Celery chain.
+
+        The chain runs: schema sync → pipelines record sync → … → finalize.
+        Each link is a Tier 3 task; on any failure the chain aborts via
+        link_error and `connection_metadata.initial_sync_status` is set to
+        "failed" by the failure terminator. On full success the terminal
+        finalize link sets it to "success".
+
+        See `src/service/integrations/crm/records/common/hubspot_chain.py`.
+        """
+        build_hubspot_initial_sync_chain(
+            organisation_id=UUID(org_id_str),
+            integration_id=UUID(int_id_str),
+        ).apply_async()
         logger.info(
-            "Triggered initial HubSpot deal schema sync: integration=%s",
+            "Dispatched HubSpot initial sync chain: integration=%s",
             int_id_str,
         )
 

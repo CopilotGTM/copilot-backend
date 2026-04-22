@@ -11,10 +11,13 @@ from .calendar import (
     sync_calendar_org_task,
 )
 
-# CRM schema sync tasks (HubSpot)
+# CRM schema + record sync tasks (HubSpot)
 from .crm import (
+    mark_hubspot_initial_sync_failed_task,
+    mark_hubspot_initial_sync_succeeded_task,
     sync_hubspot_deal_schema_all_orgs_task,
     sync_hubspot_deal_schema_task,
+    sync_hubspot_pipelines_task,
 )
 
 # Email sync tasks (three-tier architecture)
@@ -65,4 +68,8 @@ __all__ = [
     # CRM schema sync (HubSpot)
     "sync_hubspot_deal_schema_all_orgs_task",
     "sync_hubspot_deal_schema_task",
+    # CRM record sync (HubSpot, phase 2: pipelines + chain terminators)
+    "sync_hubspot_pipelines_task",
+    "mark_hubspot_initial_sync_succeeded_task",
+    "mark_hubspot_initial_sync_failed_task",
 ]

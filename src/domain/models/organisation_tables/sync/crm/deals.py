@@ -114,6 +114,7 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         UniqueConstraint("integration_id", "external_id", name="uq_crm_stage_external"),
         Index("ix_crm_stage_pipeline_order", "pipeline_id", "display_order"),
         Index("ix_crm_stage_org_name", "organisation_id", "name"),
+        Index("ix_crm_deal_stage_pipeline_active", "pipeline_id", "is_active"),
         CheckConstraint(
             "(probability IS NULL) OR (probability >= 0 AND probability <= 100)",
             name="ck_crm_stage_probability",
@@ -163,6 +164,14 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
         description="Whether the provider marks this stage as closed.",
+    )
+    is_active: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+        description=(
+            "False once the provider stops returning this stage in a snapshot. "
+            "Historical deals keep referencing it; no hard/soft delete."
+        ),
     )
     display_order: int | None = Field(
         default=None,

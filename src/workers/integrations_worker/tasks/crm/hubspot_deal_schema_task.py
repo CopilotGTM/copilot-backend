@@ -122,6 +122,9 @@ def sync_hubspot_deal_schema_task(
     try:
         return run_async(_run())
     except SoftTimeLimitExceeded:
+        # Record the failure, then re-raise so the Celery chain aborts via
+        # link_error. Returning a dict would succeed the task in Celery's eyes
+        # and let downstream chain links run against a half-finished state.
         run_async(
             record_sync_failure(
                 organisation_id=org_id,
@@ -129,13 +132,7 @@ def sync_hubspot_deal_schema_task(
                 error=TimeoutError("HubSpot deal schema sync timed out"),
             )
         )
-        return {
-            "status": "timed_out",
-            "organisation_id": organisation_id,
-            "integration_id": integration_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-        }
+        raise
 
 
 async def _mark_history_failed(
@@ -195,8 +192,11 @@ async def _update_integration_metadata(
     }
     schema_sync["deals"] = deals_entry
     metadata["schema_sync"] = schema_sync
-    if status == "success":
-        metadata["initial_sync_status"] = "success"
+    # initial_sync_status is owned exclusively by the chain's terminal finalize
+    # task (mark_hubspot_initial_sync_succeeded) and the link_error terminator
+    # (mark_hubspot_initial_sync_failed). Per-phase tasks must not write it —
+    # otherwise schema success would mark the whole initial sync done before
+    # downstream phases run.
     integration.connection_metadata = metadata
     integration.last_synced_at = datetime_now_naive()
     session.add(integration)
