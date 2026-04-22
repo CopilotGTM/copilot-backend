@@ -2,7 +2,6 @@
 Tasks for the integrations worker.
 
 This module exports all integration-related Celery tasks.
-CRM sync tasks (HubSpot, Salesforce) deprecated — moved to deprecated/workers/.
 """
 
 # Calendar sync tasks (three-tier architecture)
@@ -10,6 +9,12 @@ from .calendar import (
     sync_calendar_all_orgs_task,
     sync_calendar_integration_task,
     sync_calendar_org_task,
+)
+
+# CRM schema sync tasks (HubSpot)
+from .crm import (
+    sync_hubspot_deal_schema_all_orgs_task,
+    sync_hubspot_deal_schema_task,
 )
 
 # Email sync tasks (three-tier architecture)
@@ -57,4 +62,7 @@ __all__ = [
     "sync_email_all_orgs_task",
     "sync_email_org_task",
     "sync_email_integration_task",
+    # CRM schema sync (HubSpot)
+    "sync_hubspot_deal_schema_all_orgs_task",
+    "sync_hubspot_deal_schema_task",
 ]

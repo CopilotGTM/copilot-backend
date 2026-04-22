@@ -185,7 +185,7 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
     )
     description: str | None = Field(
         default=None,
-        sa_column=Column(String(500), nullable=True),
+        sa_column=Column(String(5000), nullable=True),
         description="Optional admin-facing explanation of business meaning and usage.",
     )
     options: dict[str, Any] = Field(

@@ -15,7 +15,12 @@
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
 
 HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
-HubSpot deal schema sync is now the first active CRM sync slice. Deal-record sync remains deferred.
+HubSpot **deal schema sync** is live as the first active CRM sync slice: non-canonical
+HubSpot deal properties are mirrored into `crm_custom_field_definitions` as
+`field_source='provider'` rows via `integrations.sync_hubspot_deal_schema` (Tier 3) and
+`integrations.sync_hubspot_deal_schema_all_orgs` (Tier 1, K8s CronJob every 14 days).
+Deal-record sync, HubSpot schema for contacts/companies/pipelines, and Salesforce sync all
+remain deferred.
 
 ## OAuth Model
 
@@ -49,13 +54,14 @@ src/
     messaging_sync_service.py   # Teams/Slack channel/chat/message upsert (org-scoped)
     crm/
       __init__.py               # CRM integration helpers shared across provider syncs
-      common/
-        schema_types.py         # Provider-neutral CRM schema dataclasses
-        field_type_mapper.py    # HubSpot property type -> CRM field type mapping
-        field_registry_service.py # Provider-backed CRM field registry persistence
       schema/
-        schema_sync_result.py    # Shared schema-sync counters/result
-        hubspot_deal_schema_service.py # HubSpot deal schema orchestration
+        __init__.py
+        hubspot_deal_mapping.py # HubSpot property -> CRMDeal column map + import-time validator
+        schema_types.py         # Provider-neutral CRM schema + sync-result dataclasses
+        classifier.py           # Pure classify(raw) -> CanonicalMatch | ProviderCustomMatch
+        normalizer.py           # HubSpot type table + NormalizedSchemaField producer
+        registry_writer.py      # field_source='provider' upsert / deactivate / reactivate
+        schema_sync_service.py  # HubSpotDealSchemaSyncService.run() orchestrator
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -76,13 +82,18 @@ src/
         slack.py                # Slack channels, chats, messages fetcher
       crm/
         hubspot/
-          deal_schema_fetcher.py # HubSpot deal property schema fetcher
+          schema_fetcher.py     # HubSpot Properties API fetcher (call_with_token_retry + archived=false)
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
       messaging/                # Three-tier messaging sync tasks
+      crm/
+        hubspot_deal_schema_task.py          # Tier 3: integrations.sync_hubspot_deal_schema
+        hubspot_deal_schema_all_orgs_task.py # Tier 1 fan-out for the 14-day K8s CronJob
       token_refresh.py          # Three-tier token refresh tasks
-    config.py                   # Task limits, beat schedule, worker config
+    scheduled_jobs.py           # Source-of-truth cron metadata for K8s CronJobs
+    cron_dispatch.py            # Entry point K8s CronJobs invoke to dispatch Tier 1 tasks
+    config.py                   # Task limits + routes (no in-process Beat — beat_schedule is empty by design)
 ```
 
 ## Data Flow
@@ -96,16 +107,19 @@ User clicks "Connect" in frontend
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
       2. Store tokens in KnowledgeIntegration.credentials
-      3. Store post-connect state only
-         HubSpot and Salesforce still store `initial_sync_status=not_implemented` in
-         `connection_metadata`
-         HubSpot deal schema sync exists as the first active CRM sync slice, but it is not
-         dispatched from the callback flow yet
+      3. apply_post_connect_state() stamps provider-specific metadata:
+         - HubSpot: `initial_sync_status='queued'` + `schema_sync.deals.status='queued'`
+         - Salesforce: `initial_sync_status='not_implemented'` + placeholder message
+      4. trigger_initial_sync() dispatches per integration type:
+         - HubSpot -> integrations.sync_hubspot_deal_schema (Tier 3)
+         - Salesforce -> no dispatch (placeholder-only)
 
-Celery Beat (scheduled)
-  -> Tier 1: all_orgs_task (fan out to orgs)
-  -> Tier 2: org_task (sync all integrations for one org)
-  -> Provider API fetch (NO db session held)
+Kubernetes CronJob (scheduled — this repo does NOT use in-process Celery Beat)
+  -> `python -m src.workers.integrations_worker.cron_dispatch --job <name>`
+  -> dispatch_scheduled_job() looks up the ScheduledJob in scheduled_jobs.py
+  -> enqueues Tier 1 task (e.g. integrations.sync_hubspot_deal_schema_all_orgs)
+  -> Tier 1 reads master schema, dispatches per-integration Tier 3 tasks
+  -> Tier 3 runs fresh-session: extract integration -> fetch (no session) -> persist
   -> SyncService writes to DB (fresh session)
 ```
 

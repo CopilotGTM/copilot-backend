@@ -23,7 +23,9 @@ class HubSpotProvider(BaseIntegrationProvider):
 
     AUTHORIZATION_BASE_URL = "https://app.hubspot.com/oauth/authorize"
     TOKEN_URL = "https://api.hubapi.com/oauth/v1/token"
-    REVOKE_URL = "https://api.hubapi.com/oauth/v1/token/revoke"
+    # HubSpot's current revoke endpoint is versioned; the old v1/token/revoke
+    # path returns 404 during disconnect.
+    REVOKE_URL = "https://api.hubapi.com/oauth/2026-03/token/revoke"
     ACCESS_TOKEN_INFO_URL = "https://api.hubapi.com/oauth/v1/access-tokens/{token}"
 
     def __init__(self, integration_type: IntegrationType):

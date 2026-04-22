@@ -150,12 +150,31 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 
 ## HubSpot CRM
 
-- **Custom OAuth**: Supported via the current first-party provider architecture
-- **Deal schema sync**: Supported
-- **Deal record sync**: Deferred
-- **Current behavior after connect**: Integration is stored as active; schema sync is implemented as the first CRM sync slice, but is not auto-dispatched from the OAuth callback flow yet
-- **Registry storage**: Provider-backed deal schema rows are mirrored into `crm_custom_field_definitions` with `field_source=provider` and scoped by `integration_id`
-- **Current placeholder metadata**: HubSpot integrations still receive `initial_sync_status = not_implemented` during post-connect state handling because the callback flow does not auto-dispatch schema sync yet
+- **Custom OAuth**: Supported via the current first-party provider architecture.
+- **Deal schema sync**: Supported. First live CRM sync slice.
+- **Deal record sync**: Deferred.
+- **Schema for other HubSpot objects** (contacts, companies, pipelines, stages, owners): Deferred.
+- **Tasks**:
+  - `integrations.sync_hubspot_deal_schema` (Tier 3, on-demand + post-connect dispatch).
+  - `integrations.sync_hubspot_deal_schema_all_orgs` (Tier 1 fan-out) triggered every 14 days by
+    the Kubernetes CronJob `sync-hubspot-deal-schema-all-orgs`
+    (`python -m src.workers.integrations_worker.cron_dispatch --job sync-hubspot-deal-schema-all-orgs`).
+- **Behavior after connect**:
+  - `apply_post_connect_state` stamps `initial_sync_status='queued'` and
+    `schema_sync.deals.status='queued'` into `connection_metadata`.
+  - `trigger_initial_sync` dispatches the Tier 3 schema task immediately.
+- **Persistence rule**: HubSpot properties whose `name` matches a canonical column on `CRMDeal`
+  (per `src/service/integrations/crm/schema/hubspot_deal_mapping.py`) are **not** stored in
+  `crm_custom_field_definitions`. Non-canonical properties are persisted as `field_source='provider'`
+  rows scoped by `integration_id`, further tagged with `is_provider_custom`:
+  - `is_provider_custom=true` — property created by the tenant inside HubSpot.
+  - `is_provider_custom=false` — HubSpot built-in property that we don't currently canonicalize.
+- **Active-snapshot semantics**: previously-seen rows missing from the latest sync payload are
+  marked `is_active=false` (not soft-deleted). Rows reappearing after being inactive are
+  counted as `reactivated` (distinct from `updated`).
+- **Direction**: strictly HubSpot → CopilotGTM. No write-back.
+- **Consumption**: provider-backed rows are NOT yet surfaced to any internal read path
+  (handlers, services, UI). That follows in a separate consumption-layer design.
 
 ## Salesforce CRM
 

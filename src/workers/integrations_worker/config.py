@@ -103,6 +103,17 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.sync_hubspot_deal_schema": {
+        "soft": 900,
+        "hard": 960,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_hubspot_deal_schema_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
 }
 
 CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
@@ -211,7 +222,15 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
             },
-            # CRM sync tasks (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
+            # CRM schema sync tasks (HubSpot)
+            "integrations.sync_hubspot_deal_schema_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_hubspot_deal_schema": {
+                "queue": "integrations_priority",  # Priority queue for manual / post-connect triggers
+                "routing_key": "integrations_priority",
+            },
         }
 
         # Fixed integrations schedules are owned by Kubernetes CronJobs.

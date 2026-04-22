@@ -66,8 +66,8 @@ class InitialSyncService:
     def apply_post_connect_state(self, integration: KnowledgeIntegration) -> None:
         """Apply provider-specific post-connect state before the integration is committed.
 
-        This keeps callback persistence generic while letting the post-connect
-        lifecycle service own sync-related metadata decisions.
+        HubSpot queues a schema sync; Salesforce retains the prior `not_implemented`
+        placeholder until its own sync pipeline ships.
         """
         integration_type = integration.integration_type
         if isinstance(integration_type, str):
@@ -78,8 +78,16 @@ class InitialSyncService:
 
         metadata = dict(integration.connection_metadata or {})
 
-        # TODO(crm-sync): Replace these placeholder markers with real CRM initial
-        # dispatch once HubSpot and Salesforce sync pipelines are implemented.
+        if integration_type == IntegrationType.HUBSPOT:
+            metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "queued"
+            metadata.pop(self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY, None)
+            schema_sync = dict(metadata.get("schema_sync") or {})
+            schema_sync["deals"] = {"status": "queued"}
+            metadata["schema_sync"] = schema_sync
+            integration.connection_metadata = metadata
+            return
+
+        # Salesforce (and any other CRM placeholder) keeps the existing behavior.
         metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "not_implemented"
         metadata[self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY] = self.CRM_PLACEHOLDER_MESSAGES[
             integration_type
@@ -123,6 +131,10 @@ class InitialSyncService:
             # Messaging (Teams)
             if integration_type in self.MESSAGING_INTEGRATION_TYPES:
                 self._trigger_messaging_sync(org_id_str, int_id_str)
+                return
+
+            if integration_type == IntegrationType.HUBSPOT:
+                self._trigger_hubspot_schema_sync(org_id_str, int_id_str)
                 return
 
             if integration_type in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
@@ -173,8 +185,16 @@ class InitialSyncService:
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
-    # _trigger_crm_sync removed — CRM sync (HubSpot, Salesforce) deprecated.
-    # Code preserved in deprecated/workers/ for future one-time migration.
+    def _trigger_hubspot_schema_sync(self, org_id_str: str, int_id_str: str) -> None:
+        """Trigger HubSpot deal schema sync (Tier 3)."""
+        send_integrations_task(
+            task_name="integrations.sync_hubspot_deal_schema",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+        )
+        logger.info(
+            "Triggered initial HubSpot deal schema sync: integration=%s",
+            int_id_str,
+        )
 
 
 # Convenience singleton for easy import

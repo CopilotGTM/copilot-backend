@@ -362,6 +362,57 @@ await db.commit()
   - Triggered on-demand via API endpoints
   - Useful for testing or manual token renewal
 
+### CRM Schema Sync Tasks (HubSpot)
+
+> First live CRM sync slice. Mirrors non-canonical HubSpot deal property
+> definitions into `crm_custom_field_definitions` as `field_source='provider'`
+> rows. Canonical properties (those already modelled as columns on `CRMDeal`)
+> are excluded by design. Record sync is deferred to a later phase.
+
+#### integrations.sync_hubspot_deal_schema
+
+- **Tier**: 3 (single integration, user-or-system-triggered)
+- **Queue**: `integrations_priority`
+- **Purpose**: Fetch HubSpot deal property schema via the Properties API and
+  upsert non-canonical properties into the provider-backed custom-field
+  registry. Previously-seen rows missing from the current sync are marked
+  inactive (active-snapshot semantics).
+- **Args**: `organisation_id: str`, `integration_id: str`
+- **Triggered by**:
+  - `InitialSyncService.trigger_initial_sync` after a HubSpot OAuth connect
+  - The Tier 1 fan-out task below on the 14-day schedule
+  - Any future "Refresh schema" admin endpoint (dispatches the same task)
+- **Session ownership**: the task owns the sync-history and
+  `connection_metadata.schema_sync.deals` sessions. The service
+  (`HubSpotDealSchemaSyncService`) owns its own extract and persist sessions
+  so no DB session is held during the HubSpot API call.
+- **Limits**: `soft=900s`, `hard=960s`, `retries=3`, `retry_delay=60s`
+- **Errors**:
+  - `SchemaSyncConfigurationError` (integration missing / wrong type /
+    inactive) → sync history marked `FAILED` with
+    `error_class='configuration'`; re-raised (non-retryable).
+  - `SoftTimeLimitExceeded` → `record_sync_failure` + returns
+    `{"status": "timed_out", ...}`.
+  - Provider/DB errors propagate to Celery for retry with backoff.
+- **Success metadata**: `SchemaSyncResult.to_metadata()` is written into
+  both sync history and
+  `KnowledgeIntegration.connection_metadata.schema_sync.deals`.
+
+#### integrations.sync_hubspot_deal_schema_all_orgs
+
+- **Tier**: 1 (coordinator / fan-out)
+- **Queue**: `integrations`
+- **Purpose**: List all active HubSpot integrations from the master schema
+  and dispatch one Tier 3 task per integration. Never holds a per-org
+  session.
+- **Args**: _none_
+- **Scheduled via**: Kubernetes CronJob that invokes
+  `python -m src.workers.integrations_worker.cron_dispatch --job
+  sync-hubspot-deal-schema-all-orgs`. The `ScheduledJob` entry in
+  `scheduled_jobs.py` is the source-of-truth metadata (cadence
+  `0 2 */14 * *` — every 14 days at 02:00 UTC, `max_lag_seconds=172800`).
+- **Limits**: `soft=120s`, `hard=180s`, `retries=0`
+
 ## Queues
 
 - **integrations** – Scheduled sweep and regular sync jobs

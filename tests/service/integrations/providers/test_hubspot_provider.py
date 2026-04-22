@@ -65,3 +65,43 @@ async def test_hubspot_provider_normalizes_user_info(monkeypatch: pytest.MonkeyP
     assert payload["hubspot_user_id"] == 42
     assert payload["hubspot_portal_id"] == 777
     assert payload["hubspot_portal_name"] == "acme"
+
+
+@pytest.mark.asyncio
+async def test_hubspot_provider_revokes_token_with_current_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = HubSpotProvider(IntegrationType.HUBSPOT)
+    provider._client_id = "hubspot-client-id"
+    provider._client_secret = "hubspot-client-secret"
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    async def fake_request(
+        method: str,
+        url: str,
+        *,
+        data: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> FakeResponse:
+        captured["method"] = method
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr(provider, "_request_with_retry", fake_request)
+
+    await provider.revoke_token("refresh-token")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.hubapi.com/oauth/2026-03/token/revoke"
+    assert captured["data"] == {
+        "token": "refresh-token",
+        "client_id": "hubspot-client-id",
+        "client_secret": "hubspot-client-secret",
+    }
+    assert captured["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}

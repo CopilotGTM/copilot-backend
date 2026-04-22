@@ -19,6 +19,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.alter_column(
+        "crm_custom_field_definitions",
+        "description",
+        existing_type=sa.String(length=500),
+        type_=sa.String(length=5000),
+        existing_nullable=True,
+    )
     op.add_column(
         "crm_custom_field_definitions",
         sa.Column(
@@ -133,6 +140,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.alter_column(
+        "crm_custom_field_definitions",
+        "description",
+        existing_type=sa.String(length=5000),
+        type_=sa.String(length=500),
+        existing_nullable=True,
+        postgresql_using="left(description, 500)",
+    )
     op.drop_constraint(
         "ck_crm_custom_field_source_provenance",
         "crm_custom_field_definitions",
