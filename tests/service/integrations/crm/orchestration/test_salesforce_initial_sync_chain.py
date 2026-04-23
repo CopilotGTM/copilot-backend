@@ -6,7 +6,9 @@ from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain im
 )
 
 
-def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_finalize() -> None:
+def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_users_then_finalize() -> (
+    None
+):
     organisation_id = uuid4()
     integration_id = uuid4()
     chain_signature = MagicMock()
@@ -18,6 +20,7 @@ def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_f
             side_effect=[
                 "schema",
                 "pipelines",
+                "users",
                 "finalize",
                 failure_signature,
             ],
@@ -39,8 +42,9 @@ def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_f
     assert mock_task_signature.call_args_list == [
         call("integrations.sync_salesforce_opportunity_schema", kwargs=kwargs),
         call("integrations.sync_salesforce_pipelines", kwargs=kwargs),
+        call("integrations.sync_salesforce_users", kwargs=kwargs),
         call("integrations.mark_salesforce_initial_sync_succeeded", kwargs=kwargs),
         call("integrations.mark_salesforce_initial_sync_failed", kwargs=kwargs),
     ]
-    mock_chain.assert_called_once_with("schema", "pipelines", "finalize")
+    mock_chain.assert_called_once_with("schema", "pipelines", "users", "finalize")
     chain_signature.set.assert_called_once_with(link_error=failure_signature)
