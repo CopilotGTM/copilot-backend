@@ -191,12 +191,21 @@ One pass, scoped identically. No deactivation pass because `CRMContact`
 has no `is_active` column today. `contact_id` PK is never rewritten —
 referenced by `CRMDeal.primary_contact_id`.
 
-`company_id` resolution:
+`company_id` + `owner_id` resolution:
 
 - Before Pass A, load `{company_external_id → company_id}` from
-  `crm_companies` (same session, same org+integration scope).
-- For each incoming contact with `company_external_id`, look up the PK.
-  Unresolved → `company_id = NULL`, tick `unresolved_company_link` counter.
+  `crm_companies` AND `{owner_external_id → crm_users.user_id}` from
+  `crm_users` (same session, same org+integration scope).
+- For each incoming contact with `company_external_id` / `owner_external_id`,
+  look up the PKs. Unresolved → the respective FK stays NULL and the matching
+  counter (`unresolved_company_link` / `unresolved_owner_link`) ticks.
+
+**Company writer — owner_id resolution**
+
+Symmetrically, `HubSpotCompanyWriter.apply` accepts the same owner map and
+resolves `CRMCompany.owner_id` at write time (`unresolved_owner_link`
+counter when absent). Works because the chain runs users-before-companies,
+so `crm_users` is already populated by the time companies writes fire.
 
 **Why no hard delete**
 

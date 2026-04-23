@@ -47,7 +47,7 @@ def build_hubspot_initial_sync_chain(
         task_signature("integrations.sync_hubspot_users", kwargs=kwargs),
         task_signature("integrations.sync_hubspot_companies", kwargs=kwargs),
         task_signature("integrations.sync_hubspot_contacts", kwargs=kwargs),
-        # phase 6: integrations.sync_hubspot_deals
+        task_signature("integrations.sync_hubspot_deals", kwargs=kwargs),
         # phase 7: integrations.sync_hubspot_stage_history
         # phase 8: integrations.sync_hubspot_associations
         # Terminal finalize link — sole writer of initial_sync_status="success".

@@ -6,6 +6,9 @@ from src.workers.integrations_worker.tasks.crm.hubspot_company_record_sync_task 
 from src.workers.integrations_worker.tasks.crm.hubspot_contact_record_sync_task import (
     sync_hubspot_contacts_task,
 )
+from src.workers.integrations_worker.tasks.crm.hubspot_deal_record_sync_task import (
+    sync_hubspot_deals_task,
+)
 from src.workers.integrations_worker.tasks.crm.hubspot_deal_schema_all_orgs_task import (
     sync_hubspot_deal_schema_all_orgs_task,
 )
@@ -32,6 +35,7 @@ __all__ = [
     "sync_hubspot_users_task",
     "sync_hubspot_companies_task",
     "sync_hubspot_contacts_task",
+    "sync_hubspot_deals_task",
     "mark_hubspot_initial_sync_succeeded_task",
     "mark_hubspot_initial_sync_failed_task",
 ]

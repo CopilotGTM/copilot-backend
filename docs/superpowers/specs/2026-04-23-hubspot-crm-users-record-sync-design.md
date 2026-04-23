@@ -2,6 +2,28 @@
 
 **Status:** 2026-04-23 — phase 3 of the HubSpot record-sync series. Builds on the shared infrastructure introduced in `2026-04-22-hubspot-crm-pipelines-record-sync-design.md` (Celery chain, backfill contract, task_signature helper, record_sync_types).
 
+---
+
+## ⚠️ REVISION 2026-04-23 — Identity-bridge design supersedes matched-only
+
+**The original "matched-only" rule below is OBSOLETE.** As-shipped behaviour:
+
+- **Every non-malformed HubSpot owner produces a `crm_users` row.** No owner is skipped for being absent from `public.users`.
+- **`user_id` is the shared identifier across `public.users` and `crm_users`, but not enforced by FK.** Two cases:
+  - Owner email matches a `public.users` row in the same org → `crm_users.user_id = public.users.user_id` (unchanged from original).
+  - No match (or owner has no email) → `crm_users.user_id = uuid4()` minted by the writer. **No `public.users` row is written.**
+- **Signup-flow convergence (future, not in this phase):** when a `public.users` row is later created for email E in org O (via signup or admin-create), the creator is expected to look up `crm_users WHERE email=E AND organisation_id=O` first. If one exists, use its `user_id` as `public.users.user_id` so the identifier converges in both tables. If none exists, mint fresh as normal.
+- **Renamed / new counters.** `skipped_no_email` and `skipped_unmatched` are gone (we no longer skip). `UserWriteResult` and `UserSyncResult` now carry `users_matched_public` (user_id reused from `public.users`) and `users_minted_uuid` (fresh UUID).
+- **`OwnerSkipReason` enum deleted.** `OwnerMatchResult` is now just `(owner, matched_app_user_id: UUID | None)`; the writer's `_resolve_user_id` returns either the matched PK or a minted uuid4.
+
+### Why the change
+
+Matched-only meant a HubSpot owner who hadn't (yet) signed up as an app user produced no `crm_users` row, which in turn meant deals owned by them landed with `owner_id=NULL`. That defeats the entire purpose of the record-sync pipeline's write-time FK resolution. Minting a UUID in `crm_users` keeps deal FKs resolvable while still giving the eventual signup flow a handle to converge identities on.
+
+Sections 1, 2.matched-only paragraph, 3.skip-rules, 4.UNMATCHED classification, 7.UserSyncResult counter list, 9.edge cases are all superseded by this block. The rest of the file (fetcher, chain, orchestration, deactivation, deal backfill) remains accurate.
+
+---
+
 ## 1. Goal
 
 Ingest HubSpot **owners** (which are the CRM-side view of users who can own records) into CopilotGTM's internal `crm_users` table. Stable identity for each human in the org is guaranteed by anchoring `crm_users.user_id` to `public.users.user_id` whenever an app user already exists for that email.
@@ -162,6 +184,7 @@ class NormalizedHubSpotOwner:
   - Missing or non-string `id` → drop, `skipped_malformed += 1`.
   - `archived=true` somehow slipped through the `archived=false` filter → drop silently (defensive).
 - **`properties` payload shape:**
+
   ```json
   {
     "hubspot_user_id": 67890,
@@ -494,25 +517,30 @@ Cross-tenant leakage is impossible by construction: neither the email index nor 
 ## 15. Testing (single end-phase task)
 
 **Unit (pure, no DB, no network):**
+
 - `normalize_one_owner` — happy, missing id (skip), missing email (valid but flagged), teams empty, no primary team, unparseable createdAt, archived-slipped-through defensive drop.
 - Email normalization — mixed case, whitespace, unicode, empty string, None.
 - `DealFkBackfillOp` new shape (`email_col`) — FK+name+email passes; FK+email without name rejected; allowlist rejects unknown col; mapping tuple shape enforced.
 - `build_hubspot_initial_sync_chain` regression — chain now contains schema → pipelines → users → finalize in order; link_error unchanged.
 
 **Component (in-memory DB):**
+
 - `HubSpotUserWriter.apply()` — insert new, update existing, reactivate inactive, deactivate missing, refuse cross-integration writes. Email-duplicate owner → second one classified and logged, sync continues.
 - Email index builder — empty-org path; multi-user path; case-insensitive match.
 - `backfill_crm_deals` with the new 4-tuple shape (FK + name + email) — covers `owner_id` + `owner_name` + `owner_email` op.
 
 **Integration (mocked HubSpot HTTP):**
+
 - `HubSpotOwnersFetcher` — single-page, multi-page cursor pagination, 401-refresh, 429 retry, malformed payload (non-list results).
 - `HubSpotUserRecordSyncService.run()` — end-to-end with fixture HubSpot owners + fixture app users; asserts counts in `UserSyncResult` + rows in `crm_users` + `CRMDeal` backfill side-effects.
 
 **Worker:**
+
 - `sync_hubspot_users_task` — success; configuration error re-raises; timeout re-raises (regression guard); history + metadata writes.
 - Post-connect — HubSpot metadata at connect time now includes `record_sync.users.status="queued"`.
 
 **Regression:**
+
 - Phase-2 tests continue to pass; chain composition test updated to expect 4 positional links (was 3).
 
 ## 16. Open Decisions Resolved

@@ -142,6 +142,16 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    # ── HubSpot record sync (phase 6: deals fact table) ──
+    # Larger window than the dimensions: deal volumes per portal are typically
+    # the highest of any object, and we request `propertiesWithHistory` which
+    # halves HubSpot's page size to 50.
+    "integrations.sync_hubspot_deals": {
+        "soft": 600,
+        "hard": 660,
+        "retries": 3,
+        "retry_delay": 60,
+    },
     # Chain terminators — short, idempotent, owns initial_sync_status writes.
     "integrations.mark_hubspot_initial_sync_succeeded": {
         "soft": 30,
@@ -289,6 +299,11 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             # CRM record sync tasks (HubSpot, phase 5: contacts)
             "integrations.sync_hubspot_contacts": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 6: deals fact table)
+            "integrations.sync_hubspot_deals": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },

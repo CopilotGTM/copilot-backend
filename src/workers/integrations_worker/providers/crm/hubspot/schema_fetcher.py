@@ -20,7 +20,13 @@ from src.service.integrations.providers.token_resolution import (
 logger = get_logger(__name__)
 
 _BASE_URL = "https://api.hubapi.com/crm/v3/properties"
-_DEFAULT_TIMEOUT = 30.0
+# HubSpot's Properties API can be slow for portals with hundreds of custom
+# fields, and it's on the critical path for "complete payload capture" in
+# the deals record sync — a timeout here forces the caller to fall back to a
+# narrower baseline, silently dropping custom-field coverage. 60s gives
+# slow portals a real chance; callers that need strict failure semantics
+# can still raise.
+_DEFAULT_TIMEOUT = 60.0
 
 
 class HubSpotSchemaFetcher:
