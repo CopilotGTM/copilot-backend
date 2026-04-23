@@ -32,10 +32,20 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderTemperature,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.meeting_recording import (
+    MeetingRecordingProvider,
+    MeetingRecordingSession,
+    MeetingRecordingStatus,
+    MeetingTranscriptStatus,
+)
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_sync_service import build_meeting_timeline_event
 from src.service.crm.timeline.timeline_event_source_resolver import resolve_meeting_event_source
+from src.service.meeting_bot.session_service import (
+    MeetingRecordingSessionService,
+)
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
@@ -66,6 +76,9 @@ class DealMeetingMatcher:
         self._contact_cache_by_external: dict[str, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
         self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
+        # Recording rows are created inside the DB transaction, but the Celery
+        # dispatch happens only after commit so workers never see rolled-back rows.
+        self._pending_recording_event_ids: set[UUID] = set()
 
     def _normalize_email(self, email: str | None) -> str | None:
         """Normalize email string by stripping whitespace and converting to lowercase."""
@@ -566,6 +579,9 @@ class DealMeetingMatcher:
                 stats["meetings_linked"] += linked_count
 
             await session.commit()
+            # The recording send task depends on the association/session rows
+            # being durable before another worker starts reading them.
+            await self._dispatch_pending_recordings()
 
         await self._dispatch_pending_research()
         return stats
@@ -620,6 +636,8 @@ class DealMeetingMatcher:
         )
 
         await session.commit()
+        # Deal-scoped processing uses the same post-commit rule as org-wide runs.
+        await self._dispatch_pending_recordings()
         await self._dispatch_pending_research()
 
         return {
@@ -1035,6 +1053,9 @@ class DealMeetingMatcher:
                     event_source=resolved_source,
                 )
                 session.add(timeline_event)
+                # Queue the provider send only for meetings we actually linked to
+                # a deal in this transaction.
+                await self._enqueue_meeting_recording(session, event)
 
                 linked_count += 1
 
@@ -1053,6 +1074,82 @@ class DealMeetingMatcher:
             linked_event_ids.add(event.event_id)
 
         return linked_count
+
+    async def _enqueue_meeting_recording(
+        self,
+        session: AsyncSession,
+        event: CalendarEvent,
+    ) -> bool:
+        """Persist a pending recording row for future meetings with a join URL.
+
+        Uses `ON CONFLICT DO NOTHING` because multiple matcher passes can touch
+        the same event before the recording dispatch task runs.
+        """
+        meeting_url = getattr(event, "conference_link", None)
+        if not meeting_url:
+            return False
+
+        join_at = getattr(event, "start_at", None)
+        if join_at is None:
+            return False
+        if join_at.tzinfo is None:
+            join_at = join_at.replace(tzinfo=UTC)
+        if join_at <= datetime.now(UTC):
+            return False
+
+        stmt = (
+            insert(MeetingRecordingSession)
+            .values(
+                organisation_id=self.organisation_id,
+                calendar_event_id=event.event_id,
+                provider=MeetingRecordingProvider.RECALL_AI.value,
+                dedupe_key=MeetingRecordingSessionService.build_dedupe_key(
+                    self.organisation_id,
+                    event.event_id,
+                ),
+                meeting_url=meeting_url,
+                join_at=join_at,
+                status=MeetingRecordingStatus.PENDING_SEND.value,
+                transcript_status=MeetingTranscriptStatus.NOT_REQUESTED.value,
+            )
+            .on_conflict_do_nothing(constraint="uq_meeting_recording_org_event_provider")
+        )
+        result = await session.execute(stmt)
+        created = (getattr(result, "rowcount", 0) or 0) > 0
+        if created:
+            # Store only the event id here; the send task re-reads durable DB
+            # state after commit instead of relying on in-memory event objects.
+            self._pending_recording_event_ids.add(event.event_id)
+        return created
+
+    async def _dispatch_pending_recordings(self) -> None:
+        """Dispatch recording send tasks after the transaction commits."""
+        if not self._pending_recording_event_ids:
+            return
+
+        pending_event_ids = sorted(self._pending_recording_event_ids, key=str)
+        self._pending_recording_event_ids.clear()
+
+        for event_id in pending_event_ids:
+            try:
+                await send_deal_task_async(
+                    "deal.send_meeting_recording",
+                    kwargs={
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(event_id),
+                    },
+                    queue="deal",
+                )
+            except Exception:
+                logger.error(
+                    "Failed to dispatch meeting recording send task",
+                    extra={
+                        "event": "meeting_recording_dispatch_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(event_id),
+                    },
+                    exc_info=True,
+                )
 
     async def _cleanup_orphaned_associations(
         self,

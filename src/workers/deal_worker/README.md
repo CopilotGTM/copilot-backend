@@ -199,6 +199,7 @@ Always listen to both queues; otherwise AI workloads or deterministic jobs will 
 | Every 30 minutes at `:05,:35` | `deal.trigger_transcript_fetch_all_orgs` | Fetch transcripts and kick off the meeting/deal summary pipeline. |
 | Hourly at `:20` | `stakeholder_research.trigger_retry_all_orgs` | Retry stakeholder enrichment that previously failed or never completed. |
 | Hourly at `:45` | `deal.cleanup_stale_jobs_all_orgs` | Mark stale deal jobs as failed so they do not remain stuck indefinitely. |
+| Hourly at `:50` | `deal.trigger_send_unsent_meeting_recordings_all_orgs` | Catch deal-linked upcoming meetings that were missed by the event-driven send path. |
 | Every 3 hours at `HH:10` | `deal_memory.trigger_backfill_all_orgs` | Backfill deal memory for organisations that have source data but no memory state. |
 
 Fixed schedules are triggered by Kubernetes CronJobs and dispatched through

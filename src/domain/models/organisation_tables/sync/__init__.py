@@ -1,4 +1,4 @@
-"""Synced data domain models (calendar + future CRM, email, etc.)."""
+"""Synced data domain models (calendar, CRM, messaging, meeting recording, etc.)."""
 
 from .base import SyncCategory, SyncedRecordMixin
 from .calendar import (
@@ -70,6 +70,12 @@ from .meeting_intelligence import (
     MeetingSource,
     MeetingStatus,
     TranscriptSegment,
+)
+from .meeting_recording import (
+    MeetingRecordingProvider,
+    MeetingRecordingSession,
+    MeetingRecordingStatus,
+    MeetingTranscriptStatus,
 )
 from .messaging_models import (
     ChannelType,
@@ -161,6 +167,11 @@ __all__ = [
     "MeetingStatus",
     "Meeting",
     "TranscriptSegment",
+    # Meeting recording orchestration models
+    "MeetingRecordingProvider",
+    "MeetingRecordingStatus",
+    "MeetingTranscriptStatus",
+    "MeetingRecordingSession",
     # Participant models
     "IntegrationParticipant",
     "IntegrationParticipantIdentity",

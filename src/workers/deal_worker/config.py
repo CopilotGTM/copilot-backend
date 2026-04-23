@@ -56,6 +56,13 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal.match_email_to_deals_org",
             "deal.match_email_to_deals",
             "deal.match_email_to_deals_all_orgs",
+            # Meeting recording dispatch stays on the main deal queue because
+            # these tasks are orchestration/I-O, not the long-running LLM jobs
+            # that belong on `deal_jobs`.
+            "deal.process_meeting_recording_webhook",
+            "deal.send_meeting_recording",
+            "deal.send_unsent_meeting_recordings_org",
+            "deal.trigger_send_unsent_meeting_recordings_all_orgs",
             # Timeline event tasks
             "deal.sync_deal_timeline",
             "deal.sync_org_timeline",

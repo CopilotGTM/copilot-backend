@@ -444,6 +444,94 @@ class ApolloConfig:
             logger.error("Apollo API key missing from Key Vault")
 
 
+class RecallConfig:
+    """Configuration for Recall.ai meeting bot access and webhook verification.
+
+    Shared by the API webhook route and the deal worker tasks so both sides of
+    the flow read the same provider region, timeout, and secret-loading rules.
+    """
+
+    RECALL_REGION: str = os.getenv("RECALL_REGION", "us-west-2")
+    RECALL_TIMEOUT_SECONDS: float = float(os.getenv("RECALL_TIMEOUT_SECONDS", "30"))
+    RECALL_BOT_NAME: str = os.getenv("RECALL_BOT_NAME", "CopilotGTM Notetaker")
+
+    SECRET_NAME_API_KEY: str = "recall-api-key"
+    SECRET_NAME_WEBHOOK_SECRET: str = "recall-webhook-secret"
+
+    _api_key: str | None = os.getenv("RECALL_API_KEY")
+    _webhook_secret: str | None = os.getenv("RECALL_WEBHOOK_SECRET")
+    _credentials_ttl_hours: float = float(os.getenv("RECALL_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _api_key_from_env: bool = bool(os.getenv("RECALL_API_KEY"))
+    _webhook_secret_from_env: bool = bool(os.getenv("RECALL_WEBHOOK_SECRET"))
+    # One lock/TTL covers both secrets because they usually rotate together and
+    # the flow commonly needs both during the same deployment window.
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def get_api_key(self) -> str | None:
+        """Return cached API key, refreshing from Key Vault if TTL expired."""
+        if self._api_key_from_env:
+            return self._api_key
+
+        if not self._is_expired():
+            return self._api_key
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._api_key
+            await self._load_from_vault()
+
+        return self._api_key
+
+    async def get_webhook_secret(self) -> str | None:
+        """Return cached webhook secret, refreshing from Key Vault if TTL expired."""
+        if self._webhook_secret_from_env:
+            return self._webhook_secret
+
+        if not self._is_expired():
+            return self._webhook_secret
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._webhook_secret
+            await self._load_from_vault()
+
+        return self._webhook_secret
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Recall credentials from Key Vault (TTL refresh)")
+        # Allow local/test environments to override only one credential without
+        # forcing the other one out of Key Vault.
+        if not self._api_key_from_env:
+            self._api_key = await master_secrets_manager.get(self.SECRET_NAME_API_KEY)
+        if not self._webhook_secret_from_env:
+            self._webhook_secret = await master_secrets_manager.get(self.SECRET_NAME_WEBHOOK_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self._api_key and self._webhook_secret:
+            logger.info("Recall credentials cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Recall credentials missing from Key Vault")
+
+
 class TeamsConfig:
     """Configuration for Microsoft Teams Bot integration.
 
@@ -1270,6 +1358,7 @@ microsoft_integration_config = MicrosoftIntegrationConfig()
 hubspot_integration_config = HubSpotIntegrationConfig()
 salesforce_integration_config = SalesforceIntegrationConfig()
 apollo_config = ApolloConfig()
+recall_config = RecallConfig()
 teams_config = TeamsConfig()
 
 
