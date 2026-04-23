@@ -44,9 +44,9 @@ def build_hubspot_initial_sync_chain(
     return chain(
         task_signature("integrations.sync_hubspot_deal_schema", kwargs=kwargs),
         task_signature("integrations.sync_hubspot_pipelines", kwargs=kwargs),
-        # phase 3: integrations.sync_hubspot_users
-        # phase 4: integrations.sync_hubspot_companies
-        # phase 5: integrations.sync_hubspot_contacts
+        task_signature("integrations.sync_hubspot_users", kwargs=kwargs),
+        task_signature("integrations.sync_hubspot_companies", kwargs=kwargs),
+        task_signature("integrations.sync_hubspot_contacts", kwargs=kwargs),
         # phase 6: integrations.sync_hubspot_deals
         # phase 7: integrations.sync_hubspot_stage_history
         # phase 8: integrations.sync_hubspot_associations

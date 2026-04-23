@@ -68,19 +68,27 @@ class DealFkBackfillOp:
     """One batched UPDATE op describing how to resolve a CRMDeal FK column.
 
     Valid shapes:
-      1. FK-only:              name_col=None, label_col=None
-      2. FK + name:            name_col=<col>, label_col=None
-      3. FK + name + label:    name_col=<col>, label_col=<col>
+      1. FK-only:             name_col=None, label_col=None, email_col=None
+      2. FK + name:           name_col=<col>, label_col=None, email_col=None
+      3. FK + name + label:   name_col=<col>, label_col=<col>, email_col=None
+      4. FK + name + email:   name_col=<col>, label_col=None, email_col=<col>
 
-    `name_col=None, label_col=<col>` is rejected — there is no well-defined
-    semantics for "update label without name," and silent drift would follow.
+    `name_col=None` with either `label_col` or `email_col` set is rejected —
+    there is no well-defined semantics for "update label/email without name,"
+    and silent drift would follow.
+
+    `mapping` values are 4-tuples regardless of shape:
+        (internal_id, name_or_None, label_or_None, email_or_None)
+    For backwards-compatibility with callers that predate email_col, the
+    validator also accepts 3-tuples (internal_id, name, label) by padding.
     """
 
     external_col: str
     fk_col: str
-    mapping: Mapping[str, tuple[UUID, str | None, str | None]]
+    mapping: Mapping[str, tuple]
     name_col: str | None = None
     label_col: str | None = None
+    email_col: str | None = None
 
     def __post_init__(self) -> None:
         if self.external_col not in _ALLOWED_EXTERNAL_COLS:
@@ -91,8 +99,12 @@ class DealFkBackfillOp:
             raise ValueError(f"name_col {self.name_col!r} is not an allowed display column")
         if self.label_col is not None and self.label_col not in _ALLOWED_DISPLAY_COLS:
             raise ValueError(f"label_col {self.label_col!r} is not an allowed display column")
-        if self.name_col is None and self.label_col is not None:
-            raise ValueError("label_col is set but name_col is None — this shape is not supported")
+        if self.email_col is not None and self.email_col not in _ALLOWED_DISPLAY_COLS:
+            raise ValueError(f"email_col {self.email_col!r} is not an allowed display column")
+        if self.name_col is None and (self.label_col is not None or self.email_col is not None):
+            raise ValueError(
+                "label_col or email_col is set but name_col is None — this shape is not supported"
+            )
         if not self.mapping:
             raise ValueError("mapping cannot be empty")
 
@@ -132,7 +144,8 @@ async def backfill_crm_deals(
 
     for op in ops:
         per_op_total = 0
-        for external_id, (internal_id, name, label) in op.mapping.items():
+        for external_id, raw_tuple in op.mapping.items():
+            internal_id, name, label, email = _unpack_mapping_tuple(raw_tuple)
             sql = _build_update_sql(op)
             params: dict[str, object] = {
                 "org": organisation_id,
@@ -144,6 +157,8 @@ async def backfill_crm_deals(
                 params["name"] = name
             if op.label_col is not None:
                 params["label"] = label
+            if op.email_col is not None:
+                params["email"] = email
 
             exec_result = await session.execute(sql, params)
             # rowcount is a CursorResult attribute; typed Result stubs don't expose it.
@@ -166,6 +181,24 @@ async def backfill_crm_deals(
     return result
 
 
+def _unpack_mapping_tuple(
+    raw: tuple,
+) -> tuple[UUID, str | None, str | None, str | None]:
+    """Accept either (id, name, label) 3-tuples or (id, name, label, email) 4-tuples.
+
+    The 3-tuple form is the pre-email-column shape kept for caller back-compat.
+    Returns a 4-tuple padded with None.
+    """
+    if len(raw) == 4:
+        return raw
+    if len(raw) == 3:
+        internal_id, name, label = raw
+        return internal_id, name, label, None
+    raise ValueError(
+        f"DealFkBackfillOp mapping value must be a 3- or 4-tuple, got {len(raw)} items"
+    )
+
+
 def _build_update_sql(op: DealFkBackfillOp):
     """Build the parameterised UPDATE statement for a single op.
 
@@ -181,6 +214,9 @@ def _build_update_sql(op: DealFkBackfillOp):
     if op.label_col is not None:
         set_clauses.append(f"{op.label_col} = :label")
         predicate_terms.append(f"{op.label_col} IS DISTINCT FROM :label")
+    if op.email_col is not None:
+        set_clauses.append(f"{op.email_col} = :email")
+        predicate_terms.append(f"{op.email_col} IS DISTINCT FROM :email")
 
     set_sql = ", ".join(set_clauses)
     predicate_sql = " OR ".join(predicate_terms)

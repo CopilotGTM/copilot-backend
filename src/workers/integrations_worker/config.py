@@ -121,6 +121,27 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    # ── HubSpot record sync (phase 3: users / owners, matched-only) ──
+    "integrations.sync_hubspot_users": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 4: companies / accounts) ──
+    "integrations.sync_hubspot_companies": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 5: contacts) ──
+    "integrations.sync_hubspot_contacts": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
     # Chain terminators — short, idempotent, owns initial_sync_status writes.
     "integrations.mark_hubspot_initial_sync_succeeded": {
         "soft": 30,
@@ -254,6 +275,21 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             # CRM record sync tasks (HubSpot, phase 2: pipelines + stages)
             "integrations.sync_hubspot_pipelines": {
                 "queue": "integrations_priority",  # Co-scheduled with the chain it belongs to
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 3: users / owners)
+            "integrations.sync_hubspot_users": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 4: companies / accounts)
+            "integrations.sync_hubspot_companies": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 5: contacts)
+            "integrations.sync_hubspot_contacts": {
+                "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },
             "integrations.mark_hubspot_initial_sync_succeeded": {

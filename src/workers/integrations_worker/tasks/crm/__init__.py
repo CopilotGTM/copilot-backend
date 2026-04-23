@@ -1,5 +1,11 @@
 """CRM schema and record sync Celery tasks for integrations_worker."""
 
+from src.workers.integrations_worker.tasks.crm.hubspot_company_record_sync_task import (
+    sync_hubspot_companies_task,
+)
+from src.workers.integrations_worker.tasks.crm.hubspot_contact_record_sync_task import (
+    sync_hubspot_contacts_task,
+)
 from src.workers.integrations_worker.tasks.crm.hubspot_deal_schema_all_orgs_task import (
     sync_hubspot_deal_schema_all_orgs_task,
 )
@@ -15,11 +21,17 @@ from src.workers.integrations_worker.tasks.crm.hubspot_initial_sync_succeeded_ta
 from src.workers.integrations_worker.tasks.crm.hubspot_pipeline_record_sync_task import (
     sync_hubspot_pipelines_task,
 )
+from src.workers.integrations_worker.tasks.crm.hubspot_user_record_sync_task import (
+    sync_hubspot_users_task,
+)
 
 __all__ = [
     "sync_hubspot_deal_schema_all_orgs_task",
     "sync_hubspot_deal_schema_task",
     "sync_hubspot_pipelines_task",
+    "sync_hubspot_users_task",
+    "sync_hubspot_companies_task",
+    "sync_hubspot_contacts_task",
     "mark_hubspot_initial_sync_succeeded_task",
     "mark_hubspot_initial_sync_failed_task",
 ]
