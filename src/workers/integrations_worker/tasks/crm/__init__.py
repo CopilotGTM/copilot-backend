@@ -39,6 +39,9 @@ from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_opportunity
 from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_opportunity_schema_task import (
     sync_salesforce_opportunity_schema_task,
 )
+from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_pipeline_record_sync_task import (
+    sync_salesforce_pipelines_task,
+)
 
 __all__ = [
     "sync_hubspot_deal_schema_all_orgs_task",
@@ -52,6 +55,7 @@ __all__ = [
     "mark_hubspot_initial_sync_failed_task",
     "sync_salesforce_opportunity_schema_task",
     "sync_salesforce_opportunity_schema_all_orgs_task",
+    "sync_salesforce_pipelines_task",
     "mark_salesforce_initial_sync_succeeded_task",
     "mark_salesforce_initial_sync_failed_task",
 ]

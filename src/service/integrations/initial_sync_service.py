@@ -96,6 +96,9 @@ class InitialSyncService:
             schema_sync = dict(metadata.get("schema_sync") or {})
             schema_sync["opportunities"] = {"status": "queued"}
             metadata["schema_sync"] = schema_sync
+            record_sync = dict(metadata.get("record_sync") or {})
+            record_sync["pipelines"] = {"status": "queued"}
+            metadata["record_sync"] = record_sync
             integration.connection_metadata = metadata
             return
 

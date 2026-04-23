@@ -19,6 +19,7 @@ def build_salesforce_initial_sync_chain(
 
     success_chain = chain(
         task_signature("integrations.sync_salesforce_opportunity_schema", kwargs=kwargs),
+        task_signature("integrations.sync_salesforce_pipelines", kwargs=kwargs),
         task_signature("integrations.mark_salesforce_initial_sync_succeeded", kwargs=kwargs),
     )
     failure_terminator = task_signature(

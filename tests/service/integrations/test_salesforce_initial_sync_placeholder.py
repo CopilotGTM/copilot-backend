@@ -9,7 +9,7 @@ from src.domain.models.organisation_tables.sync import (
 from src.service.integrations.initial_sync_service import InitialSyncService
 
 
-def test_initial_sync_service_queues_salesforce_schema_sync_metadata() -> None:
+def test_initial_sync_service_queues_salesforce_schema_and_pipeline_sync_metadata() -> None:
     service = InitialSyncService()
     integration = KnowledgeIntegration(
         organisation_id=uuid4(),
@@ -28,6 +28,7 @@ def test_initial_sync_service_queues_salesforce_schema_sync_metadata() -> None:
     assert integration.connection_metadata["initial_sync_status"] == "queued"
     assert "initial_sync_placeholder" not in integration.connection_metadata
     assert integration.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["pipelines"]["status"] == "queued"
 
 
 def test_initial_sync_service_dispatches_salesforce_initial_sync_chain() -> None:
