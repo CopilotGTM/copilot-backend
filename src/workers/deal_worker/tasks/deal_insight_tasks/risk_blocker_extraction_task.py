@@ -32,6 +32,7 @@ from src.domain.models.organisation_tables.job_models import DealJobs, DealJobTy
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
@@ -216,10 +217,14 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
                         session.add(risk_job)
                         await session.flush()
 
-                        extract_deal_risks_blockers_task.delay(
-                            organisation_id=str(org.organisation_id),
-                            deal_id=d_id,
-                            job_id=str(risk_job.job_id),
+                        # Preserve the periodic trigger lineage so child extraction tasks stay attributable.
+                        extract_deal_risks_blockers_task.apply_async(
+                            kwargs={
+                                "organisation_id": str(org.organisation_id),
+                                "deal_id": d_id,
+                                "job_id": str(risk_job.job_id),
+                            },
+                            headers=correlation_headers(),
                         )
                         triggered_count += 1
 

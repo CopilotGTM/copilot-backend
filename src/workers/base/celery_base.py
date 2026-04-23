@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any
 
 from celery import Celery, current_app
@@ -12,7 +13,15 @@ from celery.signals import (
     worker_ready,
 )
 
-from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
+from src.infra.observability.context import (
+    generate_request_id,
+    get_request_id,
+    load_from_headers,
+    reset_context,
+    set_celery_context,
+    set_request_id,
+)
+from src.infra.observability.metrics import record_celery_task_run
 from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import get_logger, resolve_celery_component
 
@@ -43,6 +52,16 @@ def _resolve_runtime_service_name_suffix(sender: Any | None = None) -> str:
     if not app_name:
         return ""
     return f"-{resolve_celery_component(app_name)}"
+
+
+def _resolve_task_queue(task: Any | None) -> str | None:
+    try:
+        # Routing key is the most useful queue label in dashboards; exchange is a fallback.
+        delivery_info = getattr(getattr(task, "request", None), "delivery_info", None) or {}
+        queue = delivery_info.get("routing_key") or delivery_info.get("exchange")
+    except Exception:
+        queue = None
+    return str(queue) if queue else None
 
 
 def _register_observability_signals() -> None:
@@ -101,23 +120,45 @@ def _register_observability_signals() -> None:
         except Exception:
             headers = {}
 
+        reset_context()
         load_from_headers(headers)
+        if not get_request_id():
+            # Beat and other root producers often dispatch without headers; seed a
+            # request id here so any fan-out tasks inherit a stable correlation id.
+            set_request_id(generate_request_id())
 
-        queue = None
-        try:
-            delivery_info = getattr(getattr(task, "request", None), "delivery_info", None) or {}
-            queue = delivery_info.get("routing_key") or delivery_info.get("exchange")
-        except Exception:
-            queue = None
+        queue = _resolve_task_queue(task)
 
         set_celery_context(
             task_id=str(task_id) if task_id else None,
             task_name=getattr(task, "name", None),
-            queue=str(queue) if queue else None,
+            queue=queue,
         )
+
+        request = getattr(task, "request", None)
+        if request is not None:
+            # Keep timing state on the Celery request object so postrun can emit duration reliably.
+            request._observability_started_at = time.perf_counter()
 
     @task_postrun.connect(weak=False)
     def _task_postrun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
+        request = getattr(task, "request", None)
+        started_at = getattr(request, "_observability_started_at", None)
+        duration_ms = (
+            round((time.perf_counter() - started_at) * 1000)
+            if isinstance(started_at, (int, float))
+            else None
+        )
+        if request is not None and hasattr(request, "_observability_started_at"):
+            del request._observability_started_at
+
+        # Emit task metrics before resetting context so queue/task labels still resolve correctly.
+        record_celery_task_run(
+            task_name=getattr(task, "name", None),
+            queue=_resolve_task_queue(task),
+            status=str(kwargs.get("state") or "UNKNOWN"),
+            duration_ms=duration_ms,
+        )
         reset_context()
 
     @task_failure.connect(weak=False)
@@ -168,22 +209,27 @@ def create_celery_app(worker_name, config, tasks_module):
         celery_app.conf.broker_use_ssl = config.ssl_config
         celery_app.conf.redis_backend_use_ssl = config.ssl_config
 
+    worker_config_updates: dict[str, Any] = {}
+
     # Set worker-specific queue configurations
     if hasattr(config, "task_queues"):
         celery_app.conf.task_queues = config.task_queues
 
     if hasattr(config, "task_default_queue"):
-        celery_app.conf.task_default_queue = config.task_default_queue
+        worker_config_updates["task_default_queue"] = config.task_default_queue
 
     # Set default exchange settings
     if hasattr(config, "task_default_exchange"):
-        celery_app.conf.task_default_exchange = config.task_default_exchange
+        worker_config_updates["task_default_exchange"] = config.task_default_exchange
 
     if hasattr(config, "task_default_exchange_type"):
-        celery_app.conf.task_default_exchange_type = config.task_default_exchange_type
+        worker_config_updates["task_default_exchange_type"] = config.task_default_exchange_type
 
     if hasattr(config, "task_default_routing_key"):
-        celery_app.conf.task_default_routing_key = config.task_default_routing_key
+        worker_config_updates["task_default_routing_key"] = config.task_default_routing_key
+
+    if worker_config_updates:
+        celery_app.conf.update(worker_config_updates)
 
     # Set task routing if defined in the worker's config
     if hasattr(config, "task_routes"):

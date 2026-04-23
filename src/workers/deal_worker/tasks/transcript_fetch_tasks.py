@@ -44,6 +44,7 @@ from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
@@ -225,8 +226,10 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
         for org_id in org_ids:
             try:
                 # Trigger Tier 2 task for this org
+                # Preserve beat/coordinator lineage into the heavy org-level transcript pipeline.
                 task = fetch_meeting_transcripts_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
+                    headers=correlation_headers(),
                 )
                 org_tasks.append(
                     {

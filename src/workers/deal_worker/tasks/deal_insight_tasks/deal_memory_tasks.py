@@ -35,6 +35,7 @@ from src.domain.models.master_tables.organisation_models import (
 from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
@@ -228,7 +229,8 @@ def build_deal_memory_org(self: Task, organisation_id: str):
         service = DealMemoryService(UUID(organisation_id))
         result = run_async(service.backfill_org())
 
-        # Dispatch full insight pipeline (deal_memory → risk + stakeholder)
+        # Reuse the shared pipeline dispatcher so every downstream fan-out keeps the same
+        # orchestration and observability behavior as real-time triggers.
         for org_id_str, job_id_str, deal_id_str in result["jobs_to_dispatch"]:
             dispatch_deal_insight_pipeline(org_id_str, deal_id_str, job_id_str)
 
@@ -275,12 +277,16 @@ def trigger_deal_memory_backfill_all_orgs():
             result = await master_session.execute(
                 select(Organisation).where(col(Organisation.status) == OrganisationStatus.APPROVED)
             )
-            orgs = result.scalars().all()
+        orgs = result.scalars().all()
 
         dispatched = 0
         for org in orgs:
             try:
-                build_deal_memory_org.delay(organisation_id=str(org.organisation_id))
+                # Propagate coordinator context into each org-specific backfill worker.
+                build_deal_memory_org.apply_async(
+                    kwargs={"organisation_id": str(org.organisation_id)},
+                    headers=correlation_headers(),
+                )
                 dispatched += 1
             except Exception as e:
                 logger.warning(

@@ -131,6 +131,9 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
             # Return 503 Service Unavailable if unhealthy for load balancer decisions
             raise HTTPException(status_code=503, detail=health_response)
 
+    except HTTPException:
+        # Preserve the intentionally raised unhealthy payload for callers and monitors.
+        raise
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         error_response = {

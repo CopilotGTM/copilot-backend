@@ -29,6 +29,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.transcripts import TranscriptService
@@ -666,10 +667,12 @@ class MeetingSummaryService:
         # Build task signatures for the chain
         task_signatures = []
         for job_id in job_ids:
+            # Each summary task must carry the current request/task lineage into the chained pipeline.
             sig = signature(
                 "meeting_summary_task.process",
                 args=[str(self.organisation_id), str(job_id)],
                 queue="deal_jobs",
+                headers=correlation_headers(),
                 immutable=True,  # Don't pass result to next task
             )
             task_signatures.append(sig)

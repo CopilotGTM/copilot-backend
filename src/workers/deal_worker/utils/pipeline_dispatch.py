@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.infra.database.sessions import org_async_session_scope, org_session_scope
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.client import get_deal_celery_client
 
@@ -258,12 +259,15 @@ def _build_deal_insight_canvas(
     """
     celery_app = get_deal_celery_client()
 
+    # Attach headers per signature so every branch's task_prerun receives the same
+    # correlation set, regardless of how Celery serializes the canvas.
     # Deal Memory runs first — builds the foundational deal narrative.
     deal_memory_sig = celery_app.signature(
         "deal_memory.process_job",
         kwargs={"organisation_id": organisation_id, "job_id": job_id},
         queue="deal_jobs",
         immutable=True,
+        headers=correlation_headers(),
     )
     # Risk and Stakeholder run in parallel after deal memory completes.
     risk_blocker_sig = celery_app.signature(
@@ -275,6 +279,7 @@ def _build_deal_insight_canvas(
         },
         queue="deal_jobs",
         immutable=True,
+        headers=correlation_headers(),
     )
     stakeholder_sig = celery_app.signature(
         "stakeholder.analyze_deal_stakeholders_task",
@@ -285,6 +290,7 @@ def _build_deal_insight_canvas(
         },
         queue="deal_jobs",
         immutable=True,
+        headers=correlation_headers(),
     )
 
     return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig))
@@ -331,6 +337,7 @@ def dispatch_deal_insight_pipeline(
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
 
+    # Headers are already attached to the individual signatures that need them.
     pipeline.apply_async()
 
 
@@ -353,4 +360,5 @@ async def dispatch_deal_insight_pipeline_async(
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
 
+    # Headers are already attached to the individual signatures that need them.
     pipeline.apply_async()

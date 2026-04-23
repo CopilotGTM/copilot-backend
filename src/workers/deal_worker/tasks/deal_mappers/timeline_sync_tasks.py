@@ -50,6 +50,7 @@ from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
 )
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_service import DealTimelineService
@@ -141,8 +142,10 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
+                # Propagate coordinator lineage into each org-wide timeline reconciliation run.
                 sync_org_timeline_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
+                    headers=correlation_headers(),
                 )
                 orgs_triggered += 1
             except Exception as e:

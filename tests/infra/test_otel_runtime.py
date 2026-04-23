@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from httpx import Client as HttpxClient
 from src.api.middleware.request_context import RequestContextMiddleware
 from src.infra.config.configs import otel_config, sentry_config
+from src.infra.observability.context import get_request_id, reset_context
 from src.infra.utils.logger import configure_logging, get_logger, resolve_celery_component
 from src.workers.base import celery_base
 from supabase import Client as SupabaseClient
@@ -198,6 +199,36 @@ def test_request_context_logs_4xx_requests_as_warning(capsys, monkeypatch):
     assert payload["request_id"] == "req-404"
 
 
+def test_request_context_records_unmatched_routes_with_bounded_metric_label(
+    capsys, mocker, monkeypatch
+):
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setenv("ACCESS_LOG_LEVEL", "INFO")
+    configure_logging(component="api", force=True)
+    metric_mock = mocker.patch("src.api.middleware.request_context.record_http_server_request")
+    app = FastAPI()
+    app.add_middleware(RequestContextMiddleware)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/scanner/definitely-not-a-route", headers={"X-Request-Id": "req-404"}
+        )
+
+    assert response.status_code == 404
+    metric_mock.assert_called_once_with(
+        method="GET",
+        route="unmatched",
+        status_code=404,
+        duration_ms=mocker.ANY,
+    )
+    payload = next(
+        item
+        for item in _structured_lines(capsys.readouterr().err)
+        if item.get("event") == "http_request"
+    )
+    assert payload["http_path"] == "/scanner/definitely-not-a-route"
+
+
 def test_request_context_logs_5xx_requests_as_error(capsys, monkeypatch):
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.setenv("ACCESS_LOG_LEVEL", "INFO")
@@ -312,36 +343,30 @@ def test_create_fastapi_app_instruments_shared_app_instance(mocker):
     instrument_mock.assert_called_once_with(app_state.fastapp)
 
 
-def test_fastapi_lifespan_initializes_sentry_after_supabase_clients(mocker):
-    call_order: list[str] = []
-
+def test_fastapi_lifespan_does_not_reinitialize_sentry(mocker):
+    # Sentry is initialized at module import so startup/import failures are captured;
+    # the lifespan must not redundantly call it again.
     mocker.patch("src.api.fastapi_app.initialize_redis_pool", side_effect=lambda: None)
     mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", side_effect=lambda: None)
     mocker.patch("src.api.fastapi_app.async_init_otel", side_effect=lambda **kwargs: None)
     mocker.patch("src.api.fastapi_app.close_redis_pool", side_effect=lambda: None)
     mocker.patch("src.api.fastapi_app.close_async_redis_pool", side_effect=lambda: None)
-    mocker.patch("src.api.fastapi_app.init_sentry", side_effect=lambda: call_order.append("sentry"))
+    sentry_mock = mocker.patch("src.api.fastapi_app.init_sentry")
 
-    async def _admin_init():
-        call_order.append("admin")
-
-    async def _user_init():
-        call_order.append("user")
-
-    async def _token_init():
-        call_order.append("token")
+    async def _noop_init():
+        return None
 
     mocker.patch(
         "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
-        side_effect=_admin_init,
+        side_effect=_noop_init,
     )
     mocker.patch(
         "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
-        side_effect=_user_init,
+        side_effect=_noop_init,
     )
     mocker.patch(
         "src.infra.security.token_revocation.token_revocation_service.initialize",
-        side_effect=_token_init,
+        side_effect=_noop_init,
     )
 
     async def _run() -> None:
@@ -350,7 +375,7 @@ def test_fastapi_lifespan_initializes_sentry_after_supabase_clients(mocker):
 
     asyncio.run(_run())
 
-    assert call_order == ["admin", "user", "token", "sentry"]
+    sentry_mock.assert_not_called()
 
 
 def _build_fresh_fastapi_app(mocker) -> FastAPI:
@@ -443,6 +468,48 @@ def test_create_celery_app_sets_resilient_redis_transport_options():
         "retry_on_timeout": True,
         "health_check_interval": 30,
     }
+
+
+def test_create_celery_app_applies_worker_default_routing_settings():
+    class _RoutingWorkerConfig(_DummyWorkerConfig):
+        task_default_queue = "attachments"
+        task_default_exchange = "chat"
+        task_default_exchange_type = "direct"
+        task_default_routing_key = "attachments"
+
+    app = celery_base.create_celery_app(
+        "chat_worker",
+        _RoutingWorkerConfig(),
+        "tests.chat_tasks",
+    )
+
+    assert app.conf.task_default_queue == "attachments"
+    assert app.conf.task_default_exchange == "chat"
+    assert app.conf.task_default_exchange_type == "direct"
+    assert app.conf.task_default_routing_key == "attachments"
+
+
+def test_celery_task_prerun_seeds_request_id_when_headers_missing(mocker):
+    mocker.patch("src.workers.base.celery_base.generate_request_id", return_value="seeded-root-id")
+
+    app = celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
+    app.set_current()
+
+    class _DummyTaskRequest:
+        headers: dict[str, str] = {}
+        delivery_info: dict[str, str] = {}
+
+    class _DummyTask:
+        name = "tests.root_task"
+        request = _DummyTaskRequest()
+
+    reset_context()
+
+    try:
+        celery_base.task_prerun.send(sender=None, task_id="task-123", task=_DummyTask())
+        assert get_request_id() == "seeded-root-id"
+    finally:
+        reset_context()
 
 
 def test_otel_log_sanitizer_drops_source_location_fields():

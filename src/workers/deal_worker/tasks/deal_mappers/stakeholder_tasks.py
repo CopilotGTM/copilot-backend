@@ -37,6 +37,7 @@ from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import (
     acquire_master_async_session,
 )
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
@@ -110,8 +111,16 @@ def sync_deal_stakeholders_task(
 
         # Trigger re-matching if new stakeholders were created
         if trigger_rematching and result.requires_rematching:
-            match_calendar_to_deals_task.delay(organisation_id, deal_id)
-            match_email_to_deals_task.delay(organisation_id, deal_id)
+            # Reuse one header snapshot so both sibling tasks tie back to the same parent run.
+            dispatch_headers = correlation_headers()
+            match_calendar_to_deals_task.apply_async(
+                kwargs={"organisation_id": organisation_id, "deal_id": deal_id},
+                headers=dispatch_headers,
+            )
+            match_email_to_deals_task.apply_async(
+                kwargs={"organisation_id": organisation_id, "deal_id": deal_id},
+                headers=dispatch_headers,
+            )
             rematching_triggered = True
 
         logger.info(
@@ -236,8 +245,16 @@ def sync_all_deals_stakeholders_org_task(
                     match_email_to_deals_org_task,
                 )
 
-                match_calendar_to_deals_org_task.delay(organisation_id)
-                match_email_to_deals_org_task.delay(organisation_id)
+                # Reuse one header snapshot so both org-wide matchers stay under the same lineage.
+                dispatch_headers = correlation_headers()
+                match_calendar_to_deals_org_task.apply_async(
+                    kwargs={"organisation_id": organisation_id},
+                    headers=dispatch_headers,
+                )
+                match_email_to_deals_org_task.apply_async(
+                    kwargs={"organisation_id": organisation_id},
+                    headers=dispatch_headers,
+                )
                 deal_matching_triggered = True
                 logger.info(
                     "Triggered calendar/email matching for organisation",
@@ -396,8 +413,10 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
+                # Preserve coordinator context into each org-level stakeholder sync.
                 task = sync_all_deals_stakeholders_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
+                    headers=correlation_headers(),
                 )
                 org_tasks.append(
                     {

@@ -21,6 +21,7 @@ from uuid import UUID
 
 from celery import Task
 
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.workers.chat_worker.celery_app import app
 
@@ -46,6 +47,7 @@ def poll_due_reminders_task() -> dict[str, Any]:
     dispatched = 0
     for org_id, reminder_id in claimed:
         try:
+            # Preserve scheduler/task correlation so per-reminder execution can be traced back to poller runs.
             execute_reminder_task.apply_async(
                 kwargs={
                     "organisation_id": org_id,
@@ -53,6 +55,7 @@ def poll_due_reminders_task() -> dict[str, Any]:
                 },
                 queue="chat_messages",
                 routing_key="chat_messages",
+                headers=correlation_headers(),
             )
             dispatched += 1
         except Exception as e:

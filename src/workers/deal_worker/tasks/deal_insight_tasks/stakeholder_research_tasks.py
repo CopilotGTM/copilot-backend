@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
@@ -277,12 +278,16 @@ def trigger_retry_pending_research_all_orgs():
             result = await master_session.execute(
                 select(Organisation).where(col(Organisation.status) == OrganisationStatus.APPROVED)
             )
-            orgs = result.scalars().all()
+        orgs = result.scalars().all()
 
         dispatched = 0
         for org in orgs:
             try:
-                retry_pending_research_org.delay(organisation_id=str(org.organisation_id))
+                # Keep all-org coordinator context attached to each per-org retry sweep.
+                retry_pending_research_org.apply_async(
+                    kwargs={"organisation_id": str(org.organisation_id)},
+                    headers=correlation_headers(),
+                )
                 dispatched += 1
             except Exception as e:
                 logger.warning(
