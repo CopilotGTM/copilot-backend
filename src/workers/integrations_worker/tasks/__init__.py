@@ -15,10 +15,14 @@ from .calendar import (
 from .crm import (
     mark_hubspot_initial_sync_failed_task,
     mark_hubspot_initial_sync_succeeded_task,
+    mark_salesforce_initial_sync_failed_task,
+    mark_salesforce_initial_sync_succeeded_task,
     sync_hubspot_deal_schema_all_orgs_task,
     sync_hubspot_deal_schema_task,
     sync_hubspot_pipelines_task,
     sync_hubspot_users_task,
+    sync_salesforce_opportunity_schema_all_orgs_task,
+    sync_salesforce_opportunity_schema_task,
 )
 
 # Email sync tasks (three-tier architecture)
@@ -75,4 +79,8 @@ __all__ = [
     "sync_hubspot_users_task",
     "mark_hubspot_initial_sync_succeeded_task",
     "mark_hubspot_initial_sync_failed_task",
+    "sync_salesforce_opportunity_schema_task",
+    "sync_salesforce_opportunity_schema_all_orgs_task",
+    "mark_salesforce_initial_sync_succeeded_task",
+    "mark_salesforce_initial_sync_failed_task",
 ]

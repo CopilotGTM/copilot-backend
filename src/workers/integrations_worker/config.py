@@ -114,6 +114,17 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 180,
         "retries": 0,
     },
+    "integrations.sync_salesforce_opportunity_schema": {
+        "soft": 900,
+        "hard": 960,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_opportunity_schema_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
     # ── HubSpot record sync (phase 2: pipelines + stages) ──
     "integrations.sync_hubspot_pipelines": {
         "soft": 300,
@@ -160,6 +171,18 @@ TASK_LIMITS: dict[str, dict] = {
         "retry_delay": 30,
     },
     "integrations.mark_hubspot_initial_sync_failed": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_salesforce_initial_sync_succeeded": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_salesforce_initial_sync_failed": {
         "soft": 30,
         "hard": 60,
         "retries": 2,
@@ -282,6 +305,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual / post-connect triggers
                 "routing_key": "integrations_priority",
             },
+            "integrations.sync_salesforce_opportunity_schema_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_salesforce_opportunity_schema": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
             # CRM record sync tasks (HubSpot, phase 2: pipelines + stages)
             "integrations.sync_hubspot_pipelines": {
                 "queue": "integrations_priority",  # Co-scheduled with the chain it belongs to
@@ -312,6 +343,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "routing_key": "integrations_priority",
             },
             "integrations.mark_hubspot_initial_sync_failed": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_salesforce_initial_sync_succeeded": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_salesforce_initial_sync_failed": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },

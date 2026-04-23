@@ -1,3 +1,4 @@
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from src.domain.models.organisation_tables.sync import (
@@ -8,7 +9,7 @@ from src.domain.models.organisation_tables.sync import (
 from src.service.integrations.initial_sync_service import InitialSyncService
 
 
-def test_initial_sync_service_applies_salesforce_placeholder_metadata() -> None:
+def test_initial_sync_service_queues_salesforce_schema_sync_metadata() -> None:
     service = InitialSyncService()
     integration = KnowledgeIntegration(
         organisation_id=uuid4(),
@@ -24,8 +25,34 @@ def test_initial_sync_service_applies_salesforce_placeholder_metadata() -> None:
 
     service.apply_post_connect_state(integration)
 
-    assert integration.connection_metadata["initial_sync_status"] == "not_implemented"
-    assert (
-        "Salesforce custom auth connected successfully"
-        in integration.connection_metadata["initial_sync_placeholder"]
+    assert integration.connection_metadata["initial_sync_status"] == "queued"
+    assert "initial_sync_placeholder" not in integration.connection_metadata
+    assert integration.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
+
+
+def test_initial_sync_service_dispatches_salesforce_initial_sync_chain() -> None:
+    service = InitialSyncService()
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_scope=IntegrationScope.ORGANIZATION,
+        integration_type=IntegrationType.SALESFORCE,
+        name="Test Integration",
+        credentials={},
+        connection_metadata={},
+        is_active=True,
+        connection_id=str(uuid4()),
     )
+    chain_signature = MagicMock()
+
+    with patch(
+        "src.service.integrations.initial_sync_service.build_salesforce_initial_sync_chain",
+        return_value=chain_signature,
+    ) as mock_build:
+        service.trigger_initial_sync(integration.organisation_id, integration)
+
+    mock_build.assert_called_once_with(
+        organisation_id=integration.organisation_id,
+        integration_id=integration.integration_id,
+    )
+    chain_signature.apply_async.assert_called_once_with()

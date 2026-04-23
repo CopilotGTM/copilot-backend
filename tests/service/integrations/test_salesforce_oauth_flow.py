@@ -81,7 +81,7 @@ def _make_integration(**overrides: object) -> KnowledgeIntegration:
 
 
 @pytest.mark.asyncio
-async def test_callback_creates_salesforce_integration_with_placeholder_metadata() -> None:
+async def test_callback_creates_salesforce_integration_with_queued_schema_metadata() -> None:
     service = CopilotCallbackService()
     user_id = uuid4()
     organisation_id = uuid4()
@@ -131,7 +131,8 @@ async def test_callback_creates_salesforce_integration_with_placeholder_metadata
     created = create_session.add.call_args[0][0]
     assert created.integration_scope == IntegrationScope.ORGANIZATION
     assert created.connection_metadata["provider_key"] == "salesforce"
-    assert created.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert created.connection_metadata["initial_sync_status"] == "queued"
+    assert created.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -188,7 +189,8 @@ async def test_callback_reactivates_existing_salesforce_integration() -> None:
 
     assert result["reactivated"] is True
     assert existing.is_active is True
-    assert existing.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert existing.connection_metadata["initial_sync_status"] == "queued"
+    assert existing.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -225,7 +227,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
             "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
             return_value=provider,
         ),
-        pytest.raises(ValueError, match="Personal email addresses \\(gmail.com\\)"),
+        pytest.raises(ValueError, match="connected account uses gmail.com"),
     ):
         await service.handle_oauth_callback(code="abc", state="signed-state")
 

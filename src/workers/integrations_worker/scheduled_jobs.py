@@ -55,6 +55,12 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="0 2 */14 * *",
         max_lag_seconds=60 * 60 * 48,
     ),
+    "sync-salesforce-opportunity-schema-all-orgs": ScheduledJob(
+        name="sync-salesforce-opportunity-schema-all-orgs",
+        task_name="integrations.sync_salesforce_opportunity_schema_all_orgs",
+        schedule="0 3 */14 * *",
+        max_lag_seconds=60 * 60 * 48,
+    ),
 }
 
 

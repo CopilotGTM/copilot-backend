@@ -1,8 +1,5 @@
-"""CRM record sync package.
+"""CRM record-sync packages.
 
-Per-entity record syncs live under subpackages (pipelines, deals, etc.).
-Shared infrastructure (chain builder, backfill contract, shared DTOs) lives
-under `common/`.
-
-See `docs/superpowers/specs/2026-04-22-hubspot-crm-pipelines-record-sync-design.md`.
+Provider-neutral helpers live under `common/`. Provider/object implementations
+live under provider packages such as `hubspot/`.
 """
