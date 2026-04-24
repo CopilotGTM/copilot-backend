@@ -30,6 +30,8 @@ if os.getenv("ENV", "local") == "local":
     load_dotenv(BASE_DIR / ".env", override=False)
 
 configure_logging(component="api")
+# Initialize Sentry before importing routers so startup/import failures are captured.
+init_sentry()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,8 +132,6 @@ async def lifespan(app: FastAPI):
     await supabase_user_client.initialize()
     await token_revocation_service.initialize()
     logger.info("Supabase clients initialized")
-
-    init_sentry()
 
     yield
 

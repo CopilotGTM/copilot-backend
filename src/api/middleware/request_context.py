@@ -5,6 +5,7 @@ import os
 import time
 
 from src.infra.observability.context import generate_request_id, reset_context, set_request_id
+from src.infra.observability.metrics import record_http_server_request
 from src.infra.utils.logger import get_logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -27,6 +28,13 @@ def _sync_access_logger_level() -> None:
     desired_level = min(logging.getLogger().getEffectiveLevel(), _resolve_access_success_level())
     if _logger.level != desired_level:
         _logger.setLevel(desired_level)
+
+
+def _resolve_http_route(request: Request) -> str:
+    # Prefer Starlette route template to keep metric cardinality bounded.
+    route = request.scope.get("route")
+    route_template = getattr(route, "path", None)
+    return route_template or "unmatched"
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -65,6 +73,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         _sync_access_logger_level()
         path = request.url.path
         method = request.method
+        route = _resolve_http_route(request)
         extra = {
             "event": "http_request",
             "http_method": method,
@@ -72,6 +81,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             "http_status_code": status,
             "duration_ms": duration_ms,
         }
+
+        # Emit API observability metrics for SLOs and triage.
+        record_http_server_request(
+            method=method,
+            route=route,
+            status_code=status,
+            duration_ms=duration_ms,
+        )
 
         if path in _QUIET_PATHS:
             _logger.debug("HTTP request completed", extra=extra)

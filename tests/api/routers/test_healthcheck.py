@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -130,3 +133,39 @@ def test_knowledge_scheduler_health_endpoint_returns_scheduler_status(
 
     assert response.status_code == 503
     assert response.json()["detail"]["jobs"]["cleanup-stale-knowledge-jobs"]["status"] == "stale"
+
+
+def test_detailed_healthcheck_preserves_unhealthy_component_payload(mocker):
+    import src.api.routers.healthcheck as healthcheck_runtime
+
+    # Reproduce a genuine unhealthy dependency so the handler must re-raise its own 503 payload.
+    provider = mocker.Mock()
+    provider.get_client_info.return_value = {"provider": "test"}
+
+    mocker.patch.object(healthcheck_runtime.secrets_manager, "get_metrics", return_value={})
+    mocker.patch.object(healthcheck_runtime.secrets_manager, "provider", provider, create=True)
+    mocker.patch.object(
+        healthcheck_runtime,
+        "get_scheduler_health",
+        return_value={"healthy": False, "component": "integrations"},
+    )
+    mocker.patch.object(
+        healthcheck_runtime,
+        "get_deal_scheduler_health",
+        return_value={"healthy": True, "component": "deal"},
+    )
+    mocker.patch.object(
+        healthcheck_runtime,
+        "get_knowledge_scheduler_health",
+        return_value={"healthy": True, "component": "knowledge"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(healthcheck_runtime.detailed_healthcheck(authorized=True))
+
+    # HTTPException.detail is typed as str|None upstream but FastAPI allows Any.
+    detail: Any = exc_info.value.detail
+    assert exc_info.value.status_code == 503
+    assert detail["status"] == "unhealthy"
+    assert detail["integrations_scheduler"]["component"] == "integrations"
+    assert detail["overall_healthy"] is False

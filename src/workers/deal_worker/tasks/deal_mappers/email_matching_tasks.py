@@ -36,6 +36,7 @@ from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
 )
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
@@ -424,8 +425,10 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
+                # Coordinator fan-out should preserve correlation so org-level matching is traceable.
                 task = match_email_to_deals_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
+                    headers=correlation_headers(),
                 )
                 org_tasks.append(
                     {

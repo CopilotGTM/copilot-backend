@@ -3,6 +3,7 @@
 Call ``init_otel(service_name_suffix)`` once at process startup.
 Disabled when OTEL_ENABLED is false or OTEL_EXPORTER_OTLP_ENDPOINT is empty.
 
+Exports traces, metrics, and logs over OTLP HTTP.
 Instruments: Celery, httpx, requests, SQLAlchemy, Redis.
 Also bridges Python ``logging`` so every log record gets trace_id/span_id.
 """
@@ -53,6 +54,7 @@ async def async_init_otel(service_name_suffix: str = "") -> None:
     _otel_initialized = True
 
     _setup_tracing(otel_config, service_name_suffix)
+    _setup_metrics(otel_config, service_name_suffix)
     _setup_logging(otel_config, service_name_suffix)
     _auto_instrument()
 
@@ -88,6 +90,7 @@ def init_otel(service_name_suffix: str = "") -> None:
     _otel_initialized = True
 
     _setup_tracing(otel_config, service_name_suffix)
+    _setup_metrics(otel_config, service_name_suffix)
     _setup_logging(otel_config, service_name_suffix)
     _auto_instrument()
 
@@ -174,6 +177,29 @@ def _setup_tracing(otel_config, suffix: str) -> None:
     )
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
+
+
+def _setup_metrics(otel_config, suffix: str) -> None:
+    from opentelemetry import metrics
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+    # Metrics use a dedicated OTLP endpoint and periodic reader because they are exported
+    # independently from traces/logs and should keep flowing even when request volume is low.
+    exporter = OTLPMetricExporter(
+        endpoint=f"{otel_config.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/metrics",
+        headers=_parse_headers(otel_config.OTEL_EXPORTER_OTLP_HEADERS),
+    )
+    reader = PeriodicExportingMetricReader(
+        exporter,
+        export_interval_millis=otel_config.OTEL_METRICS_EXPORT_INTERVAL_MS,
+    )
+    provider = MeterProvider(
+        resource=_resource(otel_config, suffix),
+        metric_readers=[reader],
+    )
+    metrics.set_meter_provider(provider)
 
 
 def _setup_logging(otel_config, suffix: str) -> None:

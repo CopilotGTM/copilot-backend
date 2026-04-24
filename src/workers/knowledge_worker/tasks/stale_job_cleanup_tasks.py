@@ -24,6 +24,7 @@ from src.domain.models.master_tables.organisation_models import (
     OrganisationStatus,
 )
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app
@@ -82,9 +83,11 @@ def cleanup_stale_jobs_all_orgs_task() -> dict[str, Any]:
         org_tasks = []
         for org_id in org_ids:
             try:
+                # Preserve coordinator lineage into each org-level cleanup run.
                 task = cleanup_stale_jobs_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                     queue="knowledge_upload",
+                    headers=correlation_headers(),
                 )
                 org_tasks.append(
                     {

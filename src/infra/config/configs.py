@@ -68,6 +68,10 @@ class OTelConfig:
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     OTEL_EXPORTER_OTLP_HEADERS: str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
     OTEL_TRACES_SAMPLE_RATE: float = float(os.getenv("OTEL_TRACES_SAMPLE_RATE", "0.2"))
+    # Keep metric export cadence configurable so lower environments can trade freshness for cost.
+    OTEL_METRICS_EXPORT_INTERVAL_MS: int = int(
+        os.getenv("OTEL_METRICS_EXPORT_INTERVAL_MS", "60000")
+    )
 
     _credentials_from_env: bool = bool(os.getenv("OTEL_EXPORTER_OTLP_HEADERS"))
     _credentials_ttl_hours: float = float(os.getenv("OTEL_CREDENTIALS_TTL_HOURS", "6"))
@@ -126,7 +130,8 @@ class SentryConfig:
 
     SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
     SENTRY_ENVIRONMENT: str = os.getenv("ENV", "dev")
-    SENTRY_SEND_DEFAULT_PII: bool = os.getenv("SENTRY_SEND_DEFAULT_PII", "true").lower() == "true"
+    # Default to no automatic PII capture; explicit allow-in is safer for a multi-tenant backend.
+    SENTRY_SEND_DEFAULT_PII: bool = os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true"
     SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
 
 

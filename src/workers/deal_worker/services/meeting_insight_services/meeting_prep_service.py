@@ -26,6 +26,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -494,10 +495,12 @@ class MeetingPrepService:
         # Trigger the Celery task
         if job_id:
             try:
+                # Apply headers at signature construction time so the async handoff keeps parent context.
                 sig = signature(
                     "meeting_prep_task.process",
                     args=[str(self.organisation_id), str(job_id)],
                     queue="deal_jobs",
+                    headers=correlation_headers(),
                 )
                 if sig:
                     sig.apply_async()
