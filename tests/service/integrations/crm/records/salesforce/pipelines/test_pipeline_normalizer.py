@@ -132,3 +132,43 @@ def test_normalize_salesforce_pipelines_uses_master_record_type_fallback() -> No
     assert len(pipelines) == 1
     assert pipelines[0].external_id == "master"
     assert pipelines[0].stages[0].external_id == "master:Qualification"
+
+
+def test_normalize_salesforce_pipelines_keeps_master_with_custom_record_types() -> None:
+    record_types = [
+        {
+            "Id": "012MASTER",
+            "Name": "Master",
+            "DeveloperName": "Master",
+            "IsActive": True,
+            "IsMaster": True,
+        },
+        {
+            "Id": "012CUSTOM",
+            "Name": "Enterprise Sales",
+            "DeveloperName": "Enterprise_Sales",
+            "IsActive": True,
+            "IsMaster": False,
+        },
+    ]
+    stage_values_by_record_type = {
+        "012MASTER": [{"value": "Qualification", "label": "Qualification"}],
+        "012CUSTOM": [{"value": "Discovery", "label": "Discovery"}],
+    }
+
+    pipelines, skipped_pipelines, skipped_stages, unresolved_stage_metadata = (
+        normalize_salesforce_pipelines(
+            record_types=record_types,
+            stage_values_by_record_type=stage_values_by_record_type,
+            opportunity_stages=[],
+        )
+    )
+
+    assert skipped_pipelines == 0
+    assert skipped_stages == 0
+    assert unresolved_stage_metadata == 2
+    assert [pipeline.external_id for pipeline in pipelines] == ["master", "012CUSTOM"]
+    assert [stage.external_id for pipeline in pipelines for stage in pipeline.stages] == [
+        "master:Qualification",
+        "012CUSTOM:Discovery",
+    ]

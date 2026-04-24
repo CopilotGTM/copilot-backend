@@ -75,8 +75,7 @@ def _select_record_types_for_sync(
     record_types: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     active = [row for row in record_types if bool(row.get("IsActive", True))]
-    non_master = [row for row in active if not bool(row.get("IsMaster"))]
-    return non_master or active
+    return active
 
 
 def _normalize_stage(

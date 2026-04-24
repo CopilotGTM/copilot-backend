@@ -38,6 +38,9 @@ from src.service.integrations.sync_history_manager import (
 )
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
+from src.workers.integrations_worker.tasks.crm.failure_handling import (
+    record_crm_task_failure,
+)
 
 logger = get_logger(__name__)
 
@@ -81,11 +84,27 @@ def sync_hubspot_deal_schema_task(
                 integration_id=int_id,
             )
         except SchemaSyncConfigurationError as exc:
-            await _mark_history_failed(
-                org_id,
-                sync_id,
+            await record_crm_task_failure(
+                organisation_id=org_id,
+                integration_id=int_id,
+                sync_id=sync_id,
                 error_class="configuration",
                 error_message=str(exc),
+                error=exc,
+                mark_history_failed=_mark_history_failed,
+                update_integration_metadata=_update_integration_metadata,
+            )
+            raise
+        except Exception as exc:
+            await record_crm_task_failure(
+                organisation_id=org_id,
+                integration_id=int_id,
+                sync_id=sync_id,
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+                error=exc,
+                mark_history_failed=_mark_history_failed,
+                update_integration_metadata=_update_integration_metadata,
             )
             raise
 

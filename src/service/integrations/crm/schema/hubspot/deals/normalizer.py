@@ -23,6 +23,10 @@ from src.service.integrations.crm.schema.common.types import (
     NormalizedSchemaOption,
     ProviderCustomMatch,
 )
+from src.service.integrations.crm.schema.hubspot_deal_field_policy import (
+    HubSpotDealFieldMetadata,
+    classify_hubspot_deal_field_for_value_storage,
+)
 
 logger = get_logger(__name__)
 _KEY_NORMALIZE_RE = re.compile(r"[^a-z0-9_]+")
@@ -145,6 +149,26 @@ def _truncate_optional_string(value: Any, *, max_length: int) -> str | None:
     return value[:max_length]
 
 
+def _internal_key_for_provider_field(
+    raw: Mapping[str, Any],
+    classification: ProviderCustomMatch,
+    *,
+    fallback_key: str,
+) -> str:
+    decision = classify_hubspot_deal_field_for_value_storage(
+        HubSpotDealFieldMetadata(
+            provider_field_key=classification.provider_field_key,
+            hidden=bool(raw.get("hidden", False)),
+            read_only_value=bool(raw.get("readOnlyValue", False)),
+            group_name=str(raw.get("groupName")) if raw.get("groupName") else None,
+            label=str(raw.get("label")) if raw.get("label") else None,
+            current_internal_key=fallback_key,
+            is_provider_custom=classification.is_provider_custom,
+        )
+    )
+    return _provider_internal_key(decision.internal_name or fallback_key)
+
+
 def normalize(
     raw: Mapping[str, Any],
     classification: ProviderCustomMatch,
@@ -170,9 +194,15 @@ def normalize(
     if display_order is not None and not isinstance(display_order, int):
         display_order = None
 
+    key = _internal_key_for_provider_field(
+        raw,
+        classification,
+        fallback_key=_provider_internal_key(name),
+    )
+
     return NormalizedSchemaField(
         provider_field_key=name,
-        key=_provider_internal_key(name),
+        key=key,
         label=label,
         description=description,
         data_type=data_type,

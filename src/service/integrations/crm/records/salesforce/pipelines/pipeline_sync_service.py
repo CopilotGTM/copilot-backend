@@ -169,5 +169,4 @@ class SalesforcePipelineRecordSyncService:
 
 
 def _select_record_types_for_sync(record_types: list[dict]) -> list[dict]:
-    non_master = [row for row in record_types if not bool(row.get("IsMaster"))]
-    return non_master or record_types
+    return [row for row in record_types if bool(row.get("IsActive", True))]

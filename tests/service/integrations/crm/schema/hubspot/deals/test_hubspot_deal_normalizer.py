@@ -52,3 +52,24 @@ def test_normalize_truncates_hubspot_description_to_db_limit() -> None:
 
     assert normalized.description == "x" * 5000
     assert normalized.data_payload["description"] == "x" * 6000
+
+
+def test_normalize_uses_internal_key_for_promoted_hubspot_field() -> None:
+    raw = {
+        "name": "hs_next_step",
+        "label": "Next step",
+        "type": "string",
+        "fieldType": "text",
+        "hubspotDefined": True,
+    }
+
+    normalized = normalize(
+        raw,
+        ProviderCustomMatch(
+            provider_field_key=raw["name"],
+            is_provider_custom=False,
+        ),
+    )
+
+    assert normalized.provider_field_key == "hs_next_step"
+    assert normalized.key == "next_step"
