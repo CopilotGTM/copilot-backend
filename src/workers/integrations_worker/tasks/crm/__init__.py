@@ -27,6 +27,12 @@ from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_pipeline_record_s
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_user_record_sync_task import (
     sync_hubspot_users_task,
 )
+from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_company_record_sync_task import (
+    sync_salesforce_companies_task,
+)
+from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_contact_record_sync_task import (
+    sync_salesforce_contacts_task,
+)
 from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_initial_sync_failed_task import (
     mark_salesforce_initial_sync_failed_task,
 )
@@ -60,6 +66,8 @@ __all__ = [
     "sync_salesforce_opportunity_schema_all_orgs_task",
     "sync_salesforce_pipelines_task",
     "sync_salesforce_users_task",
+    "sync_salesforce_companies_task",
+    "sync_salesforce_contacts_task",
     "mark_salesforce_initial_sync_succeeded_task",
     "mark_salesforce_initial_sync_failed_task",
 ]

@@ -7,6 +7,7 @@ Documentation for CopilotGTM's integration sync system — OAuth, data sync, err
 | Document | Description |
 |----------|-------------|
 | [architecture-overview.md](architecture-overview.md) | High-level architecture, supported providers, directory structure |
+| [crm-initial-sync.md](crm-initial-sync.md) | Live HubSpot/Salesforce post-connect CRM chain, metadata, and persisted tables |
 | [oauth-and-token-management.md](oauth-and-token-management.md) | Custom OAuth flow, callback scope validation, token storage, refresh, and revocation detection |
 | [reauth-and-permission-recovery.md](reauth-and-permission-recovery.md) | Backend reconnect model, expired-auth vs permission-drift handling, and API state contract |
 | [three-tier-sync-architecture.md](three-tier-sync-architecture.md) | Celery task tiers, beat schedule, session management |

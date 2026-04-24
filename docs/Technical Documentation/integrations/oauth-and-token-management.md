@@ -41,10 +41,11 @@ HubSpot uses the same first-party custom OAuth flow as Google, Microsoft, and Sl
 - scheduled refresh handled by `custom_token_refresh_service.py`
 - disconnect handled through `IntegrationService.revoke_custom_oauth_token()`
 
-Current limitation:
+Current behavior after successful connect:
 
-- successful connect stores `initial_sync_status = not_implemented` in `connection_metadata`
-- no HubSpot CRM sync tasks are dispatched in this phase
+- `InitialSyncService.apply_post_connect_state()` stamps queued CRM metadata
+- `InitialSyncService.trigger_initial_sync()` dispatches the HubSpot CRM chain
+- live chain: `schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
 
 ### Salesforce
 
@@ -56,10 +57,11 @@ Salesforce uses the same first-party custom OAuth flow as Google, Microsoft, Sla
 - scheduled refresh handled by `custom_token_refresh_service.py`
 - disconnect handled through `IntegrationService.revoke_custom_oauth_token()`
 
-Current limitation:
+Current behavior after successful connect:
 
-- successful connect stores `initial_sync_status = not_implemented` in `connection_metadata`
-- no Salesforce CRM sync tasks are dispatched in this phase
+- `InitialSyncService.apply_post_connect_state()` stamps queued CRM metadata
+- `InitialSyncService.trigger_initial_sync()` dispatches the Salesforce CRM chain
+- live chain: `schema -> pipelines -> users -> companies -> contacts -> finalize`
 
 ### Token Refresh
 

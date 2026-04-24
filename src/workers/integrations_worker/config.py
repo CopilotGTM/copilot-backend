@@ -151,6 +151,18 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.sync_salesforce_companies": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_contacts": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
     # ── HubSpot record sync (phase 4: companies / accounts) ──
     "integrations.sync_hubspot_companies": {
         "soft": 300,
@@ -340,6 +352,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "routing_key": "integrations_priority",
             },
             "integrations.sync_salesforce_users": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_companies": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_contacts": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },

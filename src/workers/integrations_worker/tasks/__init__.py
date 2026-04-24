@@ -21,6 +21,8 @@ from .crm import (
     sync_hubspot_deal_schema_task,
     sync_hubspot_pipelines_task,
     sync_hubspot_users_task,
+    sync_salesforce_companies_task,
+    sync_salesforce_contacts_task,
     sync_salesforce_opportunity_schema_all_orgs_task,
     sync_salesforce_opportunity_schema_task,
     sync_salesforce_pipelines_task,
@@ -79,6 +81,8 @@ __all__ = [
     "sync_hubspot_pipelines_task",
     # CRM record sync (HubSpot, phase 3: users / owners)
     "sync_hubspot_users_task",
+    "sync_salesforce_companies_task",
+    "sync_salesforce_contacts_task",
     "sync_salesforce_pipelines_task",
     "sync_salesforce_users_task",
     "mark_hubspot_initial_sync_succeeded_task",
