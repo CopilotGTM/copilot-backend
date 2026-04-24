@@ -16,6 +16,8 @@ from src.service.integrations.copilot_callback_service import CopilotCallbackSer
 from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.service.integrations.integration_service import IntegrationService
 
+_SALESFORCE_GRANTED_SCOPE = "refresh_token api"
+
 
 class FakeResult:
     def __init__(self, *, scalar: object | None = None) -> None:
@@ -81,7 +83,7 @@ def _make_integration(**overrides: object) -> KnowledgeIntegration:
 
 
 @pytest.mark.asyncio
-async def test_callback_creates_salesforce_integration_with_placeholder_metadata() -> None:
+async def test_callback_creates_salesforce_integration_with_queued_schema_metadata() -> None:
     service = CopilotCallbackService()
     user_id = uuid4()
     organisation_id = uuid4()
@@ -131,7 +133,8 @@ async def test_callback_creates_salesforce_integration_with_placeholder_metadata
     created = create_session.add.call_args[0][0]
     assert created.integration_scope == IntegrationScope.ORGANIZATION
     assert created.connection_metadata["provider_key"] == "salesforce"
-    assert created.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert created.connection_metadata["initial_sync_status"] == "queued"
+    assert created.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -155,6 +158,7 @@ async def test_callback_reactivates_existing_salesforce_integration() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 
@@ -188,7 +192,8 @@ async def test_callback_reactivates_existing_salesforce_integration() -> None:
 
     assert result["reactivated"] is True
     assert existing.is_active is True
-    assert existing.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert existing.connection_metadata["initial_sync_status"] == "queued"
+    assert existing.connection_metadata["schema_sync"]["opportunities"]["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -203,6 +208,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "seller@gmail.com"}
 
@@ -225,7 +231,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
             "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
             return_value=provider,
         ),
-        pytest.raises(ValueError, match="Personal email addresses \\(gmail.com\\)"),
+        pytest.raises(ValueError, match="connected account uses gmail.com"),
     ):
         await service.handle_oauth_callback(code="abc", state="signed-state")
 
@@ -249,6 +255,7 @@ async def test_callback_rejects_duplicate_account_connected_by_other_user() -> N
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 

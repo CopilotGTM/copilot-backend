@@ -54,7 +54,7 @@ class SalesforceProvider(BaseIntegrationProvider):
         return "salesforce"
 
     def _get_scopes(self) -> list[str]:
-        return ["refresh_token", "api", "openid", "profile", "email"]
+        return ["refresh_token", "offline_access", "api", "openid", "profile", "email"]
 
     async def _request_with_retry(
         self,

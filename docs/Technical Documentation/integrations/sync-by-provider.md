@@ -150,18 +150,43 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 
 ## HubSpot CRM
 
-- **Custom OAuth**: Supported via the current first-party provider architecture
-- **Deal schema sync**: Supported
-- **Deal record sync**: Deferred
-- **Current behavior after connect**: Integration is stored as active; schema sync is implemented as the first CRM sync slice, but is not auto-dispatched from the OAuth callback flow yet
-- **Registry storage**: Provider-backed deal schema rows are mirrored into `crm_custom_field_definitions` with `field_source=provider` and scoped by `integration_id`
-- **Current placeholder metadata**: HubSpot integrations still receive `initial_sync_status = not_implemented` during post-connect state handling because the callback flow does not auto-dispatch schema sync yet
+- **Custom OAuth**: Supported.
+- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
+- **Schema refresh**:
+  - `integrations.sync_hubspot_deal_schema`
+  - `integrations.sync_hubspot_deal_schema_all_orgs`
+- **Current capture**:
+  - schema registry for deal fields
+  - pipelines + stages
+  - users
+  - companies
+  - contacts
+  - deals
+  - deal stage history
+  - deal participants
+  - object associations
+  - `crm_activities` for tasks and notes
+- **Direction**: strictly HubSpot -> CopilotGTM.
+- **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.
 
 ## Salesforce CRM
 
-- **Custom OAuth**: Supported via the current first-party provider architecture
-- **Data sync**: Deferred
-- **Current behavior after connect**: Integration is stored as active and marked with an initial-sync placeholder in `connection_metadata`
-- **Current placeholder metadata**:
-  - `initial_sync_status = not_implemented`
-  - `initial_sync_placeholder = Salesforce custom auth connected successfully; CRM sync dispatch will be added later.`
+- **Custom OAuth**: Supported.
+- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
+- **Pipeline model**:
+  - pipeline = `Opportunity RecordType`
+  - stage = record-type-scoped `StageName`
+- **Current capture boundary**:
+  - Opportunity schema
+  - pipelines + stages
+  - users
+  - companies
+  - contacts
+  - deals
+  - deal stage history
+  - deal participants
+  - deal object associations
+  - crm activities for tasks and notes
+- **Deferred**: broader Salesforce association slices beyond direct deal-company/contact edges.
+- **Direction**: strictly Salesforce -> CopilotGTM.
+- **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.

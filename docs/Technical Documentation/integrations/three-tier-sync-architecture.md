@@ -4,6 +4,9 @@
 
 All scheduled sync tasks follow a three-tier Celery architecture:
 
+This is the default scheduled-sync model for calendar, email, messaging, and token refresh.
+HubSpot and Salesforce CRM post-connect initial sync are the main exception: they run as provider-specific Tier 3 chains rather than the generic Tier 1 -> Tier 2 -> Tier 3 flow.
+
 ```
 Tier 1: all_orgs_task (coordinator)
   - Queries approved orgs from master DB
@@ -22,9 +25,9 @@ Tier 3: integration_task (manual/on-demand)
   - Soft limit: 900s (allows initial sync)
 ```
 
-## Beat Schedule
+## Fixed Schedule
 
-Configured in `src/workers/integrations_worker/config.py`:
+Configured in `src/workers/integrations_worker/scheduled_jobs.py` and dispatched by `src/workers/integrations_worker/cron_dispatch.py`:
 
 | Task | Schedule | Tier |
 |------|----------|------|

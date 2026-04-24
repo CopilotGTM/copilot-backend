@@ -16,6 +16,15 @@ from src.service.integrations.copilot_callback_service import CopilotCallbackSer
 from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.service.integrations.integration_service import IntegrationService
 
+_HUBSPOT_GRANTED_SCOPE = (
+    "oauth automation conversations.read sales-email-read "
+    "crm.objects.companies.read crm.objects.contacts.read crm.objects.deals.read "
+    "crm.objects.leads.read crm.objects.line_items.read crm.objects.products.read "
+    "crm.objects.owners.read crm.objects.users.read crm.objects.tasks.read "
+    "crm.objects.notes.read crm.schemas.companies.read crm.schemas.contacts.read "
+    "crm.schemas.deals.read"
+)
+
 
 class FakeResult:
     def __init__(self, *, scalar: object | None = None) -> None:
@@ -95,7 +104,7 @@ async def test_callback_creates_hubspot_integration_with_placeholder_metadata() 
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
-        "scope": "oauth crm.objects.deals.read",
+        "scope": _HUBSPOT_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 
@@ -131,7 +140,7 @@ async def test_callback_creates_hubspot_integration_with_placeholder_metadata() 
     created = create_session.add.call_args[0][0]
     assert created.integration_scope == IntegrationScope.ORGANIZATION
     assert created.connection_metadata["provider_key"] == "hubspot"
-    assert created.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert created.connection_metadata["initial_sync_status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -155,6 +164,7 @@ async def test_callback_reactivates_existing_hubspot_integration() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _HUBSPOT_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 
@@ -188,7 +198,7 @@ async def test_callback_reactivates_existing_hubspot_integration() -> None:
 
     assert result["reactivated"] is True
     assert existing.is_active is True
-    assert existing.connection_metadata["initial_sync_status"] == "not_implemented"
+    assert existing.connection_metadata["initial_sync_status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -203,6 +213,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _HUBSPOT_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "seller@gmail.com"}
 
@@ -225,7 +236,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
             "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
             return_value=provider,
         ),
-        pytest.raises(ValueError, match="Personal email addresses \\(gmail.com\\)"),
+        pytest.raises(ValueError, match="connected account uses gmail.com"),
     ):
         await service.handle_oauth_callback(code="abc", state="signed-state")
 
@@ -249,6 +260,7 @@ async def test_callback_rejects_duplicate_account_connected_by_other_user() -> N
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _HUBSPOT_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 
@@ -349,7 +361,7 @@ async def test_custom_token_refresh_uses_hubspot_provider() -> None:
     provider.refresh_token.return_value = {
         "access_token": "new-access",
         "expires_in": 3600,
-        "scope": "oauth crm.objects.deals.read",
+        "scope": _HUBSPOT_GRANTED_SCOPE,
     }
 
     service = CustomTokenRefreshService(organisation_id=organisation_id)

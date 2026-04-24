@@ -39,6 +39,8 @@ def test_hubspot_metadata_is_beta_and_org_scoped() -> None:
         "crm.objects.products.write",
         "crm.objects.owners.read",
         "crm.objects.users.read",
+        "crm.objects.tasks.read",
+        "crm.objects.notes.read",
         "crm.schemas.companies.read",
         "crm.schemas.contacts.read",
         "crm.schemas.deals.read",

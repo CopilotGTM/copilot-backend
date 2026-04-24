@@ -27,6 +27,8 @@ api:
     GOOGLE_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
     MICROSOFT_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
     SLACK_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
+    HUBSPOT_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
+    SALESFORCE_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
   environment: production
   autoscaling:
     minReplicas: 2

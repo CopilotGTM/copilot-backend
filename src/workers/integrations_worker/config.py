@@ -103,6 +103,145 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.sync_hubspot_deal_schema": {
+        "soft": 900,
+        "hard": 960,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_hubspot_deal_schema_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.sync_salesforce_opportunity_schema": {
+        "soft": 900,
+        "hard": 960,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_opportunity_schema_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    # ── HubSpot record sync (phase 2: pipelines + stages) ──
+    "integrations.sync_hubspot_pipelines": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_pipelines": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 3: users / owners, matched-only) ──
+    "integrations.sync_hubspot_users": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_hubspot_tasks": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_hubspot_notes": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_users": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_companies": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_contacts": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_deals": {
+        "soft": 600,
+        "hard": 720,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_tasks": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_notes": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 4: companies / accounts) ──
+    "integrations.sync_hubspot_companies": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 5: contacts) ──
+    "integrations.sync_hubspot_contacts": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # ── HubSpot record sync (phase 6: deals fact table) ──
+    # Larger window than the dimensions: deal volumes per portal are typically
+    # the highest of any object, and we request `propertiesWithHistory` which
+    # halves HubSpot's page size to 50.
+    "integrations.sync_hubspot_deals": {
+        "soft": 600,
+        "hard": 660,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    # Chain terminators — short, idempotent, owns initial_sync_status writes.
+    "integrations.mark_hubspot_initial_sync_succeeded": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_hubspot_initial_sync_failed": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_salesforce_initial_sync_succeeded": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
+    "integrations.mark_salesforce_initial_sync_failed": {
+        "soft": 30,
+        "hard": 60,
+        "retries": 2,
+        "retry_delay": 30,
+    },
 }
 
 CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
@@ -211,7 +350,100 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
             },
-            # CRM sync tasks (HubSpot, Salesforce) deprecated — moved to deprecated/workers/
+            # CRM schema sync tasks (HubSpot)
+            "integrations.sync_hubspot_deal_schema_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_hubspot_deal_schema": {
+                "queue": "integrations_priority",  # Priority queue for manual / post-connect triggers
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_opportunity_schema_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_salesforce_opportunity_schema": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 2: pipelines + stages)
+            "integrations.sync_hubspot_pipelines": {
+                "queue": "integrations_priority",  # Co-scheduled with the chain it belongs to
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_pipelines": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 3: users / owners)
+            "integrations.sync_hubspot_users": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_hubspot_tasks": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_hubspot_notes": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_users": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_companies": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_contacts": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_deals": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_tasks": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_notes": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 4: companies / accounts)
+            "integrations.sync_hubspot_companies": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 5: contacts)
+            "integrations.sync_hubspot_contacts": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            # CRM record sync tasks (HubSpot, phase 6: deals fact table)
+            "integrations.sync_hubspot_deals": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_hubspot_initial_sync_succeeded": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_hubspot_initial_sync_failed": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_salesforce_initial_sync_succeeded": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_salesforce_initial_sync_failed": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
         }
 
         # Fixed integrations schedules are owned by Kubernetes CronJobs.

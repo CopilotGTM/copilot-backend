@@ -28,3 +28,29 @@ def test_helm_env_overrides_declare_slack_redirect_uri() -> None:
     assert (
         'SLACK_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"'
     ) in prod_values
+
+
+def test_helm_env_overrides_declare_hubspot_and_salesforce_redirect_uris() -> None:
+    dev_values = (REPO_ROOT / "charts" / "application" / "values-dev.yaml").read_text(
+        encoding="utf-8"
+    )
+    prod_values = (REPO_ROOT / "charts" / "application" / "values-prod.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'HUBSPOT_REDIRECT_URI: "https://devapi.copilotgtm.com/'
+        'users/integrations/copilot-oauth/callback"'
+    ) in dev_values
+    assert (
+        'SALESFORCE_REDIRECT_URI: "https://devapi.copilotgtm.com/'
+        'users/integrations/copilot-oauth/callback"'
+    ) in dev_values
+    assert (
+        'HUBSPOT_REDIRECT_URI: "https://api.copilotgtm.com/'
+        'users/integrations/copilot-oauth/callback"'
+    ) in prod_values
+    assert (
+        'SALESFORCE_REDIRECT_URI: "https://api.copilotgtm.com/'
+        'users/integrations/copilot-oauth/callback"'
+    ) in prod_values

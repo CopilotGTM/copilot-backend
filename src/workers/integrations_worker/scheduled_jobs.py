@@ -49,6 +49,18 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="*/30 * * * *",
         max_lag_seconds=60 * 60,
     ),
+    "sync-hubspot-deal-schema-all-orgs": ScheduledJob(
+        name="sync-hubspot-deal-schema-all-orgs",
+        task_name="integrations.sync_hubspot_deal_schema_all_orgs",
+        schedule="0 2 */14 * *",
+        max_lag_seconds=60 * 60 * 48,
+    ),
+    "sync-salesforce-opportunity-schema-all-orgs": ScheduledJob(
+        name="sync-salesforce-opportunity-schema-all-orgs",
+        task_name="integrations.sync_salesforce_opportunity_schema_all_orgs",
+        schedule="0 3 */14 * *",
+        max_lag_seconds=60 * 60 * 48,
+    ),
 }
 
 

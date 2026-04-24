@@ -34,3 +34,26 @@ def test_validate_required_scopes_rejects_missing_google_meet_scope() -> None:
                 "https://www.googleapis.com/auth/calendar.readonly"
             },
         )
+
+
+def test_validate_required_scopes_rejects_missing_hubspot_notes_permission() -> None:
+    with pytest.raises(ValueError, match="HubSpot activity permissions were not granted"):
+        CopilotCallbackService()._validate_required_scopes(
+            IntegrationType.HUBSPOT,
+            {
+                "scope": "oauth automation conversations.read sales-email-read "
+                "crm.objects.companies.read crm.objects.contacts.read crm.objects.deals.read "
+                "crm.objects.leads.read crm.objects.line_items.read crm.objects.products.read "
+                "crm.objects.owners.read crm.objects.users.read crm.schemas.companies.read "
+                "crm.schemas.contacts.read crm.schemas.deals.read crm.objects.tasks.read"
+            },
+        )
+
+
+def test_validate_required_scopes_accepts_salesforce_offline_access_scope() -> None:
+    CopilotCallbackService()._validate_required_scopes(
+        IntegrationType.SALESFORCE,
+        {
+            "scope": "api offline_access openid profile email",
+        },
+    )

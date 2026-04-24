@@ -23,6 +23,7 @@ async def test_salesforce_provider_builds_authorization_url() -> None:
     assert params["client_id"] == ["salesforce-client-id"]
     assert params["state"] == ["signed-state"]
     assert params["redirect_uri"] == [provider.redirect_uri]
+    assert params["scope"] == ["refresh_token offline_access api openid profile email"]
 
 
 @pytest.mark.asyncio

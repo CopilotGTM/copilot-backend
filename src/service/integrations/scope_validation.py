@@ -65,6 +65,33 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
             "team:read",
         }
     ),
+    IntegrationType.HUBSPOT: frozenset(
+        {
+            "oauth",
+            "automation",
+            "conversations.read",
+            "sales-email-read",
+            "crm.objects.companies.read",
+            "crm.objects.contacts.read",
+            "crm.objects.deals.read",
+            "crm.objects.leads.read",
+            "crm.objects.line_items.read",
+            "crm.objects.products.read",
+            "crm.objects.owners.read",
+            "crm.objects.users.read",
+            "crm.objects.tasks.read",
+            "crm.objects.notes.read",
+            "crm.schemas.companies.read",
+            "crm.schemas.contacts.read",
+            "crm.schemas.deals.read",
+        }
+    ),
+    IntegrationType.SALESFORCE: frozenset(
+        {
+            "refresh_token",
+            "api",
+        }
+    ),
 }
 
 _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
@@ -83,6 +110,12 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             "https://www.googleapis.com/auth/calendar",
         }
     ),
+    "refresh_token": frozenset(
+        {
+            "refresh_token",
+            "offline_access",
+        }
+    ),
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
@@ -98,6 +131,14 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "users:read": "Slack user access",
     "users:read.email": "Slack user email access",
     "team:read": "Slack workspace access",
+    "oauth": "HubSpot app access",
+    "automation": "HubSpot automation access",
+    "conversations.read": "HubSpot conversations access",
+    "sales-email-read": "HubSpot sales email access",
+    "crm.objects.tasks.read": "HubSpot task access",
+    "crm.objects.notes.read": "HubSpot note access",
+    "api": "Salesforce API access",
+    "refresh_token": "Salesforce offline access",
     "Mail.Read": "Outlook mail access",
     "Calendars.Read": "Outlook calendar access",
     "Chat.Read": "Microsoft Teams chat access",
@@ -137,7 +178,10 @@ def parse_granted_scopes_from_token_payload(
     token_payload: dict[str, object],
     fallback: list[str] | None = None,
 ) -> list[str] | None:
-    return parse_granted_scopes(token_payload.get("scope"), fallback)
+    scope_value = token_payload.get("scope")
+    if isinstance(scope_value, (str, list)) or scope_value is None:
+        return parse_granted_scopes(scope_value, fallback)
+    return fallback
 
 
 def get_missing_required_scopes(

@@ -13,6 +13,7 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDataType,
     CRMCustomFieldDefinition,
     CRMCustomFieldEntity,
+    CRMCustomFieldSource,
 )
 from src.infra.utils.logger import get_logger
 
@@ -68,6 +69,7 @@ class CustomFieldService:
             .where(
                 col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
                 col(CRMCustomFieldDefinition.entity_type) == entity.value,
+                col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
                 col(CRMCustomFieldDefinition.is_deleted).is_(False),
             )
             .order_by(
@@ -97,6 +99,7 @@ class CustomFieldService:
         stmt = select(CRMCustomFieldDefinition).where(
             col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == entity.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
             col(CRMCustomFieldDefinition.key).in_(list(normalized_keys)),
         )
@@ -211,6 +214,7 @@ class CustomFieldService:
         stmt = select(CRMCustomFieldDefinition).where(
             col(CRMCustomFieldDefinition.field_id) == field_id,
             col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
         )
         result = await self.session.execute(stmt)
@@ -225,6 +229,7 @@ class CustomFieldService:
         stmt = select(CRMCustomFieldDefinition).where(
             col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == entity.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.key) == key,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
         )
@@ -240,6 +245,7 @@ class CustomFieldService:
         stmt = select(CRMCustomFieldDefinition).where(
             col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_predefined).is_(True),
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
         )
@@ -327,6 +333,7 @@ class CustomFieldService:
         stmt = select(col(CRMCustomFieldDefinition.key)).where(
             col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == entity.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
             col(CRMCustomFieldDefinition.is_active).is_(True),
         )

@@ -50,6 +50,7 @@ from src.domain.models.organisation_tables.job_models import JobStatus
 from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDefinition,
     CRMCustomFieldEntity,
+    CRMCustomFieldSource,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
@@ -259,6 +260,7 @@ async def _get_active_deal_custom_field_keys(
         .where(
             col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
             col(CRMCustomFieldDefinition.is_active).is_(True),
         )
@@ -284,6 +286,7 @@ async def _get_active_deal_custom_field_definitions(
         .where(
             col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
             col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
             col(CRMCustomFieldDefinition.is_deleted).is_(False),
             col(CRMCustomFieldDefinition.is_active).is_(True),
         )

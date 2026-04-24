@@ -17,6 +17,12 @@ from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.orchestration.hubspot_initial_sync_chain import (
+    build_hubspot_initial_sync_chain,
+)
+from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain import (
+    build_salesforce_initial_sync_chain,
+)
 from src.workers.integrations_worker.client import send_integrations_task
 
 logger = get_logger(__name__)
@@ -34,7 +40,7 @@ class InitialSyncService:
     - Calendar (Google, Outlook) - Direct task dispatch
     - Email (Gmail, Outlook) - Direct task dispatch
     - Messaging (Teams, Slack) - Direct task dispatch
-    - HubSpot and Salesforce - Custom auth supported, CRM sync intentionally deferred
+    - HubSpot and Salesforce - Custom auth plus CRM schema initial sync
     """
 
     INITIAL_SYNC_STATUS_METADATA_KEY = "initial_sync_status"
@@ -49,41 +55,61 @@ class InitialSyncService:
     # Messaging integration types
     MESSAGING_INTEGRATION_TYPES = {IntegrationType.TEAMS, IntegrationType.SLACK}
 
-    # CRM custom auth is supported, but sync dispatch is intentionally deferred for now.
-    CRM_PLACEHOLDER_INTEGRATION_TYPES = {
+    CRM_INITIAL_SYNC_INTEGRATION_TYPES = {
         IntegrationType.HUBSPOT,
         IntegrationType.SALESFORCE,
-    }
-    CRM_PLACEHOLDER_MESSAGES = {
-        IntegrationType.HUBSPOT: (
-            "HubSpot custom auth connected successfully; CRM sync dispatch will be added later."
-        ),
-        IntegrationType.SALESFORCE: (
-            "Salesforce custom auth connected successfully; CRM sync dispatch will be added later."
-        ),
     }
 
     def apply_post_connect_state(self, integration: KnowledgeIntegration) -> None:
         """Apply provider-specific post-connect state before the integration is committed.
 
-        This keeps callback persistence generic while letting the post-connect
-        lifecycle service own sync-related metadata decisions.
+        HubSpot and Salesforce both queue their provider-specific schema sync.
         """
         integration_type = integration.integration_type
         if isinstance(integration_type, str):
             integration_type = IntegrationType(integration_type)
 
-        if integration_type not in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
+        if integration_type not in self.CRM_INITIAL_SYNC_INTEGRATION_TYPES:
             return
 
         metadata = dict(integration.connection_metadata or {})
 
-        # TODO(crm-sync): Replace these placeholder markers with real CRM initial
-        # dispatch once HubSpot and Salesforce sync pipelines are implemented.
-        metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "not_implemented"
-        metadata[self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY] = self.CRM_PLACEHOLDER_MESSAGES[
-            integration_type
-        ]
+        if integration_type == IntegrationType.HUBSPOT:
+            metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "queued"
+            metadata.pop(self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY, None)
+            schema_sync = dict(metadata.get("schema_sync") or {})
+            schema_sync["deals"] = {"status": "queued"}
+            metadata["schema_sync"] = schema_sync
+            record_sync = dict(metadata.get("record_sync") or {})
+            record_sync["pipelines"] = {"status": "queued"}
+            record_sync["users"] = {"status": "queued"}
+            record_sync["companies"] = {"status": "queued"}
+            record_sync["contacts"] = {"status": "queued"}
+            record_sync["deals"] = {"status": "queued"}
+            record_sync["tasks"] = {"status": "queued"}
+            record_sync["notes"] = {"status": "queued"}
+            metadata["record_sync"] = record_sync
+            integration.connection_metadata = metadata
+            return
+
+        if integration_type == IntegrationType.SALESFORCE:
+            metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "queued"
+            metadata.pop(self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY, None)
+            schema_sync = dict(metadata.get("schema_sync") or {})
+            schema_sync["opportunities"] = {"status": "queued"}
+            metadata["schema_sync"] = schema_sync
+            record_sync = dict(metadata.get("record_sync") or {})
+            record_sync["pipelines"] = {"status": "queued"}
+            record_sync["users"] = {"status": "queued"}
+            record_sync["companies"] = {"status": "queued"}
+            record_sync["contacts"] = {"status": "queued"}
+            record_sync["deals"] = {"status": "queued"}
+            record_sync["tasks"] = {"status": "queued"}
+            record_sync["notes"] = {"status": "queued"}
+            metadata["record_sync"] = record_sync
+            integration.connection_metadata = metadata
+            return
+
         integration.connection_metadata = metadata
 
     def trigger_initial_sync(
@@ -125,12 +151,12 @@ class InitialSyncService:
                 self._trigger_messaging_sync(org_id_str, int_id_str)
                 return
 
-            if integration_type in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
-                logger.info(
-                    "Initial sync placeholder only for integration type %s (integration=%s)",
-                    integration_type.value,
-                    int_id_str,
-                )
+            if integration_type == IntegrationType.HUBSPOT:
+                self._trigger_hubspot_initial_sync(org_id_str, int_id_str)
+                return
+
+            if integration_type == IntegrationType.SALESFORCE:
+                self._trigger_salesforce_initial_sync(org_id_str, int_id_str)
                 return
 
             # Unknown type
@@ -173,8 +199,36 @@ class InitialSyncService:
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
-    # _trigger_crm_sync removed — CRM sync (HubSpot, Salesforce) deprecated.
-    # Code preserved in deprecated/workers/ for future one-time migration.
+    def _trigger_hubspot_initial_sync(self, org_id_str: str, int_id_str: str) -> None:
+        """Dispatch the HubSpot post-connect Celery chain.
+
+        The chain runs: schema sync → pipelines record sync → … → finalize.
+        Each link is a Tier 3 task; on any failure the chain aborts via
+        link_error and `connection_metadata.initial_sync_status` is set to
+        "failed" by the failure terminator. On full success the terminal
+        finalize link sets it to "success".
+
+        See `src/service/integrations/crm/orchestration/hubspot_initial_sync_chain.py`.
+        """
+        build_hubspot_initial_sync_chain(
+            organisation_id=UUID(org_id_str),
+            integration_id=UUID(int_id_str),
+        ).apply_async()
+        logger.info(
+            "Dispatched HubSpot initial sync chain: integration=%s",
+            int_id_str,
+        )
+
+    def _trigger_salesforce_initial_sync(self, org_id_str: str, int_id_str: str) -> None:
+        """Dispatch the Salesforce post-connect Celery chain."""
+        build_salesforce_initial_sync_chain(
+            organisation_id=UUID(org_id_str),
+            integration_id=UUID(int_id_str),
+        ).apply_async()
+        logger.info(
+            "Dispatched Salesforce initial sync chain: integration=%s",
+            int_id_str,
+        )
 
 
 # Convenience singleton for easy import

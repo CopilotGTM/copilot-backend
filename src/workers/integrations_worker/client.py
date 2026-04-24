@@ -24,8 +24,10 @@ import asyncio
 import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from celery import Celery
+from celery.canvas import Signature
 
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
@@ -44,12 +46,19 @@ def _create_integrations_client() -> Celery:
     """
     Create a minimal Celery client for sending tasks.
 
-    This does NOT load the full worker configuration or register signal handlers.
-    It only sets up the broker connection for sending tasks.
-    """
-    from src.workers.base.worker_config import BaseWorkerConfig
+    Does NOT register signal handlers or auto-discover tasks. Does apply the
+    integrations worker's task_routes + default queue so:
 
-    config = BaseWorkerConfig()
+      - signature-based dispatch (e.g. task_signature + chain.apply_async)
+        routes each task to the queue declared in task_routes rather than
+        falling through to Celery's global default "celery" queue, which
+        the integrations worker does not listen on.
+      - callers that omit an explicit `queue=` argument to send_task still
+        get routed correctly.
+    """
+    from src.workers.integrations_worker.config import IntegrationsWorkerConfig
+
+    config = IntegrationsWorkerConfig()
 
     client = Celery(
         "integrations_client",
@@ -78,6 +87,14 @@ def _create_integrations_client() -> Celery:
             "retry_on_timeout": True,
         },
         worker_hijack_root_logger=False,
+        # Routing — must match the worker's view so signature-based dispatch
+        # lands on a queue the worker actually consumes.
+        task_default_queue=config.task_default_queue,
+        task_default_exchange=config.task_default_exchange,
+        task_default_exchange_type=config.task_default_exchange_type,
+        task_default_routing_key=config.task_default_routing_key,
+        task_queues=config.task_queues,
+        task_routes=config.task_routes,
     )
 
     masked_broker = (
@@ -132,6 +149,30 @@ def send_integrations_task(
     )
 
     return str(result.id)
+
+
+def task_signature(
+    task_name: str,
+    *,
+    kwargs: dict[str, Any] | None = None,
+) -> Signature:
+    """Build an immutable Celery signature against the integrations client.
+
+    Used by chain builders so that:
+      - Routing follows `task_routes` configured on the integrations client.
+        This function does NOT override queue or routing_key — per-task queue
+        routing is a single source of truth, not something callers reinvent.
+      - Signatures are immutable (`.si(...)` shape) so chained tasks don't
+        receive the previous task's return value as a positional arg. All
+        our chain tasks take `organisation_id` and `integration_id` by kwarg.
+    """
+    client = get_integrations_celery_client()
+    return client.signature(
+        task_name,
+        kwargs=kwargs or {},
+        immutable=True,
+        headers=correlation_headers(None),
+    )
 
 
 async def send_integrations_task_async(

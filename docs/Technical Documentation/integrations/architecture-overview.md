@@ -13,9 +13,12 @@
 | Slack Channels | Slack Web API | Messaging | conversations.list |
 | Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
+| HubSpot CRM | HubSpot API | CRM | Post-connect initial-sync chain + scheduled schema refresh |
+| Salesforce CRM | Salesforce REST API | CRM | Post-connect initial-sync chain + scheduled schema refresh |
 
-HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
-HubSpot deal schema sync is now the first active CRM sync slice. Deal-record sync remains deferred.
+HubSpot and Salesforce both use the first-party custom OAuth path and both have active CRM
+initial-sync chains live through `notes`. See [crm-initial-sync.md](crm-initial-sync.md)
+for chain order, metadata, and persisted tables.
 
 ## OAuth Model
 
@@ -49,13 +52,18 @@ src/
     messaging_sync_service.py   # Teams/Slack channel/chat/message upsert (org-scoped)
     crm/
       __init__.py               # CRM integration helpers shared across provider syncs
-      common/
-        schema_types.py         # Provider-neutral CRM schema dataclasses
-        field_type_mapper.py    # HubSpot property type -> CRM field type mapping
-        field_registry_service.py # Provider-backed CRM field registry persistence
+      orchestration/
+        hubspot_initial_sync_chain.py
+        salesforce_initial_sync_chain.py
       schema/
-        schema_sync_result.py    # Shared schema-sync counters/result
-        hubspot_deal_schema_service.py # HubSpot deal schema orchestration
+        common/
+        hubspot/deals/
+        salesforce/opportunities/
+      records/
+        hubspot/
+          pipelines/ users/ companies/ contacts/ deals/ tasks/ notes/
+        salesforce/
+          pipelines/ users/ companies/ contacts/ deals/ tasks/ notes/
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -76,13 +84,36 @@ src/
         slack.py                # Slack channels, chats, messages fetcher
       crm/
         hubspot/
-          deal_schema_fetcher.py # HubSpot deal property schema fetcher
+          schema_fetcher.py
+          companies_fetcher.py
+          contacts_fetcher.py
+          deals_fetcher.py
+          notes_fetcher.py
+          owners_fetcher.py
+          pipelines_fetcher.py
+          tasks_fetcher.py
+        salesforce/
+          accounts_fetcher.py
+          contacts_fetcher.py
+          notes_fetcher.py
+          opportunities_fetcher.py
+          opportunity_contact_roles_fetcher.py
+          opportunity_history_fetcher.py
+          schema_fetcher.py
+          pipelines_fetcher.py
+          tasks_fetcher.py
+          users_fetcher.py
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
       messaging/                # Three-tier messaging sync tasks
+      crm/
+        hubspot/                # HubSpot schema + record-sync tasks + terminators
+        salesforce/             # Salesforce schema + record-sync tasks + terminators
       token_refresh.py          # Three-tier token refresh tasks
-    config.py                   # Task limits, beat schedule, worker config
+    scheduled_jobs.py           # Source-of-truth cron metadata for K8s CronJobs
+    cron_dispatch.py            # Entry point K8s CronJobs invoke to dispatch Tier 1 tasks
+    config.py                   # Task limits + routes (no in-process Beat — beat_schedule is empty by design)
 ```
 
 ## Data Flow
@@ -95,17 +126,19 @@ User clicks "Connect" in frontend
   -> Redirect to /users/integrations/copilot-oauth/callback
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
-      2. Store tokens in KnowledgeIntegration.credentials
-      3. Store post-connect state only
-         HubSpot and Salesforce still store `initial_sync_status=not_implemented` in
-         `connection_metadata`
-         HubSpot deal schema sync exists as the first active CRM sync slice, but it is not
-         dispatched from the callback flow yet
+      2. Validate returned scopes before accepting the connection
+      3. Store tokens in KnowledgeIntegration.credentials
+      4. apply_post_connect_state() stamps queued provider-specific CRM metadata
+      5. trigger_initial_sync() dispatches the provider chain:
+         - HubSpot -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
+         - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
 
-Celery Beat (scheduled)
-  -> Tier 1: all_orgs_task (fan out to orgs)
-  -> Tier 2: org_task (sync all integrations for one org)
-  -> Provider API fetch (NO db session held)
+Kubernetes CronJob (scheduled — this repo does NOT use in-process Celery Beat)
+  -> `python -m src.workers.integrations_worker.cron_dispatch --job <name>`
+  -> dispatch_scheduled_job() looks up the ScheduledJob in scheduled_jobs.py
+  -> enqueues Tier 1 task (e.g. integrations.sync_hubspot_deal_schema_all_orgs)
+  -> Tier 1 reads master schema, dispatches per-integration Tier 3 tasks
+  -> Tier 3 runs fresh-session: extract integration -> fetch (no session) -> persist
   -> SyncService writes to DB (fresh session)
 ```
 
@@ -119,3 +152,6 @@ Per-integration tracking is done via state tables
 **Fresh session pattern**: Database sessions are never held during external API calls. Data is extracted into dataclasses, the session is released, the API call is made, then a new session is acquired to write results.
 
 **ON CONFLICT DO UPDATE**: All sync services use PostgreSQL atomic upserts to handle concurrent writes and idempotent re-syncs without N+1 queries.
+
+**CRM activities are shared storage**: HubSpot and Salesforce tasks/notes both land in
+`crm_activities`; the provider stays isolated by `integration_id`.

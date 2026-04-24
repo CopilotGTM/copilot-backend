@@ -1,4 +1,14 @@
-"""046 extend crm_custom_field_definitions into a source-aware field registry.
+"""046 extend crm_custom_field_definitions registry + add crm_deal_stages.is_active.
+
+Two unrelated schema additions are bundled here:
+
+* `crm_custom_field_definitions` gains source-aware columns / indexes /
+  constraints so a single registry can hold both internal-app custom fields
+  and provider-discovered custom fields (HubSpot/Salesforce).
+* `crm_deal_stages` gains an `is_active` flag (mirroring `crm_pipelines`)
+  plus a composite index on `(pipeline_id, is_active)` so the HubSpot
+  pipelines record sync can deactivate stages that disappear from the
+  provider snapshot without hard-deleting them.
 
 Revision ID: 3c7f79637754
 Revises: 3c7f79637755
@@ -19,6 +29,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.alter_column(
+        "crm_custom_field_definitions",
+        "description",
+        existing_type=sa.String(length=500),
+        type_=sa.String(length=5000),
+        existing_nullable=True,
+    )
     op.add_column(
         "crm_custom_field_definitions",
         sa.Column(
@@ -131,8 +148,36 @@ def upgrade() -> None:
         ")",
     )
 
+    # ── crm_deal_stages.is_active (was migration 047, merged here) ──
+    op.add_column(
+        "crm_deal_stages",
+        sa.Column(
+            "is_active",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("true"),
+        ),
+    )
+    op.create_index(
+        "ix_crm_deal_stage_pipeline_active",
+        "crm_deal_stages",
+        ["pipeline_id", "is_active"],
+    )
+
 
 def downgrade() -> None:
+    # Reverse the crm_deal_stages.is_active changes first (LIFO with upgrade).
+    op.drop_index("ix_crm_deal_stage_pipeline_active", table_name="crm_deal_stages")
+    op.drop_column("crm_deal_stages", "is_active")
+
+    op.alter_column(
+        "crm_custom_field_definitions",
+        "description",
+        existing_type=sa.String(length=5000),
+        type_=sa.String(length=500),
+        existing_nullable=True,
+        postgresql_using="left(description, 500)",
+    )
     op.drop_constraint(
         "ck_crm_custom_field_source_provenance",
         "crm_custom_field_definitions",
