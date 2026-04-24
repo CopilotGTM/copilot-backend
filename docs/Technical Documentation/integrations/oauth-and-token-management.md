@@ -13,6 +13,8 @@ KnowledgeIntegration
 
 OAuth client credentials (client_id, client_secret) are stored in Azure Key Vault per environment and loaded with a 6-hour TTL cache via `GoogleIntegrationConfig`, `MicrosoftIntegrationConfig`, `HubSpotIntegrationConfig`, and `SalesforceIntegrationConfig` in `src/infra/config/configs.py`.
 
+HubSpot and Salesforce redirect URIs are environment-specific config values, just like the Google and Microsoft custom OAuth apps.
+
 ## OAuth Flow
 
 ### Connect (Authorization)
@@ -27,8 +29,9 @@ OAuth client credentials (client_id, client_secret) are stored in Azure Key Vaul
 6. copilot_callback_service.py:
    a. Decrypt state, validate org/user
    b. Provider.exchange_code(code) -> {access_token, refresh_token, ...}
-   c. Upsert KnowledgeIntegration with credentials
-   d. Dispatch initial sync only for providers with active sync support
+   c. Reject partial consent when required scopes are missing
+   d. Upsert KnowledgeIntegration with credentials
+   e. Dispatch initial sync only for providers with active sync support
 ```
 
 ### HubSpot
@@ -46,6 +49,7 @@ Current behavior after successful connect:
 - `InitialSyncService.apply_post_connect_state()` stamps queued CRM metadata
 - `InitialSyncService.trigger_initial_sync()` dispatches the HubSpot CRM chain
 - live chain: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
+- callback-time scope validation rejects the connection if required CRM/task/note permissions are missing
 
 ### Salesforce
 
@@ -62,6 +66,7 @@ Current behavior after successful connect:
 - `InitialSyncService.apply_post_connect_state()` stamps queued CRM metadata
 - `InitialSyncService.trigger_initial_sync()` dispatches the Salesforce CRM chain
 - live chain: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
+- callback-time scope validation rejects the connection if the returned grant does not satisfy the runtime minimum (`api` plus refresh/offline access)
 
 ### Token Refresh
 
@@ -90,7 +95,7 @@ return await call_with_token_retry(token_info, _do_fetch)
 
 #### Layer 2: Scheduled Refresh (maintenance)
 
-Located in `src/service/integrations/custom_token_refresh_service.py`, triggered by Celery Beat every 4 hours:
+Located in `src/service/integrations/custom_token_refresh_service.py`, triggered by the scheduled `refresh-tokens` integrations job every 4 hours:
 
 - Finds integrations with tokens expiring within 2 hours
 - Calls `provider.refresh_token(refresh_token)`

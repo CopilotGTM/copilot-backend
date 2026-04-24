@@ -155,8 +155,17 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 - **Schema refresh**:
   - `integrations.sync_hubspot_deal_schema`
   - `integrations.sync_hubspot_deal_schema_all_orgs`
-- **Fact capture**: HubSpot is the only provider currently writing the CRM fact-table slice
-  (`crm_deals`, stage history, participants, associations).
+- **Current capture**:
+  - schema registry for deal fields
+  - pipelines + stages
+  - users
+  - companies
+  - contacts
+  - deals
+  - deal stage history
+  - deal participants
+  - object associations
+  - `crm_activities` for tasks and notes
 - **Direction**: strictly HubSpot -> CopilotGTM.
 - **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.
 
@@ -164,6 +173,9 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 
 - **Custom OAuth**: Supported.
 - **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
+- **Pipeline model**:
+  - pipeline = `Opportunity RecordType`
+  - stage = record-type-scoped `StageName`
 - **Current capture boundary**:
   - Opportunity schema
   - pipelines + stages

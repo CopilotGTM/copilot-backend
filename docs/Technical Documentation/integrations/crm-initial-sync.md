@@ -1,6 +1,6 @@
 # CRM Initial Sync (HubSpot + Salesforce)
 
-This document describes the **live CRM initial-sync flow** that runs after a HubSpot or Salesforce OAuth connection succeeds.
+This document describes the live CRM initial-sync flow that runs after a HubSpot or Salesforce OAuth connection succeeds.
 
 ## What Runs After Connect
 
@@ -45,7 +45,7 @@ Per-phase tasks update:
 - `connection_metadata.schema_sync.<object>`
 - `connection_metadata.record_sync.<phase>`
 
-These entries hold status, last synced timestamp, object-specific counters, and error details.
+These entries hold status, last synced timestamp, phase counters, and error details.
 
 ### Persisted CRM tables
 
@@ -79,6 +79,11 @@ Salesforce currently writes:
 
 Rows are provider-isolated by `integration_id`.
 
+For both providers:
+
+- tasks are stored as `crm_activities.activity_type = TASK`
+- notes are stored as `crm_activities.activity_type = NOTE`
+
 ## How a Phase Runs
 
 Each CRM phase follows the same shape:
@@ -88,24 +93,27 @@ Each CRM phase follows the same shape:
 3. Fetch from the provider API
 4. Normalize in pure Python
 5. Open a fresh org DB session
-6. Write/upsert rows and any deal FK backfill
+6. Write/upsert rows and any FK backfill needed by the phase
 7. Commit sync history + phase metadata
 
 This keeps DB sessions out of long external API calls.
 
 ## Current Capture Boundaries
 
-- HubSpot deals are the only live CRM fact-table sync today.
-- Salesforce is live through **deals**.
-- Secondary relationship modeling like `AccountContactRelation` is deferred.
+- HubSpot is live through `notes`
+- Salesforce is live through `notes`
+- both providers write the core dimension/fact CRM slice plus CRM activities
+- broader secondary relationship modeling is still deferred
+  - example: `AccountContactRelation`
+  - example: quotes, products, and line items beyond the current deal slice
 
 ## Task Families
 
 CRM work here is not the generic three-tier email/calendar pattern.
 
 - Post-connect chains are built from provider-specific Tier 3 tasks
-- HubSpot also has `sync_hubspot_deal_schema_all_orgs` for the 14-day schema refresh
-- Salesforce currently has `sync_salesforce_opportunity_schema_all_orgs` for Opportunity schema refresh
+- HubSpot also has `sync_hubspot_deal_schema_all_orgs` for scheduled schema refresh
+- Salesforce also has `sync_salesforce_opportunity_schema_all_orgs` for scheduled schema refresh
 
 Entry point:
 

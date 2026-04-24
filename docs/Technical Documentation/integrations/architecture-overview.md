@@ -13,11 +13,12 @@
 | Slack Channels | Slack Web API | Messaging | conversations.list |
 | Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
+| HubSpot CRM | HubSpot API | CRM | Post-connect initial-sync chain + scheduled schema refresh |
+| Salesforce CRM | Salesforce REST API | CRM | Post-connect initial-sync chain + scheduled schema refresh |
 
-HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
-Both providers now have active CRM initial-sync chains. HubSpot is live through deals, and
-Salesforce is live through deals. See [crm-initial-sync.md](crm-initial-sync.md) for the
-current chain order, metadata contract, and persisted tables.
+HubSpot and Salesforce both use the first-party custom OAuth path and both have active CRM
+initial-sync chains live through `notes`. See [crm-initial-sync.md](crm-initial-sync.md)
+for chain order, metadata, and persisted tables.
 
 ## OAuth Model
 
@@ -60,9 +61,9 @@ src/
         salesforce/opportunities/
       records/
         hubspot/
-          pipelines/ users/ companies/ contacts/ deals/
+          pipelines/ users/ companies/ contacts/ deals/ tasks/ notes/
         salesforce/
-          pipelines/ users/ companies/ contacts/
+          pipelines/ users/ companies/ contacts/ deals/ tasks/ notes/
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -87,14 +88,21 @@ src/
           companies_fetcher.py
           contacts_fetcher.py
           deals_fetcher.py
+          notes_fetcher.py
           owners_fetcher.py
           pipelines_fetcher.py
+          tasks_fetcher.py
         salesforce/
-          schema_fetcher.py
-          pipelines_fetcher.py
-          users_fetcher.py
           accounts_fetcher.py
           contacts_fetcher.py
+          notes_fetcher.py
+          opportunities_fetcher.py
+          opportunity_contact_roles_fetcher.py
+          opportunity_history_fetcher.py
+          schema_fetcher.py
+          pipelines_fetcher.py
+          tasks_fetcher.py
+          users_fetcher.py
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
@@ -118,9 +126,10 @@ User clicks "Connect" in frontend
   -> Redirect to /users/integrations/copilot-oauth/callback
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
-      2. Store tokens in KnowledgeIntegration.credentials
-      3. apply_post_connect_state() stamps queued provider-specific CRM metadata
-      4. trigger_initial_sync() dispatches the provider chain:
+      2. Validate returned scopes before accepting the connection
+      3. Store tokens in KnowledgeIntegration.credentials
+      4. apply_post_connect_state() stamps queued provider-specific CRM metadata
+      5. trigger_initial_sync() dispatches the provider chain:
          - HubSpot -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
          - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
 
@@ -143,3 +152,6 @@ Per-integration tracking is done via state tables
 **Fresh session pattern**: Database sessions are never held during external API calls. Data is extracted into dataclasses, the session is released, the API call is made, then a new session is acquired to write results.
 
 **ON CONFLICT DO UPDATE**: All sync services use PostgreSQL atomic upserts to handle concurrent writes and idempotent re-syncs without N+1 queries.
+
+**CRM activities are shared storage**: HubSpot and Salesforce tasks/notes both land in
+`crm_activities`; the provider stays isolated by `integration_id`.
