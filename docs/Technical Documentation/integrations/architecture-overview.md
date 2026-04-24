@@ -16,7 +16,7 @@
 
 HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
 Both providers now have active CRM initial-sync chains. HubSpot is live through deals, and
-Salesforce is live through contacts. See [crm-initial-sync.md](crm-initial-sync.md) for the
+Salesforce is live through deals. See [crm-initial-sync.md](crm-initial-sync.md) for the
 current chain order, metadata contract, and persisted tables.
 
 ## OAuth Model
@@ -122,7 +122,7 @@ User clicks "Connect" in frontend
       3. apply_post_connect_state() stamps queued provider-specific CRM metadata
       4. trigger_initial_sync() dispatches the provider chain:
          - HubSpot -> schema -> pipelines -> users -> companies -> contacts -> deals -> finalize
-         - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> finalize
+         - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> deals -> finalize
 
 Kubernetes CronJob (scheduled — this repo does NOT use in-process Celery Beat)
   -> `python -m src.workers.integrations_worker.cron_dispatch --job <name>`

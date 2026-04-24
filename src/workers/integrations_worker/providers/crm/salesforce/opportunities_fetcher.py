@@ -1,0 +1,158 @@
+"""Salesforce fetcher for Opportunity fact sync."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from src.infra.utils.logger import get_logger
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
+    call_with_token_retry,
+)
+
+logger = get_logger(__name__)
+
+_DEFAULT_TIMEOUT = 60.0
+_API_VERSION = "v61.0"
+_MAX_PAGES = 500
+_EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
+_REQUIRED_FIELDS = {
+    "Id",
+    "Name",
+    "Amount",
+    "CurrencyIsoCode",
+    "CloseDate",
+    "StageName",
+    "RecordTypeId",
+    "OwnerId",
+    "AccountId",
+    "CreatedDate",
+    "LastModifiedDate",
+    "CreatedById",
+    "LastModifiedById",
+    "Description",
+    "Type",
+    "ForecastCategoryName",
+    "Probability",
+    "ExpectedRevenue",
+    "LeadSource",
+    "LastActivityDate",
+    "DaysToClose",
+    "IsClosed",
+    "IsWon",
+}
+
+
+class SalesforceOpportunitiesFetcher:
+    def __init__(
+        self,
+        *,
+        token_info: IntegrationTokenInfo,
+        instance_url: str,
+    ) -> None:
+        self.token_info = token_info
+        self.instance_url = instance_url.rstrip("/")
+
+    async def fetch_all(self) -> tuple[list[dict[str, Any]], list[str]]:
+        field_names = await self._fetch_field_names()
+        soql = (
+            f"SELECT {', '.join(field_names)} FROM Opportunity "  # noqa: S608  # nosec B608
+            "ORDER BY CloseDate DESC, Name"
+        )
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
+        records: list[dict[str, Any]] = []
+        next_url: str | None = None
+        page_count = 0
+
+        while page_count < _MAX_PAGES:
+            payload = await self._get_json(
+                next_url or url, params=None if next_url else {"q": soql}
+            )
+            raw_records = payload.get("records")
+            if not isinstance(raw_records, list):
+                raise ValueError("Salesforce opportunity query API returned non-list records")
+            records.extend(row for row in raw_records if isinstance(row, dict))
+
+            page_count += 1
+            next_records_url = payload.get("nextRecordsUrl")
+            if not isinstance(next_records_url, str) or not next_records_url:
+                break
+            next_url = (
+                next_records_url
+                if next_records_url.startswith("http")
+                else f"{self.instance_url}{next_records_url}"
+            )
+        else:
+            logger.warning(
+                "Salesforce opportunities query hit max page ceiling",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "max_pages": _MAX_PAGES,
+                },
+            )
+
+        logger.info(
+            "Fetched Salesforce opportunities",
+            extra={
+                "integration_id": str(self.token_info.integration_id),
+                "count": len(records),
+                "pages": page_count,
+                "field_count": len(field_names),
+            },
+        )
+        return records, field_names
+
+    async def _fetch_field_names(self) -> list[str]:
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/sobjects/Opportunity/describe"
+        payload = await self._get_json(url)
+        raw_fields = payload.get("fields")
+        if not isinstance(raw_fields, list):
+            raise ValueError("Salesforce Opportunity describe API returned non-list fields")
+
+        field_names = {
+            name
+            for field in raw_fields
+            if isinstance(field, dict)
+            for name in [_extract_field_name(field)]
+            if name is not None
+        }
+        field_names.update(_REQUIRED_FIELDS)
+        if "Id" not in field_names:
+            raise ValueError("Salesforce Opportunity describe API did not yield a usable Id field")
+        return sorted(field_names)
+
+    async def _get_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        async def _request(access_token: str) -> httpx.Response:
+            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+                response.raise_for_status()
+                return response
+
+        response = await call_with_token_retry(self.token_info, _request)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Salesforce opportunities API returned non-dict payload")
+        return payload
+
+
+def _extract_field_name(field: dict[str, Any]) -> str | None:
+    name = field.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if field.get("queryable") is not True:
+        return None
+    field_type = field.get("type")
+    if isinstance(field_type, str) and field_type.lower() in _EXCLUDED_FIELD_TYPES:
+        return None
+    return name

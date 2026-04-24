@@ -9,7 +9,7 @@ from src.domain.models.organisation_tables.sync import (
 from src.service.integrations.initial_sync_service import InitialSyncService
 
 
-def test_initial_sync_service_queues_salesforce_schema_pipeline_user_company_and_contact_sync_metadata() -> (
+def test_initial_sync_service_queues_salesforce_schema_pipeline_user_company_contact_deal_and_task_sync_metadata() -> (
     None
 ):
     service = InitialSyncService()
@@ -34,6 +34,8 @@ def test_initial_sync_service_queues_salesforce_schema_pipeline_user_company_and
     assert integration.connection_metadata["record_sync"]["users"]["status"] == "queued"
     assert integration.connection_metadata["record_sync"]["companies"]["status"] == "queued"
     assert integration.connection_metadata["record_sync"]["contacts"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["deals"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["tasks"]["status"] == "queued"
 
 
 def test_initial_sync_service_dispatches_salesforce_initial_sync_chain() -> None:

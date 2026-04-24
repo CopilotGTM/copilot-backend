@@ -163,13 +163,17 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 ## Salesforce CRM
 
 - **Custom OAuth**: Supported.
-- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> finalize`
+- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
 - **Current capture boundary**:
   - Opportunity schema
   - pipelines + stages
   - users
   - companies
   - contacts
-- **Not yet implemented**: Salesforce opportunity/deal fact sync and broader association slices.
+  - deals
+  - deal stage history
+  - deal participants
+  - deal object associations
+- **Deferred**: broader Salesforce association slices beyond direct deal-company/contact edges.
 - **Direction**: strictly Salesforce -> CopilotGTM.
 - **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.

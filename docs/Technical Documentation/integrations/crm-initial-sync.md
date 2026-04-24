@@ -19,7 +19,7 @@ Only the chain terminators write `initial_sync_status`.
 
 ### Salesforce
 
-`schema -> pipelines -> users -> companies -> contacts -> finalize`
+`schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
 
 Code:
 
@@ -38,7 +38,7 @@ Queued state after connect:
   - `record_sync.pipelines/users/companies/contacts/deals.status = "queued"`
 - Salesforce:
   - `schema_sync.opportunities.status = "queued"`
-  - `record_sync.pipelines/users/companies/contacts.status = "queued"`
+  - `record_sync.pipelines/users/companies/contacts/deals.status = "queued"`
 
 Per-phase tasks update:
 
@@ -70,6 +70,10 @@ Salesforce currently writes:
 - `crm_users`
 - `crm_companies`
 - `crm_contacts`
+- `crm_deals`
+- `crm_deal_stage_history`
+- `crm_deal_participants`
+- `crm_object_associations`
 
 Rows are provider-isolated by `integration_id`.
 
@@ -90,8 +94,7 @@ This keeps DB sessions out of long external API calls.
 ## Current Capture Boundaries
 
 - HubSpot deals are the only live CRM fact-table sync today.
-- Salesforce is live through **contacts**.
-- Salesforce opportunity/deal fact sync is **not** implemented yet.
+- Salesforce is live through **deals**.
 - Secondary relationship modeling like `AccountContactRelation` is deferred.
 
 ## Task Families

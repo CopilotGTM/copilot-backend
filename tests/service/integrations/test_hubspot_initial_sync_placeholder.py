@@ -29,11 +29,15 @@ def test_initial_sync_service_applies_hubspot_placeholder_metadata() -> None:
 
     service.apply_post_connect_state(integration)
 
-    assert integration.connection_metadata["initial_sync_status"] == "not_implemented"
-    assert (
-        "CRM sync dispatch will be added later"
-        in integration.connection_metadata["initial_sync_placeholder"]
-    )
+    assert integration.connection_metadata["initial_sync_status"] == "queued"
+    assert "initial_sync_placeholder" not in integration.connection_metadata
+    assert integration.connection_metadata["schema_sync"]["deals"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["pipelines"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["users"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["companies"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["contacts"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["deals"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["tasks"]["status"] == "queued"
 
 
 def test_initial_sync_service_noops_for_hubspot_placeholder() -> None:
@@ -41,11 +45,14 @@ def test_initial_sync_service_noops_for_hubspot_placeholder() -> None:
     integration = _make_integration(IntegrationType.HUBSPOT)
 
     with (
-        patch("src.service.integrations.initial_sync_service.send_integrations_task") as mock_send,
-        patch("src.service.integrations.initial_sync_service.logger") as mock_logger,
+        patch(
+            "src.service.integrations.initial_sync_service.build_hubspot_initial_sync_chain"
+        ) as mock_build,
     ):
         service.trigger_initial_sync(integration.organisation_id, integration)
 
-    mock_send.assert_not_called()
-    mock_logger.warning.assert_not_called()
-    mock_logger.info.assert_called()
+    mock_build.assert_called_once_with(
+        organisation_id=integration.organisation_id,
+        integration_id=integration.integration_id,
+    )
+    mock_build.return_value.apply_async.assert_called_once_with()

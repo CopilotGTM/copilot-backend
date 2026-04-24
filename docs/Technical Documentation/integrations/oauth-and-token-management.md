@@ -61,7 +61,7 @@ Current behavior after successful connect:
 
 - `InitialSyncService.apply_post_connect_state()` stamps queued CRM metadata
 - `InitialSyncService.trigger_initial_sync()` dispatches the Salesforce CRM chain
-- live chain: `schema -> pipelines -> users -> companies -> contacts -> finalize`
+- live chain: `schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
 
 ### Token Refresh
 
