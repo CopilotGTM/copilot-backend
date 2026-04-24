@@ -8,11 +8,14 @@ def test_scrub_event_redacts_sensitive_request_user_and_extra_fields():
             "headers": {
                 "Authorization": "Bearer secret-token",
                 "Cookie": "session=secret",
+                "apikey": "service-role-key",
                 "X-Request-Id": "req-123",
             },
             "data": {
+                "client_secret": "oauth-client-secret",
                 "password": "top-secret",
                 "nested": {"refresh_token": "refresh-token"},
+                "supabase_service_role_key": "service-role-key",
                 "safe": "value",
             },
             "query_string": "api_key=leaked&page=1",
@@ -35,9 +38,12 @@ def test_scrub_event_redacts_sensitive_request_user_and_extra_fields():
     assert _scrub_event(event, {}) is event
     assert event["request"]["headers"]["Authorization"] == "[Filtered]"
     assert event["request"]["headers"]["Cookie"] == "[Filtered]"
+    assert event["request"]["headers"]["apikey"] == "[Filtered]"
     assert event["request"]["headers"]["X-Request-Id"] == "req-123"
+    assert event["request"]["data"]["client_secret"] == "[Filtered]"
     assert event["request"]["data"]["password"] == "[Filtered]"
     assert event["request"]["data"]["nested"]["refresh_token"] == "[Filtered]"
+    assert event["request"]["data"]["supabase_service_role_key"] == "[Filtered]"
     assert event["request"]["data"]["safe"] == "value"
     assert event["request"]["query_string"] == "[Filtered]"
     assert event["user"]["ip_address"] == "[Filtered]"

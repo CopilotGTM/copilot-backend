@@ -9,34 +9,23 @@ from src.infra.config.configs import sentry_config
 
 _sentry_initialized = False
 _REDACTED = "[Filtered]"
-# Header names are handled separately because Sentry stores them under request.headers.
-_SENSITIVE_HEADERS = frozenset(
-    {"authorization", "cookie", "set-cookie", "x-api-key", "x-auth-token"}
+# Key matching normalizes punctuation/case so variants like ``client_secret``,
+# ``x-api-key``, and Supabase's ``apikey`` are treated consistently.
+_SENSITIVE_KEY_FRAGMENTS = frozenset(
+    ("apikey", "authorization", "cookie", "key", "password", "secret", "session", "token")
 )
-# Key-based scrubbing covers request payloads, cookies, extras, and other nested mappings.
-_SENSITIVE_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "authorization",
-        "cookie",
-        "id_token",
-        "password",
-        "refresh_token",
-        "secret",
-        "session",
-        "session_id",
-        "token",
-    }
-)
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized_key = "".join(ch for ch in str(key).lower() if ch.isalnum())
+    return any(fragment in normalized_key for fragment in _SENSITIVE_KEY_FRAGMENTS)
 
 
 def _scrub_mapping(value: object) -> object:
     if isinstance(value, Mapping):
         scrubbed: dict[object, object] = {}
         for key, item in value.items():
-            normalized_key = str(key).lower()
-            scrubbed[key] = _REDACTED if normalized_key in _SENSITIVE_KEYS else _scrub_mapping(item)
+            scrubbed[key] = _REDACTED if _is_sensitive_key(key) else _scrub_mapping(item)
         return scrubbed
 
     if isinstance(value, list):
@@ -52,7 +41,7 @@ def _scrub_request(request: dict[str, Any]) -> None:
     headers = request.get("headers")
     if isinstance(headers, dict):
         for key in list(headers):
-            if str(key).lower() in _SENSITIVE_HEADERS:
+            if _is_sensitive_key(key):
                 headers[key] = _REDACTED
 
     for field in ("data", "cookies"):

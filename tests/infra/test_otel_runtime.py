@@ -578,6 +578,10 @@ def test_async_init_otel_primes_supabase_credentials_before_instrumentation(mock
     mocker.patch.object(supabase_config, "SUPABASE_URL", "")
     mocker.patch.object(supabase_config, "get_credentials", side_effect=_load_supabase)
     mocker.patch("src.infra.observability.otel._setup_tracing", side_effect=lambda *args: None)
+    mocker.patch(
+        "src.infra.observability.otel._setup_metrics",
+        side_effect=lambda *args: call_order.append("metrics"),
+    )
     mocker.patch("src.infra.observability.otel._setup_logging", side_effect=lambda *args: None)
     mocker.patch(
         "src.infra.observability.otel._auto_instrument",
@@ -586,7 +590,7 @@ def test_async_init_otel_primes_supabase_credentials_before_instrumentation(mock
 
     asyncio.run(otel_runtime.async_init_otel())
 
-    assert call_order == ["headers", "supabase", "instrument"]
+    assert call_order == ["headers", "supabase", "metrics", "instrument"]
 
 
 def test_instrument_httpx_skips_local_runtime(mocker, monkeypatch):
