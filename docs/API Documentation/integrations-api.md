@@ -473,7 +473,7 @@ OAuth scopes are managed server-side based on integration requirements; the fron
 
 **Examples:**
 
-- HubSpot: `crm.objects.contacts.read`, `crm.objects.deals.read`, `crm.objects.companies.read`, `files`
+- HubSpot: `oauth`, `automation`, `conversations.read`, `sales-email-read`, `crm.objects.companies.read`, `crm.objects.companies.write`, `crm.objects.contacts.read`, `crm.objects.contacts.write`, `crm.objects.deals.read`, `crm.objects.deals.write`, `crm.objects.leads.read`, `crm.objects.leads.write`, `crm.objects.line_items.read`, `crm.objects.line_items.write`, `crm.objects.products.read`, `crm.objects.products.write`, `crm.objects.owners.read`, `crm.objects.users.read`, `crm.schemas.companies.read`, `crm.schemas.contacts.read`, `crm.schemas.deals.read`
 - Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
 
 ### Initiate OAuth Flow Pydantic Models (Backend)

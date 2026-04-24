@@ -1,7 +1,8 @@
-"""Service to trigger initial sync after integration authentication.
+"""Service to handle post-connect sync setup after integration authentication.
 
-This module handles dispatching the first sync for newly connected integrations.
-Called by nango_webhook_service after successful auth.
+This module owns the post-connect handoff after OAuth succeeds:
+- dispatch the first sync for providers with active sync support
+- record explicit placeholder state for providers whose sync is deferred
 
 See: docs/Technical Documentation/integration/sync_tasks/initial-sync-on-auth.md
 
@@ -22,16 +23,22 @@ logger = get_logger(__name__)
 
 
 class InitialSyncService:
-    """Service for triggering initial sync on newly authenticated integrations.
+    """Service for post-connect sync handoff on newly authenticated integrations.
 
-    This service dispatches the appropriate Celery tasks when a user connects
-    a new integration via OAuth. It handles all integration types:
+    This service handles the integration lifecycle immediately after OAuth succeeds.
+    For providers with active sync support, it dispatches the appropriate Celery
+    tasks. For providers that are connect-only today, it records explicit state in
+    connection metadata so the integration truthfully reflects its current status.
+
+    It currently handles:
     - Calendar (Google, Outlook) - Direct task dispatch
     - Email (Gmail, Outlook) - Direct task dispatch
-    - Messaging (Teams) - Direct task dispatch
-
-    Note: CRM sync (HubSpot, Salesforce) deprecated — code moved to deprecated/workers/.
+    - Messaging (Teams, Slack) - Direct task dispatch
+    - HubSpot and Salesforce - Custom auth supported, CRM sync intentionally deferred
     """
+
+    INITIAL_SYNC_STATUS_METADATA_KEY = "initial_sync_status"
+    INITIAL_SYNC_PLACEHOLDER_METADATA_KEY = "initial_sync_placeholder"
 
     # Calendar integration types
     CALENDAR_INTEGRATION_TYPES = {IntegrationType.GOOGLE_CALENDAR, IntegrationType.OUTLOOK_CALENDAR}
@@ -41,6 +48,43 @@ class InitialSyncService:
 
     # Messaging integration types
     MESSAGING_INTEGRATION_TYPES = {IntegrationType.TEAMS, IntegrationType.SLACK}
+
+    # CRM custom auth is supported, but sync dispatch is intentionally deferred for now.
+    CRM_PLACEHOLDER_INTEGRATION_TYPES = {
+        IntegrationType.HUBSPOT,
+        IntegrationType.SALESFORCE,
+    }
+    CRM_PLACEHOLDER_MESSAGES = {
+        IntegrationType.HUBSPOT: (
+            "HubSpot custom auth connected successfully; CRM sync dispatch will be added later."
+        ),
+        IntegrationType.SALESFORCE: (
+            "Salesforce custom auth connected successfully; CRM sync dispatch will be added later."
+        ),
+    }
+
+    def apply_post_connect_state(self, integration: KnowledgeIntegration) -> None:
+        """Apply provider-specific post-connect state before the integration is committed.
+
+        This keeps callback persistence generic while letting the post-connect
+        lifecycle service own sync-related metadata decisions.
+        """
+        integration_type = integration.integration_type
+        if isinstance(integration_type, str):
+            integration_type = IntegrationType(integration_type)
+
+        if integration_type not in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
+            return
+
+        metadata = dict(integration.connection_metadata or {})
+
+        # TODO(crm-sync): Replace these placeholder markers with real CRM initial
+        # dispatch once HubSpot and Salesforce sync pipelines are implemented.
+        metadata[self.INITIAL_SYNC_STATUS_METADATA_KEY] = "not_implemented"
+        metadata[self.INITIAL_SYNC_PLACEHOLDER_METADATA_KEY] = self.CRM_PLACEHOLDER_MESSAGES[
+            integration_type
+        ]
+        integration.connection_metadata = metadata
 
     def trigger_initial_sync(
         self,
@@ -79,6 +123,14 @@ class InitialSyncService:
             # Messaging (Teams)
             if integration_type in self.MESSAGING_INTEGRATION_TYPES:
                 self._trigger_messaging_sync(org_id_str, int_id_str)
+                return
+
+            if integration_type in self.CRM_PLACEHOLDER_INTEGRATION_TYPES:
+                logger.info(
+                    "Initial sync placeholder only for integration type %s (integration=%s)",
+                    integration_type.value,
+                    int_id_str,
+                )
                 return
 
             # Unknown type

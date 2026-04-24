@@ -54,6 +54,12 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="20 * * * *",
         max_lag_seconds=90 * 60,
     ),
+    "meeting-bot-fallback": ScheduledJob(
+        name="meeting-bot-fallback",
+        task_name="deal.trigger_send_unsent_meeting_recordings_all_orgs",
+        schedule="50 * * * *",
+        max_lag_seconds=90 * 60,
+    ),
 }
 
 

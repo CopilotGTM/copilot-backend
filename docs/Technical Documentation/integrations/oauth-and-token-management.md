@@ -11,7 +11,7 @@ KnowledgeIntegration
   connection_metadata: JSONB # {token_refresh_failures, email_folder_delta_links, ...}
 ```
 
-OAuth client credentials (client_id, client_secret) are stored in Azure Key Vault per environment and loaded with a 6-hour TTL cache via `GoogleIntegrationConfig` and `MicrosoftIntegrationConfig` in `src/infra/config/configs.py`.
+OAuth client credentials (client_id, client_secret) are stored in Azure Key Vault per environment and loaded with a 6-hour TTL cache via `GoogleIntegrationConfig`, `MicrosoftIntegrationConfig`, `HubSpotIntegrationConfig`, and `SalesforceIntegrationConfig` in `src/infra/config/configs.py`.
 
 ## OAuth Flow
 
@@ -21,15 +21,45 @@ OAuth client credentials (client_id, client_secret) are stored in Azure Key Vaul
 1. Frontend: GET /users/integrations/copilot-oauth/connect?type=outlook_email
 2. Backend: Provider.get_authorization_url(state=encrypted_payload)
    - state contains: org_id, user_id, integration_type, redirect_url
-3. Redirect to Microsoft/Google consent screen
+3. Redirect to provider consent screen
 4. User grants consent
 5. Redirect to: /users/integrations/copilot-oauth/callback?code=...&state=...
 6. copilot_callback_service.py:
    a. Decrypt state, validate org/user
    b. Provider.exchange_code(code) -> {access_token, refresh_token, ...}
    c. Upsert KnowledgeIntegration with credentials
-   d. Dispatch Tier 3 initial sync task
+   d. Dispatch initial sync only for providers with active sync support
 ```
+
+### HubSpot
+
+HubSpot uses the same first-party custom OAuth flow as Google, Microsoft, and Slack:
+
+- authorization URL built by `HubSpotProvider`
+- callback handled by `copilot_callback_service.py`
+- tokens stored in `knowledge_integrations.credentials`
+- scheduled refresh handled by `custom_token_refresh_service.py`
+- disconnect handled through `IntegrationService.revoke_custom_oauth_token()`
+
+Current limitation:
+
+- successful connect stores `initial_sync_status = not_implemented` in `connection_metadata`
+- no HubSpot CRM sync tasks are dispatched in this phase
+
+### Salesforce
+
+Salesforce uses the same first-party custom OAuth flow as Google, Microsoft, Slack, and HubSpot:
+
+- authorization URL built by `SalesforceProvider`
+- callback handled by `copilot_callback_service.py`
+- tokens stored in `knowledge_integrations.credentials`
+- scheduled refresh handled by `custom_token_refresh_service.py`
+- disconnect handled through `IntegrationService.revoke_custom_oauth_token()`
+
+Current limitation:
+
+- successful connect stores `initial_sync_status = not_implemented` in `connection_metadata`
+- no Salesforce CRM sync tasks are dispatched in this phase
 
 ### Token Refresh
 
@@ -81,7 +111,7 @@ When a token refresh fails, `_is_permanent_auth_error()` in `token_resolution.py
 
 When detected, raises `AuthTokenRevokedError` which sets `requires_reauth=True` and `is_active=False` on the integration. The user must re-authenticate.
 
-**Why providers re-raise raw HTTPStatusError**: `google_provider.py` and `microsoft_provider.py` do NOT wrap `HTTPStatusError` in a generic `Exception`. The raw response body must reach `_is_permanent_auth_error()` for AADSTS/invalid_grant detection to work.
+**Why providers re-raise raw HTTPStatusError**: custom OAuth providers should avoid wrapping `HTTPStatusError` in a generic `Exception` when permanent auth classification depends on the raw provider response body. This is already required for Google and Microsoft, and HubSpot and Salesforce should follow the same rule as their auth classification evolves.
 
 ## Reconnect State Semantics
 
@@ -113,4 +143,4 @@ Each environment has its own Microsoft Azure AD app registration (Terraform-mana
 | Dev | CopilotGTM MS-Integration - Dev | copilot-master-kv-dev |
 | Prod | CopilotGTM MS-Integration - Prod | copilot-master-kv-prod |
 
-This isolates rate limits, consent screens, and tokens across environments. Google OAuth clients are created manually in Google Cloud Console.
+This isolates rate limits, consent screens, and tokens across environments. Google OAuth clients are created manually in Google Cloud Console. HubSpot and Salesforce OAuth apps follow the same per-environment credential pattern and are loaded through `HubSpotIntegrationConfig` and `SalesforceIntegrationConfig`.

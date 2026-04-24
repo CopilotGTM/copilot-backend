@@ -14,7 +14,12 @@ from .activities import (
 from .associations import CRMAssociationCategory, CRMObjectAssociation, CRMObjectType
 from .companies import CRMCompany
 from .contacts import CRMContact
-from .custom_fields import CRMCustomFieldDataType, CRMCustomFieldDefinition, CRMCustomFieldEntity
+from .custom_fields import (
+    CRMCustomFieldDataType,
+    CRMCustomFieldDefinition,
+    CRMCustomFieldEntity,
+    CRMCustomFieldSource,
+)
 from .deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -58,6 +63,7 @@ __all__ = [
     "CRMCustomFieldDefinition",
     "CRMCustomFieldEntity",
     "CRMCustomFieldDataType",
+    "CRMCustomFieldSource",
     # Pipelines and Stages
     "CRMPipeline",
     "CRMDealStage",

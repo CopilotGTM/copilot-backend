@@ -72,6 +72,7 @@ from src.api.routers.knowledge_base.access_handler import (
 from src.api.routers.knowledge_base.upload_handler import (
     upload_router as knowledge_upload_router,
 )
+from src.api.routers.meeting_bot import meeting_bot_router
 from src.api.routers.reminders import reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
@@ -288,6 +289,14 @@ def create_fastapi_app():
     #   - POST /users/bots/teams/messages - Teams webhook
     #   - GET  /users/bots/teams/health - Teams health check
     fastapp.include_router(bots_router, prefix="/users/bots", tags=["bots"])
+    # Meeting bot webhooks stay outside `/users/bots` because these calls come
+    # from recording providers, not from the user-facing identity-linking flows.
+    #   - POST /users/meeting-bot/recall/webhook - Recall meeting webhook
+    fastapp.include_router(
+        meeting_bot_router,
+        prefix="/users/meeting-bot",
+        tags=["meeting-bot"],
+    )
 
     instrument_fastapi_app(fastapp)
 

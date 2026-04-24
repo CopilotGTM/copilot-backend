@@ -311,6 +311,7 @@ class CopilotCallbackService:
             provider_key=provider_key,
             token_payload=tokens,
         )
+        InitialSyncService().apply_post_connect_state(integration)
 
         session.add(integration)
         await session.commit()
@@ -362,6 +363,7 @@ class CopilotCallbackService:
                 provider_key=provider_key,
                 token_payload=tokens,
             )
+            InitialSyncService().apply_post_connect_state(integration)
 
             org_session.add(integration)
             await org_session.commit()

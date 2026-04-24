@@ -22,6 +22,15 @@ from .deal_mappers import (
     sync_org_timeline_task,
     trigger_timeline_sync_all_orgs_task,
 )
+
+# Meeting bot tasks are lightweight orchestration around deal-linked
+# calendar events, so they are exported alongside the other meeting workflows.
+from .meeting_bot_tasks import (
+    process_meeting_recording_webhook_task,
+    send_meeting_recording_task,
+    send_unsent_meeting_recordings_org_task,
+    trigger_send_unsent_meeting_recordings_all_orgs_task,
+)
 from .meeting_insight_tasks import process_meeting_prep, process_meeting_summary
 from .stale_job_cleanup_tasks import (
     cleanup_stale_deal_jobs_all_orgs_task,
@@ -46,6 +55,10 @@ __all__ = [
     # Meeting insight tasks (meeting-level)
     "process_meeting_prep",
     "process_meeting_summary",
+    "process_meeting_recording_webhook_task",
+    "send_meeting_recording_task",
+    "send_unsent_meeting_recordings_org_task",
+    "trigger_send_unsent_meeting_recordings_all_orgs_task",
     # Deal summary tasks (deal-level)
     "process_deal_summary_job",
     # Stakeholder analysis tasks

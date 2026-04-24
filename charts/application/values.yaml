@@ -113,6 +113,13 @@ api:
     ALLOW_ORIGIN_URL_AUTH: ""
     # Voice realtime APIs are fail-closed by default and enabled per environment override.
     VOICE_REALTIME_API_ENABLED: "false"
+    # Recall.ai defaults shared by API, workers, and cronjobs via the common app secret.
+    RECALL_REGION: "us-west-2"
+    RECALL_TIMEOUT_SECONDS: "30"
+    RECALL_BOT_NAME: "CopilotGTM Notetaker"
+    # Set these in your environment-specific pipeline/secret source.
+    RECALL_API_KEY: ""
+    RECALL_WEBHOOK_SECRET: ""
 
 # Knowledge Workers Configuration
 knowledge-extract-worker:
@@ -469,6 +476,8 @@ dealCronJobs:
       schedule: "10 */3 * * *"
     - name: stakeholder-research-retry
       schedule: "20 * * * *"
+    - name: meeting-bot-fallback
+      schedule: "50 * * * *"
 
 # Legacy Celery Beat config for deal worker.
 # Fixed deal schedules are owned by Kubernetes CronJobs below.

@@ -13,6 +13,8 @@ The models are organised into separate files based on their domain:
 - `base_mixins`: Provides common mixin classes for timestamps.
 
 Each model is a SQLModel class that also serves as a Pydantic model for API validation.
+The sync exports also include meeting-recording session state used by the Recall
+meeting bot flow.
 """
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
@@ -52,6 +54,7 @@ from .sync import (
     CRMCustomFieldDataType,
     CRMCustomFieldDefinition,
     CRMCustomFieldEntity,
+    CRMCustomFieldSource,
     CRMDeal,
     CRMDealParticipant,
     CRMDealStage,
@@ -69,6 +72,10 @@ from .sync import (
     IntegrationSyncHistory,
     IntegrationType,
     KnowledgeIntegration,
+    MeetingRecordingProvider,
+    MeetingRecordingSession,
+    MeetingRecordingStatus,
+    MeetingTranscriptStatus,
     SyncCategory,
     SyncedRecordMixin,
     SyncStatus,
@@ -98,6 +105,10 @@ __all__ = [
     "CalendarAttendee",
     "CalendarEventDealAssociation",
     "CalendarEventUserState",
+    "MeetingRecordingProvider",
+    "MeetingRecordingStatus",
+    "MeetingTranscriptStatus",
+    "MeetingRecordingSession",
     "CRMContact",
     "CRMCompany",
     "CRMUser",
@@ -107,6 +118,7 @@ __all__ = [
     "CRMCustomFieldDefinition",
     "CRMCustomFieldEntity",
     "CRMCustomFieldDataType",
+    "CRMCustomFieldSource",
     "CRMPipeline",
     "CRMDealStage",
     "CRMDeal",

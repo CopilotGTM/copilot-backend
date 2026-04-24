@@ -14,17 +14,20 @@
 | Slack Group Chats | Slack Web API | Messaging | conversations.list (mpim) |
 | Slack Messages | Slack Web API | Messaging | conversations.history + conversations.replies |
 
-CRM integrations (HubSpot, Salesforce) are deprecated and excluded from active sync.
+HubSpot and Salesforce custom OAuth are supported through the first-party provider architecture.
+HubSpot deal schema sync is now the first active CRM sync slice. Deal-record sync remains deferred.
 
 ## OAuth Model
 
-CopilotGTM uses **first-party custom OAuth** for Google, Microsoft, and Slack. Each
+CopilotGTM uses **first-party custom OAuth** for Google, Microsoft, Slack, HubSpot, and Salesforce. Each
 environment (local, dev, prod) has its own provider app credentials, managed via Terraform/Key Vault.
 
 Credentials are stored in Azure Key Vault (`microsoft-integration-client-id`,
 `microsoft-integration-client-secret`, `google-integration-client-id`,
-`google-integration-client-secret`, `slack-client-id`, `slack-client-secret`) and loaded
-at runtime with a TTL cache.
+`google-integration-client-secret`, `slack-client-id`, `slack-client-secret`,
+`hubspot-integration-client-id`, `hubspot-integration-client-secret`,
+`salesforce-integration-client-id`, `salesforce-integration-client-secret`)
+and loaded at runtime with a TTL cache.
 
 ## Directory Structure
 
@@ -34,7 +37,9 @@ src/
     providers/
       token_resolution.py       # Token fetch, refresh, 401 retry, distributed lock
       google_provider.py        # Google OAuth: authorize, exchange, refresh
+      hubspot_provider.py       # HubSpot OAuth: authorize, exchange, refresh, revoke
       microsoft_provider.py     # Microsoft OAuth: authorize, exchange, refresh
+      salesforce_provider.py    # Salesforce OAuth: authorize, exchange, refresh, revoke
       slack_provider.py         # Slack OAuth: authorize, exchange, refresh, revoke
       provider_factory.py       # Route integration_type -> provider
     copilot_callback_service.py # OAuth callback handler (store tokens, trigger sync)
@@ -42,6 +47,15 @@ src/
     email_sync_service.py       # Email folder/message upsert
     email_delta_sync_service.py # Email sync orchestrator (fresh session pattern)
     messaging_sync_service.py   # Teams/Slack channel/chat/message upsert (org-scoped)
+    crm/
+      __init__.py               # CRM integration helpers shared across provider syncs
+      common/
+        schema_types.py         # Provider-neutral CRM schema dataclasses
+        field_type_mapper.py    # HubSpot property type -> CRM field type mapping
+        field_registry_service.py # Provider-backed CRM field registry persistence
+      schema/
+        schema_sync_result.py    # Shared schema-sync counters/result
+        hubspot_deal_schema_service.py # HubSpot deal schema orchestration
     custom_token_refresh_service.py  # Scheduled token refresh service
     sync_health.py              # Error classification, circuit breaker, failure tracking
     sync_history_manager.py     # IntegrationSyncHistory record management
@@ -60,6 +74,9 @@ src/
       messaging/
         teams.py                # Teams channels, chats, messages fetcher
         slack.py                # Slack channels, chats, messages fetcher
+      crm/
+        hubspot/
+          deal_schema_fetcher.py # HubSpot deal property schema fetcher
     tasks/
       email/                    # Three-tier email sync tasks
       calendar/                 # Three-tier calendar sync tasks
@@ -72,14 +89,18 @@ src/
 
 ```
 User clicks "Connect" in frontend
-  -> GET /users/integrations/copilot-oauth/connect?type=outlook_email
+  -> GET /users/integrations/copilot-oauth/connect?type=hubspot
   -> Provider generates authorization URL
-  -> User consents in Microsoft/Google
+  -> User consents in the provider
   -> Redirect to /users/integrations/copilot-oauth/callback
   -> copilot_callback_service.py:
       1. Exchange auth code for tokens
       2. Store tokens in KnowledgeIntegration.credentials
-      3. Dispatch Tier 3 sync task (immediate initial sync)
+      3. Store post-connect state only
+         HubSpot and Salesforce still store `initial_sync_status=not_implemented` in
+         `connection_metadata`
+         HubSpot deal schema sync exists as the first active CRM sync slice, but it is not
+         dispatched from the callback flow yet
 
 Celery Beat (scheduled)
   -> Tier 1: all_orgs_task (fan out to orgs)

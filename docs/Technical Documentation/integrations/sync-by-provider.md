@@ -148,6 +148,20 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 
 ---
 
-## CRM Sync (Deprecated)
+## HubSpot CRM
 
-HubSpot and Salesforce CRM sync code exists but is deprecated. The sync tasks and provider code have been moved to `deprecated/` directories. CRM data (deals, contacts, companies) is imported via CSV or the internal CRM.
+- **Custom OAuth**: Supported via the current first-party provider architecture
+- **Deal schema sync**: Supported
+- **Deal record sync**: Deferred
+- **Current behavior after connect**: Integration is stored as active; schema sync is implemented as the first CRM sync slice, but is not auto-dispatched from the OAuth callback flow yet
+- **Registry storage**: Provider-backed deal schema rows are mirrored into `crm_custom_field_definitions` with `field_source=provider` and scoped by `integration_id`
+- **Current placeholder metadata**: HubSpot integrations still receive `initial_sync_status = not_implemented` during post-connect state handling because the callback flow does not auto-dispatch schema sync yet
+
+## Salesforce CRM
+
+- **Custom OAuth**: Supported via the current first-party provider architecture
+- **Data sync**: Deferred
+- **Current behavior after connect**: Integration is stored as active and marked with an initial-sync placeholder in `connection_metadata`
+- **Current placeholder metadata**:
+  - `initial_sync_status = not_implemented`
+  - `initial_sync_placeholder = Salesforce custom auth connected successfully; CRM sync dispatch will be added later.`
