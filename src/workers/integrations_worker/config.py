@@ -151,6 +151,12 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.sync_hubspot_notes": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
     "integrations.sync_salesforce_users": {
         "soft": 300,
         "hard": 360,
@@ -176,6 +182,12 @@ TASK_LIMITS: dict[str, dict] = {
         "retry_delay": 60,
     },
     "integrations.sync_salesforce_tasks": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.sync_salesforce_notes": {
         "soft": 300,
         "hard": 360,
         "retries": 3,
@@ -373,6 +385,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },
+            "integrations.sync_hubspot_notes": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
             "integrations.sync_salesforce_users": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
@@ -390,6 +406,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "routing_key": "integrations_priority",
             },
             "integrations.sync_salesforce_tasks": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.sync_salesforce_notes": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },

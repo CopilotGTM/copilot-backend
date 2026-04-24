@@ -151,7 +151,7 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 ## HubSpot CRM
 
 - **Custom OAuth**: Supported.
-- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
+- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
 - **Schema refresh**:
   - `integrations.sync_hubspot_deal_schema`
   - `integrations.sync_hubspot_deal_schema_all_orgs`
@@ -163,7 +163,7 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
 ## Salesforce CRM
 
 - **Custom OAuth**: Supported.
-- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
+- **Live chain**: `schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
 - **Current capture boundary**:
   - Opportunity schema
   - pipelines + stages
@@ -174,6 +174,7 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
   - deal stage history
   - deal participants
   - deal object associations
+  - crm activities for tasks and notes
 - **Deferred**: broader Salesforce association slices beyond direct deal-company/contact edges.
 - **Direction**: strictly Salesforce -> CopilotGTM.
 - **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.

@@ -38,6 +38,7 @@ def test_initial_sync_service_applies_hubspot_placeholder_metadata() -> None:
     assert integration.connection_metadata["record_sync"]["contacts"]["status"] == "queued"
     assert integration.connection_metadata["record_sync"]["deals"]["status"] == "queued"
     assert integration.connection_metadata["record_sync"]["tasks"]["status"] == "queued"
+    assert integration.connection_metadata["record_sync"]["notes"]["status"] == "queued"
 
 
 def test_initial_sync_service_noops_for_hubspot_placeholder() -> None:

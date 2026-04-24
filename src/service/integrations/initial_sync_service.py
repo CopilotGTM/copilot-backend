@@ -87,6 +87,7 @@ class InitialSyncService:
             record_sync["contacts"] = {"status": "queued"}
             record_sync["deals"] = {"status": "queued"}
             record_sync["tasks"] = {"status": "queued"}
+            record_sync["notes"] = {"status": "queued"}
             metadata["record_sync"] = record_sync
             integration.connection_metadata = metadata
             return
@@ -104,6 +105,7 @@ class InitialSyncService:
             record_sync["contacts"] = {"status": "queued"}
             record_sync["deals"] = {"status": "queued"}
             record_sync["tasks"] = {"status": "queued"}
+            record_sync["notes"] = {"status": "queued"}
             metadata["record_sync"] = record_sync
             integration.connection_metadata = metadata
             return

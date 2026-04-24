@@ -15,11 +15,11 @@ Only the chain terminators write `initial_sync_status`.
 
 ### HubSpot
 
-`schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
+`schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
 
 ### Salesforce
 
-`schema -> pipelines -> users -> companies -> contacts -> deals -> finalize`
+`schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize`
 
 Code:
 
@@ -35,10 +35,10 @@ Queued state after connect:
 
 - HubSpot:
   - `schema_sync.deals.status = "queued"`
-  - `record_sync.pipelines/users/companies/contacts/deals.status = "queued"`
+  - `record_sync.pipelines/users/companies/contacts/deals/tasks/notes.status = "queued"`
 - Salesforce:
   - `schema_sync.opportunities.status = "queued"`
-  - `record_sync.pipelines/users/companies/contacts/deals.status = "queued"`
+  - `record_sync.pipelines/users/companies/contacts/deals/tasks/notes.status = "queued"`
 
 Per-phase tasks update:
 
@@ -61,6 +61,7 @@ HubSpot currently writes:
 - `crm_deal_stage_history`
 - `crm_deal_participants`
 - `crm_object_associations`
+- `crm_activities` for tasks and notes
 
 Salesforce currently writes:
 
@@ -74,6 +75,7 @@ Salesforce currently writes:
 - `crm_deal_stage_history`
 - `crm_deal_participants`
 - `crm_object_associations`
+- `crm_activities` for tasks and notes
 
 Rows are provider-isolated by `integration_id`.
 

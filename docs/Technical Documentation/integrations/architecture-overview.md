@@ -121,8 +121,8 @@ User clicks "Connect" in frontend
       2. Store tokens in KnowledgeIntegration.credentials
       3. apply_post_connect_state() stamps queued provider-specific CRM metadata
       4. trigger_initial_sync() dispatches the provider chain:
-         - HubSpot -> schema -> pipelines -> users -> companies -> contacts -> deals -> finalize
-         - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> deals -> finalize
+         - HubSpot -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
+         - Salesforce -> schema -> pipelines -> users -> companies -> contacts -> deals -> tasks -> notes -> finalize
 
 Kubernetes CronJob (scheduled — this repo does NOT use in-process Celery Beat)
   -> `python -m src.workers.integrations_worker.cron_dispatch --job <name>`

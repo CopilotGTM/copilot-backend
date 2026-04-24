@@ -45,6 +45,7 @@ def build_hubspot_initial_sync_chain(
         task_signature("integrations.sync_hubspot_contacts", kwargs=kwargs),
         task_signature("integrations.sync_hubspot_deals", kwargs=kwargs),
         task_signature("integrations.sync_hubspot_tasks", kwargs=kwargs),
+        task_signature("integrations.sync_hubspot_notes", kwargs=kwargs),
         task_signature(
             "integrations.mark_hubspot_initial_sync_succeeded",
             kwargs=kwargs,

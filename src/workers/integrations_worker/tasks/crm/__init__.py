@@ -21,6 +21,9 @@ from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_initial_sync_fail
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_initial_sync_succeeded_task import (
     mark_hubspot_initial_sync_succeeded_task,
 )
+from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_note_record_sync_task import (
+    sync_hubspot_notes_task,
+)
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_pipeline_record_sync_task import (
     sync_hubspot_pipelines_task,
 )
@@ -44,6 +47,9 @@ from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_initial_syn
 )
 from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_initial_sync_succeeded_task import (
     mark_salesforce_initial_sync_succeeded_task,
+)
+from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_note_record_sync_task import (
+    sync_salesforce_notes_task,
 )
 from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_opportunity_schema_all_orgs_task import (
     sync_salesforce_opportunity_schema_all_orgs_task,
@@ -70,6 +76,7 @@ __all__ = [
     "sync_hubspot_contacts_task",
     "sync_hubspot_deals_task",
     "sync_hubspot_tasks_task",
+    "sync_hubspot_notes_task",
     "mark_hubspot_initial_sync_succeeded_task",
     "mark_hubspot_initial_sync_failed_task",
     "sync_salesforce_opportunity_schema_task",
@@ -80,6 +87,7 @@ __all__ = [
     "sync_salesforce_contacts_task",
     "sync_salesforce_deals_task",
     "sync_salesforce_tasks_task",
+    "sync_salesforce_notes_task",
     "mark_salesforce_initial_sync_succeeded_task",
     "mark_salesforce_initial_sync_failed_task",
 ]

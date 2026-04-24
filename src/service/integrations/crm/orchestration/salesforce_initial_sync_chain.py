@@ -25,6 +25,7 @@ def build_salesforce_initial_sync_chain(
         task_signature("integrations.sync_salesforce_contacts", kwargs=kwargs),
         task_signature("integrations.sync_salesforce_deals", kwargs=kwargs),
         task_signature("integrations.sync_salesforce_tasks", kwargs=kwargs),
+        task_signature("integrations.sync_salesforce_notes", kwargs=kwargs),
         task_signature("integrations.mark_salesforce_initial_sync_succeeded", kwargs=kwargs),
     )
     failure_terminator = task_signature(

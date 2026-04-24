@@ -6,7 +6,7 @@ from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain im
 )
 
 
-def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_users_then_companies_then_contacts_then_deals_then_tasks_then_finalize() -> (
+def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_users_then_companies_then_contacts_then_deals_then_tasks_then_notes_then_finalize() -> (
     None
 ):
     organisation_id = uuid4()
@@ -25,6 +25,7 @@ def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_u
                 "contacts",
                 "deals",
                 "tasks",
+                "notes",
                 "finalize",
                 failure_signature,
             ],
@@ -51,6 +52,7 @@ def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_u
         call("integrations.sync_salesforce_contacts", kwargs=kwargs),
         call("integrations.sync_salesforce_deals", kwargs=kwargs),
         call("integrations.sync_salesforce_tasks", kwargs=kwargs),
+        call("integrations.sync_salesforce_notes", kwargs=kwargs),
         call("integrations.mark_salesforce_initial_sync_succeeded", kwargs=kwargs),
         call("integrations.mark_salesforce_initial_sync_failed", kwargs=kwargs),
     ]
@@ -62,6 +64,7 @@ def test_build_salesforce_initial_sync_chain_orders_schema_then_pipelines_then_u
         "contacts",
         "deals",
         "tasks",
+        "notes",
         "finalize",
     )
     chain_signature.set.assert_called_once_with(link_error=failure_signature)

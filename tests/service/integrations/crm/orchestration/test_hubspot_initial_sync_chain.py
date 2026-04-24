@@ -24,6 +24,7 @@ def test_build_hubspot_initial_sync_chain_orders_all_phases_then_finalize() -> N
                 "contacts",
                 "deals",
                 "tasks",
+                "notes",
                 "finalize",
             ],
         ) as mock_task_signature,
@@ -50,6 +51,7 @@ def test_build_hubspot_initial_sync_chain_orders_all_phases_then_finalize() -> N
         call("integrations.sync_hubspot_contacts", kwargs=kwargs),
         call("integrations.sync_hubspot_deals", kwargs=kwargs),
         call("integrations.sync_hubspot_tasks", kwargs=kwargs),
+        call("integrations.sync_hubspot_notes", kwargs=kwargs),
         call("integrations.mark_hubspot_initial_sync_succeeded", kwargs=kwargs),
     ]
     mock_chain.assert_called_once_with(
@@ -60,6 +62,7 @@ def test_build_hubspot_initial_sync_chain_orders_all_phases_then_finalize() -> N
         "contacts",
         "deals",
         "tasks",
+        "notes",
         "finalize",
     )
     chain_signature.set.assert_called_once_with(link_error=failure_signature)
