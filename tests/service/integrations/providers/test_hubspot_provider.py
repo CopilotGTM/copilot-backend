@@ -33,6 +33,7 @@ async def test_hubspot_provider_builds_authorization_url() -> None:
             "crm.objects.line_items.read crm.objects.line_items.write "
             "crm.objects.products.read crm.objects.products.write "
             "crm.objects.owners.read crm.objects.users.read "
+            "crm.objects.tasks.read crm.objects.notes.read "
             "crm.schemas.companies.read crm.schemas.contacts.read crm.schemas.deals.read"
         )
     ]

@@ -20,3 +20,11 @@ def test_salesforce_metadata_is_beta_and_org_scoped() -> None:
     assert metadata.availability_status == AvailabilityStatus.BETA
     assert metadata.default_scope == IntegrationScope.ORGANIZATION
     assert metadata.allow_multiple_connections is False
+    assert metadata.oauth_scopes == [
+        "refresh_token",
+        "offline_access",
+        "api",
+        "openid",
+        "profile",
+        "email",
+    ]

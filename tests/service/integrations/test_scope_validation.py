@@ -85,3 +85,40 @@ def test_get_missing_required_scopes_detects_missing_slack_scopes() -> None:
         "users:read.email",
         "team:read",
     }
+
+
+def test_get_missing_required_scopes_detects_missing_hubspot_task_scope() -> None:
+    assert "crm.objects.tasks.read" in get_missing_required_scopes(
+        IntegrationType.HUBSPOT,
+        [
+            "oauth",
+            "automation",
+            "conversations.read",
+            "sales-email-read",
+            "crm.objects.companies.read",
+            "crm.objects.contacts.read",
+            "crm.objects.deals.read",
+            "crm.objects.leads.read",
+            "crm.objects.line_items.read",
+            "crm.objects.products.read",
+            "crm.objects.owners.read",
+            "crm.objects.users.read",
+            "crm.schemas.companies.read",
+            "crm.schemas.contacts.read",
+            "crm.schemas.deals.read",
+            "crm.objects.notes.read",
+        ],
+    )
+
+
+def test_get_missing_required_scopes_accepts_salesforce_offline_access_alias() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.SALESFORCE,
+            [
+                "api",
+                "offline_access",
+            ],
+        )
+        == set()
+    )

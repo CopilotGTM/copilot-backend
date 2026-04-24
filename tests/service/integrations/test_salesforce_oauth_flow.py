@@ -16,6 +16,8 @@ from src.service.integrations.copilot_callback_service import CopilotCallbackSer
 from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.service.integrations.integration_service import IntegrationService
 
+_SALESFORCE_GRANTED_SCOPE = "refresh_token api"
+
 
 class FakeResult:
     def __init__(self, *, scalar: object | None = None) -> None:
@@ -156,6 +158,7 @@ async def test_callback_reactivates_existing_salesforce_integration() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 
@@ -205,6 +208,7 @@ async def test_callback_rejects_personal_email_accounts() -> None:
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "seller@gmail.com"}
 
@@ -251,6 +255,7 @@ async def test_callback_rejects_duplicate_account_connected_by_other_user() -> N
         "access_token": "new-access",
         "refresh_token": "new-refresh",
         "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
     }
     provider.get_user_info.return_value = {"email": "sales@acme.com"}
 

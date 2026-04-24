@@ -142,6 +142,8 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
             "crm.objects.products.write",
             "crm.objects.owners.read",
             "crm.objects.users.read",
+            "crm.objects.tasks.read",
+            "crm.objects.notes.read",
             "crm.schemas.companies.read",
             "crm.schemas.contacts.read",
             "crm.schemas.deals.read",
@@ -319,7 +321,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
         availability_status=AvailabilityStatus.BETA,
-        oauth_scopes=["refresh_token", "api", "openid", "profile", "email"],
+        oauth_scopes=["refresh_token", "offline_access", "api", "openid", "profile", "email"],
         documentation_url="https://developer.salesforce.com/docs/platform/mobile-sdk/guide/oauth-scope-parameter-values.html",
         default_sync_frequency="manual",
         # Access Control - Organization wide CRM

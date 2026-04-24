@@ -75,6 +75,8 @@ class HubSpotProvider(BaseIntegrationProvider):
             "crm.objects.products.write",
             "crm.objects.owners.read",
             "crm.objects.users.read",
+            "crm.objects.tasks.read",
+            "crm.objects.notes.read",
             "crm.schemas.companies.read",
             "crm.schemas.contacts.read",
             "crm.schemas.deals.read",

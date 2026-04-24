@@ -87,6 +87,22 @@ class CopilotCallbackService:
         if integration_type == IntegrationType.SLACK:
             return "Slack permissions were not granted. Please reconnect and allow Slack access."
 
+        if integration_type == IntegrationType.HUBSPOT:
+            if {"crm.objects.tasks.read", "crm.objects.notes.read"} & missing_scopes:
+                return (
+                    "HubSpot activity permissions were not granted. "
+                    "Please reconnect and allow HubSpot task and note access."
+                )
+            return (
+                "HubSpot permissions were not granted. Please reconnect and allow HubSpot access."
+            )
+
+        if integration_type == IntegrationType.SALESFORCE:
+            return (
+                "Salesforce permissions were not granted. "
+                "Please reconnect and allow Salesforce access."
+            )
+
         integration_name = INTEGRATION_METADATA[integration_type].name
         return (
             f"Required {integration_name} permissions were not granted. "
