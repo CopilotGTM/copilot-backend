@@ -30,8 +30,6 @@ if os.getenv("ENV", "local") == "local":
     load_dotenv(BASE_DIR / ".env", override=False)
 
 configure_logging(component="api")
-# Initialize Sentry before importing routers so startup/import failures are captured.
-init_sentry()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,6 +105,8 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
+    init_sentry()
+    logger.info("Sentry initialized")
 
     # Initialize Redis connection pools at startup
     logger.info("Initializing Redis connection pools...")
