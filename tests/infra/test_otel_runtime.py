@@ -343,30 +343,63 @@ def test_create_fastapi_app_instruments_shared_app_instance(mocker):
     instrument_mock.assert_called_once_with(app_state.fastapp)
 
 
-def test_fastapi_lifespan_does_not_reinitialize_sentry(mocker):
-    # Sentry is initialized at module import so startup/import failures are captured;
-    # the lifespan must not redundantly call it again.
-    mocker.patch("src.api.fastapi_app.initialize_redis_pool", side_effect=lambda: None)
-    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", side_effect=lambda: None)
-    mocker.patch("src.api.fastapi_app.async_init_otel", side_effect=lambda **kwargs: None)
-    mocker.patch("src.api.fastapi_app.close_redis_pool", side_effect=lambda: None)
-    mocker.patch("src.api.fastapi_app.close_async_redis_pool", side_effect=lambda: None)
-    sentry_mock = mocker.patch("src.api.fastapi_app.init_sentry")
+def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
+    call_order: list[str] = []
 
-    async def _noop_init():
-        return None
+    mocker.patch(
+        "src.api.fastapi_app.initialize_redis_pool",
+        side_effect=lambda: call_order.append("redis"),
+    )
+
+    async def _async_redis_init():
+        call_order.append("async_redis")
+
+    async def _security_init(**kwargs):
+        call_order.append("security")
+
+    async def _otel_init(**kwargs):
+        call_order.append("otel")
+
+    async def _async_redis_close():
+        call_order.append("async_redis_close")
+
+    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", side_effect=_async_redis_init)
+    mocker.patch.object(
+        fastapi_app.security_secrets_config,
+        "preload_required",
+        side_effect=_security_init,
+    )
+    mocker.patch("src.api.fastapi_app.async_init_otel", side_effect=_otel_init)
+    mocker.patch(
+        "src.api.fastapi_app.close_redis_pool",
+        side_effect=lambda: call_order.append("redis_close"),
+    )
+    mocker.patch("src.api.fastapi_app.close_async_redis_pool", side_effect=_async_redis_close)
+    mocker.patch(
+        "src.api.fastapi_app.init_sentry",
+        side_effect=lambda: call_order.append("sentry"),
+    )
+
+    async def _admin_init():
+        call_order.append("supabase_admin")
+
+    async def _user_init():
+        call_order.append("supabase_user")
+
+    async def _revocation_init():
+        call_order.append("token_revocation")
 
     mocker.patch(
         "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
-        side_effect=_noop_init,
+        side_effect=_admin_init,
     )
     mocker.patch(
         "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
-        side_effect=_noop_init,
+        side_effect=_user_init,
     )
     mocker.patch(
         "src.infra.security.token_revocation.token_revocation_service.initialize",
-        side_effect=_noop_init,
+        side_effect=_revocation_init,
     )
 
     async def _run() -> None:
@@ -375,7 +408,18 @@ def test_fastapi_lifespan_does_not_reinitialize_sentry(mocker):
 
     asyncio.run(_run())
 
-    sentry_mock.assert_not_called()
+    assert call_order == [
+        "redis",
+        "async_redis",
+        "security",
+        "supabase_admin",
+        "supabase_user",
+        "token_revocation",
+        "sentry",
+        "otel",
+        "redis_close",
+        "async_redis_close",
+    ]
 
 
 def _build_fresh_fastapi_app(mocker) -> FastAPI:
