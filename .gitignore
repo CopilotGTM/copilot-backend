@@ -203,8 +203,7 @@ tmpclaude-*
 nul
 .claude/
 
-# Local dispatch scripts + experimental policy modules kept out of tree.
+# Local dispatch scripts kept out of tree.
 send_hubspot_deal_schema_sync.py
-src/service/integrations/crm/schema/hubspot_deal_field_policy.py
 tests/scripts/test_send_hubspot_deal_schema_sync.py
 tests/service/integrations/crm/schema/test_hubspot_deal_field_policy.py
