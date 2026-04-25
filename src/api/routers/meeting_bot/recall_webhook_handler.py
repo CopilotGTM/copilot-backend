@@ -17,9 +17,7 @@ from src.service.integrations.meeting_recording.providers import (
     RecallWebhookVerificationError,
     verify_recall_webhook_signature,
 )
-from src.workers.deal_worker.tasks.meeting_bot_tasks import (
-    process_meeting_recording_webhook_task,
-)
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
@@ -83,10 +81,23 @@ async def handle_recall_webhook(request: Request) -> Response:
 
     # Background processing owns the org lookup, session mutation, and any
     # provider follow-up fetches so the HTTP handler remains cheap and idempotent.
-    process_meeting_recording_webhook_task.apply_async(
-        kwargs={
-            "payload": payload,
-            "webhook_id": webhook_id,
-        }
-    )
+    try:
+        await send_deal_task_async(
+            "deal.process_meeting_recording_webhook",
+            kwargs={
+                "payload": payload,
+                "webhook_id": webhook_id,
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to queue meeting recording webhook task",
+            extra={"webhook_id": webhook_id},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to queue webhook processing task",
+        ) from exc
+
     return Response(status_code=status.HTTP_200_OK)
