@@ -161,6 +161,83 @@ async def test_slack_create_bot_job_channel():
     assert job.chat_type == "SLACK_CHAT"
 
 
+@pytest.mark.asyncio
+async def test_whatsapp_create_bot_job_personal():
+    """WhatsApp personal chat: creates session + message + job."""
+    from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+    bot = WhatsAppBotService()
+    user = _make_user()
+    captured_jobs = []
+
+    class TrackingSession(_FakeAsyncSession):
+        def add(self, obj):
+            super().add(obj)
+            if hasattr(obj, "job_type"):
+                captured_jobs.append(obj)
+
+    async def gen(org_id):
+        yield TrackingSession()
+
+    with patch(_PATCH_ASYNC_SESSION, side_effect=gen):
+        job_id = await bot._create_bot_job(user=user, message_text="hi")
+
+    assert isinstance(job_id, UUID)
+    assert len(captured_jobs) == 1
+    job = captured_jobs[0]
+    assert job.job_type == "whatsapp_chat_response"
+    assert job.chat_type == "WHATSAPP_CHAT"
+    assert job.status.value == "pending"
+    assert job.user_id == user.user_id
+
+
+@pytest.mark.asyncio
+async def test_send_whatsapp_payload_uses_whatsapp_bot_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.adapters import ChannelPayload
+
+    captured: dict[str, str] = {}
+
+    class FakeWhatsAppBotService:
+        async def send_text_message(
+            self, phone_number_id: str, recipient_wa_id: str, text: str
+        ) -> bool:
+            captured["phone_number_id"] = phone_number_id
+            captured["recipient_wa_id"] = recipient_wa_id
+            captured["text"] = text
+            return True
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.WhatsAppBotService",
+        FakeWhatsAppBotService,
+    )
+
+    service = BotMessageProcessingService(uuid4())
+    sent = await service._send_payload(
+        "whatsapp",
+        {"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+        ChannelPayload(type="message", content={"text": "hello"}),
+    )
+
+    assert sent is True
+    assert captured == {
+        "phone_number_id": "phone-123",
+        "recipient_wa_id": "15551234567",
+        "text": "hello",
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_whatsapp_payload_requires_reply_context() -> None:
+    from src.adapters import ChannelPayload
+
+    service = BotMessageProcessingService(uuid4())
+    sent = await service._send_payload("whatsapp", {}, ChannelPayload(type="message", content={}))
+
+    assert sent is False
+
+
 # ---------------------------------------------------------------------------
 # _finalize_job (sync, worker-side)
 # ---------------------------------------------------------------------------

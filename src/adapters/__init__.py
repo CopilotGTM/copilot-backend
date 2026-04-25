@@ -207,8 +207,14 @@ def get_adapter(channel: str, *args, **kwargs) -> ChannelAdapter:
         from src.adapters.slack_adapter import SlackAdapter
 
         return SlackAdapter(*args, **kwargs)
+    elif channel == "whatsapp":
+        from src.adapters.whatsapp_adapter import WhatsAppAdapter
+
+        return WhatsAppAdapter(*args, **kwargs)
     else:
-        raise ValueError(f"Unsupported channel: {channel}. Supported channels: teams, slack")
+        raise ValueError(
+            f"Unsupported channel: {channel}. Supported channels: teams, slack, whatsapp"
+        )
 
 
 __all__ = [

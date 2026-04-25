@@ -874,6 +874,18 @@ class BotMessageProcessingService:
                         conversation_id=conversation_id,
                         message=_STATIC_ERROR_MESSAGE,
                     )
+            elif provider == "whatsapp":
+                phone_number_id = reply_context.get("phone_number_id")
+                recipient_wa_id = reply_context.get("recipient_wa_id")
+                if phone_number_id and recipient_wa_id:
+                    from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+                    whatsapp_bot = WhatsAppBotService()
+                    await whatsapp_bot.send_text_message(
+                        phone_number_id=phone_number_id,
+                        recipient_wa_id=recipient_wa_id,
+                        text=_STATIC_ERROR_MESSAGE,
+                    )
         except Exception:
             logger.warning("Thinking indicator cleanup failed", exc_info=True)
 
@@ -945,6 +957,8 @@ class BotMessageProcessingService:
             return await self._send_teams_payload(reply_context, payload)
         elif provider == "slack":
             return await self._send_slack_payload(reply_context, payload)
+        elif provider == "whatsapp":
+            return await self._send_whatsapp_payload(reply_context, payload)
         else:
             logger.error("Unsupported bot provider: %s", provider)
             return False
@@ -1169,6 +1183,28 @@ class BotMessageProcessingService:
             )
         else:
             return await bot_service._send_message(team_id, channel_id, text, thread_ts=thread_ts)
+
+    async def _send_whatsapp_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
+        """Send rendered payload to WhatsApp Cloud API."""
+        from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+        phone_number_id = reply_context.get("phone_number_id", "")
+        recipient_wa_id = reply_context.get("recipient_wa_id", "")
+        text = payload.content.get("text") or payload.text_fallback or ""
+
+        if not phone_number_id or not recipient_wa_id:
+            logger.error(
+                "Missing WhatsApp reply context: phone_number_id=%s recipient_wa_id=%s",
+                bool(phone_number_id),
+                bool(recipient_wa_id),
+            )
+            return False
+
+        return await WhatsAppBotService().send_text_message(
+            phone_number_id=phone_number_id,
+            recipient_wa_id=recipient_wa_id,
+            text=text,
+        )
 
     async def _get_slack_bot_token(self, team_id: str) -> str | None:
         """Look up the Slack bot token for a workspace."""
