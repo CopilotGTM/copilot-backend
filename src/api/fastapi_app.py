@@ -105,8 +105,6 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
-    init_sentry()
-    logger.info("Sentry initialized")
 
     # Initialize Redis connection pools at startup
     logger.info("Initializing Redis connection pools...")
@@ -119,10 +117,6 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Security signing secrets initialized")
 
-    # Load OTel auth headers from Key Vault and initialize tracing
-    await async_init_otel(service_name_suffix="-api")
-    logger.info("OpenTelemetry initialized")
-
     # Load Supabase credentials from Key Vault (or env vars for local dev)
     from src.infra.auth.supabase_admin_client import supabase_admin_client
     from src.infra.auth.supabase_user_client import supabase_user_client
@@ -132,6 +126,15 @@ async def lifespan(app: FastAPI):
     await supabase_user_client.initialize()
     await token_revocation_service.initialize()
     logger.info("Supabase clients initialized")
+
+    # Supabase auth uses an HTTP/2 httpx transport; create it before observability
+    # integrations instrument httpx, otherwise auth requests can fail at framing time.
+    init_sentry()
+    logger.info("Sentry initialized")
+
+    # Load OTel auth headers from Key Vault and initialize tracing
+    await async_init_otel(service_name_suffix="-api")
+    logger.info("OpenTelemetry initialized")
 
     yield
 
