@@ -83,6 +83,28 @@ def test_whatsapp_personal_chat_gets_mobile_plain_text_system_message() -> None:
     }
 
 
+def test_google_chat_personal_chat_gets_chat_plain_text_system_message() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    messages = service._build_messages(
+        message_text="summarize the deal",
+        chat_history=None,
+        bot_context={"conversation_type": "personal"},
+        provider="google_chat",
+    )
+
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
+    assert "Google Chat" in content
+    assert "plain text" in content
+    assert "cards or channel internals" in content
+    assert messages[-1] == {
+        "role": "user",
+        "content": "summarize the deal",
+        "attachment_manifest": None,
+    }
+
+
 def test_slack_personal_chat_keeps_no_system_message() -> None:
     service = BotMessageProcessingService(uuid4())
 
@@ -319,6 +341,20 @@ def test_build_status_context_supports_whatsapp() -> None:
     }
 
 
+def test_build_status_context_returns_none_for_google_chat() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    status_ctx = service._build_status_context(
+        "google_chat",
+        {
+            "space_name": "spaces/AAA",
+            "thread_name": "spaces/AAA/threads/THREAD1",
+        },
+    )
+
+    assert status_ctx is None
+
+
 @pytest.mark.asyncio
 async def test_update_thinking_status_sends_whatsapp_typing_indicator(
     monkeypatch: pytest.MonkeyPatch,
@@ -389,3 +425,39 @@ async def test_provider_sets_agent_channel_without_reply_context_shape(
     )
 
     assert captured["channel"] == "whatsapp"
+
+
+@pytest.mark.asyncio
+async def test_send_payload_dispatches_google_chat_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.adapters import ChannelPayload
+
+    service = BotMessageProcessingService(uuid4())
+    sent: dict[str, object] = {}
+
+    class FakeGoogleChatBotService:
+        async def send_message(self, **kwargs) -> bool:
+            sent.update(kwargs)
+            return True
+
+    monkeypatch.setattr(
+        "src.service.bots.google_chat_bot_service.GoogleChatBotService",
+        FakeGoogleChatBotService,
+    )
+
+    success = await service._send_payload(
+        "google_chat",
+        {
+            "space_name": "spaces/AAA",
+            "thread_name": "spaces/AAA/threads/THREAD1",
+        },
+        ChannelPayload(type="message", content={"text": "Done"}),
+    )
+
+    assert success is True
+    assert sent == {
+        "space_name": "spaces/AAA",
+        "text": "Done",
+        "thread_name": "spaces/AAA/threads/THREAD1",
+    }

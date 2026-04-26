@@ -56,6 +56,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy>=0.41b0",
     "opentelemetry-instrumentation-redis>=0.41b0",
     "pypdf>=5.9.0",
+    "google-auth>=2.38.0",
 ]
 
 [project.optional-dependencies]

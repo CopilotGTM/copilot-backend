@@ -25,6 +25,7 @@ api:
     OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp-gateway-prod-us-west-0.grafana.net/otlp"
     REDIS_SSL_CERT_REQS: "CERT_REQUIRED"
     GOOGLE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
+    GOOGLE_CHAT_AUTH_AUDIENCE: "https://devapi.copilotgtm.com/users/bots/google-chat/events"
     MICROSOFT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     SLACK_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     HUBSPOT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"

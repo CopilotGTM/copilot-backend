@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build a single page that links a user's external bot identity (e.g. Microsoft Teams) to their CopilotGTM account. The backend handles all identity mapping and token validation — the frontend just needs to orchestrate the login check and one API call.
+Build a single page that links a user's external bot identity (e.g. Microsoft Teams, Slack, WhatsApp, or Google Chat) to their CopilotGTM account. The backend handles all identity mapping and token validation — the frontend just needs to orchestrate the login check and one API call.
 
 **Route:** `/bots/auth`
 
@@ -36,7 +36,7 @@ https://app.copilotgtm.com/bots/auth?state=<token>&provider=teams
 
 ```
 state    = URL query param "state"    (required)
-provider = URL query param "provider" (required, e.g. "teams")
+provider = URL query param "provider" (required, e.g. "teams", "slack", "whatsapp", "google_chat")
 ```
 
 If either is missing, show an error: **"Invalid link. Please go back to the bot and type `login` to get a new link."**
@@ -199,7 +199,7 @@ Full endpoint URLs:
 ## Testing
 
 1. Trigger the flow from the Teams bot (send any message, bot responds with sign-in link)
-2. Click the link -> page should load at `/bots/auth?state=...&provider=teams`
+2. Click the link -> page should load at `/bots/auth?state=...&provider=teams` or the relevant provider such as `google_chat`
 3. If already logged into CopilotGTM -> should auto-link and show success
 4. If not logged in -> should show login form -> after login -> auto-link -> success
 5. Go back to Teams and send a message -> bot should recognize you

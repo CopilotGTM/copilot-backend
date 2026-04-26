@@ -37,6 +37,7 @@ class ExternalIdentityProvider(str, Enum):
     TEAMS = "teams"
     SLACK = "slack"
     WHATSAPP = "whatsapp"
+    GOOGLE_CHAT = "google_chat"
     AZURE_AD = "azure_ad"
     GOOGLE = "google"
     OKTA = "okta"
