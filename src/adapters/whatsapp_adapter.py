@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.adapters import AgentResponse, ChannelAdapter, ChannelContext, ChannelPayload, ResponseType
 from src.infra.messaging.chat_stream_models import Frame
+
+_STRUCTURED_RESULT_LIMIT = 8
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 class WhatsAppAdapter(ChannelAdapter):
@@ -39,7 +44,8 @@ class WhatsAppAdapter(ChannelAdapter):
         return self.render_text(response.text)
 
     def render_text(self, text: str) -> ChannelPayload:
-        return ChannelPayload(type="message", content={"text": text}, text_fallback=text)
+        rendered = _normalize_whatsapp_text(text)
+        return ChannelPayload(type="message", content={"text": rendered}, text_fallback=rendered)
 
     def render_question(
         self,
@@ -64,12 +70,20 @@ class WhatsAppAdapter(ChannelAdapter):
         if title:
             lines.append(title)
         if items:
-            for item in items:
+            visible_items = items[:_STRUCTURED_RESULT_LIMIT]
+            for index, item in enumerate(visible_items, start=1):
                 if isinstance(item, dict):
-                    lines.extend(f"{key}: {value}" for key, value in item.items())
+                    lines.append(f"{index}. {_format_record(item)}")
+                else:
+                    lines.append(f"{index}. {item}")
+            if len(items) > _STRUCTURED_RESULT_LIMIT:
+                lines.append(f"{len(items) - _STRUCTURED_RESULT_LIMIT} more results not shown.")
         elif rows and columns:
-            for row in rows:
-                lines.append(" | ".join(f"{col}: {row.get(col, '')}" for col in columns))
+            visible_rows = rows[:_STRUCTURED_RESULT_LIMIT]
+            for index, row in enumerate(visible_rows, start=1):
+                lines.append(f"{index}. {_format_record(row, columns)}")
+            if len(rows) > _STRUCTURED_RESULT_LIMIT:
+                lines.append(f"{len(rows) - _STRUCTURED_RESULT_LIMIT} more results not shown.")
         return self.render_text("\n".join(lines).strip() or "No results.")
 
     def render_confirmation(self, prompt: str) -> ChannelPayload:
@@ -77,3 +91,80 @@ class WhatsAppAdapter(ChannelAdapter):
 
     def render_error(self, message: str) -> ChannelPayload:
         return self.render_text(message)
+
+
+def _normalize_whatsapp_text(text: str) -> str:
+    text = _convert_markdown_tables(text or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", text)
+    text = re.sub(r"^```[^\n]*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*>\s?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"(?<!\*)\*\*([^*\n]+)\*\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?<!_)__([^_\n]+)__(?!_)", r"\1", text)
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+
+    lines = [line.rstrip() for line in text.split("\n")]
+    compact_lines: list[str] = []
+    previous_blank = False
+    for line in lines:
+        stripped = line.strip()
+        if _MARKDOWN_TABLE_SEPARATOR_RE.match(stripped):
+            continue
+        if not stripped:
+            if not previous_blank and compact_lines:
+                compact_lines.append("")
+            previous_blank = True
+            continue
+        compact_lines.append(stripped)
+        previous_blank = False
+
+    return "\n".join(compact_lines).strip()
+
+
+def _convert_markdown_tables(text: str) -> str:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    output: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        if (
+            index + 1 < len(lines)
+            and _is_table_row(lines[index])
+            and _MARKDOWN_TABLE_SEPARATOR_RE.match(lines[index + 1].strip())
+        ):
+            headers = _split_table_row(lines[index])
+            index += 2
+            table_rows: list[list[str]] = []
+            while index < len(lines) and _is_table_row(lines[index]):
+                table_rows.append(_split_table_row(lines[index]))
+                index += 1
+
+            for row_number, row in enumerate(table_rows, start=1):
+                row_record = {
+                    header: row[column_index] if column_index < len(row) else ""
+                    for column_index, header in enumerate(headers)
+                    if header
+                }
+                output.append(f"{row_number}. {_format_record(row_record)}")
+            continue
+
+        output.append(lines[index])
+        index += 1
+
+    return "\n".join(output)
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return "|" in stripped and stripped.count("|") >= 1
+
+
+def _split_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _format_record(record: dict[str, Any], columns: list[str] | None = None) -> str:
+    keys = columns or list(record.keys())
+    parts = [f"{key}: {record.get(key, '')}" for key in keys if record.get(key) not in (None, "")]
+    return "; ".join(parts) if parts else "No details"

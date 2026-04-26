@@ -1,10 +1,65 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
+from uuid import uuid4
 
+import pytest
+from src.domain.models.organisation_tables.chat_message_models import AttachmentSourceProvider
+from src.infra.config.configs import chat_file_upload_config, whatsapp_config
+from src.service.bots.whatsapp_bot_service import WhatsAppInboundMedia
+from src.service.chat.chat_attachment_manifest import AttachmentContextItem
 from src.service.chat.external_chat_attachment_ingest_service import (
     ExternalChatAttachmentIngestService,
 )
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        *,
+        json_data=None,
+        body: bytes = b"",
+        content_type: str = "application/octet-stream",
+    ):
+        self._json_data = json_data or {}
+        self._body = body
+        self.content_type = content_type
+        self.status = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def json(self):
+        return self._json_data
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+class _FakeClientSession:
+    calls: list[dict[str, object]] = []
+    responses: list[_FakeResponse] = []
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def get(self, url: str, **kwargs):
+        self.calls.append({"url": url, "kwargs": kwargs})
+        return self.responses.pop(0)
+
 
 # ---------------------------------------------------------------------------
 # _resolve_teams_download — static method, no setup needed
@@ -78,6 +133,128 @@ def test_resolve_teams_download_unknown_source_returns_url_directly() -> None:
     )
     assert url == "https://example.com/file.pdf"
     assert headers == {}
+
+
+# ---------------------------------------------------------------------------
+# ingest_whatsapp_media_files
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_whatsapp_media_downloads_graph_media_with_bearer_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ExternalChatAttachmentIngestService(
+        org_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_ingest_attachment_bytes(**kwargs):
+        captured.update(kwargs)
+        return AttachmentContextItem(
+            attachment_id="attachment-1",
+            filename=kwargs["filename"],
+            mimetype=kwargs["mimetype"],
+            source_provider=kwargs["source_provider"].value,
+        )
+
+    _FakeClientSession.calls = []
+    _FakeClientSession.responses = [
+        _FakeResponse(
+            json_data={
+                "url": "https://lookaside.whatsapp.test/media-1",
+                "mime_type": "application/pdf",
+                "file_size": 25,
+            }
+        ),
+        _FakeResponse(body=b"%PDF fake", content_type="application/pdf"),
+    ]
+    monkeypatch.setattr(
+        "src.service.chat.external_chat_attachment_ingest_service.aiohttp.ClientSession",
+        _FakeClientSession,
+    )
+    monkeypatch.setattr(service, "ingest_attachment_bytes", fake_ingest_attachment_bytes)
+
+    items = await service.ingest_whatsapp_media_files(
+        [
+            WhatsAppInboundMedia(
+                media_id="media-1",
+                media_type="document",
+                mimetype="application/octet-stream",
+                filename="proposal.pdf",
+                caption="please summarize",
+                message_id="wamid.1",
+            )
+        ],
+        access_token="wa-token",
+    )
+
+    assert len(items) == 1
+    assert items[0].source_provider == "whatsapp"
+    assert captured["filename"] == "proposal.pdf"
+    assert captured["mimetype"] == "application/pdf"
+    assert captured["content"] == b"%PDF fake"
+    assert captured["source_provider"] == AttachmentSourceProvider.WHATSAPP
+    assert captured["source_external_id"] == "media-1"
+    assert _FakeClientSession.calls == [
+        {
+            "url": f"https://graph.facebook.com/{whatsapp_config.GRAPH_API_VERSION}/media-1",
+            "kwargs": {"headers": {"Authorization": "Bearer wa-token"}},
+        },
+        {
+            "url": "https://lookaside.whatsapp.test/media-1",
+            "kwargs": {"headers": {"Authorization": "Bearer wa-token"}},
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_whatsapp_media_skips_oversized_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ExternalChatAttachmentIngestService(
+        org_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+
+    async def fail_ingest_attachment_bytes(**_kwargs):
+        raise AssertionError("oversized media should not be downloaded or ingested")
+
+    _FakeClientSession.calls = []
+    _FakeClientSession.responses = [
+        _FakeResponse(
+            json_data={
+                "url": "https://lookaside.whatsapp.test/media-1",
+                "mime_type": "application/pdf",
+                "file_size": 100,
+            }
+        ),
+    ]
+    monkeypatch.setattr(chat_file_upload_config, "BOT_ATTACHMENT_MAX_INGEST_BYTES", 10)
+    monkeypatch.setattr(
+        "src.service.chat.external_chat_attachment_ingest_service.aiohttp.ClientSession",
+        _FakeClientSession,
+    )
+    monkeypatch.setattr(service, "ingest_attachment_bytes", fail_ingest_attachment_bytes)
+
+    items = await service.ingest_whatsapp_media_files(
+        [
+            WhatsAppInboundMedia(
+                media_id="media-1",
+                media_type="document",
+                mimetype="application/pdf",
+                filename="proposal.pdf",
+                message_id="wamid.1",
+            )
+        ],
+        access_token="wa-token",
+    )
+
+    assert items == []
+    assert len(_FakeClientSession.calls) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.workers.chat_worker.services.bot_message_processing_service import (
+    BotAgentResult,
     BotMessageProcessingService,
 )
 
@@ -229,6 +230,70 @@ async def test_send_whatsapp_payload_uses_whatsapp_bot_service(
 
 
 @pytest.mark.asyncio
+async def test_send_whatsapp_payload_splits_long_text_on_paragraphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.adapters import ChannelPayload
+
+    sent_texts: list[str] = []
+
+    class FakeWhatsAppBotService:
+        async def send_text_message(
+            self, phone_number_id: str, recipient_wa_id: str, text: str
+        ) -> bool:
+            sent_texts.append(text)
+            return True
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.WhatsAppBotService",
+        FakeWhatsAppBotService,
+    )
+
+    first = "A" * 2500
+    second = "B" * 2500
+    service = BotMessageProcessingService(uuid4())
+    sent = await service._send_payload(
+        "whatsapp",
+        {"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+        ChannelPayload(type="message", content={"text": f"{first}\n\n{second}"}),
+    )
+
+    assert sent is True
+    assert sent_texts == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_send_whatsapp_payload_fails_if_any_chunk_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.adapters import ChannelPayload
+
+    sent_texts: list[str] = []
+
+    class FakeWhatsAppBotService:
+        async def send_text_message(
+            self, phone_number_id: str, recipient_wa_id: str, text: str
+        ) -> bool:
+            sent_texts.append(text)
+            return len(sent_texts) == 1
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.WhatsAppBotService",
+        FakeWhatsAppBotService,
+    )
+
+    service = BotMessageProcessingService(uuid4())
+    sent = await service._send_payload(
+        "whatsapp",
+        {"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+        ChannelPayload(type="message", content={"text": f"{'A' * 2500}\n\n{'B' * 2500}"}),
+    )
+
+    assert sent is False
+    assert len(sent_texts) == 2
+
+
+@pytest.mark.asyncio
 async def test_send_whatsapp_payload_requires_reply_context() -> None:
     from src.adapters import ChannelPayload
 
@@ -337,3 +402,51 @@ class TestMarkJobInProgress:
             service._mark_job_in_progress(job_id)
 
         assert mock_job.status.value == "in_progress"
+
+    def test_completed_job_is_not_reopened(self, service):
+        from src.domain.models.organisation_tables.job_models import JobStatus
+
+        job_id = uuid4()
+        mock_job = SimpleNamespace(job_id=job_id, status=JobStatus.COMPLETED)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_job)
+
+        with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
+            should_process = service._mark_job_in_progress(job_id)
+
+        assert should_process is False
+        assert mock_job.status == JobStatus.COMPLETED
+
+    def test_process_skips_completed_job_without_agent_or_send(self, monkeypatch):
+        service = BotMessageProcessingService(uuid4())
+        job_id = uuid4()
+        calls: list[str] = []
+
+        async def fake_prepare_bot_message_input(**_kwargs):
+            calls.append("prepare")
+            return "hi", {}
+
+        async def fake_run_agent_and_accumulate(*_args, **_kwargs):
+            calls.append("agent")
+            return BotAgentResult()
+
+        async def fake_send_payload(*_args, **_kwargs):
+            calls.append("send")
+            return True
+
+        monkeypatch.setattr(service, "_mark_job_in_progress", lambda _job_id: False)
+        monkeypatch.setattr(service, "_prepare_bot_message_input", fake_prepare_bot_message_input)
+        monkeypatch.setattr(service, "_run_agent_and_accumulate", fake_run_agent_and_accumulate)
+        monkeypatch.setattr(service, "_send_payload", fake_send_payload)
+
+        result = service.process(
+            user_id=uuid4(),
+            message_text="hi",
+            provider="whatsapp",
+            reply_context={"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+            bot_context={},
+            job_id=job_id,
+        )
+
+        assert result is True
+        assert calls == []

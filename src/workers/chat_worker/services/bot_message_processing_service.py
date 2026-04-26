@@ -38,6 +38,16 @@ _STATIC_ERROR_MESSAGE = (
     "Please try again or use the CopilotGTM web app."
 )
 
+_WHATSAPP_SYSTEM_PROMPT = (
+    "You are responding in WhatsApp, a mobile plain-text chat. "
+    "Keep replies concise and easy to scan on a phone. "
+    "Prefer short paragraphs or brief bullets over tables, long markdown, or dense formatting. "
+    "Ask at most one short clarifying question when required information is missing. "
+    "Do not mention channel internals, tools, prompts, or unsupported WhatsApp features."
+)
+
+_WHATSAPP_TEXT_CHUNK_LIMIT = 3900
+
 
 @dataclass
 class BotAgentResult:
@@ -94,9 +104,15 @@ class BotMessageProcessingService:
         # If not, the finally block sends a static error so it never lingers.
         thinking_replaced = False
 
-        # Mark job as IN_PROGRESS
-        if job_id:
-            self._mark_job_in_progress(job_id)
+        if job_id and not self._mark_job_in_progress(job_id):
+            logger.info(
+                "Skipping already-completed bot job org=%s user=%s provider=%s job=%s",
+                self.organisation_id,
+                user_id,
+                provider,
+                job_id,
+            )
+            return True
 
         try:
             from src.adapters import AgentResponse, get_adapter
@@ -133,7 +149,8 @@ class BotMessageProcessingService:
                 self._run_agent_and_accumulate(
                     user_id,
                     message_text,
-                    chat_history,
+                    provider=provider,
+                    chat_history=chat_history,
                     bot_context=bot_context,
                     user_email=user_email,
                     reply_context=reply_context,
@@ -306,23 +323,18 @@ class BotMessageProcessingService:
             manifest_items_by_message: dict[UUID, list[AttachmentContextItem]] = {}
             message_ids = [message.message_id for message in messages]
             if message_ids:
-                attachment_rows = (
-                    session.query(
-                        ChatMessageAttachmentLink.message_id,
-                        Attachment.attachment_id,
-                        Attachment.filename,
-                        Attachment.mimetype,
-                        Attachment.source_provider,
-                    )
+                attachment_stmt = (
+                    select(ChatMessageAttachmentLink, Attachment)
                     .join(
                         Attachment,
-                        Attachment.attachment_id == ChatMessageAttachmentLink.attachment_id,
+                        col(Attachment.attachment_id)
+                        == col(ChatMessageAttachmentLink.attachment_id),
                     )
                     .filter(
-                        ChatMessageAttachmentLink.message_id.in_(message_ids),
-                        Attachment.organisation_id == self.organisation_id,
-                        Attachment.is_deleted.is_(False),
-                        Attachment.status.notin_(
+                        col(ChatMessageAttachmentLink.message_id).in_(message_ids),
+                        col(Attachment.organisation_id) == self.organisation_id,
+                        col(Attachment.is_deleted).is_(False),
+                        col(Attachment.status).notin_(
                             [
                                 AttachmentStatus.PENDING_UPLOAD.value,
                                 AttachmentStatus.FAILED.value,
@@ -330,20 +342,24 @@ class BotMessageProcessingService:
                         ),
                     )
                     .order_by(
-                        ChatMessageAttachmentLink.message_id,
-                        ChatMessageAttachmentLink.attachment_order,
+                        col(ChatMessageAttachmentLink.message_id),
+                        col(ChatMessageAttachmentLink.attachment_order),
                     )
-                    .all()
                 )
-                for row in attachment_rows:
-                    manifest_items_by_message.setdefault(row.message_id, []).append(
+                attachment_rows = session.execute(attachment_stmt).all()
+                for link, attachment in attachment_rows:
+                    manifest_items_by_message.setdefault(link.message_id, []).append(
                         AttachmentContextItem(
-                            attachment_id=str(row.attachment_id),
-                            filename=row.filename,
-                            mimetype=row.mimetype,
+                            attachment_id=str(attachment.attachment_id),
+                            filename=attachment.filename,
+                            mimetype=attachment.mimetype,
                             source_provider=(
-                                getattr(row.source_provider, "value", row.source_provider)
-                                if row.source_provider
+                                getattr(
+                                    attachment.source_provider,
+                                    "value",
+                                    attachment.source_provider,
+                                )
+                                if attachment.source_provider
                                 else None
                             ),
                         )
@@ -366,17 +382,24 @@ class BotMessageProcessingService:
     # Job tracking (token usage / cost)
     # ------------------------------------------------------------------
 
-    def _mark_job_in_progress(self, job_id: UUID) -> None:
-        """Mark a pre-created PENDING job as IN_PROGRESS."""
+    def _mark_job_in_progress(self, job_id: UUID) -> bool:
+        """Mark a pre-created job as IN_PROGRESS unless it already completed."""
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import org_session_scope
 
         with org_session_scope(self.organisation_id) as session:
             job = session.get(ChatMessageJob, job_id)
-            if job:
-                job.status = JobStatus.IN_PROGRESS
-                session.add(job)
-                session.commit()
+            if not job:
+                return True
+
+            status = getattr(job.status, "value", job.status)
+            if status == JobStatus.COMPLETED.value:
+                return False
+
+            job.status = JobStatus.IN_PROGRESS
+            session.add(job)
+            session.commit()
+            return True
 
     def _get_session_from_job(self, job_id: UUID) -> UUID | None:
         """Extract session_id from job metadata."""
@@ -445,6 +468,14 @@ class BotMessageProcessingService:
             return transcript_text
         return f"{text.strip()}\n\n[Slack audio transcript]\n{transcript_text}"
 
+    @staticmethod
+    def _merge_whatsapp_audio_transcript_text(text: str, transcript: str) -> str:
+        """Preserve typed WhatsApp context while using the transcript as user input."""
+        transcript_text = transcript.strip()
+        if not text.strip():
+            return transcript_text
+        return f"{text.strip()}\n\n[WhatsApp audio transcript]\n{transcript_text}"
+
     async def _prepare_bot_message_input(
         self,
         message_text: str,
@@ -454,6 +485,14 @@ class BotMessageProcessingService:
         job_id: UUID | None,
     ) -> tuple[str, dict]:
         """Resolve provider-specific transient inputs before the agent sees the message."""
+        if provider == "whatsapp":
+            return await self._prepare_whatsapp_audio_input(
+                message_text=message_text,
+                reply_context=reply_context,
+                bot_context=bot_context,
+                job_id=job_id,
+            )
+
         if provider != "slack":
             return message_text, bot_context
 
@@ -479,6 +518,145 @@ class BotMessageProcessingService:
             self._persist_user_message_text(job_id, merged_text)
 
         return merged_text, bot_context
+
+    async def _prepare_whatsapp_audio_input(
+        self,
+        message_text: str,
+        reply_context: dict,
+        bot_context: dict,
+        job_id: UUID | None,
+    ) -> tuple[str, dict]:
+        whatsapp_audio_files = list(bot_context.get("whatsapp_audio_files") or [])
+        if not whatsapp_audio_files:
+            return message_text, bot_context
+
+        phone_number_id = str(reply_context.get("phone_number_id") or "")
+        if not phone_number_id:
+            logger.warning("Skipping WhatsApp audio transcription: missing phone_number_id")
+            return message_text, bot_context
+
+        transcript = await self._transcribe_whatsapp_audio_files(
+            whatsapp_audio_files,
+            phone_number_id=phone_number_id,
+        )
+        if not transcript:
+            return message_text, bot_context
+
+        merged_text = self._merge_whatsapp_audio_transcript_text(message_text, transcript)
+        bot_context = dict(bot_context)
+        bot_context["input_modality"] = "audio"
+        bot_context["audio_origin"] = "whatsapp_audio"
+
+        if job_id and bot_context.get("conversation_type") == "personal":
+            self._persist_user_message_text(job_id, merged_text)
+
+        return merged_text, bot_context
+
+    async def _transcribe_whatsapp_audio_files(
+        self,
+        whatsapp_files: list[dict],
+        *,
+        phone_number_id: str,
+    ) -> str:
+        """Download and transcribe WhatsApp audio on the chat worker."""
+        from src.infra.media.audio_transcription import transcribe_audio
+
+        transcripts: list[tuple[str, str]] = []
+        for file_info in whatsapp_files:
+            media_id = str(file_info.get("media_id") or "")
+            if not media_id:
+                continue
+
+            filename = str(file_info.get("filename") or "whatsapp-audio.ogg")
+            downloaded = await self._download_whatsapp_media(
+                media_id,
+                phone_number_id=phone_number_id,
+            )
+            if not downloaded:
+                continue
+
+            content, mimetype = downloaded
+            if mimetype and not file_info.get("filename"):
+                filename = self._filename_for_whatsapp_audio_mimetype(mimetype)
+
+            transcript = (await transcribe_audio(content, filename)).strip()
+            if transcript:
+                transcripts.append((filename, transcript))
+
+        if not transcripts:
+            return ""
+        if len(transcripts) == 1:
+            return transcripts[0][1]
+        return "\n\n".join(
+            f"[WhatsApp audio: {filename}]\n{transcript}" for filename, transcript in transcripts
+        )
+
+    async def _download_whatsapp_media(
+        self,
+        media_id: str,
+        *,
+        phone_number_id: str,
+    ) -> tuple[bytes, str | None] | None:
+        import aiohttp
+
+        from src.infra.config.configs import chat_file_upload_config, whatsapp_config
+        from src.service.bots.whatsapp_bot_service import WHATSAPP_GRAPH_API_BASE
+
+        access_token = await whatsapp_config.get_access_token()
+        if not access_token:
+            logger.warning("Skipping WhatsApp audio transcription: access token unavailable")
+            return None
+
+        timeout = aiohttp.ClientTimeout(
+            total=chat_file_upload_config.BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS
+        )
+        headers = {"Authorization": f"Bearer {access_token}"}
+        metadata_url = f"{WHATSAPP_GRAPH_API_BASE}/{whatsapp_config.GRAPH_API_VERSION}/{media_id}"
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as http_session:
+                async with http_session.get(
+                    metadata_url,
+                    params={"phone_number_id": phone_number_id},
+                    headers=headers,
+                ) as metadata_response:
+                    metadata_response.raise_for_status()
+                    metadata = await metadata_response.json()
+
+                media_url = str(metadata.get("url") or "")
+                mimetype = str(metadata.get("mime_type") or "") or None
+                size = int(metadata.get("file_size") or 0)
+                if size and size > chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES:
+                    logger.warning(
+                        "Skipping WhatsApp media %s: size=%s exceeds ingest limit",
+                        media_id,
+                        size,
+                    )
+                    return None
+                if not media_url:
+                    logger.warning("Skipping WhatsApp media %s: missing media URL", media_id)
+                    return None
+
+                async with http_session.get(media_url, headers=headers) as media_response:
+                    media_response.raise_for_status()
+                    content = await media_response.read()
+                    response_mimetype = media_response.headers.get("content-type")
+                    return content, mimetype or response_mimetype
+        except Exception:
+            logger.warning("Failed to download WhatsApp media %s", media_id, exc_info=True)
+            return None
+
+    @staticmethod
+    def _filename_for_whatsapp_audio_mimetype(mimetype: str) -> str:
+        clean_mimetype = mimetype.split(";", maxsplit=1)[0].strip().lower()
+        extension = {
+            "audio/aac": "aac",
+            "audio/amr": "amr",
+            "audio/mpeg": "mp3",
+            "audio/mp4": "m4a",
+            "audio/ogg": "ogg",
+        }.get(clean_mimetype, "ogg")
+        return f"whatsapp-audio.{extension}"
 
     async def _transcribe_slack_audio_files(
         self,
@@ -555,6 +733,7 @@ class BotMessageProcessingService:
         self,
         user_id: UUID,
         message_text: str,
+        provider: str,
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
         user_email: str | None = None,
@@ -569,8 +748,9 @@ class BotMessageProcessingService:
         For group chats, the agent calls the fetch_teams_chat_messages tool itself.
 
         Args:
-            reply_context: Platform reply context (service_url, conversation_id) -
-                passed into metadata so tools can send proactive cards.
+            provider: Bot platform that received the webhook.
+            reply_context: Platform reply context passed into metadata so tools
+                can send proactive cards.
         """
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
@@ -579,12 +759,14 @@ class BotMessageProcessingService:
 
         conversation_type = (bot_context or {}).get("conversation_type", "personal")
         current_attachments = list((bot_context or {}).get("current_attachments") or [])
-        messages = self._build_messages(message_text, chat_history, bot_context=bot_context)
+        messages = self._build_messages(
+            message_text,
+            chat_history,
+            bot_context=bot_context,
+            provider=provider,
+        )
 
-        # Determine channel from reply_context or bot_context
-        channel = "teams"
-        if reply_context and "channel_id" in reply_context and "service_url" not in reply_context:
-            channel = "slack"
+        channel = provider.lower()
 
         metadata: dict = {}
         if bot_context and conversation_type == "groupChat":
@@ -678,7 +860,7 @@ class BotMessageProcessingService:
             return []
 
         from agno.media import Image as AgnoImage
-        from sqlmodel import select
+        from sqlmodel import col, select
 
         from src.domain.models.organisation_tables.chat_message_models import Attachment
         from src.infra.database.sessions import acquire_org_async_session
@@ -701,9 +883,9 @@ class BotMessageProcessingService:
         attachments: list[Attachment] = []
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = select(Attachment).where(
-                Attachment.attachment_id.in_(attachment_ids),
-                Attachment.organisation_id == self.organisation_id,
-                Attachment.is_deleted.is_(False),
+                col(Attachment.attachment_id).in_(attachment_ids),
+                col(Attachment.organisation_id) == self.organisation_id,
+                col(Attachment.is_deleted).is_(False),
             )
             attachments = list((await session.execute(stmt)).scalars().all())
             break
@@ -776,6 +958,17 @@ class BotMessageProcessingService:
                         }
                 except Exception:
                     logger.debug("Failed to get Teams thinking activity ID", exc_info=True)
+        elif channel == "whatsapp":
+            phone_number_id = reply_context.get("phone_number_id")
+            recipient_wa_id = reply_context.get("recipient_wa_id")
+            incoming_message_id = reply_context.get("incoming_message_id")
+            if phone_number_id and recipient_wa_id and incoming_message_id:
+                return {
+                    "platform": "whatsapp",
+                    "phone_number_id": phone_number_id,
+                    "recipient_wa_id": recipient_wa_id,
+                    "incoming_message_id": incoming_message_id,
+                }
         return None
 
     async def _update_thinking_status(
@@ -807,6 +1000,14 @@ class BotMessageProcessingService:
                     conversation_id=status_ctx["conversation_id"],
                     activity_id=status_ctx["activity_id"],
                     text=f"⏳ _{status_text}..._",
+                )
+            elif platform == "whatsapp":
+                from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+                whatsapp_bot = WhatsAppBotService()
+                await whatsapp_bot.send_typing_indicator(
+                    phone_number_id=status_ctx["phone_number_id"],
+                    message_id=status_ctx["incoming_message_id"],
                 )
         except Exception:
             # Non-critical — don't break agent flow if status update fails
@@ -894,13 +1095,23 @@ class BotMessageProcessingService:
         message_text: str,
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
+        provider: str | None = None,
     ) -> list[dict]:
         """Build message list for the agent."""
         from src.service.chat.chat_attachment_manifest import build_attachment_manifest
 
         messages: list[dict] = []
+        provider_key = (provider or "").lower()
+        conversation_type = (bot_context or {}).get("conversation_type")
 
-        if bot_context and bot_context.get("conversation_type") == "groupChat":
+        if provider_key == "whatsapp":
+            messages.append(
+                {
+                    "role": "system",
+                    "content": _WHATSAPP_SYSTEM_PROMPT,
+                }
+            )
+        elif bot_context and conversation_type == "groupChat":
             messages.append(
                 {
                     "role": "system",
@@ -914,7 +1125,7 @@ class BotMessageProcessingService:
                     ),
                 }
             )
-        elif bot_context and bot_context.get("conversation_type") == "channel":
+        elif bot_context and conversation_type == "channel":
             messages.append(
                 {
                     "role": "system",
@@ -1200,11 +1411,59 @@ class BotMessageProcessingService:
             )
             return False
 
-        return await WhatsAppBotService().send_text_message(
-            phone_number_id=phone_number_id,
-            recipient_wa_id=recipient_wa_id,
-            text=text,
-        )
+        whatsapp_bot = WhatsAppBotService()
+        for chunk in self._split_whatsapp_text(text):
+            sent = await whatsapp_bot.send_text_message(
+                phone_number_id=phone_number_id,
+                recipient_wa_id=recipient_wa_id,
+                text=chunk,
+            )
+            if not sent:
+                return False
+        return True
+
+    @staticmethod
+    def _split_whatsapp_text(text: str) -> list[str]:
+        """Split long WhatsApp text before it reaches the provider limit."""
+        stripped_text = text.strip()
+        if not stripped_text:
+            return [""]
+        if len(stripped_text) <= _WHATSAPP_TEXT_CHUNK_LIMIT:
+            return [stripped_text]
+
+        chunks: list[str] = []
+        current = ""
+        for part in stripped_text.split("\n\n"):
+            part = part.strip()
+            if not part:
+                continue
+            if len(part) > _WHATSAPP_TEXT_CHUNK_LIMIT:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(BotMessageProcessingService._hard_split_whatsapp_part(part))
+                continue
+
+            candidate = f"{current}\n\n{part}" if current else part
+            if len(candidate) <= _WHATSAPP_TEXT_CHUNK_LIMIT:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = part
+
+        if current:
+            chunks.append(current)
+        return chunks or [stripped_text[:_WHATSAPP_TEXT_CHUNK_LIMIT]]
+
+    @staticmethod
+    def _hard_split_whatsapp_part(text: str) -> list[str]:
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            chunks.append(remaining[:_WHATSAPP_TEXT_CHUNK_LIMIT].strip())
+            remaining = remaining[_WHATSAPP_TEXT_CHUNK_LIMIT:].strip()
+        return chunks
 
     async def _get_slack_bot_token(self, team_id: str) -> str | None:
         """Look up the Slack bot token for a workspace."""

@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 from src.workers.chat_worker.services.bot_message_processing_service import (
     BotMessageProcessingService,
 )
@@ -52,6 +53,44 @@ def test_personal_chat_has_no_system_message() -> None:
         message_text="hello",
         chat_history=None,
         bot_context={"conversation_type": "personal"},
+    )
+
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "hello"
+
+
+def test_whatsapp_personal_chat_gets_mobile_plain_text_system_message() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    messages = service._build_messages(
+        message_text="summarize the deal",
+        chat_history=None,
+        bot_context={"conversation_type": "personal"},
+        provider="whatsapp",
+    )
+
+    assert messages[0]["role"] == "system"
+    content = messages[0]["content"]
+    assert "WhatsApp" in content
+    assert "mobile" in content
+    assert "plain-text" in content
+    assert "concise" in content
+    assert "one short clarifying question" in content
+    assert messages[-1] == {
+        "role": "user",
+        "content": "summarize the deal",
+        "attachment_manifest": None,
+    }
+
+
+def test_slack_personal_chat_keeps_no_system_message() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    messages = service._build_messages(
+        message_text="hello",
+        chat_history=None,
+        bot_context={"conversation_type": "personal"},
+        provider="slack",
     )
 
     assert messages[0]["role"] == "user"
@@ -171,3 +210,182 @@ def test_merge_audio_transcript_text_keeps_typed_context() -> None:
     assert merged == (
         "please use this voice note\n\n[Slack audio transcript]\ncreate a follow-up task"
     )
+
+
+def test_merge_whatsapp_audio_transcript_text_keeps_typed_context() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    merged = service._merge_whatsapp_audio_transcript_text(
+        "please use this voice note",
+        "create a follow-up task",
+    )
+
+    assert merged == (
+        "please use this voice note\n\n[WhatsApp audio transcript]\ncreate a follow-up task"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_whatsapp_audio_input_transcribes_and_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    job_id = uuid4()
+    persisted: dict[str, str] = {}
+
+    async def fake_transcribe_whatsapp_audio_files(_files, *, phone_number_id):
+        assert phone_number_id == "phone-123"
+        return "create a follow-up task"
+
+    monkeypatch.setattr(
+        service,
+        "_transcribe_whatsapp_audio_files",
+        fake_transcribe_whatsapp_audio_files,
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_user_message_text",
+        lambda captured_job_id, text: persisted.update(
+            {"job_id": str(captured_job_id), "text": text}
+        ),
+    )
+
+    message_text, bot_context = await service._prepare_bot_message_input(
+        message_text="please use this voice note",
+        provider="whatsapp",
+        reply_context={"phone_number_id": "phone-123"},
+        bot_context={
+            "conversation_type": "personal",
+            "whatsapp_audio_files": [{"media_id": "media-123"}],
+        },
+        job_id=job_id,
+    )
+
+    assert message_text == (
+        "please use this voice note\n\n[WhatsApp audio transcript]\ncreate a follow-up task"
+    )
+    assert bot_context["input_modality"] == "audio"
+    assert bot_context["audio_origin"] == "whatsapp_audio"
+    assert persisted == {"job_id": str(job_id), "text": message_text}
+
+
+@pytest.mark.asyncio
+async def test_prepare_whatsapp_audio_input_keeps_typed_text_when_transcript_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    async def fake_transcribe_whatsapp_audio_files(_files, *, phone_number_id):
+        return ""
+
+    monkeypatch.setattr(
+        service,
+        "_transcribe_whatsapp_audio_files",
+        fake_transcribe_whatsapp_audio_files,
+    )
+
+    message_text, bot_context = await service._prepare_bot_message_input(
+        message_text="typed fallback",
+        provider="whatsapp",
+        reply_context={"phone_number_id": "phone-123"},
+        bot_context={
+            "conversation_type": "personal",
+            "whatsapp_audio_files": [{"media_id": "media-123"}],
+        },
+        job_id=uuid4(),
+    )
+
+    assert message_text == "typed fallback"
+    assert "input_modality" not in bot_context
+
+
+def test_build_status_context_supports_whatsapp() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    status_ctx = service._build_status_context(
+        "whatsapp",
+        {
+            "phone_number_id": "phone-123",
+            "recipient_wa_id": "15551234567",
+            "incoming_message_id": "wamid.1",
+        },
+    )
+
+    assert status_ctx == {
+        "platform": "whatsapp",
+        "phone_number_id": "phone-123",
+        "recipient_wa_id": "15551234567",
+        "incoming_message_id": "wamid.1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_thinking_status_sends_whatsapp_typing_indicator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    sent: dict[str, str] = {}
+
+    class FakeWhatsAppBotService:
+        async def send_typing_indicator(self, phone_number_id: str, message_id: str) -> bool:
+            sent["phone_number_id"] = phone_number_id
+            sent["message_id"] = message_id
+            return True
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.WhatsAppBotService",
+        FakeWhatsAppBotService,
+    )
+
+    await service._update_thinking_status(
+        {
+            "platform": "whatsapp",
+            "phone_number_id": "phone-123",
+            "recipient_wa_id": "15551234567",
+            "incoming_message_id": "wamid.1",
+        },
+        "Searching CRM",
+    )
+
+    assert sent == {
+        "phone_number_id": "phone-123",
+        "message_id": "wamid.1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_provider_sets_agent_channel_without_reply_context_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    captured = {}
+
+    async def fake_master_session():
+        yield object()
+
+    async def fake_get_organisation_name(_session, _organisation_id):
+        return "Test Org"
+
+    async def fake_run_agent_for_chat(**kwargs):
+        captured["channel"] = kwargs["context"].channel
+        if False:
+            yield None
+
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.bot_message_processing_service.acquire_master_async_session",
+        fake_master_session,
+    )
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.bot_message_processing_service.get_organisation_name",
+        fake_get_organisation_name,
+    )
+    monkeypatch.setattr("src.agents.orchestrator.run_agent_for_chat", fake_run_agent_for_chat)
+
+    await service._run_agent_and_accumulate(
+        user_id=uuid4(),
+        message_text="hello",
+        provider="whatsapp",
+        reply_context={},
+    )
+
+    assert captured["channel"] == "whatsapp"

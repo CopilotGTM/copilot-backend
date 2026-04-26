@@ -86,10 +86,14 @@ class AgentResponse:
         for frame in frames:
             frame_type = frame.type
 
-            if frame_type in ("answer.delta", "answer.replace"):
+            if frame_type == "answer.delta":
                 content = getattr(frame, "content", "")
                 if content:
                     text_parts.append(content)
+
+            elif frame_type == "answer.replace":
+                content = getattr(frame, "content", "")
+                text_parts = [content] if content else []
 
             elif frame_type == "question.prompt":
                 response_type = ResponseType.QUESTION
