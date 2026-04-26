@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import aiohttp
@@ -18,7 +18,11 @@ from src.infra.utils.logger import get_logger
 from src.service.chat.chat_attachment_manifest import AttachmentContextItem
 from src.workers.chat_worker.client import send_chat_task_async
 
+if TYPE_CHECKING:
+    from src.service.bots.whatsapp_bot_service import WhatsAppInboundMedia
+
 logger = get_logger(__name__)
+WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com"
 
 
 class ExternalChatAttachmentIngestService:
@@ -177,6 +181,109 @@ class ExternalChatAttachmentIngestService:
                         "provider_source": source,
                         "content_url": file_info.get("content_url"),
                         "file_type": file_info.get("file_type"),
+                    },
+                )
+                items.append(item)
+
+        return items
+
+    async def ingest_whatsapp_media_files(
+        self,
+        media_files: list[WhatsAppInboundMedia],
+        *,
+        access_token: str,
+    ) -> list[AttachmentContextItem]:
+        from src.infra.config.configs import whatsapp_config
+
+        timeout = aiohttp.ClientTimeout(
+            total=chat_file_upload_config.BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS
+        )
+        items: list[AttachmentContextItem] = []
+        auth_headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with aiohttp.ClientSession(timeout=timeout) as http_session:
+            for media in media_files:
+                try:
+                    metadata_url = (
+                        f"{WHATSAPP_GRAPH_API_BASE}/{whatsapp_config.GRAPH_API_VERSION}/"
+                        f"{media.media_id}"
+                    )
+                    async with http_session.get(metadata_url, headers=auth_headers) as response:
+                        response.raise_for_status()
+                        metadata = await response.json()
+
+                    size = int(metadata.get("file_size") or 0)
+                    if size and size > chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES:
+                        logger.warning(
+                            "Skipping WhatsApp media %s: size=%s exceeds ingest limit",
+                            media.media_id,
+                            size,
+                        )
+                        continue
+
+                    download_url = str(metadata.get("url") or "")
+                    if not download_url:
+                        logger.warning(
+                            "Skipping WhatsApp media %s: missing download URL", media.media_id
+                        )
+                        continue
+
+                    async with http_session.get(download_url, headers=auth_headers) as response:
+                        response.raise_for_status()
+                        content = await response.read()
+                        response_content_type = (response.content_type or "").lower().strip()
+                except Exception:
+                    logger.warning(
+                        "Failed to download WhatsApp media %s",
+                        media.media_id,
+                        exc_info=True,
+                    )
+                    continue
+
+                if len(content) > chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES:
+                    logger.warning(
+                        "Skipping WhatsApp media %s: size=%s exceeds ingest limit",
+                        media.media_id,
+                        len(content),
+                    )
+                    continue
+
+                mimetype = (
+                    (
+                        media.mimetype
+                        or str(metadata.get("mime_type") or "")
+                        or response_content_type
+                    )
+                    .lower()
+                    .strip()
+                )
+                if not mimetype or mimetype == "application/octet-stream":
+                    mimetype = self._guess_mimetype(media.filename, "", response_content_type)
+                mimetype = mimetype.split(";", maxsplit=1)[0].strip().lower()
+
+                if mimetype not in chat_file_upload_config.ALLOWED_MIMETYPES:
+                    logger.warning(
+                        "Skipping WhatsApp media %s: unsupported mimetype=%s",
+                        media.media_id,
+                        mimetype,
+                    )
+                    continue
+
+                item = await self.ingest_attachment_bytes(
+                    filename=media.filename or "whatsapp-attachment",
+                    mimetype=mimetype,
+                    content=content,
+                    source_provider=AttachmentSourceProvider.WHATSAPP,
+                    source_external_id=media.media_id,
+                    attachment_metadata={
+                        "provider_url": download_url,
+                        "provider_media_type": media.media_type,
+                        "caption": media.caption,
+                        "message_id": media.message_id,
+                        "provider_payload": {
+                            "file_size": size,
+                            "sha256": metadata.get("sha256"),
+                        },
                     },
                 )
                 items.append(item)

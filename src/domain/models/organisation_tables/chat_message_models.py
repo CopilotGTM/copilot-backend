@@ -70,6 +70,7 @@ class AttachmentSourceProvider(str, Enum):
     WEB = "web"
     SLACK = "slack"
     TEAMS = "teams"
+    WHATSAPP = "whatsapp"
 
 
 class Attachment(TimestampMixin, table=True):

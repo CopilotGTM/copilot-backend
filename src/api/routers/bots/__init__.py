@@ -14,10 +14,12 @@ from fastapi import APIRouter
 from .auth_callback_handler import router as auth_router
 from .slack_webhook_handler import router as slack_router
 from .teams_webhook_handler import router as teams_router
+from .whatsapp_webhook_handler import router as whatsapp_router
 
 bots_router = APIRouter()
 bots_router.include_router(auth_router, prefix="/auth")
 bots_router.include_router(teams_router, prefix="/teams")
 bots_router.include_router(slack_router, prefix="/slack")
+bots_router.include_router(whatsapp_router, prefix="/whatsapp")
 
 __all__ = ["bots_router"]

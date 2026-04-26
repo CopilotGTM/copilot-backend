@@ -1615,7 +1615,120 @@ class SlackConfig:
     )
 
 
+class WhatsAppConfig:
+    """Configuration for WhatsApp Business Platform bot integration.
+
+    Credentials are loaded from env vars for local/dev usage or from the master
+    Key Vault in shared environments. The webhook verify token is the shared
+    secret pasted into Meta's webhook configuration; Meta does not issue it.
+    """
+
+    WHATSAPP_ENABLED: bool = os.getenv("WHATSAPP_ENABLED", "true").lower() == "true"
+
+    SECRET_NAME_ACCESS_TOKEN: str = "whatsapp-access-token"
+    SECRET_NAME_WEBHOOK_VERIFY_TOKEN: str = "whatsapp-verify-token"
+    SECRET_NAME_APP_SECRET: str = "whatsapp-app-secret"
+
+    ACCESS_TOKEN: str | None = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    WEBHOOK_VERIFY_TOKEN: str | None = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
+    APP_SECRET: str | None = os.getenv("WHATSAPP_APP_SECRET")
+
+    _access_token_from_env: bool = bool(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+    _webhook_verify_token_from_env: bool = bool(os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN"))
+    _app_secret_from_env: bool = bool(os.getenv("WHATSAPP_APP_SECRET"))
+    _credentials_ttl_hours: float = float(os.getenv("WHATSAPP_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    GRAPH_API_VERSION: str = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v25.0")
+    WEBHOOK_DEDUPE_TTL_SECONDS: int = int(os.getenv("WHATSAPP_WEBHOOK_DEDUPE_TTL_SECONDS", "300"))
+    WHATSAPP_AUTH_LOGIN_URL: str = os.getenv(
+        "WHATSAPP_AUTH_LOGIN_URL",
+        f"{os.getenv('APP_URL', '').rstrip('/')}/bots/auth" if os.getenv("APP_URL") else "",
+    )
+
+    async def get_credentials(self) -> tuple[str | None, str | None, str | None]:
+        """Return access token, webhook verify token, and app secret."""
+        if self._all_credentials_from_env():
+            return self.ACCESS_TOKEN, self.WEBHOOK_VERIFY_TOKEN, self.APP_SECRET
+
+        if not self._is_expired():
+            return self.ACCESS_TOKEN, self.WEBHOOK_VERIFY_TOKEN, self.APP_SECRET
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self.ACCESS_TOKEN, self.WEBHOOK_VERIFY_TOKEN, self.APP_SECRET
+            await self._load_credentials_from_vault()
+
+        return self.ACCESS_TOKEN, self.WEBHOOK_VERIFY_TOKEN, self.APP_SECRET
+
+    async def get_webhook_verify_token(self) -> str | None:
+        """Return only the token needed for Meta webhook challenge verification."""
+        if self._webhook_verify_token_from_env:
+            return self.WEBHOOK_VERIFY_TOKEN
+
+        await self.get_credentials()
+        return self.WEBHOOK_VERIFY_TOKEN
+
+    async def get_access_token(self) -> str | None:
+        """Return the token used for outbound WhatsApp Cloud API calls."""
+        if self._access_token_from_env:
+            return self.ACCESS_TOKEN
+
+        await self.get_credentials()
+        return self.ACCESS_TOKEN
+
+    async def get_app_secret(self) -> str | None:
+        """Return the Meta app secret used to validate signed webhook POSTs."""
+        if self._app_secret_from_env:
+            return self.APP_SECRET
+
+        await self.get_credentials()
+        return self.APP_SECRET
+
+    def _all_credentials_from_env(self) -> bool:
+        return (
+            self._access_token_from_env
+            and self._webhook_verify_token_from_env
+            and self._app_secret_from_env
+        )
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_credentials_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading WhatsApp app credentials from Key Vault (TTL refresh)")
+        if not self._access_token_from_env:
+            self.ACCESS_TOKEN = await master_secrets_manager.get(self.SECRET_NAME_ACCESS_TOKEN)
+        if not self._webhook_verify_token_from_env:
+            self.WEBHOOK_VERIFY_TOKEN = await master_secrets_manager.get(
+                self.SECRET_NAME_WEBHOOK_VERIFY_TOKEN
+            )
+        if not self._app_secret_from_env:
+            self.APP_SECRET = await master_secrets_manager.get(self.SECRET_NAME_APP_SECRET)
+
+        self._credentials_loaded_at = time.time()
+
+        if self.ACCESS_TOKEN and self.WEBHOOK_VERIFY_TOKEN and self.APP_SECRET:
+            logger.info("WhatsApp app credentials cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("WhatsApp app credentials missing from Key Vault")
+
+
 slack_config = SlackConfig()
+whatsapp_config = WhatsAppConfig()
 sentry_config = SentryConfig()
 otel_config = OTelConfig()
 

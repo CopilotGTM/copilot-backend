@@ -27,6 +27,9 @@ def get_provider_identity(activity: dict[str, Any]) -> tuple[ExternalIdentityPro
     if provider_raw == "slack":
         external_tenant_id = channel_data.get("team", {}).get("id", "")
         return ExternalIdentityProvider.SLACK, external_user_id, external_tenant_id
+    if provider_raw == "whatsapp":
+        external_tenant_id = channel_data.get("phone_number", {}).get("id", "")
+        return ExternalIdentityProvider.WHATSAPP, external_user_id, external_tenant_id
 
     # Default to Teams for backwards compatibility with existing activity payloads.
     external_tenant_id = channel_data.get("tenant", {}).get("id", "")

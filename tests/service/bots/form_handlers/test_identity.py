@@ -39,6 +39,20 @@ def test_get_provider_identity_slack() -> None:
     assert tenant_id == "T456"
 
 
+def test_get_provider_identity_whatsapp() -> None:
+    activity = {
+        "provider": "whatsapp",
+        "from": {"id": "15551234567"},
+        "channelData": {"phone_number": {"id": "phone-123"}},
+    }
+
+    provider, user_id, tenant_id = get_provider_identity(activity)
+
+    assert provider == ExternalIdentityProvider.WHATSAPP
+    assert user_id == "15551234567"
+    assert tenant_id == "phone-123"
+
+
 @pytest.mark.asyncio
 async def test_resolve_user_from_activity_uses_slack_provider() -> None:
     activity = {

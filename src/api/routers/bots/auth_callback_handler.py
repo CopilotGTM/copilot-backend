@@ -31,6 +31,7 @@ from src.infra.utils.logger import get_logger
 from src.service.bots.auth_state_service import get_bot_auth_state_service
 from src.service.bots.identity_service import ExternalIdentityService
 from src.service.bots.teams_bot_service import TeamsBotService
+from src.service.bots.whatsapp_bot_service import WhatsAppBotService
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,7 @@ def get_identity_service() -> ExternalIdentityService:
 PROVIDER_TYPE_MAP = {
     ExternalIdentityProvider.TEAMS: ExternalIdentityProviderType.CHAT_BOT,
     ExternalIdentityProvider.SLACK: ExternalIdentityProviderType.CHAT_BOT,
+    ExternalIdentityProvider.WHATSAPP: ExternalIdentityProviderType.CHAT_BOT,
     # Future providers:
     # ExternalIdentityProvider.AZURE_AD: ExternalIdentityProviderType.SSO,
     # ExternalIdentityProvider.GOOGLE: ExternalIdentityProviderType.SSO,
@@ -128,9 +130,11 @@ async def bot_auth_callback(
         HTTPException 401: Invalid access token
         HTTPException 404: User not found in CopilotGTM
     """
-    # Step 1: Validate and consume state token
+    # Step 1: Validate state token without consuming it. The token is only
+    # consumed after the app access token and Copilot user checks succeed, so a
+    # failed first web login does not burn the bot link.
     state_service = get_bot_auth_state_service()
-    auth_state = state_service.validate_and_consume_state(request.state)
+    auth_state = state_service.peek_state(request.state)
 
     if not auth_state:
         logger.warning("Invalid or expired state token")
@@ -208,6 +212,14 @@ async def bot_auth_callback(
     # Step 4: Create or reactivate identity mapping
     provider_type = PROVIDER_TYPE_MAP.get(provider, ExternalIdentityProviderType.CHAT_BOT)
     user_email = user.email
+
+    auth_state = state_service.validate_and_consume_state(request.state)
+    if not auth_state:
+        logger.warning("State token was consumed or expired before linking")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired state token. Please try logging in again from the bot.",
+        )
 
     try:
         _, created = await identity_service.create_or_reactivate_identity_mapping(
@@ -307,6 +319,26 @@ async def bot_auth_callback(
                 await slack_service._send_message(slack_team_id, channel_id, welcome_text)
             except Exception:
                 logger.warning("Failed to send Slack welcome message", exc_info=True)
+
+    elif provider == ExternalIdentityProvider.WHATSAPP:
+        phone_number_id = context.get("phone_number_id")
+        recipient_wa_id = context.get("recipient_wa_id")
+        if phone_number_id and recipient_wa_id:
+            welcome_text = (
+                f"You're now signed in as {user_email}.\n\n"
+                "You can now ask me questions and I'll help you find answers "
+                "from your organization's knowledge base.\n\n"
+                "Type help to see available commands."
+            )
+            try:
+                whatsapp_service = WhatsAppBotService()
+                await whatsapp_service.send_text_message(
+                    phone_number_id=phone_number_id,
+                    recipient_wa_id=recipient_wa_id,
+                    text=welcome_text,
+                )
+            except Exception:
+                logger.warning("Failed to send WhatsApp welcome message", exc_info=True)
 
     return BotAuthCallbackResponse(
         success=True,
