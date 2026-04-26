@@ -195,6 +195,43 @@ async def test_linked_user_enqueues_when_typing_indicator_fails(
 
 
 @pytest.mark.asyncio
+async def test_linked_user_gets_temporary_failure_message_when_enqueue_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WhatsAppBotService()
+    user = SimpleNamespace(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        email="test@example.com",
+    )
+    send_mock = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
+    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
+    monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "send_text_message", send_mock)
+
+    async def fake_send_chat_task_async(*_args, **_kwargs):
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(
+        "src.workers.chat_worker.client.send_chat_task_async",
+        fake_send_chat_task_async,
+    )
+
+    await service._route_message(_message())
+
+    send_mock.assert_awaited_once_with(
+        phone_number_id="phone-123",
+        recipient_wa_id="15551234567",
+        text=(
+            "I'm sorry, I'm having trouble processing your request right now. "
+            "Please try again in a moment."
+        ),
+    )
+
+
+@pytest.mark.asyncio
 async def test_linked_user_audio_message_enqueues_chat_processing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

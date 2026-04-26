@@ -303,26 +303,37 @@ class WhatsAppBotService:
         if attachment_refs:
             bot_context["current_attachments"] = attachment_refs
 
-        await send_chat_task_async(
-            "chat.process_bot_message",
-            args=[
-                str(user.organisation_id),
-                str(user.user_id),
-                message.text,
-                "whatsapp",
-                self._build_reply_context(
-                    phone_number_id=message.phone_number_id,
-                    recipient_wa_id=message.recipient_wa_id,
-                    incoming_message_id=message.message_id,
+        try:
+            await send_chat_task_async(
+                "chat.process_bot_message",
+                args=[
+                    str(user.organisation_id),
+                    str(user.user_id),
+                    message.text,
+                    "whatsapp",
+                    self._build_reply_context(
+                        phone_number_id=message.phone_number_id,
+                        recipient_wa_id=message.recipient_wa_id,
+                        incoming_message_id=message.message_id,
+                    ),
+                ],
+                kwargs={
+                    "user_email": user.email,
+                    "bot_context": bot_context,
+                    "job_id": job_id,
+                },
+                queue="chat_messages",
+            )
+        except Exception as e:
+            logger.error("Failed to enqueue WhatsApp bot message task: %s", e, exc_info=True)
+            await self.send_text_message(
+                phone_number_id=message.phone_number_id,
+                recipient_wa_id=message.recipient_wa_id,
+                text=(
+                    "I'm sorry, I'm having trouble processing your request right now. "
+                    "Please try again in a moment."
                 ),
-            ],
-            kwargs={
-                "user_email": user.email,
-                "bot_context": bot_context,
-                "job_id": job_id,
-            },
-            queue="chat_messages",
-        )
+            )
 
     @staticmethod
     def _build_reply_context(
