@@ -13,6 +13,7 @@ from .auth_state_service import (
     BotAuthStateService,
     get_bot_auth_state_service,
 )
+from .google_chat_bot_service import GoogleChatBotService
 from .identity_service import ExternalIdentityService
 from .teams_bot_service import TeamsBotService
 from .teams_graph_client import (
@@ -30,6 +31,7 @@ __all__ = [
     "ExternalIdentityService",
     # Teams bot service
     "TeamsBotService",
+    "GoogleChatBotService",
     # Graph API client
     "get_graph_access_token",
 ]

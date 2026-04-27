@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.service.bots.auth_validators.base import WebhookAuthValidator
+from src.service.bots.auth_validators.google_chat_auth import GoogleChatAuthValidator
 from src.service.bots.auth_validators.slack_auth import SlackAuthValidator
 from src.service.bots.auth_validators.teams_auth import TeamsAuthValidator
 from src.service.bots.auth_validators.whatsapp_auth import WhatsAppAuthValidator
@@ -22,5 +23,7 @@ def get_auth_validator(provider: str, credential: str) -> WebhookAuthValidator:
         return SlackAuthValidator(credential)
     elif provider_key == "whatsapp":
         return WhatsAppAuthValidator(credential)
+    elif provider_key == "google_chat":
+        return GoogleChatAuthValidator(credential)
 
     raise ValueError(f"Unsupported auth provider: {provider}")

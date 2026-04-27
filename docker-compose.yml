@@ -11,9 +11,15 @@
 # Azure Authentication: Mounts your local ~/.azure credentials into containers
 # so they can authenticate with Azure services (Key Vault, Storage, etc.)
 #
+# Google Chat local auth: mounts your local gcloud ADC file into API/chat worker
+# for keyless service-account impersonation. On Windows this defaults to:
+#   %APPDATA%\gcloud\application_default_credentials.json
+#
 # Prerequisites:
 #   1. Run `az login` on your local machine before starting
-#   2. Copy .env to .env.local and adjust as needed
+#   2. For Google Chat outbound replies, run:
+#      gcloud auth application-default login --impersonate-service-account=<bot-service-account>
+#   3. Copy .env to .env.local and adjust as needed
 #
 # Usage:
 #   docker-compose up -d              # Start all services
@@ -134,12 +140,15 @@ services:
       # Celery broker URL (local Redis, no SSL)
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json
     env_file:
       - .env
     volumes:
       # Mount Azure CLI credentials for Azure service authentication
       # Removed :ro to allow token refreshes or login from within container if needed
       - azure-data:/home/appuser/.azure
+      # Mount Google Cloud ADC for Google Chat app-auth calls.
+      - ${APPDATA}/gcloud:/home/appuser/.config/gcloud:ro
       # Mount source code for hot reload (optional - comment out for production-like testing)
       - ./src:/app/src:ro
     depends_on:
@@ -344,10 +353,12 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       # - AGENT_GENERAL_DEBUG=true
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json
     env_file:
       - .env
     volumes:
       - azure-data:/home/appuser/.azure
+      - ${APPDATA}/gcloud:/home/appuser/.config/gcloud:ro
       - ./src:/app/src:ro
     depends_on:
       redis:

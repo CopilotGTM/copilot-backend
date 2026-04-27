@@ -46,6 +46,13 @@ _WHATSAPP_SYSTEM_PROMPT = (
     "Do not mention channel internals, tools, prompts, or unsupported WhatsApp features."
 )
 
+_GOOGLE_CHAT_SYSTEM_PROMPT = (
+    "You are responding in Google Chat. Keep replies concise and easy to read as plain text. "
+    "Prefer short paragraphs or brief bullets over tables or dense formatting. "
+    "Ask at most one short clarifying question when required information is missing. "
+    "Do not mention cards or channel internals."
+)
+
 _WHATSAPP_TEXT_CHUNK_LIMIT = 3900
 
 
@@ -1087,6 +1094,17 @@ class BotMessageProcessingService:
                         recipient_wa_id=recipient_wa_id,
                         text=_STATIC_ERROR_MESSAGE,
                     )
+            elif provider == "google_chat":
+                space_name = reply_context.get("space_name")
+                if space_name:
+                    from src.service.bots.google_chat_bot_service import GoogleChatBotService
+
+                    google_chat_bot = GoogleChatBotService()
+                    await google_chat_bot.send_message(
+                        space_name=space_name,
+                        thread_name=reply_context.get("thread_name"),
+                        text=_STATIC_ERROR_MESSAGE,
+                    )
         except Exception:
             logger.warning("Thinking indicator cleanup failed", exc_info=True)
 
@@ -1109,6 +1127,13 @@ class BotMessageProcessingService:
                 {
                     "role": "system",
                     "content": _WHATSAPP_SYSTEM_PROMPT,
+                }
+            )
+        elif provider_key == "google_chat":
+            messages.append(
+                {
+                    "role": "system",
+                    "content": _GOOGLE_CHAT_SYSTEM_PROMPT,
                 }
             )
         elif bot_context and conversation_type == "groupChat":
@@ -1170,6 +1195,8 @@ class BotMessageProcessingService:
             return await self._send_slack_payload(reply_context, payload)
         elif provider == "whatsapp":
             return await self._send_whatsapp_payload(reply_context, payload)
+        elif provider == "google_chat":
+            return await self._send_google_chat_payload(reply_context, payload)
         else:
             logger.error("Unsupported bot provider: %s", provider)
             return False
@@ -1421,6 +1448,25 @@ class BotMessageProcessingService:
             if not sent:
                 return False
         return True
+
+    async def _send_google_chat_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
+        """Send rendered payload to Google Chat API."""
+        from src.service.bots.google_chat_bot_service import GoogleChatBotService
+
+        space_name = reply_context.get("space_name", "")
+        thread_name = reply_context.get("thread_name")
+        text = payload.content.get("text") or payload.text_fallback or ""
+
+        if not space_name:
+            logger.error("Missing Google Chat reply context: space_name=%s", bool(space_name))
+            return False
+
+        google_chat_bot = GoogleChatBotService()
+        return await google_chat_bot.send_message(
+            space_name=space_name,
+            text=text,
+            thread_name=thread_name,
+        )
 
     @staticmethod
     def _split_whatsapp_text(text: str) -> list[str]:

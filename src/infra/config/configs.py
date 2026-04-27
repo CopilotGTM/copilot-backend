@@ -4,10 +4,12 @@ import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
+import google.auth
 from dotenv import load_dotenv
+from google.auth.credentials import Credentials
 
 # Load environment variables at the beginning of config module
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 from ..utils.logger import get_logger
 from .constant import CONFIG_MAP
@@ -1727,8 +1729,35 @@ class WhatsAppConfig:
             logger.error("WhatsApp app credentials missing from Key Vault")
 
 
+class GoogleChatConfig:
+    """Configuration for Google Chat app bot integration."""
+
+    GOOGLE_CHAT_ENABLED: bool = True
+    GOOGLE_CHAT_AUTH_AUDIENCE: str = os.getenv(
+        "GOOGLE_CHAT_AUTH_AUDIENCE",
+        (
+            f"{os.getenv('APP_URL', '').rstrip('/')}/users/bots/google-chat/events"
+            if os.getenv("APP_URL")
+            else ""
+        ),
+    )
+    GOOGLE_CHAT_AUTH_LOGIN_URL: str = os.getenv(
+        "GOOGLE_CHAT_AUTH_LOGIN_URL",
+        f"{os.getenv('APP_URL', '').rstrip('/')}/bots/auth" if os.getenv("APP_URL") else "",
+    )
+    GOOGLE_CHAT_WEBHOOK_DEDUPE_TTL_SECONDS: int = 300
+    GOOGLE_CHAT_API_BASE: str = "https://chat.googleapis.com/v1"
+    GOOGLE_CHAT_HTTP_TIMEOUT_SECONDS: float = 10
+
+    def get_app_credentials(self) -> Credentials:
+        """Return ADC/WIF credentials scoped for Google Chat app-auth calls."""
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/chat.bot"])
+        return credentials
+
+
 slack_config = SlackConfig()
 whatsapp_config = WhatsAppConfig()
+google_chat_config = GoogleChatConfig()
 sentry_config = SentryConfig()
 otel_config = OTelConfig()
 

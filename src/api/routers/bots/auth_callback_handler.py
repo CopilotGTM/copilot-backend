@@ -49,6 +49,7 @@ PROVIDER_TYPE_MAP = {
     ExternalIdentityProvider.TEAMS: ExternalIdentityProviderType.CHAT_BOT,
     ExternalIdentityProvider.SLACK: ExternalIdentityProviderType.CHAT_BOT,
     ExternalIdentityProvider.WHATSAPP: ExternalIdentityProviderType.CHAT_BOT,
+    ExternalIdentityProvider.GOOGLE_CHAT: ExternalIdentityProviderType.CHAT_BOT,
     # Future providers:
     # ExternalIdentityProvider.AZURE_AD: ExternalIdentityProviderType.SSO,
     # ExternalIdentityProvider.GOOGLE: ExternalIdentityProviderType.SSO,
@@ -339,6 +340,28 @@ async def bot_auth_callback(
                 )
             except Exception:
                 logger.warning("Failed to send WhatsApp welcome message", exc_info=True)
+
+    elif provider == ExternalIdentityProvider.GOOGLE_CHAT:
+        space_name = context.get("space_name")
+        thread_name = context.get("thread_name")
+        if space_name:
+            welcome_text = (
+                f"You're now signed in as {user_email}.\n\n"
+                "You can now ask me questions and I'll help you find answers "
+                "from your organization's knowledge base.\n\n"
+                "Type help to see available commands."
+            )
+            try:
+                from src.service.bots.google_chat_bot_service import GoogleChatBotService
+
+                google_chat_service = GoogleChatBotService()
+                await google_chat_service.send_message(
+                    space_name=space_name,
+                    thread_name=thread_name,
+                    text=welcome_text,
+                )
+            except Exception:
+                logger.warning("Failed to send Google Chat welcome message", exc_info=True)
 
     return BotAuthCallbackResponse(
         success=True,

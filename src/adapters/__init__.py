@@ -215,9 +215,14 @@ def get_adapter(channel: str, *args, **kwargs) -> ChannelAdapter:
         from src.adapters.whatsapp_adapter import WhatsAppAdapter
 
         return WhatsAppAdapter(*args, **kwargs)
+    elif channel == "google_chat":
+        from src.adapters.google_chat_adapter import GoogleChatAdapter
+
+        return GoogleChatAdapter(*args, **kwargs)
     else:
         raise ValueError(
-            f"Unsupported channel: {channel}. Supported channels: teams, slack, whatsapp"
+            "Unsupported channel: "
+            f"{channel}. Supported channels: teams, slack, whatsapp, google_chat"
         )
 
 
