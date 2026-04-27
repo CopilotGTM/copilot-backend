@@ -1,9 +1,73 @@
 """Tests for email sync service incremental sync functionality."""
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationType,
+    KnowledgeIntegration,
+)
+from src.service.integrations.email_sync_service import EmailSyncService
 from src.workers.integrations_worker.utils.sync_metadata import SyncAction
+
+
+class _FakeScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        """Return all stubbed rows from the fake SQL result."""
+        return self._rows
+
+    def one(self):
+        """Return the first stubbed row from the fake SQL result."""
+        return self._rows[0]
+
+
+class _FakeExecuteResult:
+    def __init__(self, rows=None):
+        self._rows = rows or []
+
+    def scalars(self):
+        """Return a fake scalar result object for query assertions."""
+        return _FakeScalarResult(self._rows)
+
+
+def _make_integration(**overrides):
+    defaults = {
+        "integration_id": uuid4(),
+        "organisation_id": uuid4(),
+        "created_by_user_id": uuid4(),
+        "integration_type": IntegrationType.OUTLOOK_EMAIL,
+        "name": "Email",
+        "credentials": {},
+    }
+    defaults.update(overrides)
+    return KnowledgeIntegration(**defaults)
+
+
+def _outlook_message(
+    *,
+    message_id: str,
+    folder_id: str = "folder-1",
+    subject: str = "Email",
+    is_read: bool = False,
+):
+    return {
+        "id": message_id,
+        "conversationId": f"thread-{message_id}",
+        "internetMessageId": f"<{message_id}@example.com>",
+        "parentFolderId": folder_id,
+        "subject": subject,
+        "from": {"emailAddress": {"name": "Sender", "address": "sender@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "buyer@example.com"}}],
+        "receivedDateTime": "2024-01-15T10:00:00Z",
+        "isRead": is_read,
+        "categories": ["work"],
+    }
 
 
 def _extract_folder_fields(folder_data, provider):
@@ -116,6 +180,206 @@ def _has_meaningful_message_changes(existing, incoming, provider) -> bool:
     existing_labels = existing.labels or []
     incoming_labels = fields.get("labels") or []
     return set(existing_labels) != set(incoming_labels)
+
+
+class TestEmailIncrementalBatchWrites:
+    """Regression tests for the incremental email N+1 write path."""
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_folders_uses_one_statement_and_returns_id_map(self) -> None:
+        """Multiple changed folders collapse into one INSERT ... ON CONFLICT statement."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        rows = [
+            SimpleNamespace(external_folder_id="folder-1", folder_id=uuid4()),
+            SimpleNamespace(external_folder_id="folder-2", folder_id=uuid4()),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
+        service = EmailSyncService(session, organisation_id)
+
+        result = await service._batch_upsert_folders(
+            integration_id,
+            [
+                ({"id": "folder-1", "displayName": "Inbox"}, "folder-1"),
+                ({"id": "folder-2", "displayName": "Sent Items"}, "folder-2"),
+            ],
+            "outlook",
+        )
+
+        assert session.execute.await_count == 1
+        assert result == {"folder-1": rows[0], "folder-2": rows[1]}
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT" in sql
+        assert "RETURNING" in sql
+        assert "excluded.folder_name" in sql
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_messages_uses_one_statement_and_returns_id_map(self) -> None:
+        """Multiple changed emails collapse into one INSERT ... ON CONFLICT statement."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        folder_id = uuid4()
+        rows = [
+            SimpleNamespace(external_message_id="msg-1"),
+            SimpleNamespace(external_message_id="msg-2"),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
+        service = EmailSyncService(session, organisation_id)
+
+        result = await service._batch_upsert_messages(
+            integration_id,
+            [
+                (_outlook_message(message_id="msg-1"), "msg-1"),
+                (_outlook_message(message_id="msg-2"), "msg-2"),
+            ],
+            "outlook",
+            folder_id,
+        )
+
+        assert session.execute.await_count == 1
+        assert result == {"msg-1": rows[0], "msg-2": rows[1]}
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT" in sql
+        assert "RETURNING" in sql
+        assert "excluded.subject" in sql
+
+    @pytest.mark.asyncio
+    async def test_folder_id_preload_uses_one_statement_and_caches_results(self) -> None:
+        """Resolving message parent folders is one SELECT, not one SELECT per email."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        folder_1 = uuid4()
+        folder_2 = uuid4()
+        rows = [
+            SimpleNamespace(external_folder_id="folder-1", folder_id=folder_1),
+            SimpleNamespace(external_folder_id="folder-2", folder_id=folder_2),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
+        service = EmailSyncService(session, organisation_id)
+
+        result = await service._load_folder_ids_by_external_ids(
+            integration_id,
+            ["folder-1", "folder-2", "folder-1"],
+        )
+
+        assert session.execute.await_count == 1
+        assert result == {"folder-1": folder_1, "folder-2": folder_2}
+        assert service._folder_cache == {"folder-1": folder_1, "folder-2": folder_2}
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_batches_created_and_updated_messages(self) -> None:
+        """Created and changed messages are accumulated and written once."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        folder_id = uuid4()
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = EmailSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+
+        existing_updated = SimpleNamespace(
+            subject="Old subject",
+            from_email="sender@example.com",
+            is_read="false",
+            is_starred="false",
+            is_important="false",
+            is_draft="false",
+            labels=["work"],
+            email_metadata={"parent_folder_id": "folder-1"},
+        )
+        existing_unchanged = SimpleNamespace(
+            subject="Unchanged",
+            from_email="sender@example.com",
+            is_read="false",
+            is_starred="false",
+            is_important="false",
+            is_draft="false",
+            labels=["work"],
+            email_metadata={"parent_folder_id": "folder-1"},
+        )
+        service._load_existing_messages_by_external_ids = AsyncMock(
+            return_value={
+                "msg-updated": existing_updated,
+                "msg-unchanged": existing_unchanged,
+            }
+        )
+        service._has_meaningful_message_changes = MagicMock(side_effect=[True, False])
+        service._batch_upsert_messages = AsyncMock(
+            return_value={
+                "msg-created": SimpleNamespace(external_message_id="msg-created"),
+                "msg-updated": SimpleNamespace(external_message_id="msg-updated"),
+            }
+        )
+
+        result = await service.sync_messages_incremental(
+            integration=integration,
+            provider="outlook",
+            folder_id=folder_id,
+            messages=[
+                _outlook_message(message_id="msg-created", subject="Created"),
+                _outlook_message(message_id="msg-updated", subject="Updated"),
+                _outlook_message(message_id="msg-unchanged", subject="Unchanged"),
+                {
+                    **_outlook_message(message_id="msg-deleted", subject="Deleted"),
+                    "_sync_metadata": {"sync_action": "DELETED"},
+                },
+            ],
+        )
+
+        assert result["created_count"] == 1
+        assert result["updated"] == 1
+        assert result["skipped"] == 1
+        assert service._batch_upsert_messages.await_count == 1
+        assert len(service._batch_upsert_messages.await_args.args[1]) == 2
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_falls_back_to_item_writes_after_batch_failure(self) -> None:
+        """One bad changed message should not fail the whole incremental run."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        folder_id = uuid4()
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+        session.in_transaction = MagicMock(return_value=True)
+        session.add = MagicMock()
+        service = EmailSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_messages_by_external_ids = AsyncMock(return_value={})
+        service._batch_upsert_messages = AsyncMock(side_effect=ValueError("bad batch"))
+        service._upsert_message = AsyncMock(
+            side_effect=[
+                SimpleNamespace(external_message_id="msg-1"),
+                ValueError("bad row"),
+                SimpleNamespace(external_message_id="msg-3"),
+            ]
+        )
+
+        result = await service.sync_messages_incremental(
+            integration=integration,
+            provider="outlook",
+            folder_id=folder_id,
+            messages=[
+                _outlook_message(message_id="msg-1"),
+                _outlook_message(message_id="msg-2"),
+                _outlook_message(message_id="msg-3"),
+            ],
+        )
+
+        assert result["status"] == "success"
+        assert result["records_processed"] == 2
+        assert result["records_failed"] == 1
+        assert result["created_count"] == 2
+        assert result["updated"] == 0
+        assert service._batch_upsert_messages.await_count == 1
+        assert service._upsert_message.await_count == 3
+        assert session.rollback.await_count >= 1
 
 
 class TestEmailFolderHasMeaningfulChanges:

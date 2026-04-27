@@ -66,17 +66,46 @@ Phase 5: Persist delta links + update last_synced_at → fresh session
 ```
 
 ### Monitored Folders
-Only `inbox` and `sent` folders are synced by default (`is_monitored = "true"`). Users can enable/disable monitoring for any folder.
+Email folder discovery stores provider folder/label metadata first. Message sync then runs only for folders where `email_folders.is_monitored == "true"`.
+
+Default monitored folders:
+
+| Provider | Provider folder/label | Normalized folder type | Message sync default |
+| --- | --- | --- | --- |
+| Outlook | `Inbox` | `inbox` | Synced |
+| Outlook | `Sent Items`, `Sent` | `sent` | Synced |
+| Gmail | `INBOX` | `inbox` | Synced |
+| Gmail | `SENT` | `sent` | Synced |
+
+Default non-monitored folders:
+
+| Provider | Provider folder/label | Normalized folder type | Default behavior |
+| --- | --- | --- | --- |
+| Outlook | `Drafts` | `drafts` | Folder row stored, messages not synced |
+| Outlook | `Deleted Items`, `Trash` | `trash` | Folder row stored, messages not synced |
+| Outlook | `Junk Email`, `Junk`, `Spam` | `junk` | Folder row stored, messages not synced |
+| Outlook | `Archive` | `archive` | Folder row stored, messages not synced |
+| Outlook | Custom folders | `user` | Folder row stored, messages not synced |
+| Gmail | `DRAFT` | `drafts` | Label row stored, messages not synced |
+| Gmail | `TRASH` | `trash` | Label row stored, messages not synced |
+| Gmail | `SPAM` | `junk` | Label row stored, messages not synced |
+| Gmail | `STARRED` | `starred` | Label row stored, messages not synced |
+| Gmail | `IMPORTANT` | `important` | Label row stored, messages not synced |
+| Gmail | `CATEGORY_*` labels | `category` | Label row stored, messages not synced |
+| Gmail | Custom labels | `user` | Label row stored, messages not synced |
+
+Users can enable/disable monitoring for any stored folder by changing `is_monitored`. The default scope is intentionally not a full mailbox mirror.
 
 ### Outlook-Specific
 - **Delta query**: `GET /v1.0/me/mailFolders/{id}/messages/delta`
 - **Body backfill**: Body is excluded from `$select` in delta query (same reason as calendar). After pagination, bodies are backfilled in a second pass via individual message GET calls.
-- **"Other" filtering**: Outlook's `inferenceClassification == "other"` messages (newsletters, etc.) are filtered out of inbox sync.
+- **"Other" filtering**: Outlook's `inferenceClassification == "other"` messages (newsletters, automated mail, etc.) are filtered out of message sync. Deleted markers are preserved so the local state can still process removals.
 
 ### Gmail-Specific
 - **History API**: `GET /gmail/v1/users/me/messages` for initial; `history.list` with `historyId` for incremental
 - **History expiry**: If `historyId` is too old (400/404), falls back to full fetch
 - **Label-based**: Messages are fetched per-label (INBOX, SENT); label ID is injected into message payload as `_gmail_label_id`
+- **Category filtering**: Gmail inbox sync excludes `CATEGORY_PROMOTIONS`, `CATEGORY_SOCIAL`, `CATEGORY_UPDATES`, and `CATEGORY_FORUMS` using the Gmail query where possible, with a post-fetch safety filter for any category messages that still appear.
 
 ### Change Detection (Incremental)
 `sync_messages_incremental` batch-loads existing messages by external_id, then compares key fields (subject, from_email, is_read, labels, parent folder) to skip unchanged records.
