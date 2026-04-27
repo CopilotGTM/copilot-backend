@@ -1,4 +1,10 @@
-"""WhatsApp adapter for plain-text bot responses."""
+"""Convert bot responses into WhatsApp-compatible plain text.
+
+This adapter owns the WhatsApp render boundary for bot replies.
+It removes markdown constructs that WhatsApp either strips partially
+or renders inconsistently, then flattens structured rows into readable,
+numbered bullet-like lines.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +15,19 @@ from src.adapters import AgentResponse, ChannelAdapter, ChannelContext, ChannelP
 from src.infra.messaging.chat_stream_models import Frame
 
 _STRUCTURED_RESULT_LIMIT = 8
+# Limit structured payload size to avoid overlong WhatsApp mobile messages.
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 class WhatsAppAdapter(ChannelAdapter):
-    """Render bot responses into WhatsApp-friendly plain text."""
+    """Render normalized AgentResponse objects for the WhatsApp channel.
+
+    Channel contracts:
+    - No custom cards/buttons in transport payload.
+    - Plain text only in `content["text"]`.
+    - Structured tables/lists should be compacted before transmission.
+    """
 
     def __init__(self) -> None:
         super().__init__("whatsapp")
@@ -25,9 +38,15 @@ class WhatsAppAdapter(ChannelAdapter):
         _context: ChannelContext,
         frames: list[Frame],
     ) -> ChannelPayload:
+        """Render response frames directly into a WhatsApp payload."""
         return self.render(AgentResponse.from_frames(frames))
 
     def render(self, response: AgentResponse) -> ChannelPayload:
+        """Dispatch rendering by response type.
+
+        WhatsApp does not support separate rendering widgets, so each response
+        type maps to the closest text-only representation.
+        """
         if response.type == ResponseType.QUESTION:
             return self.render_question(response.text, response.data.get("fields"), response.data)
         if response.type in (ResponseType.TABLE, ResponseType.LIST):
@@ -44,6 +63,7 @@ class WhatsAppAdapter(ChannelAdapter):
         return self.render_text(response.text)
 
     def render_text(self, text: str) -> ChannelPayload:
+        """Convert raw response text into WhatsApp-safe text payload."""
         rendered = _normalize_whatsapp_text(text)
         return ChannelPayload(type="message", content={"text": rendered}, text_fallback=rendered)
 
@@ -53,6 +73,7 @@ class WhatsAppAdapter(ChannelAdapter):
         fields: list[dict[str, Any]] | None,
         _data: dict[str, Any],
     ) -> ChannelPayload:
+        """Render a question plus selectable fields as plain lines."""
         field_lines = [f"- {field.get('label') or field.get('name')}" for field in fields or []]
         text = prompt
         if field_lines:
@@ -66,6 +87,11 @@ class WhatsAppAdapter(ChannelAdapter):
         rows: list[dict[str, Any]] | None,
         items: list[dict[str, Any]] | None,
     ) -> ChannelPayload:
+        """Render tables/lists as numbered short rows.
+
+        A small fixed limit keeps the first page usable on small WhatsApp
+        screens; callers can ask follow-ups for more rows if needed.
+        """
         lines: list[str] = []
         if title:
             lines.append(title)
@@ -87,9 +113,11 @@ class WhatsAppAdapter(ChannelAdapter):
         return self.render_text("\n".join(lines).strip() or "No results.")
 
     def render_confirmation(self, prompt: str) -> ChannelPayload:
+        """Render confirmation prompts with a simple yes/no call-to-action."""
         return self.render_text(f"{prompt}\n\nReply yes or no.")
 
     def render_error(self, message: str) -> ChannelPayload:
+        """Render errors as plain text for immediate user visibility."""
         return self.render_text(message)
 
 

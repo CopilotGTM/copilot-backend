@@ -1,4 +1,9 @@
-"""WhatsApp webhook authentication via Meta app-secret signing."""
+"""Validate WhatsApp webhooks with Meta app-secret signing.
+
+The validator is used by webhook handlers before any payload-specific work:
+it confirms the webhook sender using `X-Hub-Signature-256` and protects the
+service from forged callbacks.
+"""
 
 from __future__ import annotations
 
@@ -10,14 +15,25 @@ from src.service.bots.auth_validators.base import AuthValidationResult, WebhookA
 
 
 class WhatsAppAuthValidator(WebhookAuthValidator):
-    """Validate Meta webhook requests using X-Hub-Signature-256."""
+    """Validate inbound WhatsApp webhook requests from Meta.
+
+    The caller passes raw request headers and body bytes so the HMAC can be
+    recomputed exactly as Meta sent it.
+    """
 
     def __init__(self, app_secret: str | None) -> None:
+        """Store the app secret used to validate webhook signatures."""
         self._app_secret = app_secret or ""
 
     async def validate(
         self, headers: Mapping[str, str], body: bytes | None = None
     ) -> AuthValidationResult:
+        """Check `X-Hub-Signature-256` using constant-time comparison.
+
+        Returns:
+            AuthValidationResult: validation outcome and a short reason string
+                when validation fails.
+        """
         if not self._app_secret:
             return AuthValidationResult(False, "app_secret_missing")
 

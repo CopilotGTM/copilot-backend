@@ -1,4 +1,15 @@
-"""WhatsApp Bot webhook handler."""
+"""WhatsApp webhook handler.
+
+Endpoints:
+- GET  /bots/whatsapp/webhook  — Meta verification challenge
+- POST /bots/whatsapp/webhook  — inbound webhook delivery
+
+Notes:
+- The endpoint does not use app authentication; it relies on app-secret
+  signature verification (`X-Hub-Signature-256`) and a short dedupe key.
+- Webhooks are handed off to background processing and return 200 quickly
+  so Meta does not retry on transient worker scheduling delays.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +30,7 @@ router = APIRouter(tags=["whatsapp-bot"])
 
 
 def _extract_message_ids(payload: dict[str, Any]) -> list[str]:
+    """Collect WhatsApp message ids from a webhook payload."""
     message_ids: list[str] = []
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -36,6 +48,11 @@ async def verify_whatsapp_webhook(
     verify_token: str = Query("", alias="hub.verify_token"),
     challenge: str = Query("", alias="hub.challenge"),
 ) -> Response:
+    """Handle Meta's verification handshake.
+
+    Meta posts these params during endpoint registration; if they match the
+    configured token, we return the challenge verbatim.
+    """
     if not whatsapp_config.WHATSAPP_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -51,6 +68,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def handle_whatsapp_webhook(request: Request) -> Response:
+    """Handle incoming WhatsApp callbacks and enqueue async message processing."""
     if not whatsapp_config.WHATSAPP_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -64,6 +82,7 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
         logger.warning("WhatsApp webhook auth failed: %s", auth_result.error)
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
+    # Parse raw JSON body before any async queueing so we fail fast on bad payloads.
     try:
         payload = json.loads(body.decode("utf-8"))
     except json.JSONDecodeError as exc:
@@ -74,6 +93,7 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
 
     message_ids = _extract_message_ids(payload)
     if message_ids:
+        # Best-effort idempotency gate: ignore a retry if we've already seen these ids.
         try:
             redis = get_redis_client()
             new_message_seen = False
@@ -99,5 +119,6 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
         except Exception:
             logger.error("Error processing WhatsApp webhook", exc_info=True)
 
+    # Process webhook in background and return immediately to keep Meta retry budget low.
     asyncio.create_task(_process())
     return Response(status_code=status.HTTP_200_OK)

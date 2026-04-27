@@ -1,4 +1,19 @@
-"""WhatsApp Bot Service."""
+"""WhatsApp bot service orchestration.
+
+This service is the runtime entry-point for parsed WhatsApp webhook events.
+It maps inbound messages to internal users, normalizes media payloads, creates
+chat jobs, and enqueues `chat.process_bot_message` with WhatsApp-specific
+context.
+
+Callers:
+- src.api.routers.bots.whatsapp_webhook_handler -> process_webhook
+- External ChatAttachment pipeline -> ingest_whatsapp_media_files
+
+Notes:
+- Organization isolation is enforced where DB sessions are opened.
+- Webhook identity is not trusted by external IDs alone; internal mapping determines
+  who can continue.
+"""
 
 from __future__ import annotations
 
@@ -49,7 +64,14 @@ class WhatsAppInboundMessage:
 
 
 class WhatsAppBotService:
-    """Handle WhatsApp webhook traffic and outbound messages."""
+    """Handle WhatsApp message intake and bot job dispatch.
+
+    The service owns:
+    - message-type classification (text, media, location/contact, unsupported)
+    - login prompt routing for unlinked external ids
+    - media ingestion into the shared attachment boundary
+    - creation of personal WhatsApp chat sessions/jobs
+    """
 
     def __init__(self) -> None:
         self._identity_service = ExternalIdentityService()
@@ -57,6 +79,7 @@ class WhatsAppBotService:
 
     @property
     def auth_state_service(self) -> BotAuthStateService:
+        """Lazy-load auth state service configured for WhatsApp links."""
         if self._auth_state_service is None:
             self._auth_state_service = get_bot_auth_state_service(
                 login_url_base=whatsapp_config.WHATSAPP_AUTH_LOGIN_URL
@@ -64,6 +87,12 @@ class WhatsAppBotService:
         return self._auth_state_service
 
     async def process_webhook(self, payload: dict[str, Any]) -> None:
+        """Process a verified WhatsApp payload from the webhook router.
+
+        Only `whatsapp_business_account` envelopes are expected. For each parsed
+        inbound message we route identity, media, and reply context through the
+        same service pipeline.
+        """
         if payload.get("object") != "whatsapp_business_account":
             logger.debug("Ignoring non-WhatsApp payload object=%s", payload.get("object"))
             return
@@ -74,9 +103,12 @@ class WhatsAppBotService:
     def _extract_inbound_text_messages(
         self, payload: dict[str, Any]
     ) -> list[WhatsAppInboundMessage]:
+        """Backward-compatible alias for extracting inbound messages."""
         return self._extract_inbound_messages(payload)
 
     def _extract_inbound_messages(self, payload: dict[str, Any]) -> list[WhatsAppInboundMessage]:
+        # Parse only object payloads emitted by WhatsApp conversations.
+        # Status-only entries are ignored because they do not contain user content.
         inbound_messages: list[WhatsAppInboundMessage] = []
         for entry in payload.get("entry", []):
             for change in entry.get("changes", []):
@@ -102,10 +134,14 @@ class WhatsAppBotService:
                     media_files: list[WhatsAppInboundMedia] | None = None
                     unsupported_reason: str | None = None
 
+                    # WhatsApp sends one message object with a `type` field.
+                    # Unknown types are captured as unsupported and reported back explicitly.
                     if message_type == "text":
                         if not text:
                             continue
                     elif message_type in {"audio", "voice"}:
+                        # Audio messages are routed as transcription-ready metadata.
+                        # Inbound voice/audio ids are later converted into queue context.
                         audio_info = message.get(message_type) or message.get("audio") or {}
                         media_id = str(audio_info.get("id") or "")
                         if not media_id:
@@ -120,6 +156,8 @@ class WhatsAppBotService:
                             }
                         ]
                     elif message_type in {"image", "document"}:
+                        # Documents/images are normalized into Attachment objects and ingested
+                        # through the shared external attachment pipeline.
                         media_info = message.get(message_type) or {}
                         media_id = str(media_info.get("id") or "")
                         if not media_id:
@@ -141,10 +179,14 @@ class WhatsAppBotService:
                             )
                         ]
                     elif message_type == "contacts":
+                        # Contact payloads are flattened into plain text so worker prompts
+                        # can include them alongside normal question text.
                         text = self._format_contact_cards(message.get("contacts") or [])
                         if not text:
                             continue
                     elif message_type == "location":
+                        # Location payloads are also plain text for predictable downstream
+                        # parsing in the general agent.
                         text = self._format_location(message.get("location") or {})
                         if not text:
                             continue
@@ -167,6 +209,7 @@ class WhatsAppBotService:
 
     @staticmethod
     def _whatsapp_audio_filename(mimetype: str | None) -> str:
+        """Build a stable audio filename when WhatsApp omits a filename."""
         clean_mimetype = (mimetype or "").split(";", maxsplit=1)[0].strip().lower()
         extension = {
             "audio/aac": "aac",
@@ -179,6 +222,7 @@ class WhatsAppBotService:
 
     @staticmethod
     def _whatsapp_media_filename(media_type: str, mimetype: str | None) -> str:
+        """Build a stable filename from MIME when WhatsApp payload omits one."""
         clean_mimetype = (mimetype or "").split(";", maxsplit=1)[0].strip().lower()
         extension = {
             "image/jpeg": "jpg",
@@ -195,6 +239,7 @@ class WhatsAppBotService:
 
     @staticmethod
     def _format_contact_cards(contacts: list[dict[str, Any]]) -> str:
+        """Format WhatsApp shared contacts into readable text for prompt context."""
         blocks: list[str] = []
         for contact in contacts:
             name = contact.get("name") or {}
@@ -226,6 +271,7 @@ class WhatsAppBotService:
 
     @staticmethod
     def _format_location(location: dict[str, Any]) -> str:
+        """Format WhatsApp location payload into compact, plain-text context."""
         latitude = location.get("latitude")
         longitude = location.get("longitude")
         if latitude is None or longitude is None:
@@ -245,9 +291,12 @@ class WhatsAppBotService:
         return "\n".join(lines)
 
     async def _route_message(self, message: WhatsAppInboundMessage) -> None:
+        """Route one normalized message to login, job creation, and enqueue path."""
         user, _ = await self._get_linked_user(message.recipient_wa_id, message.phone_number_id)
         if not user:
             login_message = self._get_login_message_with_state(message)
+            # Unlinked numbers cannot be trusted for chat history, so we force a
+            # re-auth flow before any worker enqueue.
             await self.send_text_message(
                 phone_number_id=message.phone_number_id,
                 recipient_wa_id=message.recipient_wa_id,
@@ -260,6 +309,8 @@ class WhatsAppBotService:
         if message.unsupported_reason and not (
             message.text.strip() or message.media_files or message.audio_files
         ):
+            # Explicitly unsupported media should be safe-replied and never
+            # enqueued into agent jobs.
             await self.send_text_message(
                 phone_number_id=message.phone_number_id,
                 recipient_wa_id=message.recipient_wa_id,
@@ -268,6 +319,7 @@ class WhatsAppBotService:
             return
 
         try:
+            # Non-blocking typing signal improves UX; failure does not block enqueue.
             await self.send_typing_indicator(
                 phone_number_id=message.phone_number_id,
                 message_id=message.message_id,
@@ -277,6 +329,7 @@ class WhatsAppBotService:
 
         attachment_refs: list[dict[str, Any]] = []
         if message.media_files:
+            # Ingest media first so the worker gets stable attachment refs.
             attachment_refs = await self._ingest_media_files(user, message.media_files)
 
         job_id: str | None = None
@@ -304,6 +357,7 @@ class WhatsAppBotService:
             bot_context["current_attachments"] = attachment_refs
 
         try:
+            # Enqueue keeps the webhook fast; the chat worker owns heavy processing.
             await send_chat_task_async(
                 "chat.process_bot_message",
                 args=[
@@ -326,6 +380,7 @@ class WhatsAppBotService:
             )
         except Exception as e:
             logger.error("Failed to enqueue WhatsApp bot message task: %s", e, exc_info=True)
+            # Keep the request user-safe if queueing fails after all prior steps.
             await self.send_text_message(
                 phone_number_id=message.phone_number_id,
                 recipient_wa_id=message.recipient_wa_id,
@@ -341,6 +396,7 @@ class WhatsAppBotService:
         recipient_wa_id: str,
         incoming_message_id: str | None,
     ) -> dict[str, str]:
+        """Build WhatsApp reply context for outbound API calls."""
         reply_context = {
             "phone_number_id": phone_number_id,
             "recipient_wa_id": recipient_wa_id,
@@ -352,6 +408,8 @@ class WhatsAppBotService:
     async def _ingest_media_files(
         self, user: User, media_files: list[WhatsAppInboundMedia]
     ) -> list[dict[str, Any]]:
+        # Shared ingest service is responsible for download + storage + attachment
+        # records so bot attachment behavior stays aligned across channels.
         from src.infra.database.sessions import acquire_org_async_session
         from src.service.chat.chat_attachment_manifest import serialize_attachment_context
         from src.service.chat.external_chat_attachment_ingest_service import (
@@ -364,6 +422,8 @@ class WhatsAppBotService:
             return []
 
         async for db in acquire_org_async_session(user.organisation_id):
+            # Keep DB connection ownership inside this boundary; all attachment
+            # rows are written only under the caller's organization.
             ingest_service = ExternalChatAttachmentIngestService(
                 org_session=db,
                 organisation_id=user.organisation_id,
@@ -389,6 +449,8 @@ class WhatsAppBotService:
     async def _get_linked_user(
         self, recipient_wa_id: str, phone_number_id: str
     ) -> tuple[User | None, dict[str, Any] | None]:
+        # Identity lookups only trust the org mapping stored in master DB.
+        # External IDs (WA IDs/phone IDs) are used only as lookup keys.
         try:
             async for session in acquire_master_async_session():
                 user, mapping = await self._identity_service.get_user_for_external_identity(
@@ -443,6 +505,7 @@ class WhatsAppBotService:
         message_text: str,
         attachment_refs: list[dict[str, Any]] | None = None,
     ) -> UUID:
+        # Bot jobs and attachment links are always persisted in the user's org.
         from sqlmodel import col, select
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
@@ -555,6 +618,7 @@ class WhatsAppBotService:
     async def send_text_message_with_id(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> str | None:
+        """Send a text message and return WhatsApp message id when available."""
         response_payload = await self._send_text_message_payload(
             phone_number_id=phone_number_id,
             recipient_wa_id=recipient_wa_id,
@@ -571,6 +635,7 @@ class WhatsAppBotService:
     async def send_text_message(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> bool:
+        """Send a text message and return whether WhatsApp acknowledged success."""
         return (
             await self._send_text_message_payload(
                 phone_number_id=phone_number_id,
@@ -581,6 +646,10 @@ class WhatsAppBotService:
         )
 
     async def send_typing_indicator(self, phone_number_id: str, message_id: str) -> bool:
+        """Best-effort typing/read indicator for inbound WhatsApp messages.
+
+        Indicator failure is intentionally non-blocking for message routing.
+        """
         access_token = await whatsapp_config.get_access_token()
         if not access_token:
             logger.error("WhatsApp access token not available")

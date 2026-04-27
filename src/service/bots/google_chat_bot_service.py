@@ -1,4 +1,17 @@
-"""Google Chat Bot Service."""
+"""Google Chat bot service orchestration.
+
+This service is the core runtime entry-point for Google Chat events. It maps
+incoming interaction payloads to internal users, handles login-link flow, creates
+chat jobs, and sends outbound text messages back to Google Chat.
+
+Callers:
+- src.api.routers.bots.google_chat_webhook_handler -> process_event
+- src.workers.chat_worker.services.bot_message_processing_service -> send_message
+
+Notes:
+- User identity must be resolved from internal mappings; external IDs are lookup keys,
+  never trusted identity by themselves.
+"""
 
 from __future__ import annotations
 
@@ -40,7 +53,7 @@ class GoogleChatInboundEvent:
 
 
 class GoogleChatBotService:
-    """Handle Google Chat interaction events and outbound bot messages."""
+    """Handle Google Chat interactions, identity gating, and job dispatch."""
 
     def __init__(self) -> None:
         self._identity_service = ExternalIdentityService()
@@ -48,6 +61,7 @@ class GoogleChatBotService:
 
     @property
     def auth_state_service(self) -> BotAuthStateService:
+        """Lazy-load auth state service configured for Google Chat login flow."""
         if self._auth_state_service is None:
             self._auth_state_service = get_bot_auth_state_service(
                 login_url_base=google_chat_config.GOOGLE_CHAT_AUTH_LOGIN_URL
@@ -56,9 +70,15 @@ class GoogleChatBotService:
 
     @auth_state_service.setter
     def auth_state_service(self, service: BotAuthStateService) -> None:
+        """Allow tests to inject a controlled auth-state service."""
         self._auth_state_service = service
 
     async def process_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Process one verified Google Chat webhook payload.
+
+        Non-message lifecycle events return immediate metadata/acknowledgment
+        responses without queue work to keep behavior deterministic.
+        """
         event_type = str(payload.get("type") or payload.get("eventType") or "").upper()
 
         if event_type == "ADDED_TO_SPACE":
@@ -75,11 +95,13 @@ class GoogleChatBotService:
             return {}
 
         event = self._extract_event(payload)
+        # Normalize first so downstream logic only handles one event shape.
         if not event.text:
             return {"text": "I received an empty message. How can I help?"}
         return await self._route_message(event)
 
     def _extract_event(self, payload: dict[str, Any]) -> GoogleChatInboundEvent:
+        """Convert a raw Google Chat interaction event into a normalized model."""
         event_type = str(payload.get("type") or payload.get("eventType") or "").upper()
         message = payload.get("message") or {}
         space = payload.get("space") or message.get("space") or {}
@@ -103,8 +125,11 @@ class GoogleChatBotService:
         )
 
     async def _route_message(self, event: GoogleChatInboundEvent) -> dict[str, Any]:
+        """Resolve user context, enqueue chat processing, and return reply text."""
         user, _ = await self._get_linked_user(event.external_user_id, event.external_tenant_id)
         if not user:
+            # Unlinked users must authenticate before worker enqueue or message
+            # persistence can occur.
             return self._get_login_message_with_state(event)
 
         from src.workers.chat_worker.client import send_chat_task_async
@@ -127,6 +152,8 @@ class GoogleChatBotService:
             bot_context["user_timezone"] = event.timezone
 
         try:
+            # Queueing keeps webhook response time low and preserves retry
+            # semantics for downstream work in the chat worker.
             await send_chat_task_async(
                 "chat.process_bot_message",
                 args=[
@@ -157,6 +184,11 @@ class GoogleChatBotService:
     async def _get_linked_user(
         self, external_user_id: str, external_tenant_id: str
     ) -> tuple[User | None, dict[str, Any] | None]:
+        """Resolve an internal user via external identity mappings.
+
+        Organization and identity mapping are verified in master storage before
+        any personal bot job is created.
+        """
         try:
             async for session in acquire_master_async_session():
                 user, mapping = await self._identity_service.get_user_for_external_identity(
@@ -173,6 +205,7 @@ class GoogleChatBotService:
         return None, None
 
     def _get_login_message_with_state(self, event: GoogleChatInboundEvent) -> dict[str, Any]:
+        """Return a time-bound re-auth prompt with stateful login URL."""
         if not google_chat_config.GOOGLE_CHAT_AUTH_LOGIN_URL:
             return {
                 "text": (
@@ -209,6 +242,7 @@ class GoogleChatBotService:
 
     @staticmethod
     def _build_reply_context(event: GoogleChatInboundEvent) -> dict[str, str]:
+        """Build the outbound reply context used by outbound message APIs."""
         reply_context = {"space_name": event.space_name}
         if event.thread_name:
             reply_context["thread_name"] = event.thread_name
@@ -216,6 +250,7 @@ class GoogleChatBotService:
 
     @staticmethod
     def _welcome_message() -> dict[str, str]:
+        """Return the first-message response for space-join onboarding."""
         return {
             "text": (
                 "Hi, I'm Kai, your CopilotGTM assistant.\n\n"
@@ -225,6 +260,11 @@ class GoogleChatBotService:
         }
 
     async def _create_bot_job(self, user: User, message_text: str) -> UUID:
+        """Persist a bot-originated chat session/message/job in the user's org.
+
+        Session/job writes happen in short, organization-scoped DB sessions and are
+        intentionally split to avoid long-held connections around network work.
+        """
         from sqlmodel import col, select
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
@@ -240,6 +280,7 @@ class GoogleChatBotService:
         message_id: UUID | None = None
 
         async for db in acquire_org_async_session(org_id):
+            # Use org-scoped session and explicit chat type to prevent cross-org leakage.
             stmt = select(ChatSession).where(
                 col(ChatSession.user_id) == user.user_id,
                 col(ChatSession.organisation_id) == org_id,
@@ -285,6 +326,7 @@ class GoogleChatBotService:
                 break
 
         async for db in acquire_org_async_session(org_id):
+            # Job metadata is minimal; provider-specific fields stay in bot_context.
             job = ChatMessageJob(
                 message_id=message_id,
                 job_type="google_chat_response",
@@ -316,6 +358,7 @@ class GoogleChatBotService:
         text: str,
         thread_name: str | None = None,
     ) -> bool:
+        """Send a text reply to Google Chat and return true on API success."""
         access_token = await self._get_app_access_token()
         if not access_token:
             logger.error("Google Chat app credentials are unavailable")
@@ -346,6 +389,7 @@ class GoogleChatBotService:
                 ) as response,
             ):
                 if response.status < 300:
+                    # 2xx means Google Chat accepted the outbound request.
                     return True
                 logger.warning(
                     "Google Chat send failed status=%s body=%s",
@@ -357,6 +401,7 @@ class GoogleChatBotService:
         return False
 
     async def _get_app_access_token(self) -> str | None:
+        """Get an app access token using Google credentials configured for this service."""
         try:
             credentials = google_chat_config.get_app_credentials()
             return await asyncio.to_thread(self._refresh_app_credentials, credentials)
@@ -366,5 +411,6 @@ class GoogleChatBotService:
 
     @staticmethod
     def _refresh_app_credentials(credentials: Any) -> str | None:
+        """Refresh Google credentials in a blocking path and return bearer token."""
         credentials.refresh(google_requests.Request())
         return cast("str | None", credentials.token)
