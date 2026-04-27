@@ -22,10 +22,12 @@ deal_memory.process_job
        stakeholder.analyze_deal_stakeholders_task
      )
   -> deal_tasks.sync_from_summary
+  -> deal_update.process_job  # only when ENABLE_DEAL_UPDATE_AGENT_PIPELINE=true
 ```
 
-Task sync runs last so it can use updated deal memory, risk/blocker, and
-stakeholder context.
+Task sync runs after the insight group so it can use updated deal memory,
+risk/blocker, and stakeholder context. Deal update is a feature-flagged final
+step when enabled.
 
 ## Components
 

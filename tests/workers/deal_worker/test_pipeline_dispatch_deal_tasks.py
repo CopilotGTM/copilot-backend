@@ -50,6 +50,7 @@ class _FakeCelery:
 def test_create_pipeline_jobs_creates_deal_task_sync_job(monkeypatch) -> None:
     """Verify _create_pipeline_jobs always emits DEAL_TASK_SYNC for deal insights."""
 
+    monkeypatch.delenv("ENABLE_DEAL_UPDATE_AGENT_PIPELINE", raising=False)
     session = _FakeSession()
 
     @contextmanager
@@ -61,13 +62,14 @@ def test_create_pipeline_jobs_creates_deal_task_sync_job(monkeypatch) -> None:
 
     # The pipeline should return three jobs in a fixed sequence so retries are stable
     # across test, queueing, and worker replay.
-    risk_job_id, stakeholder_job_id, task_job_id = pipeline_dispatch._create_pipeline_jobs(
-        str(uuid4()), str(uuid4())
+    risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = (
+        pipeline_dispatch._create_pipeline_jobs(str(uuid4()), str(uuid4()))
     )
 
     assert risk_job_id
     assert stakeholder_job_id
     assert task_job_id
+    assert deal_update_job_id is None
     assert [job.job_type for job in session.added] == [
         DealJobType.RISK_BLOCKER_EXTRACTION,
         DealJobType.STAKEHOLDER_ANALYSIS,

@@ -25,6 +25,9 @@ from src.agents.tools.crm.manage_risks_blockers import (
 )
 from src.agents.tools.crm.search_contacts import create_search_contacts
 from src.agents.tools.crm.search_deals import create_search_deals
+from src.agents.tools.crm.update_deal_account import create_update_deal_account
+from src.agents.tools.crm.update_deal_fields import create_update_deal_fields
+from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
 from src.agents.tools.crm.update_deal_stage import create_update_deal_stage
 from src.agents.tools.crm.upsert_stakeholder import create_upsert_stakeholder
 
@@ -42,6 +45,9 @@ __all__ = [
     "create_get_deal_summary",
     "create_get_deal_change_history",
     "create_get_pipeline_details",
+    "create_update_deal_fields",
+    "create_update_deal_lifecycle",
+    "create_update_deal_account",
     # Stakeholder tools
     "create_list_deal_stakeholders",
     "create_get_stakeholder_details",

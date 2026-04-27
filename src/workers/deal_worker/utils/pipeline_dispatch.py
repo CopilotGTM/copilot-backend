@@ -9,6 +9,7 @@ meeting, and CRM-sync triggers:
    after Deal Memory completes (they read deal memory as context).
 4. Run deal task sync after the insight group so task extraction sees the
    updated deal memory, risks/blockers, and stakeholder context.
+5. Optionally run deal update after task sync when the feature flag is enabled.
 
 Keeping this orchestration in one place prevents trigger-specific code paths
 from drifting into slightly different queueing behavior.
@@ -16,6 +17,7 @@ from drifting into slightly different queueing behavior.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -129,14 +131,14 @@ async def get_or_create_deal_memory_job(
 def _create_pipeline_jobs(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str | None]:
     """Create DealJobs records for downstream deal insight pipeline tasks.
 
     Jobs are created BEFORE Celery dispatch so the UI can show PENDING status
     immediately and costing data has a record to attach to.
 
     Returns:
-        Tuple of (risk_blocker_job_id, stakeholder_job_id, task_job_id) as strings.
+        Tuple of risk, stakeholder, task-sync, and optional deal-update job IDs.
     """
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -172,20 +174,43 @@ def _create_pipeline_jobs(
         session.add(risk_job)
         session.add(stakeholder_job)
         session.add(task_job)
+
+        deal_update_job = None
+        if _deal_update_pipeline_enabled():
+            deal_update_job = DealJobs(
+                organisation_id=org_uuid,
+                user_id=AUTOMATED_PIPELINE_USER_ID,
+                job_type=DealJobType.DEAL_UPDATE,
+                deal_id=deal_uuid,
+                status=JobStatus.PENDING,
+                job_metadata={
+                    "source": "automated_pipeline",
+                    "trigger_type": "deal_insight_pipeline",
+                    "trigger_source_id": None,
+                    "instruction": (
+                        "Update safe deal CRM fields from the latest deal insight context."
+                    ),
+                    "approval_mode": "auto_safe_fields",
+                    "chained_from": "deal_insights",
+                },
+            )
+            session.add(deal_update_job)
         session.flush()
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
         task_job_id = str(task_job.job_id)
+        deal_update_job_id = str(deal_update_job.job_id) if deal_update_job else None
 
         session.commit()
 
     logger.info(
-        "Created pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s",
+        "Created pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s, update=%s",
         deal_id,
         risk_job_id,
         stakeholder_job_id,
         task_job_id,
+        deal_update_job_id,
         extra={
             "event": "deal_insight_pipeline_jobs_created",
             "organisation_id": str(org_uuid),
@@ -193,16 +218,17 @@ def _create_pipeline_jobs(
             "risk_blocker_job_id": risk_job_id,
             "stakeholder_job_id": stakeholder_job_id,
             "deal_task_job_id": task_job_id,
+            "deal_update_job_id": deal_update_job_id,
             "pipeline_type": "sync",
         },
     )
-    return risk_job_id, stakeholder_job_id, task_job_id
+    return risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id
 
 
 async def _create_pipeline_jobs_async(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str | None]:
     """Async equivalent of pipeline job creation for async worker call sites."""
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -238,21 +264,46 @@ async def _create_pipeline_jobs_async(
         session.add(risk_job)
         session.add(stakeholder_job)
         session.add(task_job)
+
+        deal_update_job = None
+        if _deal_update_pipeline_enabled():
+            deal_update_job = DealJobs(
+                organisation_id=org_uuid,
+                user_id=AUTOMATED_PIPELINE_USER_ID,
+                job_type=DealJobType.DEAL_UPDATE,
+                deal_id=deal_uuid,
+                status=JobStatus.PENDING,
+                job_metadata={
+                    "source": "automated_pipeline",
+                    "trigger_type": "deal_insight_pipeline",
+                    "trigger_source_id": None,
+                    "instruction": (
+                        "Update safe deal CRM fields from the latest deal insight context."
+                    ),
+                    "approval_mode": "auto_safe_fields",
+                    "chained_from": "deal_insights",
+                },
+            )
+            session.add(deal_update_job)
         await session.flush()
         await session.refresh(risk_job)
         await session.refresh(stakeholder_job)
         await session.refresh(task_job)
+        if deal_update_job:
+            await session.refresh(deal_update_job)
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
         task_job_id = str(task_job.job_id)
+        deal_update_job_id = str(deal_update_job.job_id) if deal_update_job else None
 
     logger.info(
-        "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s",
+        "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s, update=%s",
         deal_id,
         risk_job_id,
         stakeholder_job_id,
         task_job_id,
+        deal_update_job_id,
         extra={
             "event": "deal_insight_pipeline_jobs_created",
             "organisation_id": str(org_uuid),
@@ -260,10 +311,16 @@ async def _create_pipeline_jobs_async(
             "risk_blocker_job_id": risk_job_id,
             "stakeholder_job_id": stakeholder_job_id,
             "deal_task_job_id": task_job_id,
+            "deal_update_job_id": deal_update_job_id,
             "pipeline_type": "async",
         },
     )
-    return risk_job_id, stakeholder_job_id, task_job_id
+    return risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id
+
+
+def _deal_update_pipeline_enabled() -> bool:
+    """Return whether automatic deal-update pipeline wiring is enabled."""
+    return os.getenv("ENABLE_DEAL_UPDATE_AGENT_PIPELINE", "false").lower() == "true"
 
 
 def _build_deal_insight_canvas(
@@ -273,13 +330,14 @@ def _build_deal_insight_canvas(
     risk_job_id: str,
     stakeholder_job_id: str,
     task_job_id: str,
+    deal_update_job_id: str | None = None,
 ):
     """Build the deal memory -> parallel insights -> task sync pipeline.
 
     Deal Memory runs first to build the foundational deal narrative.
     Risk/Blocker extraction and Stakeholder analysis then run in parallel,
-    using the deal memory as their primary context. Deal task sync runs last
-    because it should create/complete tasks after insight context is fresh.
+    using the deal memory as their primary context. Deal task sync runs after
+    the insight group, and deal update can run as a final feature-flagged step.
 
     All signatures are immutable — downstream tasks read from the database,
     not from Celery return payloads.
@@ -290,7 +348,7 @@ def _build_deal_insight_canvas(
         job_id: Existing ``DEAL_MEMORY_BUILD`` job to complete first.
 
     Returns:
-        A Celery canvas representing ``chain(deal_memory, group(risk, stakeholder), task_sync)``.
+        A Celery canvas representing the deal insight pipeline.
     """
     celery_app = get_deal_celery_client()
 
@@ -339,7 +397,18 @@ def _build_deal_insight_canvas(
         headers=correlation_headers(),
     )
 
-    return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig), deal_task_sig)
+    insight_group = group(risk_blocker_sig, stakeholder_sig)
+    if deal_update_job_id:
+        deal_update_sig = celery_app.signature(
+            "deal_update.process_job",
+            kwargs={"organisation_id": organisation_id, "job_id": deal_update_job_id},
+            queue="deal_jobs",
+            immutable=True,
+            headers=correlation_headers(),
+        )
+        return chain(deal_memory_sig, insight_group, deal_task_sig, deal_update_sig)
+
+    return chain(deal_memory_sig, insight_group, deal_task_sig)
 
 
 def build_deal_insight_pipeline(
@@ -348,7 +417,9 @@ def build_deal_insight_pipeline(
     job_id: str,
 ):
     """Build the deal memory -> parallel risk+stakeholder pipeline."""
-    risk_job_id, stakeholder_job_id, task_job_id = _create_pipeline_jobs(organisation_id, deal_id)
+    risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = _create_pipeline_jobs(
+        organisation_id, deal_id
+    )
     return _build_deal_insight_canvas(
         organisation_id,
         deal_id,
@@ -356,6 +427,7 @@ def build_deal_insight_pipeline(
         risk_job_id,
         stakeholder_job_id,
         task_job_id,
+        deal_update_job_id,
     )
 
 
@@ -368,7 +440,7 @@ def dispatch_deal_insight_pipeline(
 ) -> None:
     """Dispatch the deal insight pipeline.
 
-    Pipeline order: deal_memory -> group(risk, stakeholder) -> deal_task_sync
+    Pipeline order: deal_memory -> group(risk, stakeholder) -> deal_task_sync -> optional deal_update
 
     When ``prefix_signatures`` are provided (e.g. meeting summaries), they run
     first in sequence before the deal insight pipeline starts.
@@ -396,8 +468,8 @@ async def dispatch_deal_insight_pipeline_async(
     prefix_signatures: Sequence | None = None,
 ) -> None:
     """Async-safe dispatch variant for code paths already running inside an event loop."""
-    risk_job_id, stakeholder_job_id, task_job_id = await _create_pipeline_jobs_async(
-        organisation_id, deal_id
+    risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = (
+        await _create_pipeline_jobs_async(organisation_id, deal_id)
     )
     pipeline = _build_deal_insight_canvas(
         organisation_id,
@@ -406,6 +478,7 @@ async def dispatch_deal_insight_pipeline_async(
         risk_job_id,
         stakeholder_job_id,
         task_job_id,
+        deal_update_job_id,
     )
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
