@@ -1,0 +1,6 @@
+interface:
+  display_name: "Writing Python Comments"
+  short_description: "Newcomer-readable backend Python comments at expected density"
+  default_prompt: "Use $writing-python-comments to add or review Python comments and docstrings. Aim for newcomer-readable density: a junior engineer or new hire should be able to read the file top to bottom and understand both what each non-obvious block does and why. Hit the coverage expectations and mandatory comment sites in the skill, then run the scanner."
+policy:
+  allow_implicit_invocation: true
