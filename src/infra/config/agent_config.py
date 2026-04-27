@@ -6,12 +6,12 @@ via environment variables.
 
 Usage:
     from src.infra.config.agent_config import agent_config
+    # Prefer full config for runtime-safe initialization:
+    # get_config exposes model, debug mode, and timeout as one immutable object.
+    config = agent_config.get_config("deal_task_agent")
 
-    # Get model config for an agent
+    # Existing tuple access is kept for call sites that only need model+version.
     model, api_version = agent_config.get_model("summary_agent")
-
-    # Get full config
-    config = agent_config.get_config("deal_summary_agent")
 """
 
 import os
@@ -91,6 +91,11 @@ class AgentConfig:
     DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
     DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "600"))
 
+    # Deal Task Agent - creates/completes deal tasks from meeting summaries
+    DEAL_TASK_MODEL: str = os.getenv("AGENT_DEAL_TASK_MODEL", "gpt-5.4")
+    DEAL_TASK_DEBUG: bool = os.getenv("AGENT_DEAL_TASK_DEBUG", "false").lower() == "true"
+    DEAL_TASK_TIMEOUT: int = int(os.getenv("AGENT_DEAL_TASK_TIMEOUT", "600"))
+
     # Stakeholder Research Agent — researches individual stakeholders via Apollo + LinkedIn
     STAKEHOLDER_RESEARCH_MODEL: str = os.getenv("AGENT_STAKEHOLDER_RESEARCH_MODEL", "gpt-5-mini")
     STAKEHOLDER_RESEARCH_DEBUG: bool = (
@@ -163,6 +168,11 @@ class AgentConfig:
             "DEAL_MEMORY_MODEL",
             "DEAL_MEMORY_DEBUG",
             "DEAL_MEMORY_TIMEOUT",
+        ),
+        "deal_task_agent": (
+            "DEAL_TASK_MODEL",
+            "DEAL_TASK_DEBUG",
+            "DEAL_TASK_TIMEOUT",
         ),
         "transcript_compression_agent": (
             "TRANSCRIPT_COMPRESSION_MODEL",
@@ -250,5 +260,5 @@ class AgentConfig:
         return list(cls._CONFIG_MAP.keys())
 
 
-# Create singleton instance
+# Single shared instance avoids re-reading env config at each callsite.
 agent_config = AgentConfig()

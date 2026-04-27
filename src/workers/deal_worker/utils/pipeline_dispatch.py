@@ -7,6 +7,8 @@ meeting, and CRM-sync triggers:
 2. Run Deal Memory first — it builds the foundational deal narrative.
 3. Run Risk/Blocker extraction and Stakeholder analysis in parallel
    after Deal Memory completes (they read deal memory as context).
+4. Run deal task sync after the insight group so task extraction sees the
+   updated deal memory, risks/blockers, and stakeholder context.
 
 Keeping this orchestration in one place prevents trigger-specific code paths
 from drifting into slightly different queueing behavior.
@@ -127,14 +129,14 @@ async def get_or_create_deal_memory_job(
 def _create_pipeline_jobs(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str]:
-    """Create DealJobs records for risk/blocker extraction and stakeholder analysis.
+) -> tuple[str, str, str]:
+    """Create DealJobs records for downstream deal insight pipeline tasks.
 
     Jobs are created BEFORE Celery dispatch so the UI can show PENDING status
     immediately and costing data has a record to attach to.
 
     Returns:
-        Tuple of (risk_blocker_job_id, stakeholder_job_id) as strings.
+        Tuple of (risk_blocker_job_id, stakeholder_job_id, task_job_id) as strings.
     """
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -156,36 +158,51 @@ def _create_pipeline_jobs(
             status=JobStatus.PENDING,
             job_metadata={"source": "automated_pipeline"},
         )
+        task_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.DEAL_TASK_SYNC,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={
+                "source": "automated_pipeline",
+                "chained_from": "deal_insights",
+            },
+        )
         session.add(risk_job)
         session.add(stakeholder_job)
+        session.add(task_job)
         session.flush()
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
+        task_job_id = str(task_job.job_id)
 
         session.commit()
 
     logger.info(
-        "Created pipeline jobs for deal %s: risk=%s, stakeholder=%s",
+        "Created pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s",
         deal_id,
         risk_job_id,
         stakeholder_job_id,
+        task_job_id,
         extra={
             "event": "deal_insight_pipeline_jobs_created",
             "organisation_id": str(org_uuid),
             "deal_id": str(deal_uuid),
             "risk_blocker_job_id": risk_job_id,
             "stakeholder_job_id": stakeholder_job_id,
+            "deal_task_job_id": task_job_id,
             "pipeline_type": "sync",
         },
     )
-    return risk_job_id, stakeholder_job_id
+    return risk_job_id, stakeholder_job_id, task_job_id
 
 
 async def _create_pipeline_jobs_async(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Async equivalent of pipeline job creation for async worker call sites."""
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -207,30 +224,46 @@ async def _create_pipeline_jobs_async(
             status=JobStatus.PENDING,
             job_metadata={"source": "automated_pipeline"},
         )
+        task_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.DEAL_TASK_SYNC,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={
+                "source": "automated_pipeline",
+                "chained_from": "deal_insights",
+            },
+        )
         session.add(risk_job)
         session.add(stakeholder_job)
+        session.add(task_job)
         await session.flush()
         await session.refresh(risk_job)
         await session.refresh(stakeholder_job)
+        await session.refresh(task_job)
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
+        task_job_id = str(task_job.job_id)
 
     logger.info(
-        "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s",
+        "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s",
         deal_id,
         risk_job_id,
         stakeholder_job_id,
+        task_job_id,
         extra={
             "event": "deal_insight_pipeline_jobs_created",
             "organisation_id": str(org_uuid),
             "deal_id": str(deal_uuid),
             "risk_blocker_job_id": risk_job_id,
             "stakeholder_job_id": stakeholder_job_id,
+            "deal_task_job_id": task_job_id,
             "pipeline_type": "async",
         },
     )
-    return risk_job_id, stakeholder_job_id
+    return risk_job_id, stakeholder_job_id, task_job_id
 
 
 def _build_deal_insight_canvas(
@@ -239,12 +272,14 @@ def _build_deal_insight_canvas(
     job_id: str,
     risk_job_id: str,
     stakeholder_job_id: str,
+    task_job_id: str,
 ):
-    """Build the deal memory -> parallel risk+stakeholder pipeline.
+    """Build the deal memory -> parallel insights -> task sync pipeline.
 
     Deal Memory runs first to build the foundational deal narrative.
     Risk/Blocker extraction and Stakeholder analysis then run in parallel,
-    using the deal memory as their primary context.
+    using the deal memory as their primary context. Deal task sync runs last
+    because it should create/complete tasks after insight context is fresh.
 
     All signatures are immutable — downstream tasks read from the database,
     not from Celery return payloads.
@@ -255,7 +290,7 @@ def _build_deal_insight_canvas(
         job_id: Existing ``DEAL_MEMORY_BUILD`` job to complete first.
 
     Returns:
-        A Celery canvas representing ``chain(deal_memory, group(risk, stakeholder))``.
+        A Celery canvas representing ``chain(deal_memory, group(risk, stakeholder), task_sync)``.
     """
     celery_app = get_deal_celery_client()
 
@@ -292,8 +327,19 @@ def _build_deal_insight_canvas(
         immutable=True,
         headers=correlation_headers(),
     )
+    deal_task_sig = celery_app.signature(
+        "deal_tasks.sync_from_summary",
+        kwargs={
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "job_id": task_job_id,
+        },
+        queue="deal_jobs",
+        immutable=True,
+        headers=correlation_headers(),
+    )
 
-    return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig))
+    return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig), deal_task_sig)
 
 
 def build_deal_insight_pipeline(
@@ -302,13 +348,14 @@ def build_deal_insight_pipeline(
     job_id: str,
 ):
     """Build the deal memory -> parallel risk+stakeholder pipeline."""
-    risk_job_id, stakeholder_job_id = _create_pipeline_jobs(organisation_id, deal_id)
+    risk_job_id, stakeholder_job_id, task_job_id = _create_pipeline_jobs(organisation_id, deal_id)
     return _build_deal_insight_canvas(
         organisation_id,
         deal_id,
         job_id,
         risk_job_id,
         stakeholder_job_id,
+        task_job_id,
     )
 
 
@@ -321,7 +368,7 @@ def dispatch_deal_insight_pipeline(
 ) -> None:
     """Dispatch the deal insight pipeline.
 
-    Pipeline order: deal_memory -> group(risk, stakeholder)
+    Pipeline order: deal_memory -> group(risk, stakeholder) -> deal_task_sync
 
     When ``prefix_signatures`` are provided (e.g. meeting summaries), they run
     first in sequence before the deal insight pipeline starts.
@@ -349,13 +396,16 @@ async def dispatch_deal_insight_pipeline_async(
     prefix_signatures: Sequence | None = None,
 ) -> None:
     """Async-safe dispatch variant for code paths already running inside an event loop."""
-    risk_job_id, stakeholder_job_id = await _create_pipeline_jobs_async(organisation_id, deal_id)
+    risk_job_id, stakeholder_job_id, task_job_id = await _create_pipeline_jobs_async(
+        organisation_id, deal_id
+    )
     pipeline = _build_deal_insight_canvas(
         organisation_id,
         deal_id,
         job_id,
         risk_job_id,
         stakeholder_job_id,
+        task_job_id,
     )
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
