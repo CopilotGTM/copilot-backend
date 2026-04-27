@@ -1,4 +1,9 @@
-"""Google Chat request authentication."""
+"""Validate Google Chat webhook requests using Google-issued bearer tokens.
+
+Google Chat webhooks are validated by checking an ID token in `Authorization`.
+This supports both Google OAuth2 verification and the legacy Chat JWT fallback used
+in some environments, then enforces that the token origin is Chat itself.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +23,10 @@ CHAT_CERTS_URL = f"https://www.googleapis.com/service_accounts/v1/metadata/x509/
 
 
 class GoogleChatAuthValidator:
-    """Validate bearer tokens sent by Google Chat interaction webhooks."""
+    """Validate bearer tokens for Google Chat interaction callbacks."""
 
     def __init__(self, audience: str | None = None) -> None:
+        """Store the configured expected audience for token verification."""
         self._audience = audience or ""
 
     async def validate(
@@ -28,6 +34,12 @@ class GoogleChatAuthValidator:
         headers: Mapping[str, str],
         body: bytes | None = None,
     ) -> AuthValidationResult:
+        """Validate `Authorization` header bearer token.
+
+        Returns:
+            AuthValidationResult: success flag and payload/error metadata for caller
+                decisions and logs.
+        """
         del body
         authorization = headers.get("Authorization") or headers.get("authorization") or ""
         if not authorization.startswith("Bearer "):
@@ -52,6 +64,7 @@ class GoogleChatAuthValidator:
         return AuthValidationResult(False, "invalid_issuer")
 
     def _verify_token(self, bearer: str) -> dict[str, Any]:
+        """Verify token with OAuth2 first, then fallback to Chat issuer certs."""
         request = google_requests.Request()
         oauth_error: Exception | None = None
         try:

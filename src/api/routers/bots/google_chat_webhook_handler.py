@@ -1,4 +1,15 @@
-"""Google Chat interaction webhook handler."""
+"""Google Chat interaction webhook handler.
+
+Endpoint:
+- POST /bots/google-chat/events
+
+Notes:
+- Endpoint relies on Google-issued bearer/JWT validation (`Authorization` header) in
+  place of app-level auth.
+- A dedupe key is applied before processing to avoid duplicate replies on provider retries.
+- Processing stays synchronous only for auth/parse/dedupe; response generation is
+  delegated to the service layer and then returned as immediate 200 payload.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +30,7 @@ router = APIRouter(tags=["google-chat-bot"])
 
 @router.post("/events")
 async def handle_google_chat_event(request: Request) -> Response:
+    """Validate signature/audience, dedupe event, and hand off to bot service."""
     if not google_chat_config.GOOGLE_CHAT_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -34,6 +46,7 @@ async def handle_google_chat_event(request: Request) -> Response:
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
     try:
+        # Parse JSON only after passing auth to avoid work on unauthorized payloads.
         payload = await request.json()
     except Exception as exc:
         raise HTTPException(
@@ -52,11 +65,13 @@ async def handle_google_chat_event(request: Request) -> Response:
         logger.info("Duplicate Google Chat event ignored id=%s", dedupe_id)
         return JSONResponse(content={}, status_code=status.HTTP_200_OK)
 
+    # Delegate actual event logic to the service so webhook path stays small and testable.
     response_payload = await GoogleChatBotService().process_event(payload)
     return JSONResponse(content=response_payload or {}, status_code=status.HTTP_200_OK)
 
 
 def _event_dedupe_id(payload: dict[str, Any]) -> str | None:
+    """Build a best-effort idempotency key from event metadata."""
     event_type = str(payload.get("type") or payload.get("eventType") or "").upper()
     if event_type not in {"MESSAGE", "CARD_CLICKED", "SUBMIT_FORM", "APP_COMMAND"}:
         return None
@@ -78,6 +93,7 @@ def _event_dedupe_id(payload: dict[str, Any]) -> str | None:
 
 
 def _is_duplicate(dedupe_id: str) -> bool:
+    """Return whether this dedupe id has already been observed."""
     try:
         redis = get_redis_client()
         was_new = redis.set(
@@ -88,5 +104,6 @@ def _is_duplicate(dedupe_id: str) -> bool:
         )
         return not bool(was_new)
     except Exception:
+        # On cache failure, avoid false negatives that could block legitimate traffic.
         logger.debug("Google Chat webhook dedupe check failed", exc_info=True)
         return False

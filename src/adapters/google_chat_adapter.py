@@ -1,4 +1,9 @@
-"""Google Chat adapter for plain-text bot responses."""
+"""Convert bot responses into Google Chat-compatible plain text.
+
+This adapter owns the Google Chat render boundary and intentionally flattens rich
+agent outputs into text because the bot channel does not support the richer
+widgets that other channels can render.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +14,17 @@ from src.adapters.whatsapp_adapter import _normalize_whatsapp_text
 from src.infra.messaging.chat_stream_models import Frame
 
 _STRUCTURED_RESULT_LIMIT = 8
+# Keep the first screen payload readable on mobile and desktop chat clients.
 
 
 class GoogleChatAdapter(ChannelAdapter):
-    """Render agent responses into conservative Google Chat message payloads."""
+    """Render normalized AgentResponse objects for the Google Chat channel.
+
+    Channel assumptions:
+    - Plain text payload only under `content["text"]`.
+    - No cards / attachment widgets at adapter level.
+    - Large result sets are truncated for readability before sending.
+    """
 
     def __init__(self) -> None:
         super().__init__("google_chat")
@@ -23,9 +35,11 @@ class GoogleChatAdapter(ChannelAdapter):
         _context: ChannelContext,
         frames: list[Frame],
     ) -> ChannelPayload:
+        """Render response frames directly into a Google Chat payload."""
         return self.render(AgentResponse.from_frames(frames))
 
     def render(self, response: AgentResponse) -> ChannelPayload:
+        """Dispatch by response type into channel-safe text shapes."""
         if response.type == ResponseType.QUESTION:
             return self.render_question(response.text, response.data.get("fields"), response.data)
         if response.type in (ResponseType.TABLE, ResponseType.LIST):
@@ -40,6 +54,7 @@ class GoogleChatAdapter(ChannelAdapter):
         return self.render_text(response.text)
 
     def render_text(self, text: str) -> ChannelPayload:
+        """Return a normalized text message payload."""
         rendered = _normalize_whatsapp_text(text)
         return ChannelPayload(type="message", content={"text": rendered}, text_fallback=rendered)
 
@@ -49,6 +64,7 @@ class GoogleChatAdapter(ChannelAdapter):
         fields: list[dict[str, Any]] | None,
         _data: dict[str, Any],
     ) -> ChannelPayload:
+        """Render questions as prompt text plus plain-text field options."""
         field_lines = [f"- {field.get('label') or field.get('name')}" for field in fields or []]
         text = prompt
         if field_lines:
@@ -62,6 +78,11 @@ class GoogleChatAdapter(ChannelAdapter):
         rows: list[dict[str, Any]] | None,
         items: list[dict[str, Any]] | None,
     ) -> ChannelPayload:
+        """Render tables/lists as short, numbered records.
+
+        A small cap keeps the initial response legible in chat threads and avoids
+        overwhelming the Google Chat UI.
+        """
         lines: list[str] = []
         if title:
             lines.append(title)
@@ -80,10 +101,12 @@ class GoogleChatAdapter(ChannelAdapter):
         return self.render_text("\n".join(lines).strip() or "No results.")
 
     def render_error(self, message: str) -> ChannelPayload:
+        """Render error text without structural formatting to preserve visibility."""
         return self.render_text(message)
 
 
 def _format_record(record: Any, columns: list[str] | None = None) -> str:
+    """Flatten one structured record into one compact semicolon-delimited line."""
     if not isinstance(record, dict):
         return str(record)
     keys = columns or list(record.keys())
