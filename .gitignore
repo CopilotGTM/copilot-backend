@@ -35,7 +35,6 @@ MANIFEST
 *.manifest
 *.spec
 .agent/
-.agents/
 .windsurf/
 
 # Installer logs

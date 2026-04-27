@@ -1,16 +1,360 @@
 """Tests for calendar sync service incremental sync functionality."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationType,
+    KnowledgeIntegration,
+)
+from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
+from src.service.integrations.calendar_sync_service import (
+    CalendarEventUpsertBatchItem,
+    CalendarSyncService,
+)
 from src.workers.integrations_worker.utils.sync_metadata import SyncAction
 
 
 def _parse_iso_datetime(value: str) -> datetime:
-    """Parse ISO datetime string."""
     iso_utc_suffix = "+00:00"
     return datetime.fromisoformat(value.replace("Z", iso_utc_suffix))
+
+
+class _FakeScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeExecuteResult:
+    def __init__(self, rows=None):
+        self._rows = rows or []
+
+    def scalars(self):
+        return _FakeScalarResult(self._rows)
+
+
+def _make_integration(**overrides):
+    defaults = {
+        "integration_id": uuid4(),
+        "organisation_id": uuid4(),
+        "created_by_user_id": uuid4(),
+        "integration_type": IntegrationType.GOOGLE_CALENDAR,
+        "name": "Calendar",
+        "credentials": {},
+    }
+    defaults.update(overrides)
+    return KnowledgeIntegration(**defaults)
+
+
+def _google_event(
+    *,
+    provider_id: str,
+    external_id: str,
+    title: str = "Team Sync",
+    attendees=None,
+    updated: str = "2024-01-15T09:00:00Z",
+    status: str = "confirmed",
+):
+    """Build a minimal Google calendar payload shaped like the real API.
+
+    `provider_id` is the per-mailbox event id (Google's `id` field) and
+    `external_id` is the shared global UID (`iCalUID`) — two attendees on
+    the same meeting share one external_id but each have their own provider_id.
+    """
+    event = {
+        "id": provider_id,
+        "iCalUID": external_id,
+        "summary": title,
+        "status": status,
+        "updated": updated,
+        "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
+        "end": {"dateTime": "2024-01-15T10:30:00Z", "timeZone": "UTC"},
+        "organizer": {"email": "host@example.com", "displayName": "Host"},
+    }
+    if attendees is not None:
+        event["attendees"] = attendees
+    return event
+
+
+def _event_row(external_id: str, occurrence_anchor: str = ""):
+    """Build a SimpleNamespace shaped like a CalendarEvent row from the DB.
+
+    Mirrors the column set the change detector and the orchestrator read.
+    SimpleNamespace is preferred over a real CalendarEvent here because the
+    tests never need ORM behavior — only attribute access.
+    """
+    return SimpleNamespace(
+        event_id=uuid4(),
+        external_id=external_id,
+        occurrence_anchor=occurrence_anchor,
+        status="confirmed",
+        synced_at=datetime(2024, 1, 1, tzinfo=UTC),
+        title="Team Sync",
+        description=None,
+        location=None,
+        conference_link=None,
+        organiser_email="host@example.com",
+        organiser_name="Host",
+        calendar_external_id=None,
+        timezone="UTC",
+        start_at=datetime(2024, 1, 15, 10, 0, 0),
+        end_at=datetime(2024, 1, 15, 10, 30, 0),
+        attendee_count=1,
+        is_all_day=False,
+        source_modified_at=datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+def _normalize_event(event_data, provider: str = "google"):
+    return CalendarEventNormalizer().normalize(event_data, provider)
+
+
+class TestCalendarIncrementalBatchWrites:
+    """Regression tests for the prod N+1 in incremental calendar writes.
+
+    Before this suite, every changed event in `sync_calendar_events_incremental`
+    issued its own INSERT for calendar_events, its own delete+insert for the
+    attendee snapshot, and its own INSERT for user_state — turning each
+    scheduled sync into hundreds of round trips per integration. These tests
+    pin the contract that all three write paths now collapse to one statement
+    per sync pass, and that the per-event routing for cancelled/unchanged
+    events still reaches the right counters and writers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_events_uses_one_statement_and_returns_identity_map(self) -> None:
+        """Multiple changed events collapse into one INSERT ... ON CONFLICT statement.
+
+        Locks the prod fix: previously every changed event issued its own
+        upsert. The batch path must hit the DB exactly once and return the
+        rows keyed by (external_id, occurrence_anchor) so the orchestrator
+        can attribute attendee snapshots and user-state rows correctly.
+        """
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        rows = [_event_row("ical-1"), _event_row("ical-2")]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
+        service = CalendarSyncService(session, organisation_id)
+
+        result = await service._batch_upsert_events(
+            integration,
+            [
+                CalendarEventUpsertBatchItem(
+                    event=_normalize_event(
+                        _google_event(provider_id="evt-1", external_id="ical-1")
+                    ),
+                ),
+                CalendarEventUpsertBatchItem(
+                    event=_normalize_event(
+                        _google_event(provider_id="evt-2", external_id="ical-2")
+                    ),
+                ),
+            ],
+        )
+
+        assert session.execute.await_count == 1
+        assert result == {("ical-1", ""): rows[0], ("ical-2", ""): rows[1]}
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT" in sql
+        assert "RETURNING" in sql
+
+    @pytest.mark.asyncio
+    async def test_batch_sync_attendees_deletes_once_and_inserts_fresh_snapshot(self) -> None:
+        """Attendee snapshot refresh is one bulk delete + one bulk insert.
+
+        Locks the snapshot contract: each provider payload is the truth as of
+        that moment, so we drop the existing roster for every affected event
+        in one statement and re-insert the new one in another. Two statements
+        per sync pass — not two per event. Verifies both Google and Microsoft
+        attendee shapes produce the same downstream insert payload.
+        """
+        organisation_id = uuid4()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult())
+        service = CalendarSyncService(session, organisation_id)
+        event_1 = _event_row("ical-1")
+        event_2 = _event_row("ical-2")
+
+        await service._batch_sync_attendees(
+            [
+                (
+                    event_1,
+                    _normalize_event(
+                        _google_event(
+                            provider_id="evt-1",
+                            external_id="ical-1",
+                            attendees=[
+                                {
+                                    "email": "buyer@example.com",
+                                    "displayName": "Buyer",
+                                    "responseStatus": "accepted",
+                                },
+                                {"displayName": "No Email"},
+                            ],
+                        )
+                    ),
+                ),
+                (
+                    event_2,
+                    _normalize_event(
+                        {
+                            "id": "ms-evt-2",
+                            "iCalUId": "ical-2",
+                            "organizer": {
+                                "emailAddress": {
+                                    "address": "host@example.com",
+                                    "name": "Host",
+                                }
+                            },
+                            "attendees": [
+                                {
+                                    "emailAddress": {
+                                        "address": "host@example.com",
+                                        "name": "Host",
+                                    },
+                                    "status": {"response": "accepted"},
+                                }
+                            ],
+                        },
+                        "microsoft",
+                    ),
+                ),
+            ]
+        )
+
+        assert session.execute.await_count == 2
+        delete_sql = str(session.execute.await_args_list[0].args[0])
+        insert_params = session.execute.await_args_list[1].args[0].compile().params
+        assert "calendar_event_attendees.event_id IN" in delete_sql
+        assert "buyer@example.com" in str(insert_params.values())
+        assert "host@example.com" in str(insert_params.values())
+        assert "No Email" not in str(insert_params.values())
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_user_states_resets_deleted_state_in_one_statement(self) -> None:
+        """User-state rows are upserted in one statement and resurrect on conflict.
+
+        Re-seeing an event for the same (event_id, integration_id) pair flips
+        is_deleted back to False — that's how a previously-deleted event
+        becomes active again from this integration's perspective. The whole
+        batch must be one INSERT ... ON CONFLICT, not one per event.
+        """
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult())
+        service = CalendarSyncService(session, organisation_id)
+
+        await service._batch_upsert_user_states(
+            [
+                (uuid4(), integration_id, "user-event-1"),
+                (uuid4(), integration_id, "user-event-2"),
+            ]
+        )
+
+        assert session.execute.await_count == 1
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT" in sql
+        assert "is_deleted" in sql
+        assert "external_id" in sql
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_batches_mixed_changed_and_state_only_events(self) -> None:
+        """Mixed batch (created + updated + unchanged + cancelled) hits each path correctly.
+
+        End-to-end check that the per-event routing classifies each event into
+        the right counter, accumulates the right writes, and flushes them via
+        a single batched call to each writer method. This is the most
+        important regression test in the file: it locks the contract that the
+        whole flow described in the sync_service module docstring still holds
+        when all four event types appear together in one provider delta.
+        """
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+
+        existing_updated = _event_row("ical-updated")
+        existing_unchanged = _event_row("ical-unchanged")
+        existing_cancelled = _event_row("ical-cancelled")
+        upserted_created = _event_row("ical-created")
+        upserted_updated = _event_row("ical-updated")
+
+        service._load_existing_events_by_identity = AsyncMock(
+            return_value={
+                ("ical-updated", ""): existing_updated,
+                ("ical-unchanged", ""): existing_unchanged,
+                ("ical-cancelled", ""): existing_cancelled,
+            }
+        )
+        service._has_meaningful_event_changes = MagicMock(side_effect=[True, False])
+        service._is_google_cancelled_exception = MagicMock(return_value=True)
+        service._batch_upsert_events = AsyncMock(
+            return_value={
+                ("ical-created", ""): upserted_created,
+                ("ical-updated", ""): upserted_updated,
+            }
+        )
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+
+        result = await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[
+                _google_event(
+                    provider_id="user-created",
+                    external_id="ical-created",
+                    title="Created",
+                    attendees=[{"email": "created@example.com"}],
+                ),
+                _google_event(
+                    provider_id="user-updated",
+                    external_id="ical-updated",
+                    title="Updated",
+                    attendees=[{"email": "updated@example.com"}],
+                    updated="2024-01-20T09:00:00Z",
+                ),
+                _google_event(
+                    provider_id="user-unchanged",
+                    external_id="ical-unchanged",
+                    attendees=[{"email": "unchanged@example.com"}],
+                ),
+                _google_event(
+                    provider_id="user-cancelled",
+                    external_id="ical-cancelled",
+                    status="cancelled",
+                    attendees=[{"email": "cancelled@example.com"}],
+                ),
+            ],
+        )
+
+        assert result["created"] == 1
+        assert result["updated"] == 1
+        assert result["skipped"] == 1
+        assert result["cancelled_existing"] == 1
+        assert service._batch_upsert_events.await_count == 1
+        assert len(service._batch_upsert_events.await_args.args[1]) == 2
+        refreshed_attendees = service._batch_sync_attendees.await_args.args[0]
+        assert {event.external_id for event, _ in refreshed_attendees} == {
+            "ical-created",
+            "ical-updated",
+            "ical-cancelled",
+        }
+        user_states = service._batch_upsert_user_states.await_args.args[0]
+        assert len(user_states) == 4
 
 
 def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
@@ -18,7 +362,6 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
 
     This mirrors the logic in CalendarSyncService._has_meaningful_event_changes.
     """
-    # Extract fields based on provider
     if provider == "google":
         fields = {
             "title": incoming.get("summary") or "(No title)",
@@ -26,7 +369,6 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
             "location": incoming.get("location"),
             "status": incoming.get("status"),
         }
-        # Extract times
         start = incoming.get("start", {})
         if "dateTime" in start:
             fields["start_at"] = _parse_iso_datetime(start["dateTime"])
@@ -39,19 +381,15 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
             fields["end_at"] = _parse_iso_datetime(end["dateTime"])
         elif "date" in end:
             fields["end_at"] = datetime.fromisoformat(f"{end['date']}T00:00:00+00:00")
-        # Attendee count
         attendees = incoming.get("attendees", [])
         fields["attendee_count"] = len(attendees) if isinstance(attendees, list) else 0
-        # Source modified
         if incoming.get("updated"):
             fields["source_modified_at"] = _parse_iso_datetime(incoming["updated"])
-        # Conference link
         conf = incoming.get("conferenceData", {})
         for entry in conf.get("entryPoints", []):
             if entry.get("entryPointType") == "video":
                 fields["conference_link"] = entry.get("uri")
                 break
-        # Organizer
         organizer = incoming.get("organizer", {})
         fields["organiser_email"] = organizer.get("email")
         fields["organiser_name"] = organizer.get("displayName")
@@ -65,7 +403,6 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
             "location": incoming.get("location", {}).get("displayName"),
             "status": "cancelled" if is_cancelled else "confirmed",
         }
-        # Extract times
         start = incoming.get("start", {})
         if start.get("dateTime"):
             fields["start_at"] = _parse_iso_datetime(start["dateTime"])
@@ -73,22 +410,17 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
         end = incoming.get("end", {})
         if end.get("dateTime"):
             fields["end_at"] = _parse_iso_datetime(end["dateTime"])
-        # Attendee count
         attendees = incoming.get("attendees", [])
         fields["attendee_count"] = len(attendees) if isinstance(attendees, list) else 0
-        # Source modified
         if incoming.get("lastModifiedDateTime"):
             fields["source_modified_at"] = _parse_iso_datetime(incoming["lastModifiedDateTime"])
-        # Conference link
         online = incoming.get("onlineMeeting", {})
         fields["conference_link"] = online.get("joinUrl")
-        # Organizer
         organizer = incoming.get("organizer", {}).get("emailAddress", {})
         fields["organiser_email"] = organizer.get("address")
         fields["organiser_name"] = organizer.get("name")
         fields["timezone"] = start.get("timeZone")
 
-    # Check source_modified_at as primary indicator
     incoming_modified = fields.get("source_modified_at")
     if (
         incoming_modified
@@ -97,7 +429,6 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
     ):
         return True
 
-    # Compare key fields
     checks = [
         (existing.title, fields.get("title")),
         (existing.description, fields.get("description")),
@@ -125,7 +456,6 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
         if existing_val != incoming_val:
             return True
 
-    # Compare start_at and end_at
     incoming_start = fields.get("start_at")
     if (
         incoming_start
@@ -142,12 +472,10 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
     ):
         return True
 
-    # Compare attendee_count
     incoming_attendee_count = fields.get("attendee_count", 0)
     if existing.attendee_count != incoming_attendee_count:
         return True
 
-    # Compare is_all_day
     incoming_is_all_day = fields.get("is_all_day", False)
     return existing.is_all_day != incoming_is_all_day
 
