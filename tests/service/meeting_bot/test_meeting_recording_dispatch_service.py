@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
 
 
@@ -26,6 +27,25 @@ class _FakeLookupSession:
     async def execute(self, _stmt):  # noqa: ANN001
         # The service only needs scalar lookup semantics for these tests.
         return _FakeScalarResult(self._event)
+
+
+class _FakeRowsResult:
+    def all(self):  # noqa: ANN201
+        return []
+
+
+class _CapturingQuerySession:
+    def __init__(self) -> None:
+        self.sql = ""
+
+    async def execute(self, stmt):  # noqa: ANN001
+        self.sql = str(
+            stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": False},
+            )
+        )
+        return _FakeRowsResult()
 
 
 def _yield_session(session):
@@ -219,3 +239,23 @@ class TestMeetingRecordingDispatchService:
             "skipped": 0,
             "failed": 1,
         }
+
+    @pytest.mark.asyncio
+    async def test_unsent_upcoming_query_selects_ordered_columns_for_postgres(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        organisation_id = uuid4()
+        query_session = _CapturingQuerySession()
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(query_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+
+        result = await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
+
+        assert result == []
+        assert "SELECT DISTINCT calendar_events.event_id, calendar_events.start_at" in (
+            query_session.sql
+        )

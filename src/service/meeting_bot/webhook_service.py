@@ -2,7 +2,8 @@
 
 Called from the Celery webhook task after the HTTP layer verifies the request.
 This service maps raw Recall events onto the normalized session record stored in
-the organisation schema.
+the organisation schema. It is intentionally small and event-driven because webhook
+timing is not guaranteed to be strictly ordered.
 """
 
 from __future__ import annotations
@@ -21,9 +22,15 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 
 
 class RecallMeetingRecordingWebhookService:
-    """Applies Recall webhook events to org-scoped recording sessions."""
+    """Apply Recall webhook events to org-scoped recording sessions.
+
+    The service performs tenant-scoped state transitions only. Provider callbacks can
+    be retried, delayed, or duplicated, so each transition is written to the same
+    persisted session row.
+    """
 
     def __init__(self, organisation_id: UUID) -> None:
+        """Bind callback handling to one tenant context."""
         self.organisation_id = organisation_id
         self.session_service = MeetingRecordingSessionService(organisation_id)
 
@@ -35,6 +42,12 @@ class RecallMeetingRecordingWebhookService:
         return organisation_id if isinstance(organisation_id, str) else None
 
     async def process_recall_webhook(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Process one Recall event and persist the resulting normalized state.
+
+        Return status is either:
+        - "processed": a session row existed and was updated
+        - "skipped": event is unsupported, duplicate, or not tied to a local session
+        """
         event_name = str(payload.get("event") or "")
         data = payload.get("data") or {}
         bot = data.get("bot") or {}
@@ -114,7 +127,11 @@ class RecallMeetingRecordingWebhookService:
         self,
         provider_session_id: str,
     ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-        """Fetch the latest bot payload only when transcript artifacts should exist."""
+        """Fetch the latest bot payload only when transcript artifacts should exist.
+
+        The extra provider call is intentionally gated to transcript-ready events to
+        avoid needless API usage on every webhook delivery.
+        """
         api_key = await recall_config.get_api_key()
         if not api_key:
             return None, None
@@ -130,6 +147,9 @@ class RecallMeetingRecordingWebhookService:
 
     @staticmethod
     def _map_status(event_name: str) -> MeetingRecordingStatus | None:
+        """Map provider event names to our internal lifecycle state."""
+        # Keep unknown events unopinionated so a webhook rename does not block other
+        # state updates (status stays preserved unless we have a known mapping).
         if event_name in {"bot.joining_call", "bot.in_waiting_room"}:
             return MeetingRecordingStatus.JOINING
         if event_name in {
@@ -147,6 +167,7 @@ class RecallMeetingRecordingWebhookService:
 
     @staticmethod
     def _map_transcript_status(event_name: str) -> MeetingTranscriptStatus | None:
+        """Map transcript lifecycle events from Recall to local status values."""
         if event_name == "transcript.processing":
             return MeetingTranscriptStatus.PENDING
         if event_name == "transcript.done":
@@ -159,6 +180,7 @@ class RecallMeetingRecordingWebhookService:
 
     @staticmethod
     def _build_status_message(provider_data: dict[str, Any]) -> str | None:
+        """Prefer explicit sub-code + message for operator-level diagnostics."""
         message = provider_data.get("message")
         sub_code = provider_data.get("sub_code")
         if message and sub_code:
@@ -171,6 +193,7 @@ class RecallMeetingRecordingWebhookService:
 
     @staticmethod
     def _parse_timestamp(value: Any) -> datetime | None:
+        """Parse Recall ISO-8601 timestamps and normalize missing timezone to UTC."""
         if not isinstance(value, str) or not value:
             return None
         normalized = value.replace("Z", "+00:00")

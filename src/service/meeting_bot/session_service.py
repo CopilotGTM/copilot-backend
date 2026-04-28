@@ -23,9 +23,14 @@ from src.infra.database.sessions import acquire_org_async_session
 
 
 class MeetingRecordingSessionService:
-    """Owns org-scoped CRUD/status transitions for recording sessions."""
+    """Owns org-scoped CRUD and status transitions for recording sessions.
+
+    This service is the only place that writes session lifecycle state, so tenant
+    isolation and transition safety are centralized here.
+    """
 
     def __init__(self, organisation_id: UUID) -> None:
+        """Create a tenant-scoped session service."""
         self.organisation_id = organisation_id
 
     @staticmethod
@@ -45,6 +50,11 @@ class MeetingRecordingSessionService:
         join_at: datetime,
         provider: MeetingRecordingProvider = MeetingRecordingProvider.RECALL_AI,
     ) -> MeetingRecordingSession:
+        """Create or refresh a pending session row for one calendar event.
+
+        Existing rows are updated when they are still unsent to preserve retry
+        semantics and keep a single stable `session_id` per tenant event/provider.
+        """
         async for session in acquire_org_async_session(self.organisation_id):
             existing = await self._get_by_event(session, calendar_event_id, provider)
             if existing:
@@ -77,6 +87,7 @@ class MeetingRecordingSessionService:
         raise RuntimeError("Failed to acquire org session")
 
     async def mark_send_queued(self, session_id: UUID) -> MeetingRecordingSession | None:
+        """Move a session into the queued state before external provider call."""
         async for session in acquire_org_async_session(self.organisation_id):
             record = await self._get_by_session_id(session, session_id)
             if not record:
@@ -95,6 +106,7 @@ class MeetingRecordingSessionService:
         provider_status: str | None,
         provider_payload: dict,
     ) -> MeetingRecordingSession | None:
+        """Mark a session as sent and persist provider response metadata."""
         async for session in acquire_org_async_session(self.organisation_id):
             record = await self._get_by_session_id(session, session_id)
             if not record:
@@ -115,6 +127,7 @@ class MeetingRecordingSessionService:
         self,
         provider_session_id: str,
     ) -> MeetingRecordingSession | None:
+        """Resolve by provider session id for webhook-driven updates."""
         async for session in acquire_org_async_session(self.organisation_id):
             return await self._get_by_provider_session_id(session, provider_session_id)
         return None
@@ -131,6 +144,7 @@ class MeetingRecordingSessionService:
         last_webhook_at: datetime | None = None,
         transcript_ready_at: datetime | None = None,
     ) -> MeetingRecordingSession | None:
+        """Apply webhook-driven status and payload updates without losing prior state."""
         async for session in acquire_org_async_session(self.organisation_id):
             record = await self._get_by_provider_session_id(session, provider_session_id)
             if not record:
@@ -162,9 +176,12 @@ class MeetingRecordingSessionService:
         before: datetime,
         after: datetime | None = None,
     ) -> list[MeetingRecordingSession]:
+        """List unsent sessions in a bounded time window, ordered by next join time."""
         if after is None:
             after = datetime.now(UTC)
         async for session in acquire_org_async_session(self.organisation_id):
+            # Shared fallback logic uses this ordering for deterministic rescan
+            # visibility in logs and for simpler manual replay.
             stmt = (
                 select(MeetingRecordingSession)
                 .where(
@@ -192,6 +209,7 @@ class MeetingRecordingSessionService:
         calendar_event_id: UUID,
         provider: MeetingRecordingProvider,
     ) -> MeetingRecordingSession | None:
+        """Lookup a session by tenant, event, and provider."""
         stmt = select(MeetingRecordingSession).where(
             col(MeetingRecordingSession.organisation_id) == self.organisation_id,
             col(MeetingRecordingSession.calendar_event_id) == calendar_event_id,

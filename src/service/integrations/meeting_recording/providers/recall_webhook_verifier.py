@@ -1,4 +1,9 @@
-"""Recall webhook signature verification."""
+"""Recall webhook signature verification.
+
+This helper is shared with API ingress. It accepts both current `webhook-*` and
+legacy `svix-*` headers because providers can lag on rollout and we still need to
+accept older sends without dropping callbacks.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +31,8 @@ def verify_recall_webhook_signature(
     value from Recall.
     """
     normalized_headers = {key.lower(): value for key, value in headers.items()}
+    # Keep header reads case-insensitive; proxy/CDN layers can mutate case and
+    # still preserve values.
     message_id = normalized_headers.get("webhook-id") or normalized_headers.get("svix-id")
     timestamp = normalized_headers.get("webhook-timestamp") or normalized_headers.get(
         "svix-timestamp"
@@ -49,6 +56,8 @@ def verify_recall_webhook_signature(
     ).decode("utf-8")
 
     for versioned_signature in signature_header.split(" "):
+        # Signature transport may include multiple schemes; skip malformed entries
+        # instead of hard-failing the entire verification.
         try:
             version, candidate_signature = versioned_signature.split(",", 1)
         except ValueError:
