@@ -15,13 +15,8 @@ trigger:
   paths:
     exclude:
       - infra/**
-      - docs/superpowers/plans/**
-      - .azure-pipelines/azure-backend-pipeline-dev.yml
-      - .azure-pipelines/azure-backend-pipeline-prod.yml
-      - .azure-pipelines/azure-infra-pipeline.yml
-      - .azure-pipelines/azure-infra-pipeline-dev.yml
-      - .azure-pipelines/azure-infra-pipeline-prod.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+      - .azure-pipelines/**
+      - docs/**
 
 pr:
   branches:
@@ -30,13 +25,8 @@ pr:
   paths:
     exclude:
       - infra/**
-      - docs/superpowers/plans/**
-      - .azure-pipelines/azure-backend-pipeline-dev.yml
-      - .azure-pipelines/azure-backend-pipeline-prod.yml
-      - .azure-pipelines/azure-infra-pipeline.yml
-      - .azure-pipelines/azure-infra-pipeline-dev.yml
-      - .azure-pipelines/azure-infra-pipeline-prod.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+      - .azure-pipelines/**
+      - docs/**
 
 variables:
   # Use dev-specific variable group
@@ -283,10 +273,19 @@ stages:
           - script: |
               echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
               echo "Note: Only pulling target-specific images for optimal caching"
-              docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
-              docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
-              docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
-              docker pull $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest || echo "⚠️ No latest integrations image found"
+              {
+                docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
+              } &
+              {
+                docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
+              } &
+              {
+                docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
+              } &
+              {
+                docker pull $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest || echo "⚠️ No latest integrations image found"
+              } &
+              wait
               echo "##[section]✅ Cache pull complete"
             displayName: 'Pull Cache Images from ACR'
             env:
