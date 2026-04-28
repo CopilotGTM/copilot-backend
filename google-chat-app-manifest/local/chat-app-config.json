@@ -1,0 +1,90 @@
+{
+  "_comment": "Reference configuration for the LOCAL developer environment. Each developer creates their own GCP sandbox project and replaces {{DEVELOPER_NGROK_HOST}} with their own ngrok hostname. Google Chat will not accept an HTTP endpoint without HTTPS, so localhost tunneling (ngrok / cloudflared) is mandatory. See ../README.md for the end-to-end process.",
+
+  "environment": "local",
+
+  "gcpProject": {
+    "projectId": "copilotgtm-local",
+    "projectName": "Copilot GTM Local",
+    "projectNumberSecretName": "google-chat-project-number"
+  },
+
+  "appInfo": {
+    "appName": "Kai - LOCAL",
+    "avatarUrl": "https://www.copilotgtm.com/assets/kai-avatar.png",
+    "description": "AI sales assistant (local). @mention Kai in a space or DM Kai directly for deal insights."
+  },
+
+  "functionality": {
+    "receiveOneOnOneMessages": true,
+    "joinSpacesAndGroupConversations": true
+  },
+
+  "connectionSettings": {
+    "mode": "HTTP_ENDPOINT",
+    "appUrl": "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/google-chat/events",
+    "authenticationAudience": "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/google-chat/events"
+  },
+
+  "slashCommands": [
+    {
+      "id": "1",
+      "name": "/help",
+      "description": "Get help using Kai",
+      "triggersDialog": false
+    },
+    {
+      "id": "2",
+      "name": "/login",
+      "description": "Link your CopilotGTM account",
+      "triggersDialog": true
+    }
+  ],
+
+  "visibility": {
+    "scope": "SPECIFIC_PEOPLE_AND_GROUPS",
+    "domain": "copilotgtm.com",
+    "allowList": [
+      "google-admin@copilotgtm.com"
+    ]
+  },
+
+  "logs": {
+    "logErrorsToCloudLogging": true
+  },
+
+  "serviceAccount": {
+    "email": "kai-chat-bot-local@copilotgtm-local.iam.gserviceaccount.com",
+    "credentialMethod": "GCLOUD_ADC_IMPERSONATION",
+    "humanUser": "tech@copilotgtm.com",
+    "userRoleOnServiceAccount": "roles/iam.serviceAccountTokenCreator",
+    "setupCommands": [
+      "gcloud auth login",
+      "gcloud config set project copilotgtm-local",
+      "gcloud auth application-default login",
+      "gcloud config set auth/impersonate_service_account kai-chat-bot-local@copilotgtm-local.iam.gserviceaccount.com"
+    ],
+    "note": "No JSON key on disk. Org policy iam.disableServiceAccountKeyCreation is enforced — this is the Google-recommended keyless alternative for local dev. Developer's human account impersonates the SA via short-lived tokens."
+  },
+
+  "marketplaceSdk": {
+    "visibility": "PRIVATE",
+    "installationSettings": "INDIVIDUAL_ONLY",
+    "appIntegrations": ["GOOGLE_CHAT_APP"],
+    "oauthScopes": [
+      "https://www.googleapis.com/auth/chat.bot",
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "https://www.googleapis.com/auth/chat.memberships.readonly",
+      "https://www.googleapis.com/auth/chat.messages.readonly"
+    ],
+    "developerInformation": {
+      "developerName": "CopilotGTM (local dev)",
+      "developerWebsite": "https://www.copilotgtm.com",
+      "supportEmail": "google-admin@copilotgtm.com",
+      "privacyUrl": "https://www.copilotgtm.com/privacy",
+      "termsOfServiceUrl": "https://www.copilotgtm.com/terms"
+    }
+  },
+
+  "appId": "376783393982"
+}
