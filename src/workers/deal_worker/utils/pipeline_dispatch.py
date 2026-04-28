@@ -468,9 +468,12 @@ async def dispatch_deal_insight_pipeline_async(
     prefix_signatures: Sequence | None = None,
 ) -> None:
     """Async-safe dispatch variant for code paths already running inside an event loop."""
-    risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = (
-        await _create_pipeline_jobs_async(organisation_id, deal_id)
-    )
+    (
+        risk_job_id,
+        stakeholder_job_id,
+        task_job_id,
+        deal_update_job_id,
+    ) = await _create_pipeline_jobs_async(organisation_id, deal_id)
     pipeline = _build_deal_insight_canvas(
         organisation_id,
         deal_id,
