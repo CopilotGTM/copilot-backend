@@ -14,6 +14,9 @@ from src.workers.deal_worker.tasks.deal_insight_tasks.deal_memory_tasks import (
 from src.workers.deal_worker.tasks.deal_insight_tasks.deal_summary_task import (
     process_deal_summary_job,
 )
+from src.workers.deal_worker.tasks.deal_insight_tasks.deal_task_sync_task import (
+    sync_deal_tasks_from_summary,
+)
 from src.workers.deal_worker.tasks.deal_insight_tasks.risk_blocker_extraction_task import (
     extract_deal_risks_blockers_task,
     trigger_extraction_all_orgs,
@@ -43,4 +46,6 @@ __all__ = [
     "process_deal_memory_job",
     "build_deal_memory_org",
     "trigger_deal_memory_backfill_all_orgs",
+    # Deal task sync
+    "sync_deal_tasks_from_summary",
 ]

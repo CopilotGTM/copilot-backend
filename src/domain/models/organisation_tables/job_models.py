@@ -1,3 +1,11 @@
+"""Persistent job and workqueue models for async operations.
+
+This module owns shared job metadata and status contracts used by worker code
+and task orchestration. The enum values represent org-level processing paths
+that must remain stable because delayed workers may deserialize historic job_type
+values long after feature changes land.
+"""
+
 from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -193,6 +201,7 @@ class DealJobType(str, Enum):
 
     # Deal memory
     DEAL_MEMORY_BUILD = "deal_memory_build"  # Build or update deal memory document
+    DEAL_TASK_SYNC = "deal_task_sync"  # Create/complete deal tasks from meeting insights
 
     # Stakeholder research
     STAKEHOLDER_RESEARCH = "stakeholder_research"

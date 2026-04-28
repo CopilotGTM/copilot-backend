@@ -11,8 +11,8 @@ that better supports multi-CRM integration patterns.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Index, String, text
@@ -24,7 +24,7 @@ from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
 
 
-class CRMActivityStatus(str, Enum):
+class CRMActivityStatus(StrEnum):
     """Canonical activity status values across CRM providers."""
 
     NOT_STARTED = "NOT_STARTED"
@@ -35,7 +35,7 @@ class CRMActivityStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-class CRMActivityType(str, Enum):
+class CRMActivityType(StrEnum):
     """Canonical activity type values across CRM providers.
 
     Covers common activity types found in major CRMs:
@@ -58,7 +58,7 @@ class CRMActivityType(str, Enum):
     OTHER = "OTHER"  # Provider-specific types not mapped above
 
 
-class CRMActivityPriority(str, Enum):
+class CRMActivityPriority(StrEnum):
     """Canonical activity priority values across CRM providers."""
 
     NONE = "NONE"
@@ -68,7 +68,7 @@ class CRMActivityPriority(str, Enum):
     URGENT = "URGENT"
 
 
-class CRMActivityObjectType(str, Enum):
+class CRMActivityObjectType(StrEnum):
     """Object types that activities can be related to.
 
     Maps to polymorphic `related_object_type` for flexible associations.
@@ -83,7 +83,7 @@ class CRMActivityObjectType(str, Enum):
     OPPORTUNITY = "OPPORTUNITY"  # Alias for DEAL (Salesforce)
 
 
-class CRMActivitySource(str, Enum):
+class CRMActivitySource(StrEnum):
     """Origin of the activity record."""
 
     MANUAL = "MANUAL"  # User-created via UI/API
@@ -116,7 +116,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     table renamed to `crm_activities` and new polymorphic columns added.
     """
 
-    __tablename__ = "crm_activities"
+    __tablename__: ClassVar[str] = "crm_activities"
     __table_args__ = (
         # Unique constraint for CRM-synced activities (integration_id NOT NULL)
         Index(
@@ -463,6 +463,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
 
     @is_deleted_remote.setter
     def is_deleted_remote(self, value: bool) -> None:
+        """Backwards-compatible setter alias for is_deleted updates."""
         self.is_deleted = bool(value)
 
     @property

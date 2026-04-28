@@ -142,10 +142,13 @@ class ToolName(str, Enum):
     GET_ACTION_ITEMS = "get_action_items"
 
     # -------------------------------------------------------------------------
-    # TASK TOOLS - For creating tasks via chat
-    # Used by: Chat Agent (Teams + Slack channel-only)
+    # TASK TOOLS - Chat task preview and deal-agent direct task automation
+    # Used by: Chat Agent, DealTaskAgent
     # -------------------------------------------------------------------------
     CREATE_TASK = "create_task"
+    LIST_DEAL_TASKS = "list_deal_tasks"
+    CREATE_DEAL_TASK = "create_deal_task"
+    COMPLETE_DEAL_TASK = "complete_deal_task"
 
     # -------------------------------------------------------------------------
     # REMINDER TOOLS - For scheduled reminders and agentic alerts
@@ -442,6 +445,19 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.RESEARCH_STAKEHOLDER,
         ToolName.RESEARCH_LINKEDIN_PROFILE,
     },
+    # -------------------------------------------------------------------------
+    # DealTaskAgent - Post-meeting deal task automation
+    # Location: src/agents/workflows/deal_tasks/agent.py
+    # Purpose: Creates and completes internal deal tasks from meeting summaries.
+    # -------------------------------------------------------------------------
+    "DealTaskAgent": {
+        ToolName.GET_DEAL_MEMORY,
+        ToolName.GET_MEETING_SUMMARY,
+        ToolName.GET_COMPRESSED_TRANSCRIPT,
+        ToolName.LIST_DEAL_TASKS,
+        ToolName.CREATE_DEAL_TASK,
+        ToolName.COMPLETE_DEAL_TASK,
+    },
 }
 
 
@@ -509,6 +525,9 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.RESEARCH_STAKEHOLDER: ToolCategory.SEARCH,
     # Tasks
     ToolName.CREATE_TASK: ToolCategory.CRM,
+    ToolName.LIST_DEAL_TASKS: ToolCategory.CRM,
+    ToolName.CREATE_DEAL_TASK: ToolCategory.CRM,
+    ToolName.COMPLETE_DEAL_TASK: ToolCategory.CRM,
     # Reminders
     ToolName.CREATE_REMINDER: ToolCategory.REMINDERS,
     ToolName.LIST_REMINDERS: ToolCategory.REMINDERS,
@@ -604,7 +623,12 @@ class ToolRegistry:
             create_search_internal_knowledge,
             create_search_internet,
         )
-        from src.agents.tools.tasks import create_create_task
+        from src.agents.tools.tasks import (
+            create_complete_deal_task,
+            create_create_deal_task,
+            create_create_task,
+            create_list_deal_tasks,
+        )
 
         # Search tools
         self._tool_factories[ToolName.SEARCH_INTERNAL_KNOWLEDGE] = (
@@ -763,6 +787,15 @@ class ToolRegistry:
 
         # Task tools
         self._tool_factories[ToolName.CREATE_TASK] = lambda: create_create_task(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_DEAL_TASKS] = lambda: create_list_deal_tasks(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_DEAL_TASK] = lambda: create_create_deal_task(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.COMPLETE_DEAL_TASK] = lambda: create_complete_deal_task(
             self.context, self.capabilities_getter
         )
 

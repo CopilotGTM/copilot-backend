@@ -101,6 +101,8 @@ class DealWorkerConfig(BaseWorkerConfig):
             "risk_blocker.extract_deal_risks_blockers_task",
             # Deal memory tasks
             "deal_memory.process_job",
+            # Deal task sync tasks
+            "deal_tasks.sync_from_summary",
             # Stakeholder research tasks
             "stakeholder_research.process_job",
         )
