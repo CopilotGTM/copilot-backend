@@ -1,3 +1,10 @@
+"""Deal-to-calendar meeting matcher and post-commit follow-up dispatch.
+
+The matcher links CRM deals to calendar events inside an org-scoped transaction.
+It also records meeting-bot send intent, but Celery dispatch is delayed until
+after commit so downstream workers never observe rolled-back associations.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -170,7 +177,8 @@ class DealMeetingMatcher:
         """
         emails: set[str] = set()
 
-        # Get all approved stakeholders from DealStakeholder table
+        # DealStakeholder is the product-owned roster, so matcher ignores raw CRM
+        # contacts that users have not approved for this deal.
         stmt = select(col(DealStakeholder.email)).where(
             col(DealStakeholder.deal_id) == deal.deal_id,
             col(DealStakeholder.is_deleted).is_(False),
@@ -409,7 +417,8 @@ class DealMeetingMatcher:
             if not domain or domain not in customer_domains:
                 continue
 
-            # Check if stakeholder already exists
+            # Discovery is idempotent across matcher reruns; an attendee already on
+            # the deal should not receive a duplicate calendar-discovered row.
             stmt = select(DealStakeholder).where(
                 col(DealStakeholder.deal_id) == deal.deal_id,
                 col(DealStakeholder.email) == email,
@@ -441,7 +450,8 @@ class DealMeetingMatcher:
             contact_result = await session.execute(contact_stmt)
             found_contact_id = contact_result.scalar_one_or_none()
 
-            # Create stakeholder
+            # Calendar-discovered stakeholders start with neutral signals because
+            # research and user approval happen after the meeting match commits.
             stakeholder = DealStakeholder(
                 organisation_id=self.organisation_id,
                 integration_id=deal.integration_id,
@@ -993,8 +1003,8 @@ class DealMeetingMatcher:
             if event.event_id in linked_event_ids:
                 continue
 
-            # Create new association using INSERT ... ON CONFLICT DO NOTHING
-            # This handles race conditions when multiple tasks process the same org
+            # Association insert is conflict-safe because multiple matcher passes can
+            # process the same org while calendar sync is still catching up.
             new_assoc = CalendarEventDealAssociation(
                 organisation_id=self.organisation_id,
                 event_id=event.event_id,
@@ -1028,7 +1038,8 @@ class DealMeetingMatcher:
 
             # Only proceed if insert succeeded (not a duplicate)
             if (getattr(result, "rowcount", 0) or 0) > 0:
-                # Create timeline event inline (same transaction)
+                # Timeline writes share the association transaction so the CRM view
+                # never shows a linked meeting without its corresponding activity.
                 calendar_integration_type = None
                 evt_int_id = getattr(event, "integration_id", None)
                 if evt_int_id is not None and evt_int_id in integration_type_by_id:
@@ -1083,7 +1094,8 @@ class DealMeetingMatcher:
         """Persist a pending recording row for future meetings with a join URL.
 
         Uses `ON CONFLICT DO NOTHING` because multiple matcher passes can touch
-        the same event before the recording dispatch task runs.
+        the same event before the recording dispatch task runs. When the row already
+        exists, a stale join target still queues dispatch so Recall can be resynced.
         """
         meeting_url = getattr(event, "conference_link", None)
         if not meeting_url:
@@ -1116,11 +1128,71 @@ class DealMeetingMatcher:
         )
         result = await session.execute(stmt)
         created = (getattr(result, "rowcount", 0) or 0) > 0
-        if created:
+        should_enqueue = created
+        if not created:
+            # Existing rows are normally idempotent duplicates. A moved meeting is the
+            # exception: it needs the same send task so dispatch can cancel/recreate.
+            existing_session = await self._get_existing_recording_session(session, event.event_id)
+            should_enqueue = bool(
+                existing_session
+                and self._is_recording_session_stale(
+                    existing_session,
+                    meeting_url=meeting_url,
+                    join_at=join_at,
+                )
+            )
+
+        if should_enqueue:
             # Store only the event id here; the send task re-reads durable DB
             # state after commit instead of relying on in-memory event objects.
             self._pending_recording_event_ids.add(event.event_id)
         return created
+
+    async def _get_existing_recording_session(
+        self,
+        session: AsyncSession,
+        calendar_event_id: UUID,
+    ) -> MeetingRecordingSession | None:
+        """Read the durable recording row for one org/event/provider tuple.
+
+        The org filter is the tenant boundary here; a calendar event id alone is not
+        trusted when deciding whether to enqueue provider work.
+        """
+        stmt = select(MeetingRecordingSession).where(
+            col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+            col(MeetingRecordingSession.calendar_event_id) == calendar_event_id,
+            col(MeetingRecordingSession.provider) == MeetingRecordingProvider.RECALL_AI.value,
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _normalize_utc(value: datetime) -> datetime:
+        """Normalize event timestamps for consistent comparison."""
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @staticmethod
+    def _is_recording_session_stale(
+        session: MeetingRecordingSession,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> bool:
+        """Detect whether an existing session needs a provider resync.
+
+        Matcher only decides whether to queue work. The dispatch service owns the
+        actual reset/cancel/send sequence after the transaction commits.
+        """
+        existing_join_at = getattr(session, "join_at", None)
+        if existing_join_at is None:
+            return False
+        return (
+            DealMeetingMatcher._normalize_utc(existing_join_at)
+            != DealMeetingMatcher._normalize_utc(join_at)
+            or getattr(session, "meeting_url", None) != meeting_url
+        )
 
     async def _dispatch_pending_recordings(self) -> None:
         """Dispatch recording send tasks after the transaction commits."""
