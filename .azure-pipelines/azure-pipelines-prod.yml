@@ -1,0 +1,16 @@
+# Deprecated compatibility file for stale Azure DevOps pipeline definitions.
+# Use .azure-pipelines/azure-backend-pipeline-prod.yml for the backend prod pipeline.
+
+trigger: none
+pr: none
+
+stages:
+  - stage: DeprecatedPipelinePath
+    displayName: Deprecated pipeline path
+    condition: false
+    jobs:
+      - job: Deprecated
+        displayName: Deprecated pipeline path
+        steps:
+          - script: echo "Use .azure-pipelines/azure-backend-pipeline-prod.yml"
+            displayName: Show replacement path
