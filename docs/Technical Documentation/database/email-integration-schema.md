@@ -49,6 +49,38 @@ sync_retry_count    # Failed sync attempts counter
 - Set `sync_from_date=2024-01-01` → don't sync 5 years of old emails
 - Configure `email_retention_days=90` for "Archive" folder (shorter retention)
 
+**Default Monitoring Rules**:
+
+Folder discovery stores provider folders/labels even when messages are not synced from them. The message sync worker only fetches messages from rows where `is_monitored == "true"`.
+
+Default monitored folders:
+
+| Provider | Provider folder/label | Normalized `folder_type` |
+| --- | --- | --- |
+| Outlook | `Inbox` | `inbox` |
+| Outlook | `Sent Items`, `Sent` | `sent` |
+| Gmail | `INBOX` | `inbox` |
+| Gmail | `SENT` | `sent` |
+
+Default non-monitored folders:
+
+| Provider | Provider folder/label | Normalized `folder_type` |
+| --- | --- | --- |
+| Outlook | `Drafts` | `drafts` |
+| Outlook | `Deleted Items`, `Trash` | `trash` |
+| Outlook | `Junk Email`, `Junk`, `Spam` | `junk` |
+| Outlook | `Archive` | `archive` |
+| Outlook | Custom folders | `user` |
+| Gmail | `DRAFT` | `drafts` |
+| Gmail | `TRASH` | `trash` |
+| Gmail | `SPAM` | `junk` |
+| Gmail | `STARRED` | `starred` |
+| Gmail | `IMPORTANT` | `important` |
+| Gmail | `CATEGORY_*` labels | `category` |
+| Gmail | Custom labels | `user` |
+
+These folders are not rejected as folder records; they are simply not selected for message fetch unless a user or admin enables monitoring. Gmail inbox sync also filters category messages (`promotions`, `social`, `updates`, `forums`), and Outlook filters messages classified as `other` by Focused Inbox.
+
 ---
 
 ### 2. `emails`
