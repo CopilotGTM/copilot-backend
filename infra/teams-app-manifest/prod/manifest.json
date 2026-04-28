@@ -1,0 +1,62 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.2.0",
+  "id": "48fc8308-c4af-4580-b4c2-62a3aa255ac1",
+  "developer": {
+    "name": "CopilotGTM",
+    "websiteUrl": "https://www.copilotgtm.com",
+    "privacyUrl": "https://www.copilotgtm.com/privacy",
+    "termsOfUseUrl": "https://www.copilotgtm.com/terms"
+  },
+  "name": {
+    "short": "CopilotGTM",
+    "full": "CopilotGTM - AI Sales Assistant"
+  },
+  "description": {
+    "short": "AI-powered sales assistant for deal insights",
+    "full": "CopilotGTM helps sales teams get instant answers from their documentation, deal data, and meeting notes. Chat directly with the bot or @mention it in channels and group chats."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#5558AF",
+  "bots": [
+    {
+      "botId": "a726a205-7f3c-4116-8dcb-2e69ab2ffa8a",
+      "scopes": ["personal", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal"],
+          "commands": [
+            {
+              "title": "help",
+              "description": "Get help using CopilotGTM"
+            },
+            {
+              "title": "login",
+              "description": "Link your CopilotGTM account"
+            }
+          ]
+        },
+        {
+          "scopes": ["groupChat"],
+          "commands": [
+            {
+              "title": "help",
+              "description": "Get help using CopilotGTM"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": [
+    "www.copilotgtm.com",
+    "*.copilotgtm.com"
+  ]
+}

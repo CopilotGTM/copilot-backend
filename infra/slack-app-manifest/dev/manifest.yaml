@@ -1,0 +1,67 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: Kai - DEV
+  description: AI sales assistant. @mention Kai in channels or DM directly for deal insights.
+  background_color: "#5558AF"
+  long_description: Kai is an AI-powered sales assistant by CopilotGTM. You can @mention Kai in any channel to get contextual answers based on your channel conversations, or chat with Kai directly for private one-on-one assistance. Kai reads your channel context and provides relevant insights from your deal data, documentation, and meeting notes.
+
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: kai-dev
+    always_online: true
+
+oauth_config:
+  redirect_urls:
+    - https://devapi.copilotgtm.com/users/bots/slack/oauth/callback
+  scopes:
+    bot:
+      # Messaging
+      - chat:write                # Send messages as Kai
+      - chat:write.customize      # Send messages with a custom username/avatar
+
+      # Channel mentions
+      - app_mentions:read         # Detect when users @mention Kai
+
+      # Reading conversations (to understand channel context)
+      - channels:history          # Read messages in public channels Kai is in
+      - channels:read             # View basic info about public channels
+      - groups:history            # Read messages in private channels Kai is invited to
+      - groups:read               # View basic info about private channels
+
+      # Direct messages
+      - im:history                # Read DM conversations with Kai
+      - im:read                   # View basic info about DMs
+      - im:write                  # Start DMs with users
+
+      # Files (download attachments shared by users)
+      - files:read                # Access file content shared in channels/DMs
+
+      # Users
+      - users:read                # View user profile info (names, avatars)
+
+    user:
+      # Integration scopes (per-user, used by Nango for channel data)
+      - channels:read             # List channels the user can see
+      - channels:history          # Read messages from channels (for deal attachments)
+      - groups:read               # List private channels the user can see
+      - groups:history            # Read messages from private channels
+
+settings:
+  event_subscriptions:
+    request_url: https://devapi.copilotgtm.com/users/bots/slack/events
+    bot_events:
+      - app_mention               # Fires when a user @mentions Kai in a channel
+      - message.im                # Fires when a user sends a DM to Kai
+  interactivity:
+    is_enabled: true
+    request_url: https://devapi.copilotgtm.com/users/bots/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
