@@ -1,0 +1,95 @@
+{
+  "_comment": "Reference configuration for the DEV environment Google Chat app. Google Chat does not accept a manifest upload; every value below is entered manually in the Google Cloud Console at: APIs & Services -> Google Chat API -> Configuration (for the app info / functionality / connection / slash commands / visibility sections) and APIs & Services -> Google Workspace Marketplace SDK -> App Configuration (for distribution). See ../README.md for the end-to-end process.",
+
+  "environment": "dev",
+
+  "gcpProject": {
+    "projectId": "copilotgtm-dev",
+    "projectName": "CopilotGTM Dev",
+    "projectNumber": "999013214578",
+    "projectNumberSecretName": "google-chat-project-number"
+  },
+
+  "appInfo": {
+    "appName": "Kai - DEV",
+    "avatarUrl": "https://www.copilotgtm.com/assets/kai-avatar.png",
+    "description": "AI sales assistant (dev). @mention Kai in a space or DM Kai directly for deal insights."
+  },
+
+  "functionality": {
+    "receiveOneOnOneMessages": true,
+    "joinSpacesAndGroupConversations": true
+  },
+
+  "connectionSettings": {
+    "mode": "HTTP_ENDPOINT",
+    "appUrl": "https://devapi.copilotgtm.com/users/bots/google-chat/events",
+    "authenticationAudience": "https://devapi.copilotgtm.com/users/bots/google-chat/events"
+  },
+
+  "slashCommands": [
+    {
+      "id": "1",
+      "name": "/help",
+      "description": "Get help using Kai",
+      "triggersDialog": false
+    },
+    {
+      "id": "2",
+      "name": "/login",
+      "description": "Link your CopilotGTM account",
+      "triggersDialog": true
+    }
+  ],
+
+  "visibility": {
+    "scope": "SPECIFIC_PEOPLE_AND_GROUPS",
+    "domain": "copilotgtm.com",
+    "allowList": [
+      "dev-team@copilotgtm.com"
+    ]
+  },
+
+  "logs": {
+    "logErrorsToCloudLogging": true
+  },
+
+  "googleAuthPlatform": {
+    "audience": "INTERNAL",
+    "dataAccessScopes": [
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "https://www.googleapis.com/auth/chat.memberships.readonly",
+      "https://www.googleapis.com/auth/chat.messages.readonly"
+    ],
+    "note": "Use these readonly scopes on the Google Auth Platform Data Access page. Keep chat.bot out of OAuth Data Access; it is app-auth only for backend Chat API calls."
+  },
+
+  "serviceAccount": {
+    "email": "kai-chat-bot-dev@copilotgtm-dev.iam.gserviceaccount.com",
+    "credentialMethod": "WORKLOAD_IDENTITY_FEDERATION",
+    "workloadIdentityPool": "copilot-aks-pool",
+    "workloadIdentityProvider": "azure",
+    "federatedPrincipal": "principal://iam.googleapis.com/projects/999013214578/locations/global/workloadIdentityPools/copilot-aks-pool/subject/{{FILL_WITH_DEV_BACKEND_AZURE_OBJECT_ID}}",
+    "credentialConfigPath": "/var/run/gcp/credential-config.json",
+    "envVar": "GOOGLE_APPLICATION_CREDENTIALS",
+    "note": "No downloaded JSON key. Azure Workload Identity on the AKS backend pod federates to this service account."
+  },
+
+  "marketplaceSdk": {
+    "visibility": "PRIVATE",
+    "installationSettings": "INDIVIDUAL_PLUS_ADMIN",
+    "appIntegrations": ["GOOGLE_CHAT_APP"],
+    "backendAppAuthScopes": [
+      "https://www.googleapis.com/auth/chat.bot"
+    ],
+    "developerInformation": {
+      "developerName": "CopilotGTM",
+      "developerWebsite": "https://www.copilotgtm.com",
+      "supportEmail": "support@copilotgtm.com",
+      "privacyUrl": "https://www.copilotgtm.com/privacy",
+      "termsOfServiceUrl": "https://www.copilotgtm.com/terms"
+    }
+  },
+
+  "appId": "999013214578"
+}

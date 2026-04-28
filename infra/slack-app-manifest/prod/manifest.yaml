@@ -52,6 +52,11 @@ oauth_config:
       - channels:history          # Read messages from channels (for deal attachments)
       - groups:read               # List private channels the user can see
       - groups:history            # Read messages from private channels
+      - mpim:read                 # List group DMs the user can see
+      - mpim:history              # Read messages from group DMs
+      - users:read                # Resolve Slack user IDs to display names
+      - users:read.email          # Resolve Slack user emails for identity matching
+      - team:read                 # Read workspace metadata for Slack channel grouping
 
 settings:
   event_subscriptions:
