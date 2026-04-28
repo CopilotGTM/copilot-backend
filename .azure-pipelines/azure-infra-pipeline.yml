@@ -1,11 +1,11 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (COMBINED - DEPRECATED)
-# Location: .azure-pipelines/infra.yml
+# Location: .azure-pipelines/azure-infra-pipeline.yml
 # =========================================================================
 # NOTE: This file contains both dev and prod stages in one pipeline.
 # For cleaner separation, use the environment-specific pipelines:
-#   - infra-dev.yml  -> DEV only (main branch)
-#   - infra-prod.yml -> PROD only (release/* branches)
+#   - azure-infra-pipeline-dev.yml  -> DEV only (main branch)
+#   - azure-infra-pipeline-prod.yml -> PROD only (release/* branches)
 # =========================================================================
 # Design goals:
 # - Supports SOC2 private-access controls (Key Vault/Storage via Private Link)
@@ -26,7 +26,7 @@ trigger:
   paths:
     include:
       - infra/terraform/azure/**
-      - .azure-pipelines/infra.yml
+      - .azure-pipelines/azure-infra-pipeline.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
@@ -36,7 +36,7 @@ pr:
   paths:
     include:
       - infra/terraform/azure/**
-      - .azure-pipelines/infra.yml
+      - .azure-pipelines/azure-infra-pipeline.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:

@@ -125,7 +125,7 @@ agent_pool = "StaticAgentPool-prod" # Override: unique pool name to avoid collis
 # Repository Names (Required - external resources in Azure DevOps)
 # -----------------------------------------------------------------
 backend_repo_name = "copilot-backend"
-backend_yml_path  = ".azure-pipelines/azure-pipelines-prod.yml"
+backend_yml_path  = ".azure-pipelines/azure-backend-pipeline-prod.yml"
 # backend_pipeline_name = "backend-pipeline"  # Default
 # backend_branch        = "main"              # Default for prod
 
@@ -141,7 +141,7 @@ frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-prod.yml"
 
 terraform_repo_name = "copilot-backend"
 # terraform_pipeline_name = "infra-pipeline"               # Default
-terraform_yml_path = ".azure-pipelines/infra-prod.yml"
+terraform_yml_path = ".azure-pipelines/azure-infra-pipeline-prod.yml"
 
 # -----------------------------------------------------------------
 # Cert-Manager & K8s

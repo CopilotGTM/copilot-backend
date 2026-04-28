@@ -54,7 +54,7 @@ resource "azuredevops_variable_group" "infra_secrets" {
 # -----------------------------------------------------------------
 # Terraform Pipeline (DEV Environment)
 # -----------------------------------------------------------------
-# Uses dev-specific pipeline YAML: .azure-pipelines/infra-dev.yml
+# Uses dev-specific pipeline YAML: .azure-pipelines/azure-infra-pipeline-dev.yml
 # Triggered on: main, feature/*, hotfix/* branches
 # -----------------------------------------------------------------
 data "azuredevops_git_repository" "terraform_repo" {

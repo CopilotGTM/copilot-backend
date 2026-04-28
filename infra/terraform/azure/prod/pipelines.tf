@@ -54,7 +54,7 @@ resource "azuredevops_variable_group" "infra_secrets" {
 # -----------------------------------------------------------------
 # Terraform Pipeline (PROD Environment)
 # -----------------------------------------------------------------
-# Uses prod-specific pipeline YAML: .azure-pipelines/infra-prod.yml
+# Uses prod-specific pipeline YAML: .azure-pipelines/azure-infra-pipeline-prod.yml
 # Triggered on: release/* branches
 # Requires approval via environment gate
 # -----------------------------------------------------------------

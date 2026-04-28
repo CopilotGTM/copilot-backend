@@ -1,6 +1,6 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (PROD ONLY)
-# Location: .azure-pipelines/infra-prod.yml
+# Location: .azure-pipelines/azure-infra-pipeline-prod.yml
 # =========================================================================
 # This pipeline handles PROD environment deployments.
 # Triggered on: release/* branches
@@ -15,7 +15,7 @@ trigger:
     include:
       - infra/terraform/azure/prod/**
       - infra/terraform/azure/modules/**
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
@@ -26,7 +26,7 @@ pr:
     include:
       - infra/terraform/azure/prod/**
       - infra/terraform/azure/modules/**
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:

@@ -1,6 +1,6 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (DEV ONLY)
-# Location: .azure-pipelines/infra-dev.yml
+# Location: .azure-pipelines/azure-infra-pipeline-dev.yml
 # =========================================================================
 # This pipeline handles DEV environment deployments.
 # Triggered on: main branch
@@ -15,7 +15,7 @@ trigger:
     include:
       - infra/terraform/azure/dev/**
       - infra/terraform/azure/modules/**
-      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
@@ -26,7 +26,7 @@ pr:
     include:
       - infra/terraform/azure/dev/**
       - infra/terraform/azure/modules/**
-      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:

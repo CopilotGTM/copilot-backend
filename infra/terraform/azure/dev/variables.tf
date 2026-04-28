@@ -419,7 +419,7 @@ variable "infra_variable_group_name" {
 variable "terraform_yml_path" {
   description = "Path to the Azure Pipelines YAML file for Terraform."
   type        = string
-  default     = ".azure-pipelines/infra-dev.yml"
+  default     = ".azure-pipelines/azure-infra-pipeline-dev.yml"
 }
 
 variable "terraform_branch" {

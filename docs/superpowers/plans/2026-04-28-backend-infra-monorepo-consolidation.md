@@ -29,8 +29,8 @@ src/
 tests/
 migrations/
 charts/application/
-.azure-pipelines/azure-pipelines-dev.yml
-.azure-pipelines/azure-pipelines-prod.yml
+.azure-pipelines/azure-backend-pipeline-dev.yml
+.azure-pipelines/azure-backend-pipeline-prod.yml
 Dockerfile
 pyproject.toml
 uv.lock
@@ -38,8 +38,8 @@ uv.lock
 
 Current app deployment ownership:
 
-- `.azure-pipelines/azure-pipelines-dev.yml` builds backend images and deploys `charts/application` to dev AKS.
-- `.azure-pipelines/azure-pipelines-prod.yml` builds backend images and deploys `charts/application` to prod AKS.
+- `.azure-pipelines/azure-backend-pipeline-dev.yml` builds backend images and deploys `charts/application` to dev AKS.
+- `.azure-pipelines/azure-backend-pipeline-prod.yml` builds backend images and deploys `charts/application` to prod AKS.
 - Backend app pipelines already use `StaticAgentPool` and `StaticAgentPool-prod`.
 
 ### Infrastructure Repository
@@ -76,8 +76,8 @@ Current infrastructure deployment ownership:
 
 ```hcl
 backend_repo_name   = "copilot-backend"
-backend_yml_path    = ".azure-pipelines/azure-pipelines-dev.yml" # dev
-backend_yml_path    = ".azure-pipelines/azure-pipelines-prod.yml" # prod
+backend_yml_path    = ".azure-pipelines/azure-backend-pipeline-dev.yml" # dev
+backend_yml_path    = ".azure-pipelines/azure-backend-pipeline-prod.yml" # prod
 terraform_repo_name = "copilot-app-infra"
 ```
 
@@ -100,10 +100,10 @@ copilot-backend/
   migrations/
   charts/
   .azure-pipelines/
-    azure-pipelines-dev.yml
-    azure-pipelines-prod.yml
-    infra-dev.yml
-    infra-prod.yml
+    azure-backend-pipeline-dev.yml
+    azure-backend-pipeline-prod.yml
+    azure-infra-pipeline-dev.yml
+    azure-infra-pipeline-prod.yml
     templates/
       terraform-env-stage.yml
   infra/
@@ -122,8 +122,8 @@ The old infra repository paths map as follows:
 | Old infra path | New backend repo path |
 | --- | --- |
 | `terraform/` | `infra/terraform/` |
-| `.pipeline/azure-pipeline-dev.yml` | `.azure-pipelines/infra-dev.yml` |
-| `.pipeline/azure-pipeline-prod.yml` | `.azure-pipelines/infra-prod.yml` |
+| `.pipeline/azure-pipeline-dev.yml` | `.azure-pipelines/azure-infra-pipeline-dev.yml` |
+| `.pipeline/azure-pipeline-prod.yml` | `.azure-pipelines/azure-infra-pipeline-prod.yml` |
 | `.pipeline/templates/terraform-env-stage.yml` | `.azure-pipelines/templates/terraform-env-stage.yml` |
 | `slack-app-manifest/` | `infra/manifests/slack-app/` |
 | `teams-app-manifest/` | `infra/manifests/teams-app/` |
@@ -318,8 +318,8 @@ True
 
 **Files:**
 
-- Move: `infra/.pipeline/azure-pipeline-dev.yml` -> `.azure-pipelines/infra-dev.yml`
-- Move: `infra/.pipeline/azure-pipeline-prod.yml` -> `.azure-pipelines/infra-prod.yml`
+- Move: `infra/.pipeline/azure-pipeline-dev.yml` -> `.azure-pipelines/azure-infra-pipeline-dev.yml`
+- Move: `infra/.pipeline/azure-pipeline-prod.yml` -> `.azure-pipelines/azure-infra-pipeline-prod.yml`
 - Move: `infra/.pipeline/templates/terraform-env-stage.yml` -> `.azure-pipelines/templates/terraform-env-stage.yml`
 - Move: `infra/slack-app-manifest/` -> `infra/manifests/slack-app/`
 - Move: `infra/teams-app-manifest/` -> `infra/manifests/teams-app/`
@@ -347,8 +347,8 @@ Expected:
 Run:
 
 ```powershell
-git -C D:\CopilotGTM\copilot-backend mv infra/.pipeline/azure-pipeline-dev.yml .azure-pipelines/infra-dev.yml
-git -C D:\CopilotGTM\copilot-backend mv infra/.pipeline/azure-pipeline-prod.yml .azure-pipelines/infra-prod.yml
+git -C D:\CopilotGTM\copilot-backend mv infra/.pipeline/azure-pipeline-dev.yml .azure-pipelines/azure-infra-pipeline-dev.yml
+git -C D:\CopilotGTM\copilot-backend mv infra/.pipeline/azure-pipeline-prod.yml .azure-pipelines/azure-infra-pipeline-prod.yml
 git -C D:\CopilotGTM\copilot-backend mv infra/.pipeline/templates/terraform-env-stage.yml .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
@@ -393,13 +393,13 @@ infra/.pipeline no longer exists.
 
 **Files:**
 
-- Modify: `.azure-pipelines/infra-dev.yml`
-- Modify: `.azure-pipelines/infra-prod.yml`
+- Modify: `.azure-pipelines/azure-infra-pipeline-dev.yml`
+- Modify: `.azure-pipelines/azure-infra-pipeline-prod.yml`
 - Modify: `.azure-pipelines/templates/terraform-env-stage.yml`
 
 - [ ] **Step 1: Update dev infra trigger paths**
 
-In `.azure-pipelines/infra-dev.yml`, replace the old path block:
+In `.azure-pipelines/azure-infra-pipeline-dev.yml`, replace the old path block:
 
 ```yaml
 paths:
@@ -416,7 +416,7 @@ paths:
   include:
     - infra/terraform/azure/dev/**
     - infra/terraform/azure/modules/**
-    - .azure-pipelines/infra-dev.yml
+    - .azure-pipelines/azure-infra-pipeline-dev.yml
     - .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
@@ -432,11 +432,11 @@ to:
 - template: templates/terraform-env-stage.yml
 ```
 
-The template line text is unchanged because `infra-dev.yml` now lives in `.azure-pipelines/` and `templates/` is its sibling.
+The template line text is unchanged because `azure-infra-pipeline-dev.yml` now lives in `.azure-pipelines/` and `templates/` is its sibling.
 
 - [ ] **Step 2: Update dev Terraform working directory**
 
-In `.azure-pipelines/infra-dev.yml`, replace:
+In `.azure-pipelines/azure-infra-pipeline-dev.yml`, replace:
 
 ```yaml
 tfWorkingDir: terraform/azure/dev
@@ -450,7 +450,7 @@ tfWorkingDir: infra/terraform/azure/dev
 
 - [ ] **Step 3: Update prod infra trigger paths**
 
-In `.azure-pipelines/infra-prod.yml`, replace:
+In `.azure-pipelines/azure-infra-pipeline-prod.yml`, replace:
 
 ```yaml
 paths:
@@ -467,13 +467,13 @@ paths:
   include:
     - infra/terraform/azure/prod/**
     - infra/terraform/azure/modules/**
-    - .azure-pipelines/infra-prod.yml
+    - .azure-pipelines/azure-infra-pipeline-prod.yml
     - .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
 - [ ] **Step 4: Update prod Terraform working directory**
 
-In `.azure-pipelines/infra-prod.yml`, replace:
+In `.azure-pipelines/azure-infra-pipeline-prod.yml`, replace:
 
 ```yaml
 tfWorkingDir: terraform/azure/prod
@@ -503,12 +503,12 @@ The template uses the tfWorkingDir parameter and does not hard-code terraform/az
 
 **Files:**
 
-- Modify: `.azure-pipelines/azure-pipelines-dev.yml`
-- Modify: `.azure-pipelines/azure-pipelines-prod.yml`
+- Modify: `.azure-pipelines/azure-backend-pipeline-dev.yml`
+- Modify: `.azure-pipelines/azure-backend-pipeline-prod.yml`
 
 - [ ] **Step 1: Add backend dev path filters**
 
-In `.azure-pipelines/azure-pipelines-dev.yml`, change:
+In `.azure-pipelines/azure-backend-pipeline-dev.yml`, change:
 
 ```yaml
 trigger:
@@ -531,8 +531,8 @@ trigger:
   paths:
     exclude:
       - infra/**
-      - .azure-pipelines/infra-dev.yml
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
@@ -555,14 +555,14 @@ pr:
   paths:
     exclude:
       - infra/**
-      - .azure-pipelines/infra-dev.yml
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
 - [ ] **Step 2: Add backend prod path filters**
 
-In `.azure-pipelines/azure-pipelines-prod.yml`, change:
+In `.azure-pipelines/azure-backend-pipeline-prod.yml`, change:
 
 ```yaml
 trigger:
@@ -581,8 +581,8 @@ trigger:
   paths:
     exclude:
       - infra/**
-      - .azure-pipelines/infra-dev.yml
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 ```
 
@@ -626,7 +626,7 @@ Replace the commented default hint:
 with an active value:
 
 ```hcl
-terraform_yml_path = ".azure-pipelines/infra-dev.yml"
+terraform_yml_path = ".azure-pipelines/azure-infra-pipeline-dev.yml"
 ```
 
 - [ ] **Step 2: Update prod Terraform pipeline repo and path**
@@ -652,7 +652,7 @@ Replace the commented default hint:
 with an active value:
 
 ```hcl
-terraform_yml_path = ".azure-pipelines/infra-prod.yml"
+terraform_yml_path = ".azure-pipelines/azure-infra-pipeline-prod.yml"
 ```
 
 - [ ] **Step 3: Keep backend pipeline repository references unchanged**
@@ -661,14 +661,14 @@ Confirm both files still contain:
 
 ```hcl
 backend_repo_name = "copilot-backend"
-backend_yml_path  = ".azure-pipelines/azure-pipelines-dev.yml"
+backend_yml_path  = ".azure-pipelines/azure-backend-pipeline-dev.yml"
 ```
 
 for dev and:
 
 ```hcl
 backend_repo_name = "copilot-backend"
-backend_yml_path  = ".azure-pipelines/azure-pipelines-prod.yml"
+backend_yml_path  = ".azure-pipelines/azure-backend-pipeline-prod.yml"
 ```
 
 for prod.
@@ -727,8 +727,8 @@ copilot-infra/terraform/azure/prod -> copilot-backend/infra/terraform/azure/prod
 terraform/azure/dev -> infra/terraform/azure/dev
 terraform/azure/prod -> infra/terraform/azure/prod
 terraform/azure/modules -> infra/terraform/azure/modules
-.pipeline/azure-pipeline-dev.yml -> .azure-pipelines/infra-dev.yml
-.pipeline/azure-pipeline-prod.yml -> .azure-pipelines/infra-prod.yml
+.pipeline/azure-pipeline-dev.yml -> .azure-pipelines/azure-infra-pipeline-dev.yml
+.pipeline/azure-pipeline-prod.yml -> .azure-pipelines/azure-infra-pipeline-prod.yml
 .pipeline/templates/terraform-env-stage.yml -> .azure-pipelines/templates/terraform-env-stage.yml
 google-chat-app-manifest -> infra/manifests/google-chat-app
 slack-app-manifest -> infra/manifests/slack-app
@@ -952,7 +952,7 @@ PR description must include:
 Use Azure DevOps pipeline:
 
 ```text
-.azure-pipelines/infra-dev.yml
+.azure-pipelines/azure-infra-pipeline-dev.yml
 ```
 
 Expected:
@@ -966,7 +966,7 @@ The dev infra pipeline checks out copilot-backend, runs from infra/terraform/azu
 Use Azure DevOps pipeline:
 
 ```text
-.azure-pipelines/infra-prod.yml
+.azure-pipelines/azure-infra-pipeline-prod.yml
 ```
 
 Expected:
@@ -1017,7 +1017,7 @@ If Terraform updates pipeline resources to the new repo and that breaks:
 - [ ] Backend app pipelines exclude `infra/**`.
 - [ ] Infra pipelines include only `infra/terraform/**` and infra pipeline YAML paths.
 - [ ] `terraform_repo_name` is `copilot-backend` in dev and prod tfvars.
-- [ ] `terraform_yml_path` points to `.azure-pipelines/infra-dev.yml` and `.azure-pipelines/infra-prod.yml`.
+- [ ] `terraform_yml_path` points to `.azure-pipelines/azure-infra-pipeline-dev.yml` and `.azure-pipelines/azure-infra-pipeline-prod.yml`.
 - [ ] Terraform state keys are unchanged.
 - [ ] No real secrets were imported.
 - [ ] Old infra repo remains available until cutover is proven.

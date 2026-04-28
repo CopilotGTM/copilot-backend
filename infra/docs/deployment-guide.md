@@ -9,9 +9,9 @@ This document explains how infrastructure deployments work in this repository, i
 ```
 copilot-backend/
 ├── .azure-pipelines/
-│   ├── infra-dev.yml                 # Dev infrastructure pipeline
-│   ├── infra-prod.yml                # Prod infrastructure pipeline
-│   ├── infra.yml                     # Legacy combined infrastructure pipeline
+│   ├── azure-infra-pipeline-dev.yml                 # Dev infrastructure pipeline
+│   ├── azure-infra-pipeline-prod.yml                # Prod infrastructure pipeline
+│   ├── azure-infra-pipeline.yml                     # Legacy combined infrastructure pipeline
 │   └── templates/
 │       └── terraform-env-stage.yml   # Reusable Terraform stage template
 ├── infra/

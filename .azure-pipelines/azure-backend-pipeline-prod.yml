@@ -1,50 +1,35 @@
 # ============================================================================
-# Azure DevOps Pipeline - Backend DEV Environment
+# Azure DevOps Pipeline - Backend PROD Environment
 # ============================================================================
-# This pipeline handles DEV deployments only.
-# Triggers on: main, feature/*, hotfix/* branches
-# Deploys to: Dev AKS cluster via Helm
+# This pipeline handles PROD deployments only.
+# Triggers on: release/* branches
+# Deploys to: Prod AKS cluster via Helm (with approval gate)
 # ============================================================================
 
 trigger:
   branches:
     include:
-      - main
-      - feature/*
-      - hotfix/*
+      - release/*
   paths:
     exclude:
       - infra/**
       - docs/superpowers/plans/**
-      - .azure-pipelines/azure-pipelines-dev.yml
-      - .azure-pipelines/azure-pipelines-prod.yml
-      - .azure-pipelines/infra.yml
-      - .azure-pipelines/infra-dev.yml
-      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/azure-backend-pipeline-dev.yml
+      - .azure-pipelines/azure-backend-pipeline-prod.yml
+      - .azure-pipelines/azure-infra-pipeline.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
       - .azure-pipelines/templates/terraform-env-stage.yml
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    exclude:
-      - infra/**
-      - docs/superpowers/plans/**
-      - .azure-pipelines/azure-pipelines-dev.yml
-      - .azure-pipelines/azure-pipelines-prod.yml
-      - .azure-pipelines/infra.yml
-      - .azure-pipelines/infra-dev.yml
-      - .azure-pipelines/infra-prod.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+pr: none  # No PR triggers for prod pipeline
 
 variables:
-  # Use dev-specific variable group
-  - group: app-secrets-dev
+  # Use prod-specific variable group
+  - group: app-secrets-prod
   - name: ENVIRONMENT
-    value: 'dev'
+    value: 'prod'
   - name: AGENT_POOL
-    value: 'StaticAgentPool'
+    value: 'StaticAgentPool-prod'
 
   # Helm/Chart configuration
   - name: CHART_PATH
@@ -57,8 +42,7 @@ variables:
     value: 'true'
 
   # Observability Stack (Loki + Promtail + Grafana)
-  # Access via: kubectl port-forward svc/copilot-backend-grafana 3001:3000 -n copilotgtm
-  # DISABLED: To free up cluster resources (CPU/Memory) - can be re-enabled when needed
+  # DISABLED in prod - enable only for targeted debugging sessions
   - name: ENABLE_OBSERVABILITY
     value: 'false'
 
@@ -72,9 +56,9 @@ variables:
   - name: INTEGRATIONS_IMAGE_REPOSITORY
     value: 'copilot-backend-integrations-worker'
 
-  # Kubeconfig for dev
-  - name: DEV_KUBECONFIG
-    value: 'kubeconfig-dev.yaml'
+  # Kubeconfig for prod
+  - name: PROD_KUBECONFIG
+    value: 'kubeconfig-prod.yaml'
 
 stages:
   # ==========================================================================
@@ -591,21 +575,21 @@ stages:
             continueOnError: true
 
   # ==========================================================================
-  # Stage 3: Deploy to Dev AKS
+  # Stage 3: Deploy to Prod AKS (Requires Approval)
   # ==========================================================================
   - stage: Deploy
-    displayName: Deploy to Dev AKS
+    displayName: Deploy to Prod AKS
     dependsOn:
       - CheckChanges
       - BuildAndPush
     condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     variables:
       - name: KUBECONFIG_FILE
-        value: '$(Pipeline.Workspace)/kubeconfig-dev.yaml'
+        value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
     jobs:
       - deployment: HelmDeploy
-        displayName: Deploy to Dev AKS
-        environment: 'dev'
+        displayName: Deploy to Prod AKS
+        environment: 'terraform-prod'  # Uses approval gate configured in Azure DevOps
         pool:
           name: $(AGENT_POOL)
         strategy:
@@ -618,7 +602,7 @@ stages:
                   displayName: 'Login to Kubernetes cluster'
                   inputs:
                     connectionType: 'Kubernetes Service Connection'
-                    kubernetesServiceEndpoint: $(DEV_KUBECONFIG)
+                    kubernetesServiceEndpoint: $(PROD_KUBECONFIG)
                     command: 'login'
 
                 - script: |
@@ -637,7 +621,7 @@ stages:
                     fi
 
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
-                      -f "$CHART_PATH/values-dev.yaml" \
+                      -f "$CHART_PATH/values-prod.yaml" \
                       --namespace copilotgtm \
                       --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
                       --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
@@ -646,11 +630,12 @@ stages:
                       --set global.redis.enableTLS=true \
                       --set global.redis.usePassword=true \
                       $EXTRA_HELM_ARGS \
-                      --set 'api.ingress.hosts[0].host=devapi.copilotgtm.com' \
+                      --set 'api.ingress.hosts[0].host=api.copilotgtm.com' \
                       --set 'api.ingress.hosts[0].paths[0].path=/' \
                       --set 'api.ingress.hosts[0].paths[0].pathType=Prefix' \
-                      --set 'api.ingress.tls[0].hosts[0]=devapi.copilotgtm.com' \
-                      --set 'api.ingress.tls[0].secretName=devapi-tls' \
+                      --set 'api.ingress.tls[0].hosts[0]=api.copilotgtm.com' \
+                      --set 'api.ingress.tls[0].secretName=api-tls' \
+                      --set api.environment=production \
                       --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
@@ -715,7 +700,7 @@ stages:
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
-                  displayName: Helm Upgrade/Install (Dev)
+                  displayName: Helm Upgrade/Install (Prod)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
