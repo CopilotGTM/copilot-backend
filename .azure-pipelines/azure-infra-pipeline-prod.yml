@@ -1,0 +1,57 @@
+# =========================================================================
+# Azure Terraform Infrastructure Pipeline (PROD ONLY)
+# Location: .azure-pipelines/azure-infra-pipeline-prod.yml
+# =========================================================================
+# This pipeline handles PROD environment deployments.
+# Triggered on: release/* branches
+# Requires approval via environment gate
+# =========================================================================
+
+trigger:
+  branches:
+    include:
+      - release/*
+  paths:
+    include:
+      - infra/terraform/azure/prod/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
+
+pr:
+  branches:
+    include:
+      - release/*
+  paths:
+    include:
+      - infra/terraform/azure/prod/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
+
+variables:
+  - name: TF_VERSION
+    value: '1.9.0'
+  - name: PROD_AGENT_POOL
+    value: 'StaticAgentPool-prod'
+
+stages:
+  # -------------------------------------------------------------------------
+  # PROD: Triggered on release/* branch push (plan + apply)
+  # -------------------------------------------------------------------------
+  - template: templates/terraform-env-stage.yml
+    parameters:
+      stageName: Prod
+      envName: prod
+      tfWorkingDir: infra/terraform/azure/prod
+      azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
+      variableGroupName: copilot-infra-secrets-prod
+      agentPoolName: $(PROD_AGENT_POOL)
+      tfVersion: ${{ variables.TF_VERSION }}
+      dependsOn: []
+      stageCondition: succeeded()
+      # Allow terraform apply from release/* branches only
+      # Still prevents apply on Pull Requests - only actual branch pushes
+      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+      approvalEnvironment: terraform-prod
+      artifactName: tfplan-prod

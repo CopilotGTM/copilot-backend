@@ -1,0 +1,75 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: Kai - LOCAL
+  description: AI sales assistant. @mention Kai in channels or DM directly for deal insights.
+  background_color: "#5558AF"
+  long_description: Kai is an AI-powered sales assistant by CopilotGTM. You can @mention Kai in any channel to get contextual answers based on your channel conversations, or chat with Kai directly for private one-on-one assistance. Kai reads your channel context and provides relevant insights from your deal data, documentation, and meeting notes.
+
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: kai-local
+    always_online: false
+
+oauth_config:
+  redirect_urls:
+    - https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/slack/oauth/callback
+    - https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/integrations/copilot-oauth/callback
+  scopes:
+    bot:
+      # Messaging
+      - chat:write                # Send messages as Kai
+      - chat:write.customize      # Send messages with a custom username/avatar
+
+      # Channel mentions
+      - app_mentions:read         # Detect when users @mention Kai
+
+      # Reading conversations (to understand channel context)
+      - channels:history          # Read messages in public channels Kai is in
+      - channels:read             # View basic info about public channels
+      - groups:history            # Read messages in private channels Kai is invited to
+      - groups:read               # View basic info about private channels
+
+      # Direct messages
+      - im:history                # Read DM conversations with Kai
+      - im:read                   # View basic info about DMs
+      - im:write                  # Start DMs with users
+
+      # Files (download attachments shared by users)
+      - files:read                # Access file content shared in channels/DMs
+
+      # Users
+      - users:read                # View user profile info (names, avatars)
+
+    user:
+      # Integration scopes (per-user, used by Nango for channel data)
+      - channels:read             # List channels the user can see
+      - channels:history          # Read messages from channels (for deal attachments)
+      - groups:read               # List private channels the user can see
+      - groups:history            # Read messages from private channels
+      - mpim:read                 # List group DMs the user can see
+      - mpim:history              # Read messages from group DMs
+      - users:read                # Resolve Slack user IDs to display names
+      - users:read.email          # Resolve Slack user emails for identity matching
+      - team:read                 # Read workspace metadata for Slack channel grouping
+
+settings:
+  event_subscriptions:
+    # Uses the same ngrok base URL as Teams bot, just a different path
+    # Current ngrok: caitlyn-nonarmigerous-uninstructively.ngrok-free.dev
+    request_url: https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/slack/events
+    bot_events:
+      - app_mention               # Fires when a user @mentions Kai in a channel
+      - message.im                # Fires when a user sends a DM to Kai
+  interactivity:
+    is_enabled: true
+    request_url: https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

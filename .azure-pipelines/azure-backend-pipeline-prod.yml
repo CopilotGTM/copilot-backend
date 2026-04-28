@@ -1,0 +1,782 @@
+# ============================================================================
+# Azure DevOps Pipeline - Backend PROD Environment
+# ============================================================================
+# This pipeline handles PROD deployments only.
+# Triggers on: release/* branches
+# Deploys to: Prod AKS cluster via Helm (with approval gate)
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - release/*
+  paths:
+    exclude:
+      - infra/**
+      - docs/superpowers/plans/**
+      - .azure-pipelines/azure-backend-pipeline-dev.yml
+      - .azure-pipelines/azure-backend-pipeline-prod.yml
+      - .azure-pipelines/azure-infra-pipeline.yml
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/azure-infra-pipeline-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
+
+pr: none  # No PR triggers for prod pipeline
+
+variables:
+  # Use prod-specific variable group
+  - group: app-secrets-prod
+  - name: ENVIRONMENT
+    value: 'prod'
+  - name: AGENT_POOL
+    value: 'StaticAgentPool-prod'
+
+  # Helm/Chart configuration
+  - name: CHART_PATH
+    value: ./charts/application
+  - name: PYTHON_VERSION
+    value: '3.11'
+
+  # Flower UI (Celery monitoring)
+  - name: ENABLE_FLOWER
+    value: 'true'
+
+  # Observability Stack (Loki + Promtail + Grafana)
+  # DISABLED in prod - enable only for targeted debugging sessions
+  - name: ENABLE_OBSERVABILITY
+    value: 'false'
+
+  # Image repositories
+  - name: API_IMAGE_REPOSITORY
+    value: 'copilot-backend-api'
+  - name: KNOWLEDGE_IMAGE_REPOSITORY
+    value: 'copilot-backend-knowledge-worker'
+  - name: LIGHT_IMAGE_REPOSITORY
+    value: 'copilot-backend-light-worker'
+  - name: INTEGRATIONS_IMAGE_REPOSITORY
+    value: 'copilot-backend-integrations-worker'
+
+  # Kubeconfig for prod
+  - name: PROD_KUBECONFIG
+    value: 'kubeconfig-prod.yaml'
+
+stages:
+  # ==========================================================================
+  # Stage 0: Check if only docs changed (skip pipeline if so)
+  # ==========================================================================
+  - stage: CheckChanges
+    displayName: Check for Code Changes
+    jobs:
+      - job: DetectChanges
+        displayName: Detect if only docs changed
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+            fetchDepth: '0'  # Need full history to compare commits
+
+          - script: |
+              echo "##[section]🔍 Checking what files changed..."
+
+              # Get the merge base (last common commit with target branch)
+              # For PRs, compare against the target branch
+              # For pushes, compare against the previous commit
+              if [ "$(Build.Reason)" = "PullRequest" ]; then
+                BASE_BRANCH="origin/$(System.PullRequest.TargetBranch)"
+                echo "PR detected - comparing against $BASE_BRANCH"
+              else
+                # For direct pushes, compare with parent commit
+                BASE_BRANCH="HEAD~1"
+                echo "Direct push detected - comparing against previous commit"
+              fi
+
+              # Get list of changed files
+              CHANGED_FILES=$(git diff --name-only $BASE_BRANCH HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+
+              echo "Changed files:"
+              echo "$CHANGED_FILES"
+              echo ""
+
+              # Check if ALL changed files are in docs/ folder
+              NON_DOCS_CHANGES=$(echo "$CHANGED_FILES" | grep -v "^docs/" | grep -v "^$" || true)
+
+              if [ -z "$NON_DOCS_CHANGES" ]; then
+                echo "##[section]📚 Only documentation changes detected!"
+                echo "Changed files are all in docs/ folder. Skipping build and deploy."
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]true"
+              else
+                echo "##[section]💻 Code changes detected!"
+                echo "Non-docs changes:"
+                echo "$NON_DOCS_CHANGES"
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]false"
+              fi
+            name: CheckDocs
+            displayName: 'Check if only docs/ changed'
+
+  # ==========================================================================
+  # Stage 1: Code Quality & Testing
+  # ==========================================================================
+  - stage: QualityCheck
+    displayName: Code Quality & Tests
+    dependsOn: CheckChanges
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    jobs:
+      - job: QualityAndSecurity
+        displayName: Quality Checks & Security Scan
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+
+          # ===================================================================
+          # Dockerfile Linting with Hadolint (CIS Docker Benchmark compliance)
+          # ===================================================================
+          - script: |
+              echo "##[section]🐳 Linting Dockerfiles with Hadolint..."
+
+              # Install Hadolint if not present
+              if ! command -v hadolint &> /dev/null; then
+                echo "Installing Hadolint..."
+                wget -qO /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+                chmod +x /usr/local/bin/hadolint
+              fi
+
+              echo ""
+              echo "Linting Dockerfile (production)..."
+              hadolint Dockerfile --format tty || HADOLINT_FAILED=1
+
+              echo ""
+              echo "Linting Dockerfile.local (development)..."
+              hadolint Dockerfile.local --format tty || HADOLINT_FAILED=1
+
+              if [ "$HADOLINT_FAILED" = "1" ]; then
+                echo "##[warning]⚠️ Hadolint found issues - review above warnings"
+              else
+                echo "##[section]✅ Dockerfile linting passed!"
+              fi
+            displayName: '🐳 Dockerfile Lint (Hadolint)'
+            continueOnError: true
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.local/bin"
+            displayName: 'Install UV'
+
+          - script: |
+              uv python install $(PYTHON_VERSION)
+            displayName: 'Install Python $(PYTHON_VERSION)'
+
+          - script: |
+              uv sync --frozen --no-install-project --no-dev --only-group quality
+              source .venv/bin/activate
+            displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
+
+          - script: |
+              source .venv/bin/activate
+              ruff format --check src/ tests/
+            displayName: '✨ Code Formatting Check (Ruff Format)'
+
+          - script: |
+              source .venv/bin/activate
+              ruff check src/ tests/
+            displayName: '🔍 Linting Check (Ruff)'
+
+          - script: |
+              source .venv/bin/activate
+              mypy src/ || true
+            displayName: '📝 Type Checking (MyPy) - Advisory Only'
+
+          - script: |
+              source .venv/bin/activate
+              bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
+              bandit -c pyproject.toml -r src/
+            displayName: '🔒 Security Scan (Bandit)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Security Report'
+            inputs:
+              targetPath: 'bandit-report.json'
+              artifact: 'security-report'
+            condition: succeededOrFailed()
+
+  # ==========================================================================
+  # Stage 2: Build & Push Docker Image
+  # ==========================================================================
+  - stage: BuildAndPush
+    displayName: Build & Push Docker Image to ACR
+    dependsOn:
+      - CheckChanges
+      - QualityCheck
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    jobs:
+      - job: dockerBuildPush
+        displayName: Build and Push to ACR
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+
+          - script: |
+              echo "##[section]📊 Checking disk space before cleanup..."
+              df -h
+              DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Current disk usage: ${DISK_USAGE}%"
+
+              echo ""
+              echo "##[section]🧹 Cleaning up Docker resources..."
+              docker container prune -f || true
+              docker image prune -a -f || true
+              docker volume prune -f || true
+              docker builder prune -a -f || true
+
+              echo ""
+              echo "##[section]✅ Disk space after cleanup:"
+              df -h
+              DISK_USAGE_AFTER=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Disk usage after cleanup: ${DISK_USAGE_AFTER}%"
+
+              if [ "$DISK_USAGE_AFTER" -gt 90 ]; then
+                echo "##[error]❌ Critical: Disk usage is ${DISK_USAGE_AFTER}% - aborting build"
+                exit 1
+              elif [ "$DISK_USAGE_AFTER" -gt 80 ]; then
+                echo "##[warning]⚠️ Warning: Disk usage is ${DISK_USAGE_AFTER}% - consider cleaning up agent"
+              else
+                echo "##[section]✅ Disk space is healthy (${DISK_USAGE_AFTER}% used)"
+              fi
+            displayName: 'Clean Up Disk Space & Check'
+
+          - script: |
+              echo "##[group]Verifying Environment Configuration"
+              echo "Environment: $(ENVIRONMENT)"
+              echo "ACR Login Server: $(ACR_LOGIN_SERVER)"
+              echo "Helm Release Name: $(HELM_RELEASE_NAME)"
+              echo "Build ID: $(Build.BuildId)"
+              echo "##[endgroup]"
+            displayName: 'Echo Environment Variables'
+
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              command: 'login'
+
+          # ===================================================================
+          # Pull cache images - only pull target-specific images (not full)
+          # Each target has its own dependency set, so cross-cache is not useful
+          # ===================================================================
+          - script: |
+              echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
+              echo "Note: Only pulling target-specific images for optimal caching"
+              docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest || echo "⚠️ No latest integrations image found"
+              echo "##[section]✅ Cache pull complete"
+            displayName: 'Pull Cache Images from ACR'
+            env:
+              DOCKER_BUILDKIT: '1'
+            continueOnError: 'true'
+
+          # ===================================================================
+          # Build API Image - FastAPI application with aiohttp for async Key Vault
+          # Target: api (installs 'api' extra from pyproject.toml)
+          # Note: Using script instead of Docker@2 buildAndPush because
+          #       buildAndPush ignores the 'arguments' input (no cache support)
+          # ===================================================================
+          - script: |
+              echo "##[section]🔨 Building API Image with cache..."
+              docker build \
+                --target api \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing API Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ API Image complete"
+            displayName: 'Build & Push API Image (target: api)'
+            env:
+              DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+
+          # ===================================================================
+          # Build Knowledge Worker - Heavy ML/Document processing
+          # Target: knowledge-worker (installs 'knowledge' extra)
+          # ===================================================================
+          - script: |
+              echo "##[section]🔨 Building Knowledge Worker Image with cache..."
+              docker build \
+                --target knowledge-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Knowledge Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Knowledge Worker Image complete"
+            displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
+            env:
+              DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
+
+          # ===================================================================
+          # Build Light Worker - Chat, Deal, Organization workers
+          # Target: light-worker (installs 'workers-light' extra)
+          # ===================================================================
+          - script: |
+              echo "##[section]🔨 Building Light Worker Image with cache..."
+              docker build \
+                --target light-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Light Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Light Worker Image complete"
+            displayName: 'Build & Push Light Worker Image (target: light-worker)'
+            env:
+              DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+
+          # ===================================================================
+          # Build Integrations Worker - CRM/Third-party sync
+          # Target: integrations-worker (installs 'integrations' extra)
+          # ===================================================================
+          - script: |
+              echo "##[section]🔨 Building Integrations Worker Image with cache..."
+              docker build \
+                --target integrations-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Integrations Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Integrations Worker Image complete"
+            displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
+            env:
+              DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+
+          - script: |
+              echo "##[section]✅ Build Complete!"
+              echo "📦 API: $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Knowledge Worker: $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Light Worker: $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Integrations Worker: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo ""
+              echo "Note: Using separated images - each with its own optimized dependencies"
+            displayName: 'Build Summary'
+
+          # ===================================================================
+          # Security: Vulnerability Scanning with Trivy
+          # Scans images for CRITICAL and HIGH vulnerabilities
+          # ===================================================================
+          - script: |
+              echo "##[section]🔒 Installing Trivy vulnerability scanner..."
+
+              # Install Trivy if not present
+              if ! command -v trivy &> /dev/null; then
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.49.1
+              fi
+
+              trivy --version
+              echo ""
+            displayName: 'Install Trivy Scanner'
+
+          - script: |
+              echo "##[section]🔍 Scanning API image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ API image scan complete"
+            displayName: '🔍 Trivy Scan: API Image'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Light Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Light Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Integrations Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Integrations Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Knowledge Worker image for vulnerabilities..."
+              echo "Note: This image is larger and may take longer to scan"
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Knowledge Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Knowledge Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]📊 Generating vulnerability report (JSON)..."
+
+              # Generate JSON reports for all images
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-api-report.json \
+                $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-light-worker-report.json \
+                $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              echo "##[section]✅ Vulnerability reports generated"
+            displayName: 'Generate Trivy Reports (JSON)'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Trivy Vulnerability Reports'
+            inputs:
+              targetPath: '.'
+              artifact: 'trivy-reports'
+              patterns: 'trivy-*.json'
+            condition: succeededOrFailed()
+
+          # ===================================================================
+          # ACR Cleanup - Keep only last 10 images per repository
+          # ===================================================================
+          - script: |
+              echo "##[section]🧹 Cleaning up old images from ACR (keeping last 10)..."
+
+              # Function to cleanup a repository
+              cleanup_repo() {
+                REPO=$1
+                echo ""
+                echo "Processing repository: $REPO"
+
+                # Get all tags sorted by creation time (newest first), excluding 'latest'
+                TAGS=$(az acr repository show-tags \
+                  --name $ACR_NAME \
+                  --repository $REPO \
+                  --orderby time_desc \
+                  --output tsv 2>/dev/null | grep -v "^latest$" || echo "")
+
+                if [ -z "$TAGS" ]; then
+                  echo "  No tags found for $REPO"
+                  return
+                fi
+
+                # Count total tags
+                TOTAL_TAGS=$(echo "$TAGS" | wc -l)
+                echo "  Total tags (excluding 'latest'): $TOTAL_TAGS"
+
+                # Keep first 10, delete the rest
+                if [ "$TOTAL_TAGS" -gt 10 ]; then
+                  TAGS_TO_DELETE=$(echo "$TAGS" | tail -n +11)
+                  DELETE_COUNT=$(echo "$TAGS_TO_DELETE" | wc -l)
+                  echo "  Deleting $DELETE_COUNT old tags..."
+
+                  for TAG in $TAGS_TO_DELETE; do
+                    echo "    Deleting $REPO:$TAG"
+                    az acr repository delete \
+                      --name $ACR_NAME \
+                      --image "$REPO:$TAG" \
+                      --yes 2>/dev/null || echo "    Failed to delete $REPO:$TAG"
+                  done
+                  echo "  ✅ Cleanup complete for $REPO"
+                else
+                  echo "  ✅ No cleanup needed (only $TOTAL_TAGS tags)"
+                fi
+              }
+
+              # Cleanup each repository (separated images only - no full copilot-backend)
+              cleanup_repo "$API_IMAGE_REPOSITORY"
+              cleanup_repo "$KNOWLEDGE_IMAGE_REPOSITORY"
+              cleanup_repo "$LIGHT_IMAGE_REPOSITORY"
+              cleanup_repo "$INTEGRATIONS_IMAGE_REPOSITORY"
+
+              echo ""
+              echo "##[section]✅ ACR cleanup complete!"
+            displayName: 'Cleanup Old ACR Images (Keep Last 10)'
+            env:
+              ACR_NAME: $(ACR_NAME)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+            continueOnError: true
+
+  # ==========================================================================
+  # Stage 3: Deploy to Prod AKS (Requires Approval)
+  # ==========================================================================
+  - stage: Deploy
+    displayName: Deploy to Prod AKS
+    dependsOn:
+      - CheckChanges
+      - BuildAndPush
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    variables:
+      - name: KUBECONFIG_FILE
+        value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
+    jobs:
+      - deployment: HelmDeploy
+        displayName: Deploy to Prod AKS
+        environment: 'terraform-prod'  # Uses approval gate configured in Azure DevOps
+        pool:
+          name: $(AGENT_POOL)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Kubernetes@1
+                  displayName: 'Login to Kubernetes cluster'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: $(PROD_KUBECONFIG)
+                    command: 'login'
+
+                - script: |
+                    kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                    kubectl delete pods -n copilotgtm -l job-name=copilot-backend-startup --ignore-not-found
+                    sleep 10
+                  displayName: 'Clean up previous startup Job and Pods'
+
+                - script: |
+                    EXTRA_HELM_ARGS=""
+                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+                    if [ "$(ENABLE_OBSERVABILITY)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set loki.enabled=true --set promtail.enabled=true --set grafana.enabled=true"
+                    fi
+
+                    helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
+                      -f "$CHART_PATH/values-prod.yaml" \
+                      --namespace copilotgtm \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
+                      --set global.redis.host="$REDIS_HOST" \
+                      --set global.redis.port="$REDIS_PORT" \
+                      --set global.redis.enableTLS=true \
+                      --set global.redis.usePassword=true \
+                      $EXTRA_HELM_ARGS \
+                      --set 'api.ingress.hosts[0].host=api.copilotgtm.com' \
+                      --set 'api.ingress.hosts[0].paths[0].path=/' \
+                      --set 'api.ingress.hosts[0].paths[0].pathType=Prefix' \
+                      --set 'api.ingress.tls[0].hosts[0]=api.copilotgtm.com' \
+                      --set 'api.ingress.tls[0].secretName=api-tls' \
+                      --set api.environment=production \
+                      --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
+                      --set api.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.autoscaling.enabled=true \
+                      --set knowledge-extract-worker.gpu.enabled=true \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set integrations-worker.autoscaling.enabled=true \
+                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set chat-worker.image.tag="$BUILD_BUILDID" \
+                      --set chat-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set chat-beat.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set organization-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.autoscaling.enabled=true \
+                      --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.autoscaling.enabled=true \
+                      --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-beat.image.tag="$BUILD_BUILDID" \
+                      --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
+                      --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
+                      --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
+                      --set api.secrets.DATABASE_NAME="$(DATABASE_NAME)" \
+                      --set api.secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
+                      --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
+                      --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
+                      --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
+                      --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
+                      --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
+                      --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
+                      --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
+                      --set api.secrets.ENV="$(ENV)" \
+                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$(AZURE_MASTER_KEY_VAULT_URL)" \
+                      --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
+                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      --set api.secrets.APP_NAME="$(APP_NAME)" \
+                      --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+                  displayName: Helm Upgrade/Install (Prod)
+                  env:
+                    HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
+                    CHART_PATH: $(CHART_PATH)
+                    WORKLOAD_IDENTITY_BACKEND_CLIENT_ID: $(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_CLIENT_ID: $(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)
+                    ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+                    BUILD_BUILDID: $(Build.BuildId)
+                    DATABASE_HOST: $(DATABASE_HOST)
+                    DATABASE_USER: $(DATABASE_USER)
+                    DATABASE_PORT: $(DATABASE_PORT)
+                    DATABASE_NAME: $(DATABASE_NAME)
+                    DATABASE_PASSWORD: $(DATABASE_PASSWORD)
+                    REDIS_HOST: $(REDIS_HOST)
+                    REDIS_PORT: $(REDIS_PORT)
+                    REDIS_PASSWORD: $(REDIS_PASSWORD)
+                    AZURE_OPENAI_API_KEY: $(AZURE_OPENAI_API_KEY)
+                    AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_OPENAI_API_KEY: $(AZURE_EMBEDDER_OPENAI_API_KEY)
+                    AZURE_EMBEDDER_OPENAI_ENDPOINT: $(AZURE_EMBEDDER_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
+                    CLOUD_PROVIDER: $(CLOUD_PROVIDER)
+                    APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    ORGANISATION_STORAGE_NAME: $(ORGANISATION_STORAGE_NAME)
+                    APPLICATION_REGION: $(APPLICATION_REGION)
+                    DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
+                    ENV: $(ENV)
+                    AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
+                    AZURE_MASTER_KEY_VAULT_URL: $(AZURE_MASTER_KEY_VAULT_URL)
+                    AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    APP_NAME: $(APP_NAME)
+                    WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
+
+                - script: |
+                    kubectl get pods -n copilotgtm
+                    kubectl get deployments -n copilotgtm
+                    kubectl get cronjobs -n copilotgtm
+                    kubectl get scaledobjects -n copilotgtm
+                  displayName: List AKS Deployments/Pods
+
+                - script: |
+                    set -euo pipefail
+
+                    restart_if_present() {
+                      local deployment_name="$1"
+
+                      if kubectl get deployment "$deployment_name" -n copilotgtm >/dev/null 2>&1; then
+                        kubectl rollout restart deployment "$deployment_name" -n copilotgtm
+                        kubectl rollout status deployment "$deployment_name" -n copilotgtm --timeout=300s
+                      else
+                        echo "Skipping missing deployment: $deployment_name"
+                      fi
+                    }
+
+                    echo "Restarting worker deployments to ensure latest values are applied..."
+                    restart_if_present copilot-backend-knowledge-extract-worker
+                    restart_if_present copilot-backend-knowledge-upload-worker
+                    restart_if_present copilot-backend-chat-worker
+                    restart_if_present copilot-backend-chat-beat
+                    restart_if_present copilot-backend-organization-worker
+                    restart_if_present copilot-backend-integrations-worker
+                    restart_if_present copilot-backend-deal-worker
+                  displayName: Force restart workers
+
+                - task: Bash@3
+                  displayName: Rollback on Helm Deploy Failure
+                  condition: failed()
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      export KUBECONFIG=$(KUBECONFIG_FILE)
+                      if helm status $(HELM_RELEASE_NAME); then
+                        REVISION=$(helm history $(HELM_RELEASE_NAME) | awk 'NR==2{print $1}')
+                        if [ ! -z "$REVISION" ]; then
+                          echo "Rolling back to previous successful release (revision $REVISION)..."
+                          helm rollback $(HELM_RELEASE_NAME) $REVISION
+                        fi
+                      fi

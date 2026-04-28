@@ -1,0 +1,284 @@
+# Template: Terraform stage (plan + apply)
+# Runs on a self-hosted agent (required for Private Link resources like Key Vault).
+#
+# ============================================================================
+# VARIABLE STRATEGY (Simpler & More Secure)
+# ============================================================================
+# - Non-sensitive values: Committed in terraform.tfvars (per environment folder)
+# - Sensitive values ONLY: Passed via Variable Group as TF_VAR_*
+#   Terraform automatically picks up TF_VAR_* environment variables!
+#
+# Required secrets in Variable Group (mark as 🔒 secret):
+#   - TF_VAR_db_password
+#   - TF_VAR_azuredevops_pat
+#   - TF_VAR_admin_password
+#   - TF_VAR_supabase_anon_key
+#   - TF_VAR_supabase_service_role_key
+#   - TF_VAR_supabase_jwt_secret
+#   - TF_VAR_resend_api_key
+#   - TF_VAR_nango_secret
+#   - TF_VAR_teams_bot_messaging_endpoint  (non-secret, change to swap ngrok/deployed URL)
+#
+# NOTE: Azure OpenAI API key is now automatically retrieved from the
+#       Azure OpenAI resource via the azure_openai module.
+# ============================================================================
+
+parameters:
+  - name: stageName
+    type: string
+  - name: envName
+    type: string
+  - name: tfWorkingDir
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: variableGroupName
+    type: string
+  - name: agentPoolName
+    type: string
+  - name: stageCondition
+    type: string
+    default: succeeded()
+  - name: applyCondition
+    type: string
+  - name: approvalEnvironment
+    type: string
+  - name: artifactName
+    type: string
+  - name: tfVersion
+    type: string
+    default: '1.9.0'
+  - name: dependsOn
+    type: object
+    default: []
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Terraform (${{ parameters.envName }})'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.stageCondition }}
+
+    variables:
+      - name: TF_VERSION
+        value: ${{ parameters.tfVersion }}
+      - name: TF_WORKING_DIR
+        value: ${{ parameters.tfWorkingDir }}
+      # Import secrets from Variable Group - they become TF_VAR_* env vars automatically
+      - group: ${{ parameters.variableGroupName }}
+
+    jobs:
+      - job: TerraformPlan
+        displayName: 'Validate & Plan'
+        pool:
+          name: ${{ parameters.agentPoolName }}
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(TF_VERSION)'
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init, Validate & Plan'
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(TF_WORKING_DIR)
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+
+                # ============================================================
+                # ARM credentials for Terraform AzureRM provider
+                # Must be set BEFORE terraform init (for backend auth)
+                # ============================================================
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                # Check for OIDC (Workload Identity Federation) vs secret-based auth
+                if [ -n "${servicePrincipalKey:-}" ]; then
+                  echo "Using Service Principal with client secret"
+                  export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                  export ARM_USE_OIDC=false
+                elif [ -n "${idToken:-}" ]; then
+                  echo "Using Workload Identity Federation (OIDC)"
+                  export ARM_USE_OIDC=true
+                  export ARM_OIDC_TOKEN="$idToken"
+                else
+                  echo "##vso[task.logissue type=error]No authentication method available. Ensure service connection is configured correctly."
+                  exit 1
+                fi
+
+                # ============================================================
+                # Terraform Variable Strategy:
+                # 1. terraform.tfvars (in repo) - non-sensitive config values
+                # 2. TF_VAR_* env vars (from Variable Group) - secrets only
+                #
+                # Azure DevOps automatically exports Variable Group variables
+                # as environment variables. Terraform reads TF_VAR_* automatically!
+                # ============================================================
+
+                echo "=== Terraform Init ==="
+                terraform init -input=false
+
+                echo "=== Terraform Validate ==="
+                terraform validate
+
+                echo "=== Terraform Format Check ==="
+                terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
+
+                # ============================================================
+                # Two-Step Deployment Strategy (Always)
+                # ============================================================
+                # Step 1: Plan & Apply AKS + dependencies only
+                # Step 2: Plan & Apply everything else (databases, OpenAI, Helm, K8s)
+                #
+                # This ensures AKS exists before Helm/K8s providers are used.
+                # ============================================================
+
+                # Step 1 targets (minimal AKS dependencies):
+                # - resource_group, vnet, waf (App Gateway for AGIC), acr, aks
+                # - AGIC role assignments (App Gateway, RG, VNet)
+                # - ACR pull role for AKS kubelet
+                # - cert-manager identity (for Helm release in Step 2)
+                echo "=== Step 1: Plan AKS & Dependencies ==="
+                terraform plan -var-file="terraform.tfvars" -out=tfplan-core -input=false \
+                  -target="module.resource_group" \
+                  -target="module.vnet" \
+                  -target="module.waf" \
+                  -target="module.acr" \
+                  -target="module.aks" \
+                  -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
+                  -target="azurerm_role_assignment.agic_appgw_contributor" \
+                  -target="azurerm_role_assignment.agic_rg_reader" \
+                  -target="azurerm_role_assignment.agic_vnet_network_contributor" \
+                  -target="azurerm_user_assigned_identity.cert_manager_dns" \
+                  -target="azurerm_role_assignment.cert_manager_dns_contributor" \
+                  -target="azurerm_federated_identity_credential.cert_manager" || {
+                    exitCode=$?
+                    if [ $exitCode -eq 1 ]; then
+                      echo "##vso[task.logissue type=error]Terraform plan failed!"
+                      exit 1
+                    fi
+                  }
+
+                # Rename to tfplan for artifact publishing
+                mv tfplan-core tfplan
+            env:
+              # Secret variables must be explicitly mapped to be available in scripts
+              TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
+              TF_VAR_db_password: $(TF_VAR_db_password)
+              TF_VAR_admin_password: $(TF_VAR_admin_password)
+              TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
+              TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
+              TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
+              TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
+              TF_VAR_nango_secret: $(TF_VAR_nango_secret)
+              # Teams Bot messaging endpoint - change in Variable Group to switch between ngrok/deployed URL
+              TF_VAR_teams_bot_messaging_endpoint: $(TF_VAR_teams_bot_messaging_endpoint)
+
+          - publish: $(TF_WORKING_DIR)/tfplan
+            artifact: ${{ parameters.artifactName }}
+            displayName: 'Publish Plan Artifact'
+
+      - deployment: TerraformApply
+        displayName: 'Apply Infrastructure Changes'
+        dependsOn: TerraformPlan
+        condition: ${{ parameters.applyCondition }}
+        environment: ${{ parameters.approvalEnvironment }}
+        pool:
+          name: ${{ parameters.agentPoolName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  fetchDepth: 1
+
+                - task: TerraformInstaller@1
+                  displayName: 'Install Terraform $(TF_VERSION)'
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                  displayName: 'Download Plan Artifact'
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init & Apply'
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(TF_WORKING_DIR)
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+
+                      # ARM credentials for Terraform (must be set before terraform init)
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                      # Check for OIDC vs secret-based auth
+                      if [ -n "${servicePrincipalKey:-}" ]; then
+                        echo "Using Service Principal with client secret"
+                        export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                        export ARM_USE_OIDC=false
+                      elif [ -n "${idToken:-}" ]; then
+                        echo "Using Workload Identity Federation (OIDC)"
+                        export ARM_USE_OIDC=true
+                        export ARM_OIDC_TOKEN="$idToken"
+                      else
+                        echo "##vso[task.logissue type=error]No authentication method available."
+                        exit 1
+                      fi
+
+                      echo "=== Terraform Init ==="
+                      terraform init -input=false
+
+                      # ============================================================
+                      # Two-Step Deployment Strategy (Always)
+                      # ============================================================
+                      # Step 1: Apply AKS & dependencies (VNet, WAF, ACR, role assignments)
+                      # Step 2: Plan & Apply everything else (databases, Helm, K8s manifests)
+                      #
+                      # This ensures AKS exists before Helm/K8s providers are used.
+                      # ============================================================
+
+                      echo "============================================================"
+                      echo "=== TWO-STEP DEPLOYMENT ==="
+                      echo "============================================================"
+
+                      echo ""
+                      echo "=== Step 1/3: Apply AKS & Dependencies (from plan artifact) ==="
+                      cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
+                      terraform apply -input=false -auto-approve tfplan
+
+                      echo ""
+                      echo "=== Step 2/3: Plan Remaining Infrastructure ==="
+                      echo "AKS ready. Now planning databases, OpenAI, Helm charts, K8s resources..."
+                      terraform plan -var-file="terraform.tfvars" -out=tfplan-full -input=false
+
+                      echo ""
+                      echo "=== Step 3/3: Apply Remaining Infrastructure ==="
+                      terraform apply -input=false -auto-approve tfplan-full
+
+                      echo ""
+                      echo "=== Deployment Complete ==="
+                  env:
+                    # Secret variables must be explicitly mapped to be available in scripts
+                    TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
+                    TF_VAR_db_password: $(TF_VAR_db_password)
+                    TF_VAR_admin_password: $(TF_VAR_admin_password)
+                    TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
+                    TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
+                    TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
+                    TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
+                    TF_VAR_nango_secret: $(TF_VAR_nango_secret)
+                    # Teams Bot messaging endpoint - change in Variable Group to switch between ngrok/deployed URL
+                    TF_VAR_teams_bot_messaging_endpoint: $(TF_VAR_teams_bot_messaging_endpoint)

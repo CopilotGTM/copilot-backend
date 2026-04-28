@@ -1,0 +1,57 @@
+# =========================================================================
+# Azure Terraform Infrastructure Pipeline (DEV ONLY)
+# Location: .azure-pipelines/azure-infra-pipeline-dev.yml
+# =========================================================================
+# This pipeline handles DEV environment deployments.
+# Triggered on: main branch
+# =========================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+  paths:
+    include:
+      - infra/terraform/azure/dev/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/terraform/azure/dev/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/azure-infra-pipeline-dev.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
+
+variables:
+  - name: TF_VERSION
+    value: '1.9.0'
+  - name: DEV_AGENT_POOL
+    value: 'StaticAgentPool'
+
+stages:
+  # -------------------------------------------------------------------------
+  # DEV: Triggered on main branch push (plan + apply)
+  # -------------------------------------------------------------------------
+  - template: templates/terraform-env-stage.yml
+    parameters:
+      stageName: Dev
+      envName: dev
+      tfWorkingDir: infra/terraform/azure/dev
+      azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
+      variableGroupName: copilot-infra-secrets-dev
+      agentPoolName: $(DEV_AGENT_POOL)
+      tfVersion: ${{ variables.TF_VERSION }}
+      dependsOn: []
+      stageCondition: succeeded()
+      # Allow terraform apply from any branch (not just main) for dev testing
+      # Still prevents apply on Pull Requests - only actual branch pushes
+      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+      approvalEnvironment: terraform-dev
+      artifactName: tfplan-dev
