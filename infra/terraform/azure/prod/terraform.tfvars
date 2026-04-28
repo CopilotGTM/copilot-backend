@@ -26,8 +26,8 @@ db_sku_name = "GP_Standard_D2s_v3"
 
 # PgBouncer - Connection pooling to share DB connections across all workers
 pgbouncer_enabled           = true
-pgbouncer_default_pool_size = 200 # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
-pgbouncer_max_client_conn   = 500 # Max client connections from workers/API to PgBouncer
+pgbouncer_default_pool_size = 200           # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
+pgbouncer_max_client_conn   = 500           # Max client connections from workers/API to PgBouncer
 pgbouncer_pool_mode         = "transaction" # Release connection after transaction
 
 # -----------------------------------------------------------------
@@ -50,7 +50,7 @@ enable_storage_private_endpoints   = false
 # aks_name           = "copilot-gtm-aks"     # Default
 # aks_dns_prefix     = "aks"                 # Default
 # aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
-aks_vm_size = "Standard_D2as_v6" # Cost optimization: 2 vCores, 8GB RAM (down from D4s_v3 4 vCores)
+aks_vm_size             = "Standard_D2as_v6" # Cost optimization: 2 vCores, 8GB RAM (down from D4s_v3 4 vCores)
 aks_enable_auto_scaling = true
 aks_min_node_count      = 3
 aks_max_node_count      = 6
@@ -139,9 +139,9 @@ frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-prod.yml"
 # frontend_admin_pipeline_name = "frontend-admin-pipeline"  # Default
 # frontend_admin_branch        = "main"                     # Default for prod
 
-terraform_repo_name = "copilot-app-infra"
+terraform_repo_name = "copilot-backend"
 # terraform_pipeline_name = "infra-pipeline"               # Default
-# terraform_yml_path      = ".pipeline/azure-pipeline-prod.yml" # Default (prod-specific)
+terraform_yml_path = ".azure-pipelines/infra-prod.yml"
 
 # -----------------------------------------------------------------
 # Cert-Manager & K8s

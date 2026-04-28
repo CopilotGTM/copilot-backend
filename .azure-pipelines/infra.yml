@@ -1,11 +1,11 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (COMBINED - DEPRECATED)
-# Location: .pipeline/.azure-pipeline.yml
+# Location: .azure-pipelines/infra.yml
 # =========================================================================
 # NOTE: This file contains both dev and prod stages in one pipeline.
 # For cleaner separation, use the environment-specific pipelines:
-#   - azure-pipeline-dev.yml  -> DEV only (main branch)
-#   - azure-pipeline-prod.yml -> PROD only (release/* branches)
+#   - infra-dev.yml  -> DEV only (main branch)
+#   - infra-prod.yml -> PROD only (release/* branches)
 # =========================================================================
 # Design goals:
 # - Supports SOC2 private-access controls (Key Vault/Storage via Private Link)
@@ -25,9 +25,9 @@ trigger:
       - hotfix/*
   paths:
     include:
-      - terraform/azure/**
-      - pipelines/**
-      - .pipeline/**
+      - infra/terraform/azure/**
+      - .azure-pipelines/infra.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
   branches:
@@ -35,9 +35,9 @@ pr:
       - main
   paths:
     include:
-      - terraform/azure/**
-      - pipelines/**
-      - .pipeline/**
+      - infra/terraform/azure/**
+      - .azure-pipelines/infra.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:
   - name: TF_VERSION
@@ -58,7 +58,7 @@ stages:
     parameters:
       stageName: Dev
       envName: dev
-      tfWorkingDir: terraform/azure/dev
+      tfWorkingDir: infra/terraform/azure/dev
       azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
       variableGroupName: copilot-infra-secrets-dev
       agentPoolName: $(DEV_AGENT_POOL)
@@ -76,7 +76,7 @@ stages:
   #   parameters:
   #     stageName: Uat
   #     envName: uat
-  #     tfWorkingDir: terraform/azure/uat
+  #     tfWorkingDir: infra/terraform/azure/uat
   #     azureServiceConnection: copilotgtm-arc-ci-cd-service--uat
   #     variableGroupName: copilot-infra-secrets-uat
   #     agentPoolName: $(SELF_HOSTED_AGENT_POOL)
@@ -94,7 +94,7 @@ stages:
     parameters:
       stageName: Prod
       envName: prod
-      tfWorkingDir: terraform/azure/prod
+      tfWorkingDir: infra/terraform/azure/prod
       azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
       variableGroupName: copilot-infra-secrets-prod
       agentPoolName: $(PROD_AGENT_POOL)

@@ -7,7 +7,7 @@ This folder contains the **core Azure foundation** stack for the prod environmen
 1) Core:
 
 ```sh
-cd terraform/azure/prod
+cd infra/terraform/azure/prod
 terraform init
 terraform plan -var-file="terraform.tfvars" -out=tfplan
 terraform apply tfplan
@@ -16,7 +16,7 @@ terraform apply tfplan
 2) AKS add-ons:
 
 ```sh
-cd terraform/azure/prod/k8s
+cd infra/terraform/azure/prod/k8s
 terraform init
 terraform plan -var-file="terraform.tfvars" -out=tfplan
 terraform apply tfplan

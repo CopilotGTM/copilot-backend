@@ -1,6 +1,6 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (PROD ONLY)
-# Location: .pipeline/azure-pipeline-prod.yml
+# Location: .azure-pipelines/infra-prod.yml
 # =========================================================================
 # This pipeline handles PROD environment deployments.
 # Triggered on: release/* branches
@@ -13,9 +13,10 @@ trigger:
       - release/*
   paths:
     include:
-      - terraform/azure/prod/**
-      - terraform/azure/modules/**
-      - .pipeline/**
+      - infra/terraform/azure/prod/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
   branches:
@@ -23,9 +24,10 @@ pr:
       - release/*
   paths:
     include:
-      - terraform/azure/prod/**
-      - terraform/azure/modules/**
-      - .pipeline/**
+      - infra/terraform/azure/prod/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:
   - name: TF_VERSION
@@ -41,7 +43,7 @@ stages:
     parameters:
       stageName: Prod
       envName: prod
-      tfWorkingDir: terraform/azure/prod
+      tfWorkingDir: infra/terraform/azure/prod
       azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
       variableGroupName: copilot-infra-secrets-prod
       agentPoolName: $(PROD_AGENT_POOL)

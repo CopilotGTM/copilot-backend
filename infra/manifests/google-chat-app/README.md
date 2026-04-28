@@ -14,7 +14,7 @@ This folder therefore contains:
 
 | Concept | Slack equivalent | Teams equivalent | Google Chat equivalent |
 |---|---|---|---|
-| App registration artifact | `slack-app-manifest/*/manifest.yaml` | `teams-app-manifest/*/manifest.json` (+ zip) | Values entered in the Chat API config page of a GCP project |
+| App registration artifact | `infra/manifests/slack-app/*/manifest.yaml` | `infra/manifests/teams-app/*/manifest.json` (+ zip) | Values entered in the Chat API config page of a GCP project |
 | Bot identity | Slack bot user + bot token | Azure Bot Service app registration (`botId`) | GCP service account + Chat API "App ID" |
 | Event webhook | `/users/bots/slack/events` | `/users/bots/teams/messages` | **`/users/bots/google-chat/events`** |
 | OAuth redirect | `/users/bots/slack/oauth/callback` | (delegated to Teams SSO) | **`/users/bots/google-chat/oauth/callback`** (only if user-auth scopes are needed) |

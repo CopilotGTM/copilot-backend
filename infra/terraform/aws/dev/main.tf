@@ -1,1 +1,0 @@
-# Root Terraform file for AWS - dev environment

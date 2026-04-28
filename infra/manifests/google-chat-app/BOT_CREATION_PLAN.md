@@ -153,9 +153,9 @@ Use the corresponding file as the source of truth:
 
 | Environment | Config file |
 |---|---|
-| `local` | `google-chat-app-manifest/local/chat-app-config.json` |
-| `dev` | `google-chat-app-manifest/dev/chat-app-config.json` |
-| `prod` | `google-chat-app-manifest/prod/chat-app-config.json` |
+| `local` | `infra/manifests/google-chat-app/local/chat-app-config.json` |
+| `dev` | `infra/manifests/google-chat-app/dev/chat-app-config.json` |
+| `prod` | `infra/manifests/google-chat-app/prod/chat-app-config.json` |
 
 ### 3.1 App Info
 
@@ -366,7 +366,7 @@ Important: once a Marketplace app is saved as public or private, changing that v
 Create a Terraform module:
 
 ```text
-terraform/azure/modules/google_chat/
+infra/terraform/azure/modules/google_chat/
   main.tf
   variables.tf
   outputs.tf
@@ -603,9 +603,9 @@ output "credential_config_path" {
 Add the module to:
 
 ```text
-terraform/azure/local/main.tf
-terraform/azure/dev/main.tf
-terraform/azure/prod/main.tf
+infra/terraform/azure/local/main.tf
+infra/terraform/azure/dev/main.tf
+infra/terraform/azure/prod/main.tf
 ```
 
 Local:
@@ -725,7 +725,7 @@ credentials, project_id = google.auth.default(
 
 ### Phase 2: Terraform Module
 
-1. Add `terraform/azure/modules/google_chat`.
+1. Add `infra/terraform/azure/modules/google_chat`.
 2. Add Google provider configuration.
 3. Add variables and outputs.
 4. Wire local, dev, and prod env roots.

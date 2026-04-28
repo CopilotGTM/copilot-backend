@@ -1,1 +1,0 @@
-# Root Terraform file for GCP - dev environment

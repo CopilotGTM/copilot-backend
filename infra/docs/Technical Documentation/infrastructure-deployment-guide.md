@@ -89,7 +89,7 @@ Create a Personal Access Token with these scopes:
 
 ```powershell
 git clone <your-repo-url>
-cd copilot-infra/terraform/azure/dev
+cd copilot-backend/infra/terraform/azure/dev
 ```
 
 ### Step 2: Azure Login
@@ -223,7 +223,7 @@ The variable group is created by Terraform but the PAT must be added manually (n
 #### 8.4 Check Pipeline Created
 
 1. Go to: **Azure DevOps** → **Pipelines**
-2. Find `copilot-app-infra-pipeline-dev`
+2. Find `copilot-infra-pipeline-dev`
 
 ---
 
@@ -233,7 +233,7 @@ Once bootstrap is complete, the pipeline handles remaining infrastructure.
 
 ### Option A: Run Pipeline Manually
 
-1. Go to: **Azure DevOps** → **Pipelines** → `copilot-app-infra-pipeline-dev`
+1. Go to: **Azure DevOps** → **Pipelines** → `copilot-infra-pipeline-dev`
 2. Click **Run pipeline**
 3. Select branch: `main` (or your feature branch)
 4. Click **Run**
@@ -266,14 +266,14 @@ git push origin main
 
 ### Enable ACR (Container Registry)
 
-1. Uncomment `module "acr"` in `terraform/azure/dev/main.tf`
+1. Uncomment `module "acr"` in `infra/terraform/azure/dev/main.tf`
 2. Uncomment `module "service_connection_acr"`
 3. Uncomment `azuredevops_pipeline_authorization.service_connection_acr_authorization`
 4. Push changes - pipeline will deploy
 
 ### Enable AKS (Kubernetes)
 
-1. Uncomment `module "aks"` in `terraform/azure/dev/main.tf`
+1. Uncomment `module "aks"` in `infra/terraform/azure/dev/main.tf`
 2. Uncomment `azurerm_role_assignment.aks_kubelet_acr_pull`
 3. Push changes - pipeline will deploy
 
@@ -308,7 +308,7 @@ sudo cat /var/log/cloud-init-output.log | tail -50
 
 ### Agent Capacity Issues ("SkuNotAvailable")
 
-Edit `terraform/azure/modules/devops_agent/main.tf` and change `vm_size`:
+Edit `infra/terraform/azure/modules/devops_agent/main.tf` and change `vm_size`:
 
 ```hcl
 vm_size = "Standard_D2as_v4"  # Try different SKU
@@ -362,7 +362,7 @@ terraform state rm 'module.service_connection.azuredevops_serviceendpoint_azurer
 ### Full Bootstrap (Copy-Paste)
 
 ```powershell
-cd terraform/azure/dev
+cd infra/terraform/azure/dev
 $env:TF_VAR_azuredevops_pat = "<YOUR_PAT_TOKEN>"
 terraform init
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"

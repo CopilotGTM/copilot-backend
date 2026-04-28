@@ -152,8 +152,8 @@ resource "azurerm_storage_account" "master_storage_account" {
 }
 
 resource "azurerm_storage_account" "org_storage_account" {
-  name                     = "organisationstorage${var.env}"
-  resource_group_name      = module.resource_group.resource_group_name
+  name                = "organisationstorage${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
   network_rules {
     default_action = "Allow"
     bypass         = ["AzureServices"]
@@ -388,10 +388,10 @@ module "teams_bot" {
 module "microsoft_app_registration" {
   source = "../modules/microsoft_oauth_app"
 
-  env            = var.env
-  display_name   = "CopilotGTM"
-  redirect_uris  = var.oauth_redirect_uris
-  key_vault_id   = azurerm_key_vault.master_key_vault.id
+  env           = var.env
+  display_name  = "CopilotGTM"
+  redirect_uris = var.oauth_redirect_uris
+  key_vault_id  = azurerm_key_vault.master_key_vault.id
 
   tags = {
     environment = var.env

@@ -11,7 +11,7 @@ The deployment is now a single-stage Terraform process, bootstrapped from a loca
 Deploy the networking, agent, and pipeline definitions first:
 
 ```sh
-cd terraform/azure/dev
+cd infra/terraform/azure/dev
 terraform init
 terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_principal" -target="module.service_connection" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
 ```

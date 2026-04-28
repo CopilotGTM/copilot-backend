@@ -10,6 +10,16 @@ trigger:
   branches:
     include:
       - release/*
+  paths:
+    exclude:
+      - infra/**
+      - docs/superpowers/plans/**
+      - .azure-pipelines/azure-pipelines-dev.yml
+      - .azure-pipelines/azure-pipelines-prod.yml
+      - .azure-pipelines/infra.yml
+      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr: none  # No PR triggers for prod pipeline
 

@@ -15,7 +15,7 @@ KEDA is a Kubernetes-based Event Driven Autoscaler that allows you to scale appl
 
 ## Installation
 
-KEDA is installed via Terraform in the `terraform/azure/dev/k8s/main.tf` file using the official Helm chart.
+KEDA is installed via Terraform in the `infra/terraform/azure/dev/k8s/main.tf` file using the official Helm chart.
 
 ## Configuration
 

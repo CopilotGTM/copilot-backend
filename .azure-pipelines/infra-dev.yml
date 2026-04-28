@@ -1,6 +1,6 @@
 # =========================================================================
 # Azure Terraform Infrastructure Pipeline (DEV ONLY)
-# Location: .pipeline/azure-pipeline-dev.yml
+# Location: .azure-pipelines/infra-dev.yml
 # =========================================================================
 # This pipeline handles DEV environment deployments.
 # Triggered on: main branch
@@ -13,9 +13,10 @@ trigger:
       - feature/*
   paths:
     include:
-      - terraform/azure/dev/**
-      - terraform/azure/modules/**
-      - .pipeline/**
+      - infra/terraform/azure/dev/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
   branches:
@@ -23,9 +24,10 @@ pr:
       - main
   paths:
     include:
-      - terraform/azure/dev/**
-      - terraform/azure/modules/**
-      - .pipeline/**
+      - infra/terraform/azure/dev/**
+      - infra/terraform/azure/modules/**
+      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:
   - name: TF_VERSION
@@ -41,7 +43,7 @@ stages:
     parameters:
       stageName: Dev
       envName: dev
-      tfWorkingDir: terraform/azure/dev
+      tfWorkingDir: infra/terraform/azure/dev
       azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
       variableGroupName: copilot-infra-secrets-dev
       agentPoolName: $(DEV_AGENT_POOL)

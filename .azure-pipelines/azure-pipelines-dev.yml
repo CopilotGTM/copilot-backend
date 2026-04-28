@@ -12,11 +12,31 @@ trigger:
       - main
       - feature/*
       - hotfix/*
+  paths:
+    exclude:
+      - infra/**
+      - docs/superpowers/plans/**
+      - .azure-pipelines/azure-pipelines-dev.yml
+      - .azure-pipelines/azure-pipelines-prod.yml
+      - .azure-pipelines/infra.yml
+      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
   branches:
     include:
       - main
+  paths:
+    exclude:
+      - infra/**
+      - docs/superpowers/plans/**
+      - .azure-pipelines/azure-pipelines-dev.yml
+      - .azure-pipelines/azure-pipelines-prod.yml
+      - .azure-pipelines/infra.yml
+      - .azure-pipelines/infra-dev.yml
+      - .azure-pipelines/infra-prod.yml
+      - .azure-pipelines/templates/terraform-env-stage.yml
 
 variables:
   # Use dev-specific variable group

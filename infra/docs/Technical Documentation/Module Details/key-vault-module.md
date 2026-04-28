@@ -48,7 +48,7 @@ The Key Vault module provisions an Azure Key Vault with RBAC, mandatory Private 
 
 - Toggle: `enable_key_vault_private_endpoints = true` (required by module validations).  
 - PE subnet: `10.0.4.0/24` (from VNet module).  
-- DNS zone creation/linking is in `terraform/azure/dev/main.tf`.
+- DNS zone creation/linking is in `infra/terraform/azure/dev/main.tf`.
 
 ## Minimal Usage Example
 

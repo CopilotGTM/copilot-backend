@@ -7,28 +7,29 @@ This document explains how infrastructure deployments work in this repository, i
 ## Repository Structure
 
 ```
-copilot-infra/
-├── .pipeline/
-│   ├── .azure-pipeline.yml           # Azure infrastructure pipeline
+copilot-backend/
+├── .azure-pipelines/
+│   ├── infra-dev.yml                 # Dev infrastructure pipeline
+│   ├── infra-prod.yml                # Prod infrastructure pipeline
+│   ├── infra.yml                     # Legacy combined infrastructure pipeline
 │   └── templates/
 │       └── terraform-env-stage.yml   # Reusable Terraform stage template
-├── terraform/
-│   ├── azure/
-│   │   ├── dev/       # Dev environment config
-│   │   ├── uat/       # UAT environment config
-│   │   ├── prod/      # Production environment config
-│   │   └── modules/   # Shared Terraform modules
-│   ├── aws/
-│   │   ├── dev/
-│   │   ├── uat/
-│   │   ├── prod/
-│   │   └── modules/
-│   └── gcp/
-│       ├── dev/
-│       ├── uat/
-│       ├── prod/
-│       └── modules/
-└── docs/
+├── infra/
+│   ├── terraform/
+│   │   ├── azure/
+│   │   │   ├── dev/       # Dev environment config
+│   │   │   ├── uat/       # UAT environment config
+│   │   │   ├── prod/      # Production environment config
+│   │   │   └── modules/   # Shared Terraform modules
+│   │   ├── aws/
+│   │   │   ├── dev/
+│   │   │   ├── uat/
+│   │   │   └── prod/
+│   │   └── gcp/
+│   │       ├── dev/
+│   │       ├── uat/
+│   │       └── prod/
+│   └── docs/
 ```
 
 ---
@@ -79,7 +80,7 @@ We use a **trunk-based development** model with release branches:
          ▼
   ┌──────────────────┐
   │  Pipeline runs   │
-  │  DEV PLAN+APPLY  │  ← terraform/azure/dev DEPLOYED ✅
+  │  DEV PLAN+APPLY  │  ← infra/terraform/azure/dev DEPLOYED ✅
   └──────────────────┘
 
 
@@ -97,7 +98,7 @@ We use a **trunk-based development** model with release branches:
          ▼
   ┌──────────────────┐
   │  Pipeline runs   │
-  │  UAT PLAN+APPLY  │  ← terraform/azure/uat DEPLOYED ✅
+  │  UAT PLAN+APPLY  │  ← infra/terraform/azure/uat DEPLOYED ✅
   └──────────────────┘
          │
          │ (7) Auto-continues
@@ -112,7 +113,7 @@ We use a **trunk-based development** model with release branches:
          ▼
   ┌──────────────────┐
   │  Pipeline runs   │
-  │  PROD PLAN+APPLY │  ← terraform/azure/prod DEPLOYED ✅
+  │  PROD PLAN+APPLY │  ← infra/terraform/azure/prod DEPLOYED ✅
   └──────────────────┘
 ```
 
@@ -129,7 +130,7 @@ git pull origin main
 git checkout -b feature/my-change
 
 # 2. Make your terraform changes
-# Edit files in terraform/azure/dev/ or terraform/azure/modules/
+# Edit files in infra/terraform/azure/dev/ or infra/terraform/azure/modules/
 
 # 3. Push to trigger validation
 git add .
@@ -142,7 +143,7 @@ git push origin feature/my-change
 
 # 5. Merge PR to main
 # → Pipeline runs DEV PLAN + APPLY
-# → terraform/azure/dev is deployed ✅
+# → infra/terraform/azure/dev is deployed ✅
 ```
 
 ### Deploy to UAT and Prod (releases)
@@ -158,7 +159,7 @@ git checkout -b release/1.0.0
 # 3. Push release branch
 git push origin release/1.0.0
 # → Pipeline runs UAT PLAN + APPLY automatically
-# → terraform/azure/uat is deployed ✅
+# → infra/terraform/azure/uat is deployed ✅
 
 # 4. Pipeline pauses at PROD stage
 # → Go to Azure DevOps → Pipelines → Environments → terraform-prod
@@ -166,7 +167,7 @@ git push origin release/1.0.0
 
 # 5. After approval
 # → Pipeline runs PROD PLAN + APPLY
-# → terraform/azure/prod is deployed ✅
+# → infra/terraform/azure/prod is deployed ✅
 ```
 
 ---
@@ -189,7 +190,7 @@ Each environment has its own:
 
 | Item | Dev | UAT | Prod |
 |------|-----|-----|------|
-| Terraform folder | `terraform/azure/dev/` | `terraform/azure/uat/` | `terraform/azure/prod/` |
+| Terraform folder | `infra/terraform/azure/dev/` | `infra/terraform/azure/uat/` | `infra/terraform/azure/prod/` |
 | Variable Group | `terraform-dev-vars` | `terraform-uat-vars` | `terraform-prod-vars` |
 | Service Connection | `copilotgtm-arc-ci-cd-service--dev` | `copilotgtm-arc-ci-cd-service--uat` | `copilotgtm-arc-ci-cd-service--prod` |
 | ADO Environment | `terraform-dev` | `terraform-uat` | `terraform-prod` |
@@ -208,7 +209,7 @@ Each environment has its own:
 
 ### 2. Self-Hosted Agent VM (Created by Terraform)
 
-The `devops_agent` module in `terraform/azure/modules/devops_agent/` creates:
+The `devops_agent` module in `infra/terraform/azure/modules/devops_agent/` creates:
 
 - A Linux VM (Ubuntu 22.04) in the private subnet
 - Pre-installed tools: Docker, Terraform, kubectl, Azure CLI, Helm, Node.js
@@ -328,7 +329,7 @@ git push origin main  # or release/x.x.x
 
 ```bash
 # SSH to self-hosted agent or VPN into VNet
-cd terraform/azure/<env>
+cd infra/terraform/azure/<env>
 terraform init
 terraform plan -var-file="terraform.tfvars"
 terraform apply
@@ -379,7 +380,7 @@ terraform apply
 Copy from dev and update non-sensitive values:
 
 ```hcl
-# terraform/azure/prod/terraform.tfvars
+# infra/terraform/azure/prod/terraform.tfvars
 env                 = "prod"
 location            = "South Africa North"  # Closest to Nigeria
 resource_group_name = "copilot-gtm-app"
@@ -453,7 +454,7 @@ git push origin release/1.0.0
 
 ### Module Location
 
-`terraform/azure/modules/devops_agent/`
+`infra/terraform/azure/modules/devops_agent/`
 
 ### What it Creates
 
@@ -525,7 +526,7 @@ module "devops_agent" {
 1. **First run**: Apply Terraform locally or from Azure Cloud Shell (which has network access):
 
    ```bash
-   cd terraform/azure/dev
+   cd infra/terraform/azure/dev
    terraform init
    terraform apply
    ```
