@@ -7,7 +7,7 @@ values long after feature changes land.
 """
 
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -171,7 +171,7 @@ class KnowledgeProcessingJob(TimestampMixin, table=True):
 KnowledgeProcessingJob.update_forward_refs()
 
 
-class DealJobType(str, Enum):
+class DealJobType(StrEnum):
     """Types of jobs that can be run for a deal."""
 
     # Meeting-related jobs
@@ -185,6 +185,7 @@ class DealJobType(str, Enum):
 
     # Deal-related jobs
     DEAL_SUMMARY = "deal_summary"  # Deal overview summary
+    DEAL_UPDATE = "deal_update"  # AI-assisted internal CRM deal update
     DEAL_RISK_ANALYSIS = "deal_risk_analysis"  # Risk assessment
     DEAL_NEXT_STEPS = "deal_next_steps"  # Recommended next steps
 

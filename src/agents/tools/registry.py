@@ -63,7 +63,10 @@ class ToolName(str, Enum):
     CREATE_DEAL = "create_deal"  # Send interactive deal creation form to chat
     ADD_DEAL_NOTE = "add_deal_note"  # Send interactive note form for existing deal
     ADD_STAKEHOLDER = "add_stakeholder"  # Send interactive stakeholder form for existing deal
-    UPDATE_DEAL_STAGE = "update_deal_stage"  # Send interactive stage update form
+    UPDATE_DEAL_STAGE = "update_deal_stage"
+    UPDATE_DEAL_FIELDS = "update_deal_fields"
+    UPDATE_DEAL_LIFECYCLE = "update_deal_lifecycle"
+    UPDATE_DEAL_ACCOUNT = "update_deal_account"  # Send interactive stage update form
 
     # -------------------------------------------------------------------------
     # STAKEHOLDER TOOLS - For stakeholder info and insights
@@ -170,6 +173,9 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
     ToolName.ADD_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
+    ToolName.UPDATE_DEAL_FIELDS,
+    ToolName.UPDATE_DEAL_LIFECYCLE,
+    ToolName.UPDATE_DEAL_ACCOUNT,
     ToolName.CREATE_TASK,
     ToolName.CREATE_REMINDER,
     ToolName.LIST_REMINDERS,
@@ -258,6 +264,9 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.ADD_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
+    ToolName.UPDATE_DEAL_FIELDS,
+    ToolName.UPDATE_DEAL_LIFECYCLE,
+    ToolName.UPDATE_DEAL_ACCOUNT,
     # Task tools (channel-only)
     ToolName.CREATE_TASK,
     # Reminder tools (channel-only)
@@ -409,6 +418,27 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # DealUpdateAgent - Deal Update Agent
+    # Location: src/agents/workflows/deal_update/agent.py
+    # Purpose: Updates internal CRM deal fields through scoped write tools.
+    # -------------------------------------------------------------------------
+    "DealUpdateAgent": {
+        ToolName.GET_DEAL_MEMORY,
+        ToolName.GET_DEAL_DETAILS,
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_NOTES,
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_SUMMARY,
+        ToolName.LIST_DEAL_EMAILS,
+        ToolName.GET_EMAIL_DETAILS,
+        ToolName.UPDATE_DEAL_FIELDS,
+        ToolName.UPDATE_DEAL_LIFECYCLE,
+        ToolName.UPDATE_DEAL_ACCOUNT,
+    },
     # DealMemoryAgent - Deal Memory Agent
     # Location: src/agents/workflows/deal_memory/agent.py
     # Purpose: Builds and updates persistent deal memory documents.
@@ -478,6 +508,9 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.ADD_DEAL_NOTE: ToolCategory.CRM,
     ToolName.ADD_STAKEHOLDER: ToolCategory.CRM,
     ToolName.UPDATE_DEAL_STAGE: ToolCategory.CRM,
+    ToolName.UPDATE_DEAL_FIELDS: ToolCategory.CRM,
+    ToolName.UPDATE_DEAL_LIFECYCLE: ToolCategory.CRM,
+    ToolName.UPDATE_DEAL_ACCOUNT: ToolCategory.CRM,
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
@@ -590,6 +623,9 @@ class ToolRegistry:
             create_resolve_risk_blocker,
             create_search_contacts,
             create_search_deals,
+            create_update_deal_account,
+            create_update_deal_fields,
+            create_update_deal_lifecycle,
             create_update_deal_stage,
             create_update_risk_blocker,
             create_upsert_stakeholder,
@@ -673,7 +709,15 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
 
-        # CRM/Stakeholder tools
+        self._tool_factories[ToolName.UPDATE_DEAL_FIELDS] = lambda: create_update_deal_fields(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_DEAL_LIFECYCLE] = lambda: create_update_deal_lifecycle(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_DEAL_ACCOUNT] = lambda: create_update_deal_account(
+            self.context, self.capabilities_getter
+        )  # CRM/Stakeholder tools
         self._tool_factories[ToolName.LIST_DEAL_STAKEHOLDERS] = (
             lambda: create_list_deal_stakeholders(self.context, self.capabilities_getter)
         )

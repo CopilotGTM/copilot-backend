@@ -12,6 +12,7 @@ Usage:
 
     # Existing tuple access is kept for call sites that only need model+version.
     model, api_version = agent_config.get_model("summary_agent")
+    config = agent_config.get_config("deal_summary_agent")
 """
 
 import os
@@ -96,6 +97,11 @@ class AgentConfig:
     DEAL_TASK_DEBUG: bool = os.getenv("AGENT_DEAL_TASK_DEBUG", "false").lower() == "true"
     DEAL_TASK_TIMEOUT: int = int(os.getenv("AGENT_DEAL_TASK_TIMEOUT", "600"))
 
+    # Deal Update Agent - updates internal CRM deal state through scoped tools
+    DEAL_UPDATE_MODEL: str = os.getenv("AGENT_DEAL_UPDATE_MODEL", "gpt-5.2")
+    DEAL_UPDATE_DEBUG: bool = os.getenv("AGENT_DEAL_UPDATE_DEBUG", "false").lower() == "true"
+    DEAL_UPDATE_TIMEOUT: int = int(os.getenv("AGENT_DEAL_UPDATE_TIMEOUT", "600"))
+
     # Stakeholder Research Agent — researches individual stakeholders via Apollo + LinkedIn
     STAKEHOLDER_RESEARCH_MODEL: str = os.getenv("AGENT_STAKEHOLDER_RESEARCH_MODEL", "gpt-5-mini")
     STAKEHOLDER_RESEARCH_DEBUG: bool = (
@@ -173,6 +179,11 @@ class AgentConfig:
             "DEAL_TASK_MODEL",
             "DEAL_TASK_DEBUG",
             "DEAL_TASK_TIMEOUT",
+        ),
+        "deal_update_agent": (
+            "DEAL_UPDATE_MODEL",
+            "DEAL_UPDATE_DEBUG",
+            "DEAL_UPDATE_TIMEOUT",
         ),
         "transcript_compression_agent": (
             "TRANSCRIPT_COMPRESSION_MODEL",

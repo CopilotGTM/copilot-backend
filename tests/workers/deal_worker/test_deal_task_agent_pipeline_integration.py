@@ -87,6 +87,7 @@ def _task(*, organisation_id, deal_id, integration_id=None) -> CRMActivity:
 
 
 def test_meeting_summary_pipeline_creates_final_task_sync_job(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_DEAL_UPDATE_AGENT_PIPELINE", raising=False)
     session = _PipelineSession()
 
     @contextmanager
@@ -95,9 +96,12 @@ def test_meeting_summary_pipeline_creates_final_task_sync_job(monkeypatch) -> No
 
     monkeypatch.setattr(pipeline_dispatch, "org_session_scope", fake_org_session_scope)
 
-    _, _, task_job_id = pipeline_dispatch._create_pipeline_jobs(str(uuid4()), str(uuid4()))
+    _, _, task_job_id, deal_update_job_id = pipeline_dispatch._create_pipeline_jobs(
+        str(uuid4()), str(uuid4())
+    )
 
     assert task_job_id
+    assert deal_update_job_id is None
     assert session.added[-1].job_type == DealJobType.DEAL_TASK_SYNC
 
 

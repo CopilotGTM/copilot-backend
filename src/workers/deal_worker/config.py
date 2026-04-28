@@ -92,6 +92,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "meeting_summary_task.process",
             "meeting_prep_task.process",
             "deal_summary_task.process",
+            "deal_update.process_job",
             # Stakeholder analysis tasks (LLM heavy)
             "stakeholder.analyze_deal_stakeholders_task",
             # "stakeholder.analyze_org_stakeholders_task",  # Disabled — uses pipeline dispatch now
