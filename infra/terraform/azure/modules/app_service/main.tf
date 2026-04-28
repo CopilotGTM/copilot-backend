@@ -48,6 +48,13 @@ resource "azurerm_linux_web_app" "this" {
   depends_on = [
     azurerm_service_plan.this
   ]
+
+  lifecycle {
+    # Deployment pipelines own the active container tag after initial app creation.
+    ignore_changes = [
+      site_config[0].application_stack[0].docker_image_name,
+    ]
+  }
 }
 
 # Role Assignment: Allow App Service to pull images from ACR
