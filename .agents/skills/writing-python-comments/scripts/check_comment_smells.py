@@ -64,13 +64,21 @@ def run_git_names(args: list[str]) -> set[Path]:
     result = subprocess.run(args, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         return set()
-    return {Path(line.strip()) for line in result.stdout.splitlines() if line.strip().endswith(".py")}
+    return {
+        Path(line.strip()) for line in result.stdout.splitlines() if line.strip().endswith(".py")
+    }
 
 
 def changed_python_files(repo_root: Path) -> list[Path]:
     names: set[Path] = set()
-    names.update(run_git_names(["git", "diff", "--name-only", "--diff-filter=ACMR", "HEAD", "--", "*.py"]))
-    names.update(run_git_names(["git", "diff", "--name-only", "--cached", "--diff-filter=ACMR", "--", "*.py"]))
+    names.update(
+        run_git_names(["git", "diff", "--name-only", "--diff-filter=ACMR", "HEAD", "--", "*.py"])
+    )
+    names.update(
+        run_git_names(
+            ["git", "diff", "--name-only", "--cached", "--diff-filter=ACMR", "--", "*.py"]
+        )
+    )
     return sorted((repo_root / name for name in names if (repo_root / name).exists()))
 
 
@@ -181,7 +189,9 @@ def scan_undercommenting_lines(path: Path, lines: list[str]) -> list[Finding]:
             seen_canonical = index
             continue
         if "LEGACY" in line and seen_canonical is not None and index - seen_canonical <= 5:
-            if not has_comment_within(lines, seen_canonical, before=5, after=index - seen_canonical):
+            if not has_comment_within(
+                lines, seen_canonical, before=5, after=index - seen_canonical
+            ):
                 findings.append(
                     Finding(
                         path,
@@ -265,13 +275,19 @@ def scan_file(path: Path) -> list[Finding]:
 def resolve_files(args: argparse.Namespace) -> list[Path]:
     repo_root = Path.cwd()
     if args.files:
-        return [Path(file).resolve() for file in args.files if Path(file).suffix == ".py" and Path(file).exists()]
+        return [
+            Path(file).resolve()
+            for file in args.files
+            if Path(file).suffix == ".py" and Path(file).exists()
+        ]
     return changed_python_files(repo_root)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", help="Optional Python files to scan. Defaults to changed .py files.")
+    parser.add_argument(
+        "files", nargs="*", help="Optional Python files to scan. Defaults to changed .py files."
+    )
     args = parser.parse_args()
 
     files = resolve_files(args)
