@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+import httpx
 from sqlalchemy import or_, select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -24,7 +25,10 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 from src.infra.config.configs import recall_config
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
+from src.service.integrations.meeting_recording.providers import (
+    RecallMeetingRecordingProvider,
+    RecallProviderError,
+)
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
 logger = get_logger(__name__)
@@ -47,8 +51,9 @@ class MeetingRecordingDispatchService:
         """Resolve an event and attempt one provider create call if it is eligible.
 
         This method is idempotent from the perspective of the caller because the
-        session state tracks whether a row was already sent. We never send again when
-        the DB already shows a successful provider send.
+        session state tracks whether a row was already sent. A sent row normally
+        short-circuits, except when the calendar event has moved and the old provider
+        bot needs to be cancelled and recreated for the new join target.
         """
         event = await self._get_calendar_event(calendar_event_id)
         # Org boundary is enforced here on every lookup. A matching row with a valid
@@ -96,23 +101,85 @@ class MeetingRecordingDispatchService:
             }
 
         # Persist the intent first so retries/fallback scans can reason about a durable
-        # state row instead of trying to recreate provider state from scratch.
+        # state row instead of trying to recreate provider state from scratch. Sent rows
+        # are returned with their old join target intact so drift can be detected below.
         session_record = await self._session_service.get_or_create_pending_session(
             calendar_event_id=calendar_event_id,
             meeting_url=meeting_url,
             join_at=join_at,
         )
+        is_rescheduled = False
+        provider: RecallMeetingRecordingProvider | None = None
         if session_record.sent_to_provider_at is not None:
-            return {
-                "status": "already_sent",
-                "calendar_event_id": str(calendar_event_id),
-            }
+            # A sent row is only reusable when its stored provider target still matches
+            # the calendar event. If the meeting moved, Recall must receive a new bot.
+            logger.info(
+                "Meeting recording existing session found for event",
+                extra={
+                    "event": "meeting_recording_existing_session_found",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(calendar_event_id),
+                    "session_id": str(session_record.session_id),
+                    "had_provider_session_id": bool(
+                        getattr(session_record, "provider_session_id", None)
+                    ),
+                    "sent_to_provider_at": session_record.sent_to_provider_at,
+                },
+            )
+            if self._is_rescheduled(session_record, meeting_url=meeting_url, join_at=join_at):
+                is_rescheduled = True
+                logger.info(
+                    "Meeting recording event appears rescheduled; forcing resend",
+                    extra={
+                        "event": "meeting_recording_rescheduled_event_detected",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(calendar_event_id),
+                        "session_id": str(session_record.session_id),
+                        "old_join_at": str(getattr(session_record, "join_at", "")),
+                        "new_join_at": str(join_at),
+                        "old_meeting_url": str(getattr(session_record, "meeting_url", "")),
+                        "new_meeting_url": str(meeting_url),
+                    },
+                )
+                provider = await self._build_provider()
+                # Cancel before resetting the row so we still have the previous Recall
+                # bot id available for cleanup. 404/transport failures are tolerated by
+                # the helper because the resend path is the recovery mechanism here.
+                await self._cancel_existing_provider_session_if_possible(
+                    provider=provider,
+                    calendar_event_id=calendar_event_id,
+                    provider_session_id=session_record.provider_session_id,
+                )
+                reset_session_record = await self._session_service.reset_for_resend(
+                    session_record.session_id,
+                    meeting_url=meeting_url,
+                    join_at=join_at,
+                )
+                if not reset_session_record:
+                    raise RuntimeError("Failed to reset meeting recording session for resend")
+                session_record = reset_session_record
+
+                logger.info(
+                    "Meeting recording session reset and marked for resend",
+                    extra={
+                        "event": "meeting_recording_session_reset_for_resend",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(calendar_event_id),
+                        "session_id": str(session_record.session_id),
+                    },
+                )
+            else:
+                return {
+                    "status": "already_sent",
+                    "calendar_event_id": str(calendar_event_id),
+                }
 
         # Mark queued before the provider call so operators can distinguish
         # "not considered yet" from "send is in flight".
         await self._session_service.mark_send_queued(session_record.session_id)
 
-        provider = await self._build_provider()
+        if provider is None:
+            provider = await self._build_provider()
         # Provider session creation is the only external side effect here. We keep this
         # call behind a short-lived session row so retries can be reconciled without
         # creating duplicate org/event state.
@@ -141,7 +208,7 @@ class MeetingRecordingDispatchService:
         )
 
         return {
-            "status": "sent",
+            "status": "rescheduled" if is_rescheduled else "sent",
             "calendar_event_id": str(calendar_event_id),
             "provider_session_id": str(provider_session_id),
         }
@@ -159,6 +226,7 @@ class MeetingRecordingDispatchService:
             "meetings_found": len(event_ids),
             "recordings_sent": 0,
             "already_sent": 0,
+            "rescheduled": 0,
             "skipped": 0,
             "failed": 0,
         }
@@ -194,6 +262,8 @@ class MeetingRecordingDispatchService:
                 summary["recordings_sent"] += 1
             elif status == "already_sent":
                 summary["already_sent"] += 1
+            elif status == "rescheduled":
+                summary["rescheduled"] += 1
             else:
                 summary["skipped"] += 1
             logger.info(
@@ -281,11 +351,14 @@ class MeetingRecordingDispatchService:
                         col(CalendarEvent.status).is_(None),
                         col(CalendarEvent.status) != "cancelled",
                     ),
-                    # Either no session exists yet or the existing row never
-                    # reached a successful provider send.
+                    # Either no session exists yet, it was never sent, or the sent
+                    # session is stale and needs a resync attempt.
                     or_(
                         col(MeetingRecordingSession.calendar_event_id).is_(None),
                         col(MeetingRecordingSession.sent_to_provider_at).is_(None),
+                        col(MeetingRecordingSession.join_at) != col(CalendarEvent.start_at),
+                        col(MeetingRecordingSession.meeting_url)
+                        != col(CalendarEvent.conference_link),
                     ),
                 )
                 .order_by(col(CalendarEvent.start_at), col(CalendarEvent.event_id))
@@ -294,3 +367,91 @@ class MeetingRecordingDispatchService:
             return [row[0] for row in result.all()]
 
         return []
+
+    @staticmethod
+    def _normalize_utc(value: datetime) -> datetime:
+        """Normalize DB and calendar timestamps into comparable UTC form."""
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def _is_rescheduled(
+        self,
+        session_record: MeetingRecordingSession,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> bool:
+        """Compare incoming event details to the provider target stored on the session.
+
+        Called only for already-sent rows. Unsent rows are allowed to refresh in place,
+        while sent rows must preserve their old join target until this drift check runs.
+        """
+        existing_join_at = getattr(session_record, "join_at", None)
+        existing_meeting_url = getattr(session_record, "meeting_url", None)
+        if existing_join_at is None or not existing_meeting_url:
+            return False
+        return (
+            self._normalize_utc(existing_join_at) != self._normalize_utc(join_at)
+            or existing_meeting_url != meeting_url
+        )
+
+    async def _cancel_existing_provider_session_if_possible(
+        self,
+        *,
+        provider: RecallMeetingRecordingProvider,
+        calendar_event_id: UUID,
+        provider_session_id: str | None,
+    ) -> None:
+        """Best-effort old bot cancel to reduce duplicate Recall bots after reschedule."""
+        if not provider_session_id:
+            # Missing provider ids can happen on manually repaired rows. The resend can
+            # still succeed, so keep the warning operational instead of blocking dispatch.
+            logger.warning(
+                "Meeting recording reschedule reset has no provider session id to cancel",
+                extra={
+                    "event": "meeting_recording_reschedule_cancel_skipped",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(calendar_event_id),
+                },
+            )
+            return
+
+        try:
+            await provider.cancel_session(provider_session_id)
+            logger.info(
+                "Meeting recording prior provider session cancelled",
+                extra={
+                    "event": "meeting_recording_reschedule_cancel_succeeded",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(calendar_event_id),
+                    "provider_session_id": provider_session_id,
+                },
+            )
+        except RecallProviderError as error:
+            if error.status_code == 404:
+                # A missing bot is equivalent to an already-completed cleanup. Continuing
+                # lets the new schedule overwrite stale local provider state.
+                logger.warning(
+                    "Meeting recording prior provider session already gone; continuing",
+                    extra={
+                        "event": "meeting_recording_reschedule_cancel_404",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(calendar_event_id),
+                        "provider_session_id": provider_session_id,
+                    },
+                )
+                return
+            raise
+        except httpx.HTTPError:
+            # Network failures are deliberately non-fatal. The provider create below is
+            # the user-visible fix, and a later webhook/status check can expose stragglers.
+            logger.warning(
+                "Meeting recording provider cancel failed with transport error; continuing",
+                extra={
+                    "event": "meeting_recording_reschedule_cancel_transport_error",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(calendar_event_id),
+                    "provider_session_id": provider_session_id,
+                },
+            )

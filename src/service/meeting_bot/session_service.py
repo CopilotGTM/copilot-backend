@@ -54,20 +54,22 @@ class MeetingRecordingSessionService:
 
         Existing rows are updated when they are still unsent to preserve retry
         semantics and keep a single stable `session_id` per tenant event/provider.
+        Already-sent rows are returned unchanged so dispatch can compare the old
+        provider target against the latest calendar event before deciding to resend.
         """
         async for session in acquire_org_async_session(self.organisation_id):
             existing = await self._get_by_event(session, calendar_event_id, provider)
             if existing:
-                existing.meeting_url = meeting_url
-                existing.join_at = join_at
                 if existing.sent_to_provider_at is None:
                     # Matcher reruns should refresh pending rows with the latest
                     # join time/link, but once a provider send succeeded we keep
                     # the sent state until an explicit follow-up action changes it.
+                    existing.meeting_url = meeting_url
+                    existing.join_at = join_at
                     existing.status = MeetingRecordingStatus.PENDING_SEND
                     existing.status_message = None
-                session.add(existing)
-                await session.commit()
+                    session.add(existing)
+                    await session.commit()
                 return existing
 
             record = MeetingRecordingSession(
@@ -118,6 +120,41 @@ class MeetingRecordingSessionService:
             record.provider_status = provider_status
             record.provider_payload = provider_payload
             record.sent_to_provider_at = now
+            session.add(record)
+            await session.commit()
+            return record
+        return None
+
+    async def reset_for_resend(
+        self,
+        session_id: UUID,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> MeetingRecordingSession | None:
+        """Clear provider lifecycle fields and move a sent session back to send-ready.
+
+        Called only after dispatch has decided an already-sent provider target is stale.
+        The org/event row is preserved for idempotency, while provider-specific state is
+        cleared so the next `mark_sent()` records the replacement bot cleanly.
+        """
+        async for session in acquire_org_async_session(self.organisation_id):
+            record = await self._get_by_session_id(session, session_id)
+            if not record:
+                return None
+            # Refresh only the durable meeting target here. The previous provider id has
+            # already been used for best-effort cancellation by the dispatch service.
+            record.meeting_url = meeting_url
+            record.join_at = join_at
+            record.status = MeetingRecordingStatus.PENDING_SEND
+            record.status_message = "Session reset for reschedule"
+            record.sent_to_provider_at = None
+            record.provider_session_id = None
+            record.provider_status = None
+            record.provider_payload = {}
+            record.last_webhook_at = None
+            record.transcript_ready_at = None
+            record.transcript_status = MeetingTranscriptStatus.NOT_REQUESTED
             session.add(record)
             await session.commit()
             return record
