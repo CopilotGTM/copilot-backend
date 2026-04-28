@@ -195,8 +195,5 @@ demo_frontend_dns_zone_resource_group = "master-resources"
 
 demo_pipeline_name     = "demo pipeline"
 demo_pipeline_yml_path = "pipelines/.azure-pipelines/azure-pipelines-demo.yml"
-# Default branch for the pipeline definition. The repo YAML must still include demo/* triggers.
-demo_pipeline_branch = "dev"
-
-
-
+# Default branch for the manual-only demo pipeline definition.
+demo_pipeline_branch = "demo/stakeholder-map"
