@@ -10,17 +10,32 @@ Create Date: 2026-04-23 12:00:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "3c7f79637753"
-down_revision: Union[str, None] = "3c7f79637754"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "3c7f79637754"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def _has_table(table_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    return table_name in inspector.get_table_names()
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    return any(index["name"] == index_name for index in inspector.get_indexes(table_name))
+
+
+def _drop_index_if_exists(index_name: str, *, table_name: str) -> None:
+    if _has_index(table_name, index_name):
+        op.drop_index(index_name, table_name=table_name)
 
 
 def upgrade() -> None:
@@ -114,11 +129,35 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop meeting_recording_sessions table."""
-    op.drop_index("ix_meeting_recording_sessions_updated_at", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_sessions_organisation_id", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_sessions_created_at", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_sessions_calendar_event_id", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_unsent_lookup", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_org_join_at", table_name="meeting_recording_sessions")
-    op.drop_index("ix_meeting_recording_org_status", table_name="meeting_recording_sessions")
+    if not _has_table("meeting_recording_sessions"):
+        return
+
+    _drop_index_if_exists(
+        "ix_meeting_recording_sessions_updated_at",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_sessions_organisation_id",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_sessions_created_at",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_sessions_calendar_event_id",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_unsent_lookup",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_org_join_at",
+        table_name="meeting_recording_sessions",
+    )
+    _drop_index_if_exists(
+        "ix_meeting_recording_org_status",
+        table_name="meeting_recording_sessions",
+    )
     op.drop_table("meeting_recording_sessions")

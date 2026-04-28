@@ -44,7 +44,12 @@ def process_meeting_recording_webhook_task(
     payload: dict[str, Any],
     webhook_id: str | None = None,
 ) -> dict[str, Any]:
-    """Process a verified Recall webhook outside the request lifecycle."""
+    """Process a verified Recall webhook outside the request lifecycle.
+
+    This is a worker-side recovery path for outbound provider callbacks. The task is
+    intentionally constrained to one webhook payload so failures stay localized and
+    retry cost is bounded.
+    """
     started_at = datetime.now(UTC).isoformat()
     lock_key = f"task_lock:process_meeting_recording_webhook:{webhook_id or 'unknown'}"
 
@@ -80,6 +85,8 @@ def process_meeting_recording_webhook_task(
     try:
         return run_async(_run())
     except Exception as exc:
+        # Retry transient transport/provider issues, but do not spin forever on
+        # permanent validation failures that are likely in bad payloads.
         logger.error(
             "Meeting recording webhook processing failed",
             extra={
@@ -119,7 +126,11 @@ def send_meeting_recording_task(
     organisation_id: str,
     calendar_event_id: str,
 ) -> dict[str, Any]:
-    """Send a single deal-linked calendar event to the recording provider."""
+    """Send one deal-linked calendar event to the recording provider.
+
+    This is the fast path for newly matched meetings, where the service decides if
+    the row should be skipped, already-sent, or retried as sent.
+    """
     started_at = datetime.now(UTC).isoformat()
     lock_key = f"task_lock:send_meeting_recording:{organisation_id}:{calendar_event_id}"
 
@@ -149,6 +160,8 @@ def send_meeting_recording_task(
     try:
         return run_async(_run())
     except Exception as exc:
+        # Single-event sends are idempotent at the service layer, so a retry is
+        # safe and preferred for short network/provider flaps.
         logger.error(
             "Meeting recording dispatch failed",
             extra={
@@ -189,7 +202,12 @@ def send_unsent_meeting_recordings_org_task(
     self: Task,
     organisation_id: str,
 ) -> dict[str, Any]:
-    """Fallback scan for upcoming deal-linked meetings not yet sent to Recall."""
+    """Fallback scan for upcoming deal-linked meetings not yet sent to Recall.
+
+    The scan is intentionally eventual: it is useful when a matcher event was missed,
+    when previous sends failed before persistence, or when race conditions left a
+    queue gap.
+    """
     started_at = datetime.now(UTC).isoformat()
     lock_key = f"task_lock:send_unsent_meeting_recordings_org:{organisation_id}"
 
@@ -207,6 +225,14 @@ def send_unsent_meeting_recordings_org_task(
     async def _run() -> dict[str, Any]:
         service = MeetingRecordingDispatchService(UUID(organisation_id))
         result = await service.dispatch_unsent_upcoming()
+        logger.info(
+            "Meeting recording fallback org task completed",
+            extra={
+                "event": "meeting_recording_fallback_org_completed",
+                "organisation_id": organisation_id,
+                **result,
+            },
+        )
         return {
             "status": "success",
             "organisation_id": organisation_id,
@@ -218,6 +244,8 @@ def send_unsent_meeting_recordings_org_task(
     try:
         return run_async(_run())
     except Exception as exc:
+        # Keep the org task as resilient as possible. A scan failure for one tenant
+        # should not prevent the worker process from accepting future scan cycles.
         logger.error(
             "Meeting recording fallback org task failed",
             extra={
@@ -252,7 +280,7 @@ def send_unsent_meeting_recordings_org_task(
     time_limit=360,
 )
 def trigger_send_unsent_meeting_recordings_all_orgs_task() -> dict[str, Any]:
-    """Tier 1 dispatcher for the temporary hourly fallback recording scan."""
+    """Tier 1 dispatcher that triggers fallback scan for all approved orgs."""
     started_at = datetime.now(UTC).isoformat()
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
