@@ -807,15 +807,15 @@ variable "demo_pipeline_name" {
 }
 
 variable "demo_pipeline_yml_path" {
-  description = "Relative path to the dedicated YAML definition used by the demo frontend pipeline. This file should trigger only on demo/* branches in the frontend repo."
+  description = "Relative path to the dedicated manual-only YAML definition used by the demo frontend pipeline."
   type        = string
   default     = "pipelines/.azure-pipelines/azure-pipelines-demo.yml"
 }
 
 variable "demo_pipeline_branch" {
-  description = "Default branch for the demo pipeline definition. The referenced YAML must still declare trigger rules for demo/* branches."
+  description = "Default branch for the manual-only demo pipeline definition."
   type        = string
-  default     = "dev"
+  default     = "demo/stakeholder-map"
 }
 
 # -----------------------------------------------------------------
