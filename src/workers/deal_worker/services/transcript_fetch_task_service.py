@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
@@ -28,6 +28,11 @@ from src.domain.models.organisation_tables.sync.calendar import (
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
+)
+from src.domain.models.organisation_tables.sync.meeting_recording import (
+    MeetingRecordingProvider,
+    MeetingRecordingSession,
+    MeetingTranscriptStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
@@ -125,6 +130,12 @@ class TranscriptFetchTaskService:
         - NOT_AVAILABLE with attempts >= MAX (permanent failure)
         """
         now = datetime.now(UTC)
+        recall_ready = exists().where(
+            col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+            col(MeetingRecordingSession.calendar_event_id) == col(CalendarEvent.event_id),
+            col(MeetingRecordingSession.provider) == MeetingRecordingProvider.RECALL_AI,
+            col(MeetingRecordingSession.transcript_status) == MeetingTranscriptStatus.READY,
+        )
 
         attendees_rel = cast(Any, CalendarEvent.attendees)
         stmt = (
@@ -155,6 +166,16 @@ class TranscriptFetchTaskService:
                     and_(
                         col(Meeting.status) == MeetingStatus.FAILED,
                         col(Meeting.transcript_fetch_attempts) < TRANSCRIPT_MAX_FETCH_ATTEMPTS,
+                    ),
+                    # Recall transcripts become available via meeting_recording_sessions.
+                    # They must be picked up even if the Teams/Google fetch path already
+                    # marked the meeting not_available before the webhook arrived.
+                    and_(
+                        recall_ready,
+                        or_(
+                            col(Meeting.meeting_id).is_(None),
+                            col(Meeting.status) != MeetingStatus.READY,
+                        ),
                     ),
                 ),
             )
@@ -322,6 +343,12 @@ class TranscriptFetchTaskService:
             List of CalendarEvents needing transcript fetch for this deal.
         """
         now = datetime.now(UTC)
+        recall_ready = exists().where(
+            col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+            col(MeetingRecordingSession.calendar_event_id) == col(CalendarEvent.event_id),
+            col(MeetingRecordingSession.provider) == MeetingRecordingProvider.RECALL_AI,
+            col(MeetingRecordingSession.transcript_status) == MeetingTranscriptStatus.READY,
+        )
 
         attendees_rel = cast(Any, CalendarEvent.attendees)
         stmt = (
@@ -353,6 +380,15 @@ class TranscriptFetchTaskService:
                     and_(
                         col(Meeting.status) == MeetingStatus.FAILED,
                         col(Meeting.transcript_fetch_attempts) < TRANSCRIPT_MAX_FETCH_ATTEMPTS,
+                    ),
+                    # Recall readiness is stored outside the Meeting row, so include
+                    # it as an independent fetch trigger until the meeting is READY.
+                    and_(
+                        recall_ready,
+                        or_(
+                            col(Meeting.meeting_id).is_(None),
+                            col(Meeting.status) != MeetingStatus.READY,
+                        ),
                     ),
                 ),
             )

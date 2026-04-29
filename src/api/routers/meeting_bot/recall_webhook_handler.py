@@ -26,6 +26,16 @@ RECALL_WEBHOOK_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 router = APIRouter(tags=["meeting-bot"])
 
 
+def _signature_versions(signature_header: str | None) -> list[str]:
+    """Expose only signature scheme names for debugging, never signature values."""
+    versions: list[str] = []
+    for part in (signature_header or "").split():
+        version = part.split(",", 1)[0]
+        if version:
+            versions.append(version)
+    return versions
+
+
 @router.post("/webhook")
 async def handle_recall_webhook(request: Request) -> Response:
     """Receive Recall workspace webhooks and hand off processing asynchronously."""
@@ -58,7 +68,26 @@ async def handle_recall_webhook(request: Request) -> Response:
             payload=body,
         )
     except RecallWebhookVerificationError as exc:
-        logger.warning("Recall webhook signature verification failed: %s", exc)
+        logger.warning(
+            "Recall webhook signature verification failed: %s",
+            exc,
+            extra={
+                "event": "recall_webhook_signature_verification_failed",
+                "has_webhook_id": bool(
+                    request.headers.get("webhook-id") or request.headers.get("svix-id")
+                ),
+                "has_webhook_timestamp": bool(
+                    request.headers.get("webhook-timestamp")
+                    or request.headers.get("svix-timestamp")
+                ),
+                "signature_versions": _signature_versions(
+                    request.headers.get("webhook-signature")
+                    or request.headers.get("svix-signature")
+                ),
+                "payload_size_bytes": len(body),
+                "webhook_secret_has_whsec_prefix": webhook_secret.strip().startswith("whsec_"),
+            },
+        )
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
     webhook_id = request.headers.get("webhook-id") or request.headers.get("svix-id")

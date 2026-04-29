@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -22,8 +23,17 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     MeetingStatus,
     TranscriptSegment,
 )
+from src.domain.models.organisation_tables.sync.meeting_recording import (
+    MeetingRecordingProvider,
+    MeetingRecordingSession,
+    MeetingTranscriptStatus,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.meeting_recording.providers import (
+    RecallMeetingRecordingProvider,
+    RecallProviderError,
+)
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
 from .google_meet_provider import GoogleMeetTranscriptProvider, TranscriptAuthError
@@ -67,6 +77,7 @@ class TranscriptService:
         self.organisation_id = organisation_id
         self._teams = TeamsTranscriptProvider()
         self._google_meet = GoogleMeetTranscriptProvider()
+        self._enable_recall_transcripts = True
 
     def _build_token_info(self, integration: KnowledgeIntegration) -> IntegrationTokenInfo:
         return IntegrationTokenInfo.from_integration(integration, self.organisation_id)
@@ -207,6 +218,17 @@ class TranscriptService:
         current_attempts = existing.transcript_fetch_attempts if existing else 0
         meeting_id = existing.meeting_id if existing else None
 
+        if getattr(self, "_enable_recall_transcripts", False):
+            recall_result = await self._fetch_recall_transcript(event, existing)
+            if recall_result.meeting:
+                meeting_id = recall_result.meeting.meeting_id
+            if recall_result.success:
+                if meeting_id:
+                    await self._update_attempts(meeting_id, current_attempts + 1)
+                result.status = "fetched"
+                result.fetched_with = MeetingRecordingProvider.RECALL_AI.value
+                return result
+
         integrations = await self.find_integrations_for_event(event)
         if not integrations:
             logger.warning("No integrations for event %s", event.event_id)
@@ -293,6 +315,167 @@ class TranscriptService:
         )
 
     # -------------------------------------------------------------------------
+    # Recall Meeting Bot Transcript Integration
+    # -------------------------------------------------------------------------
+
+    async def _fetch_recall_transcript(
+        self,
+        event: CalendarEvent,
+        existing: Meeting | None,
+    ) -> TranscriptFetchResult:
+        """Materialize a transcript made ready by the meeting-recording webhook."""
+        session = await self._get_ready_recall_session(event.event_id)
+        if not session:
+            return TranscriptFetchResult(success=False, error="No Recall transcript ready")
+
+        artifact = (session.provider_payload or {}).get("transcript_artifact") or {}
+        download_url = artifact.get("download_url")
+        if not isinstance(download_url, str) or not download_url:
+            return TranscriptFetchResult(
+                success=False,
+                error="Recall transcript artifact is missing download_url",
+                should_retry=True,
+            )
+
+        meeting = await self._create_or_get_meeting(
+            event.event_id,
+            existing,
+            source=MeetingSource.NATIVE_BOT,
+        )
+
+        try:
+            provider = RecallMeetingRecordingProvider(api_key="")
+            transcript_payload = await provider.fetch_transcript(download_url)
+            full_transcript, segments = self._parse_recall_transcript(
+                transcript_payload,
+                meeting.meeting_id,
+            )
+            if not full_transcript:
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="Recall transcript payload was empty",
+                    should_retry=True,
+                )
+
+            await self._save_transcript(
+                meeting.meeting_id,
+                full_transcript,
+                segments,
+                None,
+                {
+                    "source": MeetingRecordingProvider.RECALL_AI.value,
+                    "meeting_recording_session_id": str(session.session_id),
+                    "provider_session_id": session.provider_session_id,
+                    "recording_id": artifact.get("recording_id"),
+                    "transcript_id": artifact.get("transcript_id"),
+                },
+                existing is not None,
+            )
+
+            refreshed_meeting = await self._get_meeting(event.event_id)
+            logger.info(
+                "Fetched Recall transcript: %d segments, %d chars",
+                len(segments),
+                len(full_transcript),
+                extra={
+                    "event": "recall_transcript_fetched",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(event.event_id),
+                    "meeting_recording_session_id": str(session.session_id),
+                },
+            )
+            return TranscriptFetchResult(success=True, meeting=refreshed_meeting or meeting)
+        except RecallProviderError as exc:
+            logger.warning(
+                "Recall transcript download failed for event %s: %s",
+                event.event_id,
+                exc,
+            )
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(exc)[:500],
+                should_retry=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unexpected Recall transcript error for event %s: %s",
+                event.event_id,
+                exc,
+            )
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(exc)[:500],
+                should_retry=True,
+            )
+
+    async def _get_ready_recall_session(self, event_id: UUID) -> MeetingRecordingSession | None:
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = select(MeetingRecordingSession).where(
+                col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+                col(MeetingRecordingSession.calendar_event_id) == event_id,
+                col(MeetingRecordingSession.provider) == MeetingRecordingProvider.RECALL_AI,
+                col(MeetingRecordingSession.transcript_status) == MeetingTranscriptStatus.READY,
+            )
+            return (await session.execute(stmt)).scalars().first()
+        return None
+
+    @staticmethod
+    def _parse_recall_transcript(
+        payload: list[dict[str, Any]],
+        meeting_id: UUID,
+    ) -> tuple[str, list[TranscriptSegment]]:
+        segments: list[TranscriptSegment] = []
+        lines: list[str] = []
+
+        for index, item in enumerate(payload):
+            participant = item.get("participant") or {}
+            speaker_name = participant.get("name") or item.get("speaker") or "Unknown Speaker"
+            speaker_external_id = participant.get("id")
+            words = item.get("words") or []
+            text = item.get("text") or item.get("transcript")
+            if not text and words:
+                text = " ".join(str(word.get("text") or "").strip() for word in words).strip()
+            if not isinstance(text, str) or not text.strip():
+                continue
+
+            start_time = TranscriptService._recall_word_time(
+                words[0] if words else None,
+                "start_timestamp",
+            )
+            end_time = TranscriptService._recall_word_time(
+                words[-1] if words else None,
+                "end_timestamp",
+            )
+            segments.append(
+                TranscriptSegment(
+                    meeting_id=meeting_id,
+                    segment_index=index,
+                    speaker_external_id=str(speaker_external_id) if speaker_external_id else None,
+                    speaker_name=str(speaker_name),
+                    start_time_seconds=start_time,
+                    end_time_seconds=end_time,
+                    content=text.strip(),
+                )
+            )
+            lines.append(f"{speaker_name}: {text.strip()}")
+
+        return "\n".join(lines), segments
+
+    @staticmethod
+    def _recall_word_time(word: Any, field_name: str) -> float | None:
+        if not isinstance(word, dict):
+            return None
+        value = word.get(field_name)
+        if isinstance(value, dict):
+            value = value.get("relative")
+        if isinstance(value, int | float):
+            return float(value)
+        return None
+
+    # -------------------------------------------------------------------------
     # Teams Provider Integration
     # -------------------------------------------------------------------------
 
@@ -309,7 +492,7 @@ class TranscriptService:
             self._teams.with_token_info(self._build_token_info(integration))
             actual_meeting_id = await self._teams.resolve_meeting_id(
                 connection_id,
-                event.conference_link,  # type: ignore[arg-type]
+                event.conference_link,
             )
             if not actual_meeting_id:
                 logger.info("Could not resolve Teams meeting ID for event %s", event.event_id)
@@ -346,13 +529,13 @@ class TranscriptService:
             )
 
             # Refresh meeting object
-            meeting = await self._get_meeting(event.event_id)
+            refreshed_meeting = await self._get_meeting(event.event_id)
             logger.info(
                 "Fetched Teams transcript: %d segments, %d chars",
                 len(segments),
                 len(full_transcript),
             )
-            return TranscriptFetchResult(success=True, meeting=meeting)
+            return TranscriptFetchResult(success=True, meeting=refreshed_meeting or meeting)
 
         except TranscriptAuthError as e:
             logger.warning("Connection error with %s: %s", integration.integration_email, e)
@@ -436,13 +619,13 @@ class TranscriptService:
                 existing is not None,
             )
 
-            meeting = await self._get_meeting(event.event_id)
+            refreshed_meeting = await self._get_meeting(event.event_id)
             logger.info(
                 "Fetched Google Meet transcript: %d segments, %d chars",
                 len(segments),
                 len(full_transcript),
             )
-            return TranscriptFetchResult(success=True, meeting=meeting)
+            return TranscriptFetchResult(success=True, meeting=refreshed_meeting or meeting)
 
         except TranscriptAuthError as e:
             logger.warning("Connection error with %s: %s", integration.integration_email, e)

@@ -20,7 +20,7 @@ from src.infra.config.configs import recall_config
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
-TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done", "recording.done"}
+TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done"}
 
 
 class RecallMeetingRecordingWebhookService:
@@ -88,9 +88,9 @@ class RecallMeetingRecordingWebhookService:
         transcript_ready_at: datetime | None = None
 
         if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS:
-            # `transcript.done` is the primary transcript-ready event. `recording.done`
-            # is also useful as a recovery trigger because Recall can expose the
-            # transcript artifact on the bot before our app receives transcript.done.
+            # Only transcript completion should trigger the provider follow-up call.
+            # Recording lifecycle events update status only; transcript availability
+            # remains owned by Recall's transcript artifact lifecycle.
             bot_snapshot, transcript_artifact = await self._fetch_transcript_artifact(bot_id)
             if bot_snapshot is not None:
                 merged_payload["bot_snapshot"] = bot_snapshot

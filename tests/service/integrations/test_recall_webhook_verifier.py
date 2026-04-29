@@ -60,6 +60,25 @@ class TestRecallWebhookVerification:
 
         assert verified is True
 
+    def test_verifies_secret_with_surrounding_whitespace(self) -> None:
+        secret = "whsec_c2lnbmluZy1zZWNyZXQtdmFsdWU="
+        payload = b'{"event":"transcript.done"}'
+        webhook_id = "msg_123"
+        timestamp = "1731705121"
+        signature = _build_signature(secret, webhook_id, timestamp, payload)
+
+        verified = verify_recall_webhook_signature(
+            secret=f"\n{secret}\n",
+            headers={
+                "webhook-id": webhook_id,
+                "webhook-timestamp": timestamp,
+                "webhook-signature": signature,
+            },
+            payload=payload,
+        )
+
+        assert verified is True
+
     def test_rejects_invalid_signature(self) -> None:
         with pytest.raises(RecallWebhookVerificationError):
             verify_recall_webhook_signature(
