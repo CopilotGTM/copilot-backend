@@ -101,6 +101,86 @@ class TestRecallMeetingRecordingProvider:
 
         mock_client.delete.assert_awaited_once()
 
+    async def test_update_session_patches_scheduled_bot(self) -> None:
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        join_at = datetime.now(UTC) + timedelta(hours=2)
+        response = _json_response(
+            "PATCH",
+            "https://us-east-1.recall.ai/api/v1/bot/bot_123/",
+            {"id": "bot_123", "status": "scheduled"},
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.patch.return_value = response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await provider.update_session(
+                "bot_123",
+                meeting_url="https://teams.example/join",
+                join_at=join_at,
+                bot_name="CopilotGTM Notetaker",
+                metadata={"calendar_event_id": str(uuid4())},
+            )
+
+        assert result["id"] == "bot_123"
+        mock_client.patch.assert_awaited_once()
+        kwargs = mock_client.patch.call_args.kwargs
+        assert kwargs["json"]["meeting_url"] == "https://teams.example/join"
+        assert kwargs["json"]["join_at"] == join_at.isoformat()
+        assert kwargs["json"]["metadata"]["calendar_event_id"]
+
+    async def test_leave_call_posts_to_leave_endpoint(self) -> None:
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        response = _json_response(
+            "POST",
+            "https://us-east-1.recall.ai/api/v1/bot/bot_123/leave_call/",
+            {},
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            await provider.leave_call("bot_123")
+
+        mock_client.post.assert_awaited_once_with(
+            "https://us-east-1.recall.ai/api/v1/bot/bot_123/leave_call/"
+        )
+
+    async def test_list_sessions_returns_paginated_results(self) -> None:
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        first = _json_response(
+            "GET",
+            "https://us-east-1.recall.ai/api/v1/bot/",
+            {
+                "results": [{"id": "bot_1"}],
+                "next": "https://us-east-1.recall.ai/api/v1/bot/?cursor=abc",
+            },
+        )
+        second = _json_response(
+            "GET",
+            "https://us-east-1.recall.ai/api/v1/bot/?cursor=abc",
+            {"results": [{"id": "bot_2"}], "next": None},
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = [first, second]
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await provider.list_sessions(join_at_after=datetime.now(UTC))
+
+        assert result == [{"id": "bot_1"}, {"id": "bot_2"}]
+        assert mock_client.get.await_count == 2
+
     async def test_extract_transcript_download_url_from_bot_payload(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
 
@@ -168,9 +248,43 @@ class TestRecallMeetingRecordingProvider:
             mock_client.__aexit__.return_value = False
             mock_client_cls.return_value = mock_client
 
-            with pytest.raises(RecallProviderError):
+            with pytest.raises(RecallProviderError) as exc_info:
                 await provider.create_session(
                     meeting_url="https://teams.example/join",
                     join_at=datetime.now(UTC) + timedelta(minutes=5),
                     metadata={},
                 )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "bad request"
+
+    async def test_provider_error_preserves_recall_code_and_detail(self) -> None:
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        response = _json_response(
+            "PATCH",
+            "https://us-east-1.recall.ai/api/v1/bot/bot_123/",
+            {
+                "code": "update_bot_failed",
+                "detail": "Not enough time to launch new bot",
+            },
+            status_code=400,
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.patch.return_value = response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(RecallProviderError) as exc_info:
+                await provider.update_session(
+                    "bot_123",
+                    meeting_url="https://teams.example/join",
+                    join_at=datetime.now(UTC) + timedelta(minutes=5),
+                    metadata={},
+                )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.code == "update_bot_failed"
+        assert exc_info.value.detail == "Not enough time to launch new bot"

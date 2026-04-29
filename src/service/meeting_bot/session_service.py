@@ -125,6 +125,66 @@ class MeetingRecordingSessionService:
             return record
         return None
 
+    async def update_provider_registration(
+        self,
+        session_id: UUID,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+        provider_session_id: str,
+        provider_status: str | None,
+        provider_payload: dict[str, Any],
+        status_message: str | None = None,
+    ) -> MeetingRecordingSession | None:
+        """Store a verified provider bot without clearing the org/event identity.
+
+        Used when dispatch updates an existing Recall bot or adopts one found during
+        reconciliation. The provider operation has already succeeded, so replacing
+        local provider fields here is safe and keeps the row idempotent.
+        """
+        async for session in acquire_org_async_session(self.organisation_id):
+            record = await self._get_by_session_id(session, session_id)
+            if not record:
+                return None
+            now = datetime.now(UTC)
+            record.meeting_url = meeting_url
+            record.join_at = join_at
+            record.status = MeetingRecordingStatus.SENT
+            record.transcript_status = MeetingTranscriptStatus.PENDING
+            record.provider_session_id = provider_session_id
+            record.provider_status = provider_status
+            record.provider_payload = provider_payload
+            record.sent_to_provider_at = record.sent_to_provider_at or now
+            record.status_message = status_message
+            session.add(record)
+            await session.commit()
+            return record
+        return None
+
+    async def mark_provider_failure(
+        self,
+        session_id: UUID,
+        *,
+        status_message: str,
+        provider_payload: dict[str, Any] | None = None,
+    ) -> MeetingRecordingSession | None:
+        """Persist provider failure context so retries and operators have evidence."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            record = await self._get_by_session_id(session, session_id)
+            if not record:
+                return None
+            record.status = MeetingRecordingStatus.FAILED
+            record.status_message = status_message
+            if provider_payload is not None:
+                merged_payload = dict(record.provider_payload or {})
+                merged_payload["last_provider_error"] = provider_payload
+                record.provider_payload = merged_payload
+            record.retry_count += 1
+            session.add(record)
+            await session.commit()
+            return record
+        return None
+
     async def reset_for_resend(
         self,
         session_id: UUID,
