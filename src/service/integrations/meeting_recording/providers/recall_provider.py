@@ -1,9 +1,9 @@
 """Recall.ai meeting recording provider adapter.
 
 This wrapper intentionally mirrors only the small Recall surface the backend
-uses today: create a bot, fetch bot state, cancel a bot, and fetch transcript
-artifacts. Keeping it narrow makes provider behavior easier to reason about in
-worker retries and tests.
+uses today: create/update a bot, fetch bot state, cancel or remove a bot, list
+upcoming bots for reconciliation, and fetch transcript artifacts. Keeping it
+narrow makes provider behavior easier to reason about in worker retries and tests.
 """
 
 from __future__ import annotations
@@ -17,9 +17,20 @@ import httpx
 class RecallProviderError(RuntimeError):
     """Raised when a Recall API request fails."""
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        code: str | None = None,
+        detail: str | None = None,
+        response_body: Any | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
+        self.detail = detail
+        self.response_body = response_body
 
 
 class RecallMeetingRecordingProvider:
@@ -46,6 +57,21 @@ class RecallMeetingRecordingProvider:
             "content-type": "application/json",
         }
 
+    @staticmethod
+    def _recording_config() -> dict[str, Any]:
+        """Build the Recall recording options required by transcript ingestion."""
+        return {
+            "transcript": {
+                "provider": {
+                    # The downstream transcript fetch path expects Recall's
+                    # transcript shortcut/download artifact to be present.
+                    "recallai_streaming": {
+                        "mode": "prioritize_accuracy",
+                    }
+                }
+            }
+        }
+
     async def create_session(
         self,
         *,
@@ -53,6 +79,7 @@ class RecallMeetingRecordingProvider:
         join_at: datetime,
         metadata: dict[str, Any],
         bot_name: str = "CopilotGTM Notetaker",
+        recording_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a bot for one meeting URL.
 
@@ -64,17 +91,7 @@ class RecallMeetingRecordingProvider:
             "bot_name": bot_name,
             "join_at": join_at.isoformat(),
             "metadata": metadata,
-            "recording_config": {
-                "transcript": {
-                    "provider": {
-                        # The downstream transcript fetch path expects Recall's
-                        # transcript shortcut/download artifact to be present.
-                        "recallai_streaming": {
-                            "mode": "prioritize_accuracy",
-                        }
-                    }
-                }
-            },
+            "recording_config": recording_config or self._recording_config(),
         }
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             # Use a short-lived client per call to avoid carrying shared TCP state
@@ -88,15 +105,71 @@ class RecallMeetingRecordingProvider:
             response = await client.get(f"{self.base_url}/bot/{provider_session_id}/")
         return self._json_or_raise(response, expected_status={200})
 
+    async def update_session(
+        self,
+        provider_session_id: str,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+        metadata: dict[str, Any],
+        bot_name: str = "CopilotGTM Notetaker",
+        recording_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update a scheduled bot before Recall starts dispatching it."""
+        payload = {
+            "meeting_url": meeting_url,
+            "bot_name": bot_name,
+            "join_at": join_at.isoformat(),
+            "metadata": metadata,
+            "recording_config": recording_config or self._recording_config(),
+        }
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
+            response = await client.patch(
+                f"{self.base_url}/bot/{provider_session_id}/", json=payload
+            )
+        return self._json_or_raise(response, expected_status={200})
+
     async def cancel_session(self, provider_session_id: str) -> None:
         """Cancel one provider session when downstream cancellation flows are triggered."""
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             response = await client.delete(f"{self.base_url}/bot/{provider_session_id}/")
         if response.status_code != 204:
-            raise RecallProviderError(
-                f"Recall delete failed: HTTP {response.status_code} {response.text[:300]}",
-                status_code=response.status_code,
-            )
+            self._raise_response_error(response, "Recall delete failed")
+
+    async def leave_call(self, provider_session_id: str) -> None:
+        """Remove a bot that is already joining or in-call."""
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
+            response = await client.post(f"{self.base_url}/bot/{provider_session_id}/leave_call/")
+        self._json_or_raise(response, expected_status={200})
+
+    async def list_sessions(
+        self,
+        *,
+        join_at_after: datetime | None = None,
+        meeting_url: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List Recall bots for reconciliation and manual dedupe/adoption."""
+        params: dict[str, str] = {}
+        if join_at_after is not None:
+            params["join_at_after"] = join_at_after.isoformat()
+        if meeting_url:
+            params["meeting_url"] = meeting_url
+
+        bots: list[dict[str, Any]] = []
+        next_url: str | None = f"{self.base_url}/bot/"
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
+            while next_url:
+                response = await client.get(
+                    next_url, params=params if next_url.endswith("/bot/") else None
+                )
+                data = self._json_or_raise(response, expected_status={200})
+                if isinstance(data, list):
+                    bots.extend(item for item in data if isinstance(item, dict))
+                    break
+                bots.extend(item for item in data.get("results", []) if isinstance(item, dict))
+                next_url = data.get("next")
+                params = {}
+        return bots
 
     async def fetch_transcript(self, download_url: str) -> list[dict[str, Any]]:
         """Download transcript artifact JSON from a Recall-provided URL."""
@@ -130,8 +203,30 @@ class RecallMeetingRecordingProvider:
         """Normalize Recall responses and raise a typed error on status mismatches."""
         # Failing fast here keeps retry policy centralized in the caller tasks.
         if response.status_code not in expected_status:
-            raise RecallProviderError(
-                f"Recall request failed: HTTP {response.status_code} {response.text[:300]}",
-                status_code=response.status_code,
-            )
+            RecallMeetingRecordingProvider._raise_response_error(response, "Recall request failed")
+        if not response.content:
+            return {}
         return response.json()
+
+    @staticmethod
+    def _raise_response_error(response: httpx.Response, prefix: str) -> None:
+        """Raise provider errors with Recall's structured body preserved."""
+        body: Any
+        code: str | None = None
+        detail: str | None = None
+        try:
+            body = response.json()
+        except ValueError:
+            body = response.text[:300]
+        if isinstance(body, dict):
+            raw_code = body.get("code")
+            raw_detail = body.get("detail")
+            code = raw_code if isinstance(raw_code, str) else None
+            detail = raw_detail if isinstance(raw_detail, str) else None
+        raise RecallProviderError(
+            f"{prefix}: HTTP {response.status_code} {response.text[:300]}",
+            status_code=response.status_code,
+            code=code,
+            detail=detail,
+            response_body=body,
+        )

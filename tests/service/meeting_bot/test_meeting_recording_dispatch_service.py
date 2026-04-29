@@ -144,16 +144,17 @@ class TestMeetingRecordingDispatchService:
         service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
 
     @pytest.mark.asyncio
-    async def test_dispatch_event_returns_already_sent_without_provider_call(
+    async def test_dispatch_event_returns_already_sent_when_provider_bot_matches(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An already-sent session is reused when the calendar target is unchanged."""
+        """An already-sent session is reused only after Recall still matches it."""
         organisation_id = uuid4()
         event_id = uuid4()
+        start_at = datetime.now(UTC) + timedelta(hours=2)
         event = SimpleNamespace(
             event_id=event_id,
             conference_link="https://meet.google.com/abc-defg-hij",
-            start_at=datetime.now(UTC) + timedelta(hours=2),
+            start_at=start_at,
             status="confirmed",
         )
         lookup_session = _FakeLookupSession(event)
@@ -169,12 +170,24 @@ class TestMeetingRecordingDispatchService:
                     session_id=uuid4(),
                     dedupe_key="meeting-recording-key",
                     sent_to_provider_at=datetime.now(UTC),
+                    provider_session_id="bot_123",
+                    meeting_url=event.conference_link,
+                    join_at=start_at,
                 )
             ),
             mark_send_queued=AsyncMock(),
             mark_sent=AsyncMock(),
         )
-        service._build_provider = AsyncMock()  # noqa: SLF001
+        provider = SimpleNamespace(
+            fetch_session=AsyncMock(
+                return_value={
+                    "id": "bot_123",
+                    "meeting_url": event.conference_link,
+                    "join_at": start_at.isoformat(),
+                }
+            )
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
 
         result = await service.dispatch_event(event_id)
 
@@ -184,13 +197,77 @@ class TestMeetingRecordingDispatchService:
         }
         service._session_service.mark_send_queued.assert_not_awaited()  # noqa: SLF001
         service._session_service.mark_sent.assert_not_awaited()  # noqa: SLF001
-        service._build_provider.assert_not_awaited()  # noqa: SLF001
+        provider.fetch_session.assert_awaited_once_with("bot_123")
 
     @pytest.mark.asyncio
-    async def test_dispatch_event_reschedules_when_start_time_changes(
+    async def test_dispatch_event_repairs_already_sent_when_provider_bot_is_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A sent-but-moved event cancels the old bot and creates a replacement."""
+        """A stale local sent row is repaired instead of returned as already sent."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        start_at = datetime.now(UTC) + timedelta(hours=2)
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=start_at,
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        existing_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            sent_to_provider_at=datetime.now(UTC),
+            provider_session_id="bot_missing",
+            join_at=start_at,
+            meeting_url=event.conference_link,
+        )
+        reset_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+        )
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(return_value=existing_session),
+            reset_for_resend=AsyncMock(return_value=reset_session),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+            mark_provider_failure=AsyncMock(),
+        )
+        provider = SimpleNamespace(
+            fetch_session=AsyncMock(side_effect=RecallProviderError("missing", status_code=404)),
+            list_sessions=AsyncMock(return_value=[]),
+            create_session=AsyncMock(return_value={"id": "bot_new", "status": "scheduled"}),
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "sent",
+            "calendar_event_id": str(event_id),
+            "provider_session_id": "bot_new",
+        }
+        provider.fetch_session.assert_awaited_once_with("bot_missing")
+        provider.list_sessions.assert_awaited_once()
+        provider.create_session.assert_awaited_once()
+        service._session_service.reset_for_resend.assert_awaited_once_with(  # noqa: SLF001
+            session_id,
+            meeting_url=event.conference_link,
+            join_at=start_at,
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_reschedules_with_provider_patch_when_start_time_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sent-but-moved event updates the scheduled Recall bot first."""
         organisation_id = uuid4()
         event_id = uuid4()
         new_start_at = datetime.now(UTC) + timedelta(hours=2)
@@ -222,13 +299,12 @@ class TestMeetingRecordingDispatchService:
         service = MeetingRecordingDispatchService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
-            reset_for_resend=AsyncMock(return_value=refreshed_session),
+            update_provider_registration=AsyncMock(return_value=refreshed_session),
             mark_send_queued=AsyncMock(),
             mark_sent=AsyncMock(),
         )
         provider = SimpleNamespace(
-            cancel_session=AsyncMock(),
-            create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"}),
+            update_session=AsyncMock(return_value={"id": "bot_old", "status": "scheduled"}),
         )
         service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
 
@@ -237,23 +313,26 @@ class TestMeetingRecordingDispatchService:
         assert result == {
             "status": "rescheduled",
             "calendar_event_id": str(event_id),
-            "provider_session_id": "bot_456",
+            "provider_session_id": "bot_old",
         }
-        service._session_service.reset_for_resend.assert_awaited_once_with(
+        service._session_service.update_provider_registration.assert_awaited_once_with(
             session_id,
             meeting_url=event.conference_link,
             join_at=new_start_at,
+            provider_session_id="bot_old",
+            provider_status="scheduled",
+            provider_payload={"id": "bot_old", "status": "scheduled"},
+            status_message="Provider session updated after calendar reschedule",
         )
-        provider.cancel_session.assert_awaited_once_with("bot_old")
-        service._session_service.mark_send_queued.assert_awaited_once_with(session_id)
-        service._session_service.mark_sent.assert_awaited_once()
-        provider.create_session.assert_awaited_once()
+        provider.update_session.assert_awaited_once()
+        service._session_service.mark_send_queued.assert_not_awaited()
+        service._session_service.mark_sent.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dispatch_event_reschedules_when_meeting_link_changes(
+    async def test_dispatch_event_falls_back_to_create_when_patch_is_too_late(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A changed conference link triggers resend even when the start time matches."""
+        """Recall update_bot_failed falls back to delete/create for the new target."""
         organisation_id = uuid4()
         event_id = uuid4()
         start_at = datetime.now(UTC) + timedelta(hours=2)
@@ -288,9 +367,19 @@ class TestMeetingRecordingDispatchService:
             reset_for_resend=AsyncMock(return_value=refreshed_session),
             mark_send_queued=AsyncMock(),
             mark_sent=AsyncMock(),
+            mark_provider_failure=AsyncMock(),
         )
         provider = SimpleNamespace(
+            update_session=AsyncMock(
+                side_effect=RecallProviderError(
+                    "Recall request failed: HTTP 400 update_bot_failed",
+                    status_code=400,
+                    code="update_bot_failed",
+                    detail="Not enough time to launch new bot",
+                )
+            ),
             cancel_session=AsyncMock(),
+            list_sessions=AsyncMock(return_value=[]),
             create_session=AsyncMock(return_value={"id": "bot_789", "status": "scheduled"}),
         )
         service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
@@ -302,6 +391,7 @@ class TestMeetingRecordingDispatchService:
             "calendar_event_id": str(event_id),
             "provider_session_id": "bot_789",
         }
+        provider.update_session.assert_awaited_once()
         service._session_service.reset_for_resend.assert_awaited_once_with(
             session_id,
             meeting_url=event.conference_link,
@@ -311,10 +401,10 @@ class TestMeetingRecordingDispatchService:
         service._session_service.mark_send_queued.assert_awaited_once_with(session_id)
 
     @pytest.mark.asyncio
-    async def test_dispatch_event_reschedules_when_old_bot_cannot_be_deleted(
+    async def test_dispatch_event_reschedule_uses_leave_when_old_bot_cannot_be_deleted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Recall may reject deletion after a bot has joined; resend should continue."""
+        """Recall cannot_delete_bot falls back to leave-call before replacement create."""
         organisation_id = uuid4()
         event_id = uuid4()
         new_start_at = datetime.now(UTC) + timedelta(hours=2)
@@ -349,14 +439,25 @@ class TestMeetingRecordingDispatchService:
             reset_for_resend=AsyncMock(return_value=refreshed_session),
             mark_send_queued=AsyncMock(),
             mark_sent=AsyncMock(),
+            mark_provider_failure=AsyncMock(),
         )
         provider = SimpleNamespace(
-            cancel_session=AsyncMock(
+            update_session=AsyncMock(
                 side_effect=RecallProviderError(
-                    "Recall delete failed: HTTP 405 cannot_delete_bot",
-                    status_code=405,
+                    "Recall request failed: HTTP 400 update_bot_failed",
+                    status_code=400,
+                    code="update_bot_failed",
                 )
             ),
+            cancel_session=AsyncMock(
+                side_effect=RecallProviderError(
+                    "Recall delete failed: HTTP 400 cannot_delete_bot",
+                    status_code=400,
+                    code="cannot_delete_bot",
+                )
+            ),
+            leave_call=AsyncMock(),
+            list_sessions=AsyncMock(return_value=[]),
             create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"}),
         )
         service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
@@ -368,7 +469,9 @@ class TestMeetingRecordingDispatchService:
             "calendar_event_id": str(event_id),
             "provider_session_id": "bot_456",
         }
+        provider.update_session.assert_awaited_once()
         provider.cancel_session.assert_awaited_once_with("bot_old")
+        provider.leave_call.assert_awaited_once_with("bot_old")
         service._session_service.reset_for_resend.assert_awaited_once_with(
             session_id,
             meeting_url=event.conference_link,
