@@ -198,9 +198,7 @@ async def get_deal_details(
                 .where(
                     risk_c.organisation_id == organisation_id,
                     risk_c.deal_id == parsed_deal_id,
-                    risk_c.status.not_in(
-                        [RiskBlockerStatus.DISMISSED.value, RiskBlockerStatus.AI_DISMISSED.value]
-                    ),
+                    risk_c.status != RiskBlockerStatus.DISMISSED.value,
                 )
                 .order_by(risk_c.created_at.desc())
                 .limit(10)

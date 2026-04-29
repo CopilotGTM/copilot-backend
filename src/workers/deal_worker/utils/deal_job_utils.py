@@ -861,12 +861,7 @@ async def count_deal_risks_blockers(
         .where(
             col(DealRiskBlocker.deal_id) == deal_id,
             col(DealRiskBlocker.organisation_id) == org_id,
-            col(DealRiskBlocker.status).not_in(
-                [
-                    RiskBlockerStatus.DISMISSED,
-                    RiskBlockerStatus.AI_DISMISSED,
-                ]
-            ),
+            col(DealRiskBlocker.status) != RiskBlockerStatus.DISMISSED,
         )
         .group_by(col(DealRiskBlocker.item_type))
     )

@@ -18,21 +18,23 @@ This API manages risks and blockers associated with CRM deals. Items can be eith
 ### Item Lifecycle
 
 ```
-AI Extraction Flow:
-AI_SUGGESTED → (confirm) → OPEN → IN_PROGRESS → RESOLVED
-            ↘ (dismiss) → DISMISSED
-
-Manual Creation Flow:
-(create) → OPEN → IN_PROGRESS → RESOLVED
-                             ↘ DISMISSED / WONT_FIX
+(create — AI or manual) → OPEN → IN_PROGRESS → RESOLVED
+                                            ↘ DISMISSED / WONT_FIX
+                                            ↘ (reopen) → OPEN
 ```
 
 ### AI vs Manual Items
 
-| Origin | Initial Status | Source |
+Both AI-extracted and manually created items land directly in the active list with `status=OPEN`. Provenance is preserved via:
+
+| Field | AI-extracted | Manually created |
 | --- | --- | --- |
-| **AI-extracted** | `AI_SUGGESTED` | Meeting transcripts, emails, Slack messages |
-| **Manually created** | `OPEN` | User input via API |
+| `is_ai_generated` | `true` | `false` |
+| `created_by_user_id` | `00000000-0000-0000-0000-000000000001` (automated pipeline sentinel) | Acting user's UUID |
+| `created_by_user_name` | `"AI Extraction Agent"` | User's display name |
+| `source_type` | `MEETING_*`, `EMAIL_*`, `SLACK`, etc. | `MANUAL` |
+
+Reading rule: `created_by_user_id == 00000000-0000-0000-0000-000000000001` ⇒ AI-created; any other UUID ⇒ that user created it.
 
 > **Note**: AI extraction is triggered automatically when new meetings/emails are synced. There is no frontend trigger—extraction runs in the background.
 
@@ -82,12 +84,10 @@ export type UUID = string;
 type RiskBlockerType = "RISK" | "BLOCKER";
 
 type RiskBlockerStatus =
-  | "AI_SUGGESTED"    // AI-identified, pending user review
-  | "AI_DISMISSED"    // AI dismissed (low confidence)
-  | "OPEN"            // Confirmed as active issue
+  | "OPEN"            // Active issue (initial state for both AI and manual items)
   | "IN_PROGRESS"     // Being actively addressed
   | "RESOLVED"        // Issue resolved
-  | "DISMISSED"       // User dismissed as not relevant
+  | "DISMISSED"       // Dismissed as not relevant
   | "WONT_FIX";       // Acknowledged but not addressing
 
 type RiskBlockerSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -188,17 +188,17 @@ export interface RiskBlockerDetail {
   owner_email: string | null;
   assigned_team: string | null;
   
-  // Resolution
-  resolution_notes: string | null;
-  resolved_at: string | null;       // ISO8601
-  resolved_by: string | null;
+  // Resolution / closure
+  resolution_notes: string | null;  // populated only when status=RESOLVED
+  closed_at: string | null;         // ISO8601 — populated when RESOLVED or DISMISSED
+  closed_by_user_id: UUID | null;   // Sentinel UUID when AI closed; user UUID when user closed
+  closed_by_user_name: string | null;
   
   // Provenance
   created_by_user_id: UUID | null;
   created_by_user_name: string | null;
   last_modified_by_user_id: UUID | null;
   last_modified_by_user_name: string | null;
-  user_confirmed_at: string | null;
   
   // Timestamps
   identified_at: string;            // When the issue was identified
@@ -213,10 +213,15 @@ export interface RiskBlockerDetail {
 
 export interface AuditEntry {
   timestamp: string;
-  user_id: UUID | null;
-  user_name: string | null;
+  /** "system" for AI/pipeline actions, "user" for end-user actions */
+  actor_type: "system" | "user";
+  /** Sentinel UUID `00000000-0000-0000-0000-000000000001` for AI; user UUID otherwise. */
+  actor_id: UUID | null;
+  actor_name: string | null;
+  /** "opened", "updated", "resolved", "dismissed", "reopened", etc. */
   action: string;
-  changes: Record<string, { old: unknown; new: unknown }>;
+  /** Action-specific payload (e.g., previous_status, fields_changed, confidence). */
+  details: Record<string, unknown>;
 }
 
 /** Summary statistics */
@@ -224,7 +229,6 @@ export interface RiskBlockerSummary {
   total_count: number;
   risks_count: number;
   blockers_count: number;
-  ai_suggested_count: number;
   open_count: number;
   in_progress_count: number;
   resolved_count: number;
@@ -260,7 +264,7 @@ Retrieve a paginated list of risks and blockers for a deal.
 | `limit` | int (1-100) | 20 | Page size |
 | `page` | int | 1 | Page number (1-indexed) |
 | `item_type` | enum | null | Filter: `RISK` or `BLOCKER` |
-| `status` | string | null | Comma-separated statuses: `OPEN,IN_PROGRESS,AI_SUGGESTED` |
+| `status` | string | null | Comma-separated statuses: `OPEN,IN_PROGRESS,RESOLVED` |
 | `severity` | enum | null | Filter: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
 | `category` | enum | null | Filter by category |
 | `include_resolved` | boolean | false | Include resolved/dismissed items |
@@ -269,7 +273,7 @@ Retrieve a paginated list of risks and blockers for a deal.
 ### Sample Request
 
 ```http
-GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&page=1&status=OPEN,AI_SUGGESTED
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&page=1&status=OPEN,IN_PROGRESS
 Authorization: Bearer <token>
 ```
 
@@ -285,7 +289,7 @@ Authorization: Bearer <token>
       {
         "risk_blocker_id": "f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1",
         "item_type": "BLOCKER",
-        "status": "AI_SUGGESTED",
+        "status": "OPEN",
         "severity": "HIGH",
         "title": "Security audit required before procurement",
         "quote": "We can't proceed until the security team completes their review...",
@@ -315,8 +319,7 @@ Authorization: Bearer <token>
       "total_count": 5,
       "risks_count": 3,
       "blockers_count": 2,
-      "ai_suggested_count": 2,
-      "open_count": 2,
+      "open_count": 4,
       "in_progress_count": 1,
       "resolved_count": 0,
       "critical_count": 0,
@@ -373,14 +376,14 @@ Get full details of a specific risk or blocker including audit trail.
     "assigned_team": "Security",
     
     "resolution_notes": null,
-    "resolved_at": null,
-    "resolved_by": null,
+    "closed_at": null,
+    "closed_by_user_id": null,
+    "closed_by_user_name": null,
     
-    "created_by_user_id": null,
-    "created_by_user_name": null,
+    "created_by_user_id": "00000000-0000-0000-0000-000000000001",
+    "created_by_user_name": "AI Extraction Agent",
     "last_modified_by_user_id": "user_123",
     "last_modified_by_user_name": "John Smith",
-    "user_confirmed_at": "2025-12-16T10:30:00Z",
     
     "identified_at": "2025-12-15T14:00:00Z",
     "created_at": "2025-12-15T15:30:00Z",
@@ -388,27 +391,34 @@ Get full details of a specific risk or blocker including audit trail.
     
     "audit_trail": [
       {
-        "timestamp": "2025-12-16T10:30:00Z",
-        "user_id": "user_123",
-        "user_name": "John Smith",
-        "action": "confirmed",
-        "changes": {
-          "status": { "old": "AI_SUGGESTED", "new": "OPEN" }
+        "timestamp": "2025-12-15T15:30:00Z",
+        "actor_type": "system",
+        "actor_id": "00000000-0000-0000-0000-000000000001",
+        "actor_name": "AI Extraction Agent",
+        "action": "opened",
+        "details": {
+          "source": "ai_extraction",
+          "confidence": 0.92,
+          "reasoning": "Security review mentioned as hard requirement by IT Director."
         }
       },
       {
         "timestamp": "2025-12-16T10:35:00Z",
-        "user_id": "user_123",
-        "user_name": "John Smith",
+        "actor_type": "user",
+        "actor_id": "user_123",
+        "actor_name": "John Smith",
         "action": "updated",
-        "changes": {
-          "owner_name": { "old": null, "new": "Sarah Chen" },
-          "assigned_team": { "old": null, "new": "Security" }
+        "details": {
+          "fields_changed": ["owner_name", "assigned_team"],
+          "changes": {
+            "owner_name": { "old": null, "new": "Sarah Chen" },
+            "assigned_team": { "old": null, "new": "Security" }
+          }
         }
       }
     ],
-    "modification_count": 2,
-    "unique_modifier_count": 1
+    "modification_count": 1,
+    "unique_modifier_count": 2
   }
 }
 ```
@@ -502,38 +512,7 @@ All fields are optional. Only provided fields are updated.
 
 ---
 
-## 5) Confirm AI Suggestion
-
-Confirm an AI-suggested item, moving it from `AI_SUGGESTED` to `OPEN` status.
-
-- **Endpoint**: `POST /risks-blockers/{risk_blocker_id}/confirm`
-- **Tags**: `risks-blockers`
-
-### Sample Response
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Risk/blocker confirmed successfully",
-  "data": {
-    "risk_blocker_id": "...",
-    "status": "OPEN",
-    "user_confirmed_at": "2025-12-21T10:30:00Z",
-    ...
-  }
-}
-```
-
-### Error Cases
-
-| Status | Condition |
-| ------ | --------- |
-| `400` | Item is not in `AI_SUGGESTED` status |
-| `404` | Risk/blocker not found |
-
----
-
-## 6) Dismiss Risk/Blocker
+## 5) Dismiss Risk/Blocker
 
 Dismiss a risk/blocker (not relevant or false positive).
 
@@ -556,7 +535,7 @@ Dismiss a risk/blocker (not relevant or false positive).
 
 ---
 
-## 7) Resolve Risk/Blocker
+## 6) Resolve Risk/Blocker
 
 Mark a risk/blocker as resolved with resolution notes.
 
@@ -585,8 +564,9 @@ Mark a risk/blocker as resolved with resolution notes.
     "risk_blocker_id": "...",
     "status": "RESOLVED",
     "resolution_notes": "Security audit completed...",
-    "resolved_at": "2025-12-21T15:00:00Z",
-    "resolved_by": "John Smith",
+    "closed_at": "2025-12-21T15:00:00Z",
+    "closed_by_user_id": "user_123",
+    "closed_by_user_name": "John Smith",
     ...
   }
 }
@@ -594,7 +574,7 @@ Mark a risk/blocker as resolved with resolution notes.
 
 ---
 
-## 8) Reopen Risk/Blocker
+## 7) Reopen Risk/Blocker
 
 Reopen a previously resolved or dismissed risk/blocker.
 
@@ -611,8 +591,9 @@ Reopen a previously resolved or dismissed risk/blocker.
     "risk_blocker_id": "...",
     "status": "OPEN",
     "resolution_notes": null,
-    "resolved_at": null,
-    "resolved_by": null,
+    "closed_at": null,
+    "closed_by_user_id": null,
+    "closed_by_user_name": null,
     ...
   }
 }
@@ -627,7 +608,7 @@ Reopen a previously resolved or dismissed risk/blocker.
 
 ---
 
-## 9) Delete Risk/Blocker
+## 8) Delete Risk/Blocker
 
 Permanently delete a risk/blocker.
 
@@ -739,10 +720,6 @@ class RisksBlockersAPI {
   }
 
   // Status transitions
-  async confirm(id: string): Promise<RiskBlockerDetail> {
-    return this.request(`/risks-blockers/${id}/confirm`, { method: 'POST' });
-  }
-
   async dismiss(id: string): Promise<RiskBlockerDetail> {
     return this.request(`/risks-blockers/${id}/dismiss`, { method: 'POST' });
   }
@@ -770,22 +747,19 @@ class RisksBlockersAPI {
 
 const api = new RisksBlockersAPI('/users/crm', accessToken);
 
-// List open risks and AI suggestions
+// List active risks/blockers (both AI-extracted and manual land here as OPEN)
 const { items, summary } = await api.list(dealId, {
-  status: 'OPEN,AI_SUGGESTED',
+  status: 'OPEN,IN_PROGRESS',
   include_resolved: false,
 });
 
-// Render AI suggested panel
-const aiSuggested = items.filter(i => i.status === 'AI_SUGGESTED');
-aiSuggested.forEach(item => {
+// Highlight AI-extracted items (provenance lives on the row, not the status)
+const aiItems = items.filter(i => i.is_ai_generated);
+aiItems.forEach(item => {
   console.log(`🤖 ${item.title}`);
   console.log(`   "${item.quote}"`);
   console.log(`   Source: ${item.source_context}`);
 });
-
-// Confirm an AI suggestion
-await api.confirm(aiSuggested[0].risk_blocker_id);
 
 // Create manual risk
 await api.create(dealId, {

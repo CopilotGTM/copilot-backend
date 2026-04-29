@@ -209,7 +209,7 @@ export interface DealCreatedEventData {
 // ============================================================================
 
 type RiskBlockerSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-type RiskBlockerStatus = "AI_SUGGESTED" | "OPEN" | "IN_PROGRESS" | "RESOLVED" | "DISMISSED";
+type RiskBlockerStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "DISMISSED" | "WONT_FIX";
 type RiskBlockerCategory =
   | "TECHNICAL"
   | "INTEGRATION"

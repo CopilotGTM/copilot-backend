@@ -42,8 +42,8 @@ async def get_existing_risks_blockers(
 ) -> list[dict[str, Any]]:
     """Get all existing risks and blockers for a deal.
 
-    Used by the extraction agent to check for duplicates before
-    creating new AI-suggested items.
+    Used by the extraction agent to check for duplicates before creating new
+    items, and to decide whether to update/resolve/dismiss items already in flight.
 
     SECURITY BOUNDARIES:
     - organisation_id: Always from context (immutable) — prevents cross-org access
@@ -52,7 +52,7 @@ async def get_existing_risks_blockers(
     Args:
         context: AgentContext containing organisation and deal metadata
         deal_id: Optional deal ID override; defaults to context.deal_id
-        include_dismissed: Whether to include dismissed/AI_dismissed items
+        include_dismissed: Whether to include dismissed items
 
     Returns:
         List of risk/blocker dictionaries with relevant fields for matching.
@@ -81,14 +81,7 @@ async def get_existing_risks_blockers(
 
     # Optionally exclude dismissed items
     if not include_dismissed:
-        stmt = stmt.where(
-            c.status.not_in(
-                [
-                    RiskBlockerStatus.DISMISSED.value,
-                    RiskBlockerStatus.AI_DISMISSED.value,
-                ]
-            )
-        )
+        stmt = stmt.where(c.status != RiskBlockerStatus.DISMISSED.value)
 
     stmt = stmt.order_by(c.created_at.desc())
 

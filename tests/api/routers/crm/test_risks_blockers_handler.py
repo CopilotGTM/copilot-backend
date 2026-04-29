@@ -233,7 +233,7 @@ def test_list_risks_blockers_summary_counts(client: TestClient, risks_dependency
             deal_id, org_id, item_type=RiskBlockerType.BLOCKER, severity=RiskBlockerSeverity.HIGH
         )
     )
-    service.add_item(create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED))
+    service.add_item(create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN))
 
     resp = client.get(
         f"/users/crm/deals/{deal_id}/risks-blockers", params={"include_resolved": True}
@@ -245,7 +245,8 @@ def test_list_risks_blockers_summary_counts(client: TestClient, risks_dependency
     assert summary["blockers_count"] == 1
     assert summary["critical_count"] == 1
     assert summary["high_count"] == 1
-    assert summary["ai_suggested_count"] == 1
+    assert summary["open_count"] == 3
+    assert "ai_suggested_count" not in summary
 
 
 # =============================================================================
@@ -485,73 +486,6 @@ def test_update_risk_empty_body(client: TestClient, risks_dependency_overrides):
 
 
 # =============================================================================
-# POST /risks-blockers/{id}/confirm - Confirm AI-Suggested Tests
-# =============================================================================
-
-
-def test_confirm_ai_suggested_success(client: TestClient, risks_dependency_overrides):
-    """Test confirming AI-suggested item moves to OPEN."""
-    service = risks_dependency_overrides["service"]
-    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED)
-    service.add_item(item)
-
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/confirm")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"]["status"] == "OPEN"
-
-
-def test_confirm_from_open_fails(client: TestClient, risks_dependency_overrides):
-    """Test confirming OPEN item fails (invalid transition)."""
-    service = risks_dependency_overrides["service"]
-    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
-    service.add_item(item)
-
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/confirm")
-    assert resp.status_code == 400, resp.text
-
-
-def test_confirm_from_in_progress_fails(client: TestClient, risks_dependency_overrides):
-    """Test confirming IN_PROGRESS item fails (invalid transition)."""
-    service = risks_dependency_overrides["service"]
-    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.IN_PROGRESS)
-    service.add_item(item)
-
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/confirm")
-    assert resp.status_code == 400, resp.text
-
-
-def test_confirm_from_resolved_fails(client: TestClient, risks_dependency_overrides):
-    """Test confirming RESOLVED item fails (invalid transition)."""
-    service = risks_dependency_overrides["service"]
-    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.RESOLVED)
-    service.add_item(item)
-
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/confirm")
-    assert resp.status_code == 400, resp.text
-
-
-def test_confirm_not_found(client: TestClient, risks_dependency_overrides):
-    """Test confirming non-existent item returns 404."""
-    non_existent_id = uuid4()
-
-    resp = client.post(f"/users/crm/risks-blockers/{non_existent_id}/confirm")
-    assert resp.status_code == 404, resp.text
-
-
-# =============================================================================
 # POST /risks-blockers/{id}/dismiss - Dismiss Tests
 # =============================================================================
 
@@ -571,19 +505,23 @@ def test_dismiss_success(client: TestClient, risks_dependency_overrides):
     assert body["data"]["status"] == "DISMISSED"
 
 
-def test_dismiss_ai_suggested(client: TestClient, risks_dependency_overrides):
-    """Test dismissing AI-suggested item (reject AI suggestion)."""
+def test_dismiss_records_closure_fields(client: TestClient, risks_dependency_overrides):
+    """Test dismissing an item records closed_at and closed_by_*."""
     service = risks_dependency_overrides["service"]
     org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
+    user_ids = risks_dependency_overrides["user_ids"]
     deal_id = uuid4()
 
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED)
+    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
 
     resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/dismiss")
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"]["status"] == "DISMISSED"
+    detail_resp = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}")
+    detail = detail_resp.json()["data"]
+    assert detail["status"] == "DISMISSED"
+    assert detail["closed_at"] is not None
+    assert detail["closed_by_user_id"] == str(user_ids["user_id"])
 
 
 def test_dismiss_not_found(client: TestClient, risks_dependency_overrides):
@@ -600,9 +538,10 @@ def test_dismiss_not_found(client: TestClient, risks_dependency_overrides):
 
 
 def test_resolve_success(client: TestClient, risks_dependency_overrides):
-    """Test resolving an item with notes."""
+    """Test resolving an item with notes records closure fields."""
     service = risks_dependency_overrides["service"]
     org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
+    user_ids = risks_dependency_overrides["user_ids"]
     deal_id = uuid4()
 
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
@@ -611,9 +550,14 @@ def test_resolve_success(client: TestClient, risks_dependency_overrides):
     payload = {"resolution_notes": "Resolved by implementing mitigation strategy."}
     resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json=payload)
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"]["status"] == "RESOLVED"
-    assert "mitigation" in body["data"]["resolution_notes"]
+
+    detail = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}").json()["data"]
+    assert detail["status"] == "RESOLVED"
+    assert "mitigation" in detail["resolution_notes"]
+    assert detail["closed_at"] is not None
+    assert detail["closed_by_user_id"] == str(user_ids["user_id"])
+    assert "resolved_by" not in detail
+    assert "resolved_at" not in detail
 
 
 def test_resolve_from_in_progress(client: TestClient, risks_dependency_overrides):
@@ -686,7 +630,7 @@ def test_resolve_not_found(client: TestClient, risks_dependency_overrides):
 
 
 def test_reopen_resolved_success(client: TestClient, risks_dependency_overrides):
-    """Test reopening a resolved item."""
+    """Test reopening a resolved item clears closure fields."""
     service = risks_dependency_overrides["service"]
     org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
     deal_id = uuid4()
@@ -696,8 +640,13 @@ def test_reopen_resolved_success(client: TestClient, risks_dependency_overrides)
 
     resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"]["status"] == "OPEN"
+
+    detail = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}").json()["data"]
+    assert detail["status"] == "OPEN"
+    assert detail["closed_at"] is None
+    assert detail["closed_by_user_id"] is None
+    assert detail["closed_by_user_name"] is None
+    assert "resolved_at" not in detail
 
 
 def test_reopen_dismissed_success(client: TestClient, risks_dependency_overrides):
@@ -735,19 +684,6 @@ def test_reopen_from_in_progress_fails(client: TestClient, risks_dependency_over
     deal_id = uuid4()
 
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.IN_PROGRESS)
-    service.add_item(item)
-
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
-    assert resp.status_code == 400, resp.text
-
-
-def test_reopen_from_ai_suggested_fails(client: TestClient, risks_dependency_overrides):
-    """Test reopening AI_SUGGESTED item fails (should use confirm)."""
-    service = risks_dependency_overrides["service"]
-    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED)
     service.add_item(item)
 
     resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
@@ -799,29 +735,57 @@ def test_delete_not_found(client: TestClient, risks_dependency_overrides):
 # =============================================================================
 
 
-def test_full_lifecycle_ai_suggested_to_resolved(client: TestClient, risks_dependency_overrides):
-    """Test full lifecycle: AI_SUGGESTED -> confirm -> resolve."""
+def test_full_lifecycle_ai_extracted_to_resolved(client: TestClient, risks_dependency_overrides):
+    """AI-extracted items land directly as OPEN and resolve in one step."""
     service = risks_dependency_overrides["service"]
     org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
     deal_id = uuid4()
 
-    # Create AI-suggested item
+    # AI-extracted items now start as OPEN (no confirm step)
     item = create_risk_blocker(
-        deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED, title="AI Risk"
+        deal_id, org_id, status=RiskBlockerStatus.OPEN, is_ai_generated=True, title="AI Risk"
     )
     service.add_item(item)
     item_id = item.risk_blocker_id
 
-    # Step 1: Confirm
-    resp1 = client.post(f"/users/crm/risks-blockers/{item_id}/confirm")
-    assert resp1.status_code == 200
-    assert resp1.json()["data"]["status"] == "OPEN"
-
-    # Step 2: Resolve
+    # Resolve directly
     payload = {"resolution_notes": "Addressed and mitigated."}
-    resp2 = client.post(f"/users/crm/risks-blockers/{item_id}/resolve", json=payload)
-    assert resp2.status_code == 200
-    assert resp2.json()["data"]["status"] == "RESOLVED"
+    resp = client.post(f"/users/crm/risks-blockers/{item_id}/resolve", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "RESOLVED"
+
+
+def test_audit_trail_persists_across_transitions(client: TestClient, risks_dependency_overrides):
+    """Audit trail must record every transition.
+
+    This is the regression check for the JSONB mutability fix on
+    DealRiskBlocker.risk_blocker_data. The model wraps the column with
+    MutableDict.as_mutable(JSONB) and the service calls flag_modified, so each
+    transition's audit entry persists on commit.
+
+    Note: this test runs against the in-memory FakeRiskBlockerService, which
+    mirrors the real service's audit-trail contract. End-to-end persistence
+    against Postgres is verified via the smoke check in the migration runbook.
+    """
+    service = risks_dependency_overrides["service"]
+    org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
+    deal_id = uuid4()
+
+    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
+    service.add_item(item)
+    item_id = item.risk_blocker_id
+
+    client.post(
+        f"/users/crm/risks-blockers/{item_id}/resolve",
+        json={"resolution_notes": "Mitigated for now."},
+    )
+    client.post(f"/users/crm/risks-blockers/{item_id}/reopen")
+    client.post(f"/users/crm/risks-blockers/{item_id}/dismiss")
+
+    detail = client.get(f"/users/crm/risks-blockers/{item_id}").json()["data"]
+    actions = [entry["action"] for entry in detail["audit_trail"]]
+    assert actions == ["opened", "resolved", "reopened", "dismissed"]
+    assert detail["modification_count"] == 3
 
 
 def test_full_lifecycle_reopen_and_resolve_again(client: TestClient, risks_dependency_overrides):
@@ -855,17 +819,17 @@ def test_full_lifecycle_reopen_and_resolve_again(client: TestClient, risks_depen
     assert resp3.json()["data"]["status"] == "RESOLVED"
 
 
-def test_ai_suggested_dismiss_then_reopen(client: TestClient, risks_dependency_overrides):
-    """Test AI_SUGGESTED -> dismiss -> reopen workflow."""
+def test_dismiss_then_reopen(client: TestClient, risks_dependency_overrides):
+    """OPEN -> dismiss -> reopen workflow."""
     service = risks_dependency_overrides["service"]
     org_id = risks_dependency_overrides["user_ids"]["organisation_id"]
     deal_id = uuid4()
 
-    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.AI_SUGGESTED)
+    item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
     item_id = item.risk_blocker_id
 
-    # Dismiss (reject AI suggestion)
+    # Dismiss
     resp1 = client.post(f"/users/crm/risks-blockers/{item_id}/dismiss")
     assert resp1.status_code == 200
     assert resp1.json()["data"]["status"] == "DISMISSED"

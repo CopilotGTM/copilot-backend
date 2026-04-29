@@ -8,7 +8,7 @@ Key features:
 - Provenance tracking (AI vs user created/modified)
 - Full audit trail in metadata JSONB
 - Source attribution to original content
-- Lifecycle management (AI_SUGGESTED → OPEN → RESOLVED)
+- Lifecycle management (OPEN → IN_PROGRESS → RESOLVED / DISMISSED)
 """
 
 from datetime import datetime
@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableDict
 from sqlmodel import Field, SQLModel
 
 from ..base_mixins import utcnow
@@ -33,17 +34,16 @@ class RiskBlockerType(str, Enum):
 
 
 class RiskBlockerStatus(str, Enum):
-    """Lifecycle status of the risk/blocker."""
+    """Lifecycle status of the risk/blocker.
 
-    # AI Workflow States
-    AI_SUGGESTED = "AI_SUGGESTED"  # Identified by AI, pending review
-    AI_DISMISSED = "AI_DISMISSED"  # Dismissed by AI as low-confidence
+    Items (AI-extracted or manual) start as OPEN. Closure can be RESOLVED,
+    DISMISSED, or WONT_FIX. Reopen brings them back to OPEN.
+    """
 
-    # User Workflow States
-    OPEN = "OPEN"  # Confirmed as active issue
+    OPEN = "OPEN"  # Active issue
     IN_PROGRESS = "IN_PROGRESS"  # Being actively addressed
     RESOLVED = "RESOLVED"  # Issue has been resolved
-    DISMISSED = "DISMISSED"  # User dismissed as not relevant
+    DISMISSED = "DISMISSED"  # Dismissed as not relevant
     WONT_FIX = "WONT_FIX"  # Acknowledged but not addressing
 
 
@@ -124,12 +124,13 @@ class DealRiskBlocker(SQLModel, table=True):
     AI-identified or manually tracked risks and blockers for deals.
 
     This table stores potential deal obstacles extracted from meeting transcripts,
-    emails, Slack conversations, or manually added by users. Each item goes through
-    a lifecycle from AI suggestion to resolution.
+    emails, Slack conversations, or manually added by users. Items are opened
+    immediately on creation (whether by AI extraction or by a user) and follow
+    an OPEN → IN_PROGRESS → RESOLVED / DISMISSED lifecycle.
 
     Key design principles:
     1. Source attribution: Links to original source (transcript, email, etc.)
-    2. Lifecycle tracking: Status workflow from suggestion to resolution
+    2. Lifecycle tracking: OPEN → IN_PROGRESS → RESOLVED / DISMISSED
     3. AI confidence: Confidence score for AI-extracted items
     4. Provenance: Track AI vs user created, full audit trail in metadata
     """
@@ -147,8 +148,6 @@ class DealRiskBlocker(SQLModel, table=True):
         Index("ix_risk_blocker_category", "organisation_id", "category"),
         # Source tracking
         Index("ix_risk_blocker_source_ref", "source_type", "source_record_id"),
-        # AI-generated items pending review
-        Index("ix_risk_blocker_ai_suggested", "organisation_id", "is_ai_generated", "status"),
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -191,8 +190,8 @@ class DealRiskBlocker(SQLModel, table=True):
         description="Impact severity level.",
     )
     status: RiskBlockerStatus = Field(
-        default=RiskBlockerStatus.AI_SUGGESTED,
-        sa_column=Column(String(32), nullable=False, server_default=text("'AI_SUGGESTED'")),
+        default=RiskBlockerStatus.OPEN,
+        sa_column=Column(String(32), nullable=False, server_default=text("'OPEN'")),
         description="Current lifecycle status.",
     )
 
@@ -277,17 +276,27 @@ class DealRiskBlocker(SQLModel, table=True):
     resolution_notes: str | None = Field(
         default=None,
         sa_column=Column(Text, nullable=True),
-        description="Notes on how this was resolved.",
+        description="Notes on how this was resolved (only populated when status=RESOLVED).",
     )
-    resolved_at: datetime | None = Field(
+    closed_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="When this was marked as resolved.",
+        description="When this item was closed (resolved or dismissed).",
     )
-    resolved_by: str | None = Field(
+    closed_by_user_id: UUID | None = Field(
+        default=None,
+        description=(
+            "User ID who closed this item (resolved or dismissed). Soft-link "
+            "(intentionally not FK): cross-schema with public.users, must remain "
+            "valid after user deletion, and uses the AUTOMATED_PIPELINE_USER_ID "
+            "sentinel for AI-driven closures. Display name lives in "
+            "closed_by_user_name so reads do not require a JOIN."
+        ),
+    )
+    closed_by_user_name: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
-        description="Who resolved this issue.",
+        description="Display name of the user who closed this item.",
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -300,7 +309,11 @@ class DealRiskBlocker(SQLModel, table=True):
     )
     created_by_user_id: UUID | None = Field(
         default=None,
-        description="User ID who created this item (null for AI-generated).",
+        description=(
+            "User ID who created this item. Soft-link (intentionally not FK): "
+            "cross-schema with public.users and uses AUTOMATED_PIPELINE_USER_ID "
+            "for AI-extracted items. Pair with created_by_user_name for display."
+        ),
     )
     created_by_user_name: str | None = Field(
         default=None,
@@ -309,17 +322,15 @@ class DealRiskBlocker(SQLModel, table=True):
     )
     last_modified_by_user_id: UUID | None = Field(
         default=None,
-        description="User ID who last modified this item.",
+        description=(
+            "User ID who last modified this item. Soft-link (intentionally not "
+            "FK); set to AUTOMATED_PIPELINE_USER_ID for AI-driven mutations."
+        ),
     )
     last_modified_by_user_name: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
         description="Display name of user who last modified this item.",
-    )
-    user_confirmed_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="When a user first confirmed/accepted an AI-suggested item.",
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -344,7 +355,11 @@ class DealRiskBlocker(SQLModel, table=True):
     # ─────────────────────────────────────────────────────────────────────────
     risk_blocker_data: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
+        sa_column=Column(
+            MutableDict.as_mutable(JSONB),
+            nullable=False,
+            server_default=text(EMPTY_JSONB_SQL),
+        ),
         description="Additional data including audit_trail, mentioned_stakeholders, etc.",
     )
 
@@ -353,9 +368,9 @@ class DealRiskBlocker(SQLModel, table=True):
     # ─────────────────────────────────────────────────────────────────────────
     @property
     def modification_count(self) -> int:
-        """Total number of modifications (excluding creation)."""
+        """Total number of modifications (excluding the initial open event)."""
         trail: list[dict[str, Any]] = self.risk_blocker_data.get("audit_trail", [])
-        return len([e for e in trail if e.get("action") != "created"])
+        return len([e for e in trail if e.get("action") not in ("opened", "created")])
 
     @property
     def unique_modifier_count(self) -> int:

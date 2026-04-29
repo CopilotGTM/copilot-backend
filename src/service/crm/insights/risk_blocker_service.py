@@ -12,6 +12,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import col
 from src.api.schemas.risk_blocker_models import (
     RiskBlockerDetail,
@@ -115,13 +116,12 @@ class RiskBlockerService:
         if statuses:
             query = query.where(col(DealRiskBlocker.status).in_(statuses))
         elif not include_resolved:
-            # Exclude resolved/dismissed by default
+            # Exclude closed items by default
             query = query.where(
                 col(DealRiskBlocker.status).not_in(
                     [
                         RiskBlockerStatus.RESOLVED,
                         RiskBlockerStatus.DISMISSED,
-                        RiskBlockerStatus.AI_DISMISSED,
                         RiskBlockerStatus.WONT_FIX,
                     ]
                 )
@@ -176,9 +176,6 @@ class RiskBlockerService:
             .filter(col(DealRiskBlocker.item_type) == RiskBlockerType.BLOCKER)
             .label("blockers"),
             func.count()
-            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.AI_SUGGESTED)
-            .label("ai_suggested"),
-            func.count()
             .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.OPEN)
             .label("open"),
             func.count()
@@ -205,7 +202,6 @@ class RiskBlockerService:
             total_count=row.total or 0,
             risks_count=row.risks or 0,
             blockers_count=row.blockers or 0,
-            ai_suggested_count=row.ai_suggested or 0,
             open_count=row.open or 0,
             in_progress_count=row.in_progress or 0,
             resolved_count=row.resolved or 0,
@@ -263,11 +259,11 @@ class RiskBlockerService:
             assigned_team=assigned_team,
         )
 
-        # Initialize audit trail
+        # Initialize audit trail with the open event
         item.risk_blocker_data = {
             "audit_trail": [
                 {
-                    "action": "created",
+                    "action": "opened",
                     "timestamp": datetime.now(UTC).isoformat(),
                     "actor_type": "user",
                     "actor_id": str(self.user_id),
@@ -366,38 +362,6 @@ class RiskBlockerService:
     # Status Transition Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def confirm(self, risk_blocker_id: UUID) -> RiskBlockerDetail:
-        """Confirm an AI-suggested item."""
-        result = await self.session.execute(
-            select(DealRiskBlocker).where(
-                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
-                col(DealRiskBlocker.organisation_id) == self.organisation_id,
-            )
-        )
-        item = result.scalar_one_or_none()
-
-        if not item:
-            raise RiskBlockerNotFoundError(risk_blocker_id)
-
-        # Handle status as either enum or string (SQLAlchemy may return string)
-        current_status = item.status.value if hasattr(item.status, "value") else str(item.status)
-        if current_status != RiskBlockerStatus.AI_SUGGESTED.value:
-            raise InvalidStatusTransitionError(current_status, "OPEN")
-
-        item.status = RiskBlockerStatus.OPEN
-        item.user_confirmed_at = datetime.now(UTC)
-        item.last_modified_by_user_id = self.user_id
-        item.last_modified_by_user_name = self.user_name
-        item.updated_at = datetime.now(UTC)
-
-        self._add_audit_entry(item, "confirmed", {"previous_status": "AI_SUGGESTED"})
-
-        await self.session.commit()
-        await self.session.refresh(item)
-
-        logger.info("Confirmed risk/blocker %s", risk_blocker_id)
-        return self._to_detail(item)
-
     async def dismiss(self, risk_blocker_id: UUID) -> RiskBlockerDetail:
         """Dismiss a risk/blocker."""
         result = await self.session.execute(
@@ -413,10 +377,14 @@ class RiskBlockerService:
 
         # Handle status as either enum or string (SQLAlchemy may return string)
         previous_status = item.status.value if hasattr(item.status, "value") else str(item.status)
+        now = datetime.now(UTC)
         item.status = RiskBlockerStatus.DISMISSED
+        item.closed_at = now
+        item.closed_by_user_id = self.user_id
+        item.closed_by_user_name = self.user_name
         item.last_modified_by_user_id = self.user_id
         item.last_modified_by_user_name = self.user_name
-        item.updated_at = datetime.now(UTC)
+        item.updated_at = now
 
         self._add_audit_entry(item, "dismissed", {"previous_status": previous_status})
 
@@ -454,13 +422,15 @@ class RiskBlockerService:
 
         # Handle status as either enum or string (SQLAlchemy may return string)
         previous_status = item.status.value if hasattr(item.status, "value") else str(item.status)
+        now = datetime.now(UTC)
         item.status = RiskBlockerStatus.RESOLVED
         item.resolution_notes = resolution_notes
-        item.resolved_at = datetime.now(UTC)
-        item.resolved_by = self.user_name or str(self.user_id)
+        item.closed_at = now
+        item.closed_by_user_id = self.user_id
+        item.closed_by_user_name = self.user_name
         item.last_modified_by_user_id = self.user_id
         item.last_modified_by_user_name = self.user_name
-        item.updated_at = datetime.now(UTC)
+        item.updated_at = now
 
         self._add_audit_entry(
             item,
@@ -509,9 +479,10 @@ class RiskBlockerService:
 
         previous_status = current_status
         item.status = RiskBlockerStatus.OPEN
-        item.resolved_at = None
-        item.resolved_by = None
         item.resolution_notes = None
+        item.closed_at = None
+        item.closed_by_user_id = None
+        item.closed_by_user_name = None
         item.last_modified_by_user_id = self.user_id
         item.last_modified_by_user_name = self.user_name
         item.updated_at = datetime.now(UTC)
@@ -552,7 +523,12 @@ class RiskBlockerService:
         action: str,
         details: dict,
     ) -> None:
-        """Append an entry to the audit trail."""
+        """Append an entry to the audit trail.
+
+        The risk_blocker_data column is wrapped with MutableDict so in-place
+        mutations are tracked. flag_modified is called as a defensive backstop
+        in case the mutation extension fails to detect a nested change.
+        """
         if not item.risk_blocker_data:
             item.risk_blocker_data = {"audit_trail": [], "unique_modifiers": []}
 
@@ -571,6 +547,8 @@ class RiskBlockerService:
         user_id_str = str(self.user_id)
         if user_id_str not in item.risk_blocker_data.get("unique_modifiers", []):
             item.risk_blocker_data.setdefault("unique_modifiers", []).append(user_id_str)
+
+        flag_modified(item, "risk_blocker_data")
 
     def _to_list_item(self, item: DealRiskBlocker) -> RiskBlockerListItem:
         """Convert model to list item response."""
@@ -596,7 +574,9 @@ class RiskBlockerService:
         unique_modifiers = (
             item.risk_blocker_data.get("unique_modifiers", []) if item.risk_blocker_data else []
         )
-        modification_count = len([e for e in audit_trail if e.get("action") != "created"])
+        modification_count = len(
+            [e for e in audit_trail if e.get("action") not in ("opened", "created")]
+        )
 
         return RiskBlockerDetail(
             risk_blocker_id=item.risk_blocker_id,
@@ -619,13 +599,13 @@ class RiskBlockerService:
             owner_email=item.owner_email,
             assigned_team=item.assigned_team,
             resolution_notes=item.resolution_notes,
-            resolved_at=item.resolved_at,
-            resolved_by=item.resolved_by,
+            closed_at=item.closed_at,
+            closed_by_user_id=item.closed_by_user_id,
+            closed_by_user_name=item.closed_by_user_name,
             created_by_user_id=item.created_by_user_id,
             created_by_user_name=item.created_by_user_name,
             last_modified_by_user_id=item.last_modified_by_user_id,
             last_modified_by_user_name=item.last_modified_by_user_name,
-            user_confirmed_at=item.user_confirmed_at,
             identified_at=item.identified_at,
             created_at=item.created_at,
             updated_at=item.updated_at,

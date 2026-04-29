@@ -6,7 +6,11 @@ items that are no longer relevant, and resolving items that have been addressed.
 
 New risks/blockers are created via the agent's structured output, not via tools.
 
-All mutations are marked as AI-generated with full audit trails.
+The agent can mutate any item in the deal — both AI-flagged and user-flagged.
+Each mutation is recorded in the audit trail and attributed to the automated
+pipeline sentinel (AUTOMATED_PIPELINE_USER_ID); the original is_ai_generated
+flag on the row is left untouched, so the provenance of the original flag is
+preserved.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -22,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
@@ -40,6 +45,11 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+# Sentinel UUID used to attribute system-driven actions to the automated pipeline
+# (project-wide convention; matches deal_memory_service.py and the extraction service).
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+AI_EXTRACTION_ACTOR_NAME = "AI Extraction Agent"
 
 
 # ---------------------------------------------------------------------------
@@ -149,14 +159,17 @@ async def update_risk_blocker_impl(
         if not changes:
             return {"status": "no_changes", "message": "No fields changed"}
 
+        now = datetime.now(UTC)
+
         # Audit trail
         trail = data.get("audit_trail", [])
         trail.append(
             {
-                "action": "ai_updated",
-                "timestamp": datetime.now(UTC).isoformat(),
+                "action": "updated",
+                "timestamp": now.isoformat(),
                 "actor_type": "system",
-                "actor_id": "risk_blocker_extraction_agent",
+                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
+                "actor_name": AI_EXTRACTION_ACTOR_NAME,
                 "details": {
                     "fields_changed": list(changes.keys()),
                     "changes": changes,
@@ -165,8 +178,11 @@ async def update_risk_blocker_impl(
         )
         data["audit_trail"] = trail
         item.risk_blocker_data = data
+        flag_modified(item, "risk_blocker_data")
 
-        item.updated_at = datetime.now(UTC)
+        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
+        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
+        item.updated_at = now
 
         await session.commit()
 
@@ -219,35 +235,36 @@ async def dismiss_risk_blocker_impl(
                 "status": "skipped",
                 "message": f"Already {current_status} — no action needed",
             }
-        if current_status == RiskBlockerStatus.OPEN.value:
-            return {
-                "status": "skipped",
-                "message": "User-confirmed item (OPEN) — AI cannot dismiss. Only AI_SUGGESTED items can be AI-dismissed.",
-            }
 
         previous_status = current_status
-        new_status = RiskBlockerStatus.AI_DISMISSED
-        item.status = new_status
-        item.updated_at = datetime.now(UTC)
+        now = datetime.now(UTC)
+        item.status = RiskBlockerStatus.DISMISSED
+        item.closed_at = now
+        item.closed_by_user_id = AUTOMATED_PIPELINE_USER_ID
+        item.closed_by_user_name = AI_EXTRACTION_ACTOR_NAME
+        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
+        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
+        item.updated_at = now
 
         # Audit trail
         data = item.risk_blocker_data or {}
         trail = data.get("audit_trail", [])
         trail.append(
             {
-                "action": "ai_dismissed",
-                "timestamp": datetime.now(UTC).isoformat(),
+                "action": "dismissed",
+                "timestamp": now.isoformat(),
                 "actor_type": "system",
-                "actor_id": "risk_blocker_extraction_agent",
+                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
+                "actor_name": AI_EXTRACTION_ACTOR_NAME,
                 "details": {
                     "previous_status": previous_status,
-                    "new_status": new_status.value,
                     "reason": reason,
                 },
             }
         )
         data["audit_trail"] = trail
         item.risk_blocker_data = data
+        flag_modified(item, "risk_blocker_data")
 
         await session.commit()
 
@@ -257,7 +274,7 @@ async def dismiss_risk_blocker_impl(
             "status": "dismissed",
             "risk_blocker_id": risk_blocker_id,
             "previous_status": previous_status,
-            "new_status": new_status.value,
+            "new_status": RiskBlockerStatus.DISMISSED.value,
             "reason": reason,
         }
 
@@ -304,21 +321,26 @@ async def resolve_risk_blocker_impl(
             }
 
         previous_status = current_status
+        now = datetime.now(UTC)
         item.status = RiskBlockerStatus.RESOLVED
         item.resolution_notes = resolution_notes
-        item.resolved_at = datetime.now(UTC)
-        item.resolved_by = "AI Risk/Blocker Agent"
-        item.updated_at = datetime.now(UTC)
+        item.closed_at = now
+        item.closed_by_user_id = AUTOMATED_PIPELINE_USER_ID
+        item.closed_by_user_name = AI_EXTRACTION_ACTOR_NAME
+        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
+        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
+        item.updated_at = now
 
         # Audit trail
         data = item.risk_blocker_data or {}
         trail = data.get("audit_trail", [])
         trail.append(
             {
-                "action": "ai_resolved",
-                "timestamp": datetime.now(UTC).isoformat(),
+                "action": "resolved",
+                "timestamp": now.isoformat(),
                 "actor_type": "system",
-                "actor_id": "risk_blocker_extraction_agent",
+                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
+                "actor_name": AI_EXTRACTION_ACTOR_NAME,
                 "details": {
                     "previous_status": previous_status,
                     "resolution_notes": resolution_notes,
@@ -327,6 +349,7 @@ async def resolve_risk_blocker_impl(
         )
         data["audit_trail"] = trail
         item.risk_blocker_data = data
+        flag_modified(item, "risk_blocker_data")
 
         # Timeline event
         timeline_event = build_risk_blocker_timeline_event(
@@ -423,9 +446,11 @@ def create_dismiss_risk_blocker(
         risk_blocker_id: str,
         reason: str,
     ) -> dict[str, Any]:
-        """Dismiss an AI-suggested risk/blocker that was NEVER a real issue or is NO LONGER applicable.
+        """Dismiss a risk/blocker that was NEVER a real issue or is NO LONGER applicable.
 
-        ONLY works on AI_SUGGESTED items. Cannot dismiss user-confirmed items (status=OPEN).
+        Works on both AI-flagged and user-flagged items. The dismissal is recorded
+        in the audit trail attributed to the AI extraction agent, so the human
+        provenance of the original flag is preserved.
 
         Dismiss means "this should not have been flagged" or "circumstances changed and it no longer applies."
         If the issue WAS real but got fixed, use resolve_risk_blocker instead.
