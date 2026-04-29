@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from src.service.integrations.meeting_recording.providers import RecallProviderError
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
 
 
@@ -308,6 +309,72 @@ class TestMeetingRecordingDispatchService:
         )
         provider.cancel_session.assert_awaited_once_with("bot_old")
         service._session_service.mark_send_queued.assert_awaited_once_with(session_id)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_reschedules_when_old_bot_cannot_be_deleted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recall may reject deletion after a bot has joined; resend should continue."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        new_start_at = datetime.now(UTC) + timedelta(hours=2)
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=new_start_at,
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        existing_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            sent_to_provider_at=datetime.now(UTC),
+            provider_session_id="bot_old",
+            join_at=new_start_at - timedelta(minutes=30),
+            meeting_url="https://meet.google.com/abc-defg-hij",
+        )
+        refreshed_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+        )
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(return_value=existing_session),
+            reset_for_resend=AsyncMock(return_value=refreshed_session),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        provider = SimpleNamespace(
+            cancel_session=AsyncMock(
+                side_effect=RecallProviderError(
+                    "Recall delete failed: HTTP 405 cannot_delete_bot",
+                    status_code=405,
+                )
+            ),
+            create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"}),
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "rescheduled",
+            "calendar_event_id": str(event_id),
+            "provider_session_id": "bot_456",
+        }
+        provider.cancel_session.assert_awaited_once_with("bot_old")
+        service._session_service.reset_for_resend.assert_awaited_once_with(
+            session_id,
+            meeting_url=event.conference_link,
+            join_at=new_start_at,
+        )
+        provider.create_session.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_dispatch_unsent_upcoming_scans_and_sends_candidates(

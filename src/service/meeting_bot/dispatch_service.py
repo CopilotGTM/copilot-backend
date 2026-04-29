@@ -143,8 +143,9 @@ class MeetingRecordingDispatchService:
                 )
                 provider = await self._build_provider()
                 # Cancel before resetting the row so we still have the previous Recall
-                # bot id available for cleanup. 404/transport failures are tolerated by
-                # the helper because the resend path is the recovery mechanism here.
+                # bot id available for cleanup. Missing/non-deletable old bots and
+                # transport failures are tolerated because the resend path is the
+                # recovery mechanism here.
                 await self._cancel_existing_provider_session_if_possible(
                     provider=provider,
                     calendar_event_id=calendar_event_id,
@@ -436,6 +437,20 @@ class MeetingRecordingDispatchService:
                     "Meeting recording prior provider session already gone; continuing",
                     extra={
                         "event": "meeting_recording_reschedule_cancel_404",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(calendar_event_id),
+                        "provider_session_id": provider_session_id,
+                    },
+                )
+                return
+            if error.status_code == 405:
+                # Recall refuses deletion once a bot has joined or left the cancellable
+                # scheduled state. That old bot can no longer be moved, so continue with
+                # the replacement send instead of leaving the updated meeting unscheduled.
+                logger.warning(
+                    "Meeting recording prior provider session is not deletable; continuing",
+                    extra={
+                        "event": "meeting_recording_reschedule_cancel_not_deletable",
                         "organisation_id": str(self.organisation_id),
                         "calendar_event_id": str(calendar_event_id),
                         "provider_session_id": provider_session_id,
