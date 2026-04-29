@@ -20,6 +20,8 @@ from src.infra.config.configs import recall_config
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
+TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done", "recording.done"}
+
 
 class RecallMeetingRecordingWebhookService:
     """Apply Recall webhook events to org-scoped recording sessions.
@@ -85,15 +87,17 @@ class RecallMeetingRecordingWebhookService:
         transcript_status = self._map_transcript_status(event_name)
         transcript_ready_at: datetime | None = None
 
-        if event_name == "transcript.done":
-            # The webhook tells us the transcript is ready, but we need one
-            # provider read to capture the downloadable artifact metadata.
+        if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS:
+            # `transcript.done` is the primary transcript-ready event. `recording.done`
+            # is also useful as a recovery trigger because Recall can expose the
+            # transcript artifact on the bot before our app receives transcript.done.
             bot_snapshot, transcript_artifact = await self._fetch_transcript_artifact(bot_id)
             if bot_snapshot is not None:
                 merged_payload["bot_snapshot"] = bot_snapshot
             if transcript_artifact is not None:
                 merged_payload["transcript_artifact"] = transcript_artifact
-            transcript_ready_at = updated_at or datetime.now(UTC)
+                transcript_status = MeetingTranscriptStatus.READY
+                transcript_ready_at = updated_at or datetime.now(UTC)
 
         record = await self.session_service.apply_webhook_update(
             bot_id,
@@ -159,10 +163,12 @@ class RecallMeetingRecordingWebhookService:
             "bot.in_call_recording",
         }:
             return MeetingRecordingStatus.IN_CALL
-        if event_name in {"bot.call_ended", "bot.done"}:
+        if event_name in {"bot.call_ended", "bot.done", "recording.done"}:
             return MeetingRecordingStatus.COMPLETED
-        if event_name == "bot.fatal":
+        if event_name in {"bot.fatal", "recording.failed"}:
             return MeetingRecordingStatus.FAILED
+        if event_name == "recording.deleted":
+            return MeetingRecordingStatus.CANCELLED
         return None
 
     @staticmethod
@@ -175,6 +181,10 @@ class RecallMeetingRecordingWebhookService:
         if event_name == "transcript.failed":
             return MeetingTranscriptStatus.FAILED
         if event_name == "transcript.deleted":
+            return MeetingTranscriptStatus.NOT_AVAILABLE
+        if event_name == "recording.failed":
+            return MeetingTranscriptStatus.FAILED
+        if event_name == "recording.deleted":
             return MeetingTranscriptStatus.NOT_AVAILABLE
         return None
 
