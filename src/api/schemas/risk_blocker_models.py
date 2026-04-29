@@ -77,17 +77,17 @@ class RiskBlockerDetail(BaseModel):
     owner_email: str | None = None
     assigned_team: str | None = None
 
-    # Resolution
+    # Resolution / closure
     resolution_notes: str | None = None
-    resolved_at: datetime | None = None
-    resolved_by: str | None = None
+    closed_at: datetime | None = None
+    closed_by_user_id: UUID | None = None
+    closed_by_user_name: str | None = None
 
     # Provenance
     created_by_user_id: UUID | None = None
     created_by_user_name: str | None = None
     last_modified_by_user_id: UUID | None = None
     last_modified_by_user_name: str | None = None
-    user_confirmed_at: datetime | None = None
 
     # Timestamps
     identified_at: datetime
@@ -108,7 +108,6 @@ class RiskBlockerSummary(BaseModel):
     total_count: int = 0
     risks_count: int = 0
     blockers_count: int = 0
-    ai_suggested_count: int = 0
     open_count: int = 0
     in_progress_count: int = 0
     resolved_count: int = 0

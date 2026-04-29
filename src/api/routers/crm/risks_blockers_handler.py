@@ -77,8 +77,8 @@ async def list_risks_blockers(
     """
     Get risks and blockers for a deal.
 
-    Returns a paginated list sorted by creation date. AI-suggested items
-    that haven't been confirmed appear with status=AI_SUGGESTED.
+    Returns a paginated list sorted by creation date. AI-extracted and
+    user-created items both land directly in the active list with status=OPEN.
 
     By default, resolved and dismissed items are excluded. Use include_resolved=true
     to see all items including closed ones.
@@ -87,7 +87,7 @@ async def list_risks_blockers(
     - limit: Number of items per page (1-100, default 20)
     - page: Page number (1-indexed)
     - item_type: Filter by RISK or BLOCKER
-    - status: Comma-separated status filter (OPEN,IN_PROGRESS,AI_SUGGESTED,etc.)
+    - status: Comma-separated status filter (OPEN,IN_PROGRESS,RESOLVED,etc.)
     - severity: Filter by severity level (CRITICAL,HIGH,MEDIUM,LOW)
     - category: Filter by category (TECHNICAL,BUDGET,COMPETITION,etc.)
     - include_resolved: Include resolved/dismissed items (default false)
@@ -208,8 +208,7 @@ async def create_risk_blocker(
     """
     Create a new risk or blocker manually.
 
-    Manual items start with status=OPEN (unlike AI-suggested items
-    which start as AI_SUGGESTED and need confirmation).
+    Items are created directly with status=OPEN.
     """
     try:
         item = await service.create(
@@ -281,50 +280,6 @@ async def update_risk_blocker(
         )
     except Exception:
         logger.exception("Failed to update risk/blocker")
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@risks_blockers_router.post(
-    "/risks-blockers/{risk_blocker_id}/confirm",
-    response_model=GenericResponse[RiskBlockerDetail],
-    summary="Confirm an AI-suggested risk/blocker",
-    description="Confirm an AI-suggested item, moving it from AI_SUGGESTED to OPEN status.",
-    dependencies=[Depends(rate_limit_user_write)],
-)
-async def confirm_risk_blocker(
-    risk_blocker_id: UUID,
-    response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
-) -> GenericResponse[RiskBlockerDetail]:
-    """
-    Confirm an AI-suggested risk/blocker.
-
-    This moves the item from AI_SUGGESTED to OPEN status,
-    indicating the user has reviewed and accepted the AI's suggestion.
-    """
-    try:
-        item = await service.confirm(risk_blocker_id)
-
-        return Response.success_response(
-            message="Risk/blocker confirmed successfully",
-            data=item,
-        )
-
-    except RiskBlockerNotFoundError:
-        return Response.error_response(
-            message="Risk/blocker not found", status_code=404, response=response
-        )
-    except InvalidStatusTransitionError as e:
-        return Response.error_response(message=e.message, status_code=400, response=response)
-    except RiskBlockerServiceError as e:
-        logger.warning(f"Risk/blocker service error: {e.message}")
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception:
-        logger.exception("Failed to confirm risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

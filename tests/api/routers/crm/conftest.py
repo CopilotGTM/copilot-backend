@@ -1709,8 +1709,9 @@ class FakeRiskBlocker:
         owner_email: str | None = None,
         assigned_team: str | None = None,
         resolution_notes: str | None = None,
-        resolved_at: datetime | None = None,
-        resolved_by: str | None = None,
+        closed_at: datetime | None = None,
+        closed_by_user_id: UUID | None = None,
+        closed_by_user_name: str | None = None,
         created_by_user_id: UUID | None = None,
         created_by_user_name: str | None = None,
         identified_at: datetime | None = None,
@@ -1737,20 +1738,32 @@ class FakeRiskBlocker:
         self.owner_email = owner_email
         self.assigned_team = assigned_team
         self.resolution_notes = resolution_notes
-        self.resolved_at = resolved_at
-        self.resolved_by = resolved_by
+        self.closed_at = closed_at
+        self.closed_by_user_id = closed_by_user_id
+        self.closed_by_user_name = closed_by_user_name
         self.created_by_user_id = created_by_user_id
         self.created_by_user_name = created_by_user_name
         self.identified_at = identified_at or datetime.now(UTC)
         self.created_at = created_at or datetime.now(UTC)
         self.updated_at = updated_at or datetime.now(UTC)
-        self.user_confirmed_at: datetime | None = None
         self.last_modified_by_user_id: UUID | None = None
         self.last_modified_by_user_name: str | None = None
         self.extraction_run_id: UUID | None = None
-        self.audit_trail: list[dict] = []
+        # Seed the initial open event to mirror the real service's audit trail.
+        self.audit_trail: list[dict] = [
+            {
+                "action": "opened",
+                "timestamp": self.created_at.isoformat(),
+                "actor_type": "system" if is_ai_generated else "user",
+                "actor_id": str(created_by_user_id) if created_by_user_id else None,
+                "actor_name": created_by_user_name,
+                "details": {
+                    "source": "ai_extraction" if is_ai_generated else "manual",
+                },
+            }
+        ]
         self.modification_count: int = 0
-        self.unique_modifier_count: int = 0
+        self.unique_modifier_count: int = 1 if created_by_user_id else 0
 
 
 class FakeRiskBlockerService:
@@ -1782,7 +1795,7 @@ class FakeRiskBlockerService:
         self,
         deal_id: UUID,
         limit: int = 20,
-        cursor: str | None = None,
+        page: int = 1,
         item_type: RiskBlockerType | None = None,
         statuses: list[RiskBlockerStatus] | None = None,
         severity: RiskBlockerSeverity | None = None,
@@ -1818,7 +1831,8 @@ class FakeRiskBlockerService:
         items.sort(key=lambda i: i.created_at, reverse=reverse)
 
         total_count = len(items)
-        items = items[:limit]
+        offset = max(page - 1, 0) * limit
+        items = items[offset : offset + limit]
 
         # Build summary
         all_items = [
@@ -1830,9 +1844,6 @@ class FakeRiskBlockerService:
             "total_count": len(all_items),
             "risks_count": sum(1 for i in all_items if i.item_type == RiskBlockerType.RISK),
             "blockers_count": sum(1 for i in all_items if i.item_type == RiskBlockerType.BLOCKER),
-            "ai_suggested_count": sum(
-                1 for i in all_items if i.status == RiskBlockerStatus.AI_SUGGESTED
-            ),
             "open_count": sum(1 for i in all_items if i.status == RiskBlockerStatus.OPEN),
             "in_progress_count": sum(
                 1 for i in all_items if i.status == RiskBlockerStatus.IN_PROGRESS
@@ -1861,7 +1872,7 @@ class FakeRiskBlockerService:
             for i in items
         ]
 
-        return list_items, None, total_count, summary
+        return list_items, total_count, summary
 
     async def get_by_id(self, risk_blocker_id: UUID):
         """Get a risk/blocker by ID."""
@@ -1890,13 +1901,13 @@ class FakeRiskBlockerService:
             "owner_email": item.owner_email,
             "assigned_team": item.assigned_team,
             "resolution_notes": item.resolution_notes,
-            "resolved_at": item.resolved_at,
-            "resolved_by": item.resolved_by,
+            "closed_at": item.closed_at,
+            "closed_by_user_id": item.closed_by_user_id,
+            "closed_by_user_name": item.closed_by_user_name,
             "created_by_user_id": item.created_by_user_id,
             "created_by_user_name": item.created_by_user_name,
             "last_modified_by_user_id": item.last_modified_by_user_id,
             "last_modified_by_user_name": item.last_modified_by_user_name,
-            "user_confirmed_at": item.user_confirmed_at,
             "identified_at": item.identified_at,
             "created_at": item.created_at,
             "updated_at": item.updated_at,
@@ -1953,58 +1964,72 @@ class FakeRiskBlockerService:
 
         return await self.get_by_id(risk_blocker_id)
 
-    async def confirm(self, risk_blocker_id: UUID):
-        """Confirm an AI-suggested risk/blocker."""
-        from src.service.crm.risk_blocker_service import (
-            InvalidStatusTransitionError,
-            RiskBlockerNotFoundError,
+    def _append_audit(self, item: FakeRiskBlocker, action: str, details: dict) -> None:
+        """Append a fake audit entry — mirrors RiskBlockerService._add_audit_entry."""
+        item.audit_trail.append(
+            {
+                "action": action,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "actor_type": "user",
+                "actor_id": str(self.user_id),
+                "actor_name": self.user_name,
+                "details": details,
+            }
         )
-
-        item = self._items.get(risk_blocker_id)
-        if not item or item.organisation_id != self.organisation_id:
-            raise RiskBlockerNotFoundError(risk_blocker_id)
-
-        if item.status != RiskBlockerStatus.AI_SUGGESTED:
-            raise InvalidStatusTransitionError(item.status.value, "OPEN")
-
-        item.status = RiskBlockerStatus.OPEN
-        item.user_confirmed_at = datetime.now(UTC)
-        item.updated_at = datetime.now(UTC)
-
-        return await self.get_by_id(risk_blocker_id)
+        item.modification_count = len(
+            [e for e in item.audit_trail if e.get("action") not in ("opened", "created")]
+        )
 
     async def dismiss(self, risk_blocker_id: UUID):
         """Dismiss a risk/blocker."""
-        from src.service.crm.risk_blocker_service import RiskBlockerNotFoundError
+        from src.service.crm.insights.risk_blocker_service import RiskBlockerNotFoundError
 
         item = self._items.get(risk_blocker_id)
         if not item or item.organisation_id != self.organisation_id:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
+        previous_status = item.status.value
+        now = datetime.now(UTC)
         item.status = RiskBlockerStatus.DISMISSED
-        item.updated_at = datetime.now(UTC)
+        item.closed_at = now
+        item.closed_by_user_id = self.user_id
+        item.closed_by_user_name = self.user_name
+        item.last_modified_by_user_id = self.user_id
+        item.last_modified_by_user_name = self.user_name
+        item.updated_at = now
+        self._append_audit(item, "dismissed", {"previous_status": previous_status})
 
         return await self.get_by_id(risk_blocker_id)
 
     async def resolve(self, risk_blocker_id: UUID, resolution_notes: str):
         """Resolve a risk/blocker."""
-        from src.service.crm.risk_blocker_service import RiskBlockerNotFoundError
+        from src.service.crm.insights.risk_blocker_service import RiskBlockerNotFoundError
 
         item = self._items.get(risk_blocker_id)
         if not item or item.organisation_id != self.organisation_id:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
+        previous_status = item.status.value
+        now = datetime.now(UTC)
         item.status = RiskBlockerStatus.RESOLVED
         item.resolution_notes = resolution_notes
-        item.resolved_at = datetime.now(UTC)
-        item.resolved_by = self.user_name
-        item.updated_at = datetime.now(UTC)
+        item.closed_at = now
+        item.closed_by_user_id = self.user_id
+        item.closed_by_user_name = self.user_name
+        item.last_modified_by_user_id = self.user_id
+        item.last_modified_by_user_name = self.user_name
+        item.updated_at = now
+        self._append_audit(
+            item,
+            "resolved",
+            {"previous_status": previous_status, "resolution_notes": resolution_notes},
+        )
 
         return await self.get_by_id(risk_blocker_id)
 
     async def reopen(self, risk_blocker_id: UUID):
         """Reopen a risk/blocker."""
-        from src.service.crm.risk_blocker_service import (
+        from src.service.crm.insights.risk_blocker_service import (
             InvalidStatusTransitionError,
             RiskBlockerNotFoundError,
         )
@@ -2017,17 +2042,22 @@ class FakeRiskBlockerService:
         if item.status not in (RiskBlockerStatus.RESOLVED, RiskBlockerStatus.DISMISSED):
             raise InvalidStatusTransitionError(item.status.value, "OPEN")
 
+        previous_status = item.status.value
         item.status = RiskBlockerStatus.OPEN
         item.resolution_notes = None
-        item.resolved_at = None
-        item.resolved_by = None
+        item.closed_at = None
+        item.closed_by_user_id = None
+        item.closed_by_user_name = None
+        item.last_modified_by_user_id = self.user_id
+        item.last_modified_by_user_name = self.user_name
         item.updated_at = datetime.now(UTC)
+        self._append_audit(item, "reopened", {"previous_status": previous_status})
 
         return await self.get_by_id(risk_blocker_id)
 
     async def delete(self, risk_blocker_id: UUID):
         """Delete a risk/blocker."""
-        from src.service.crm.risk_blocker_service import RiskBlockerNotFoundError
+        from src.service.crm.insights.risk_blocker_service import RiskBlockerNotFoundError
 
         item = self._items.get(risk_blocker_id)
         if not item or item.organisation_id != self.organisation_id:

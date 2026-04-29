@@ -813,8 +813,7 @@ class DealTimelineSyncService:
 
         risk_blocker_table: Table = _table(DealRiskBlocker)
 
-        # Fetch all confirmed risk/blockers for this deal
-        # Skip AI_SUGGESTED (not yet confirmed) and AI_DISMISSED
+        # Fetch all active and resolved risk/blockers (skip dismissed/won't-fix)
         stmt = select(DealRiskBlocker).where(
             risk_blocker_table.c.organisation_id == self.organisation_id,
             risk_blocker_table.c.deal_id == deal_id,
@@ -871,7 +870,7 @@ class DealTimelineSyncService:
                 stats["skipped"] += 1
 
             # If resolved, also create a RESOLVED event
-            if status_val == RiskBlockerStatus.RESOLVED.value and risk_blocker.resolved_at:
+            if status_val == RiskBlockerStatus.RESOLVED.value and risk_blocker.closed_at:
                 resolved_key = (
                     TimelineEventType.BLOCKER_RESOLVED.value,
                     str(risk_blocker.risk_blocker_id),
@@ -1371,11 +1370,14 @@ def build_risk_blocker_timeline_event(
     )
     subtitle = f"{item_type_str} - {severity_str}"
 
-    # Determine event timestamp
-    if event_type == TimelineEventType.BLOCKER_RESOLVED and risk_blocker.resolved_at:
-        event_timestamp = risk_blocker.resolved_at
-    elif event_type == TimelineEventType.BLOCKER_DISMISSED and risk_blocker.updated_at:
-        event_timestamp = risk_blocker.updated_at
+    # Determine event timestamp — use closure time for resolve/dismiss events
+    if (
+        event_type == TimelineEventType.BLOCKER_RESOLVED
+        and risk_blocker.closed_at
+        or event_type == TimelineEventType.BLOCKER_DISMISSED
+        and risk_blocker.closed_at
+    ):
+        event_timestamp = risk_blocker.closed_at
     else:
         event_timestamp = risk_blocker.identified_at or risk_blocker.created_at
 

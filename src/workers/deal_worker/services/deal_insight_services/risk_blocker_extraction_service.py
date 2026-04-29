@@ -3,7 +3,7 @@
 This service handles the business logic for risk/blocker extraction:
 - Validating deal existence and checking content availability
 - Passing context to the RiskBlockerExtractionAgent which uses tools to gather ALL data
-- Creating AI-suggested risk/blocker records
+- Creating risk/blocker records directly with status=OPEN (no suggested transit)
 
 Follows fresh session pattern:
 - Phase 1: Validate deal, check content exists (fresh session, release before LLM)
@@ -46,6 +46,11 @@ from src.workers.deal_worker.utils.deal_job_utils import (
 
 logger = get_logger(__name__)
 
+# Sentinel UUID used to attribute system-driven actions to the automated pipeline
+# (project-wide convention; see also deal_memory_service.py, meeting_summary_service.py).
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+AI_EXTRACTION_ACTOR_NAME = "AI Extraction Agent"
+
 
 class RiskBlockerExtractionError(Exception):
     """Base exception for extraction errors."""
@@ -85,7 +90,8 @@ class RiskBlockerExtractionService:
     This service orchestrates the extraction process:
     1. Validates deal exists, checks content availability
     2. Creates RiskBlockerExtractionAgent with org_id + deal_id (agent gathers all data via tools)
-    3. Creates AI-suggested risk/blocker records from extracted items
+    3. Creates OPEN risk/blocker records from extracted items, attributed to the
+       automated pipeline sentinel user
 
     Follows fresh session pattern:
     - Phase 1: Validate deal, check content (fresh session, release before LLM)
@@ -145,7 +151,7 @@ class RiskBlockerExtractionService:
             item_type=extracted.item_type,
             category=extracted.category,
             severity=extracted.severity,
-            status=RiskBlockerStatus.AI_SUGGESTED,
+            status=RiskBlockerStatus.OPEN,
             title=extracted.title,
             description=extracted.description,
             quote=extracted.quote,
@@ -156,26 +162,32 @@ class RiskBlockerExtractionService:
             ai_confidence=extracted.confidence,
             ai_reasoning=extracted.reasoning,
             owner_name=extracted.suggested_owner,
+            created_by_user_id=AUTOMATED_PIPELINE_USER_ID,
+            created_by_user_name=AI_EXTRACTION_ACTOR_NAME,
+            last_modified_by_user_id=AUTOMATED_PIPELINE_USER_ID,
+            last_modified_by_user_name=AI_EXTRACTION_ACTOR_NAME,
             risk_blocker_data={
                 "audit_trail": [
                     {
-                        "action": "ai_extracted",
+                        "action": "opened",
                         "timestamp": datetime.now(UTC).isoformat(),
                         "actor_type": "system",
-                        "actor_id": "risk_blocker_extraction_agent",
+                        "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
+                        "actor_name": AI_EXTRACTION_ACTOR_NAME,
                         "details": {
+                            "source": "ai_extraction",
                             "confidence": extracted.confidence,
+                            "reasoning": extracted.reasoning,
                         },
                     }
                 ],
-                "unique_modifiers": [],
+                "unique_modifiers": [str(AUTOMATED_PIPELINE_USER_ID)],
             },
         )
 
         session.add(item)
 
         # Create timeline event for the AI-extracted risk/blocker
-        # Note: AI-generated items create timeline events immediately, not on user confirmation
         timeline_event_type = (
             TimelineEventType.RISK_FLAGGED
             if extracted.item_type == RiskBlockerType.RISK

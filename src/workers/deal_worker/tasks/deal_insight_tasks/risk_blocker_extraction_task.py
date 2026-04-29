@@ -5,7 +5,7 @@ deal timeline content (meetings, emails, Slack messages) using AI:
     - Identifies potential risks and blockers
     - Classifies by category, severity, and type
     - Deduplicates against existing items
-    - Creates AI_SUGGESTED entries for user review
+    - Creates OPEN entries directly (no separate review/confirm step)
 
 Tasks:
     - extract_deal_risks_blockers_task: Extract for a specific deal
@@ -62,7 +62,7 @@ def extract_deal_risks_blockers_task(
     """Extract risks and blockers for a specific deal.
 
     This task is triggered by backend events (e.g., after new meetings/emails sync),
-    not by frontend requests. It runs AI extraction and creates AI_SUGGESTED items.
+    not by frontend requests. It runs AI extraction and creates OPEN items directly.
 
     Args:
         organisation_id: UUID of the organization (string for JSON serialization)
