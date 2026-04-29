@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
@@ -228,10 +228,12 @@ class MeetingRecordingDispatchService:
         the normal path ran, the scan closes the gap.
         """
         event_ids = await self._list_unsent_upcoming_event_ids()
+        upcoming_deal_meetings = await self._count_upcoming_deal_meetings()
         # Deterministic ordering gives stable operator logs and reduces diff noise when
         # rerunning the same scan right after a temporary provider failure.
         summary = {
-            "meetings_found": len(event_ids),
+            "meetings_found": upcoming_deal_meetings,
+            "actionable_meetings_found": len(event_ids),
             "recordings_sent": 0,
             "already_sent": 0,
             "rescheduled": 0,
@@ -243,7 +245,8 @@ class MeetingRecordingDispatchService:
             extra={
                 "event": "meeting_recording_fallback_candidates_loaded",
                 "organisation_id": str(self.organisation_id),
-                "meetings_found": len(event_ids),
+                "meetings_found": upcoming_deal_meetings,
+                "actionable_meetings_found": len(event_ids),
             },
         )
 
@@ -295,6 +298,35 @@ class MeetingRecordingDispatchService:
             },
         )
         return summary
+
+    async def _count_upcoming_deal_meetings(self) -> int:
+        """Count upcoming active deal-linked meetings, regardless of bot state."""
+        now = datetime.now(UTC)
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = (
+                select(func.count(col(CalendarEvent.event_id).distinct()))
+                .select_from(CalendarEvent)
+                .join(
+                    CalendarEventDealAssociation,
+                    col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
+                )
+                .where(
+                    col(CalendarEvent.organisation_id) == self.organisation_id,
+                    col(CalendarEvent.start_at) > now,
+                    col(CalendarEvent.conference_link).is_not(None),
+                    col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+                    col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+                    or_(
+                        col(CalendarEvent.status).is_(None),
+                        col(CalendarEvent.status) != "cancelled",
+                    ),
+                )
+            )
+            result = await session.execute(stmt)
+            return int(result.scalar_one() or 0)
+
+        return 0
 
     def _provider_metadata(
         self,
