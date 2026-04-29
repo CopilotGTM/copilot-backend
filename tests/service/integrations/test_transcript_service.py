@@ -13,8 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingStatus
-from src.service.integrations.nango_client import NangoConnectionError
+from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingProvider
+from src.service.integrations.transcripts.google_meet_provider import TranscriptAuthError
 from src.service.integrations.transcripts.service import (
     TranscriptFetchResult,
     TranscriptService,
@@ -33,8 +35,15 @@ class FakeIntegration:
     integration_email: str = "user@example.com"
     connection_id: str | None = "conn-1"
     is_active: bool = True
-    integration_type: str = "OUTLOOK_CALENDAR"
+    integration_type: IntegrationType = IntegrationType.OUTLOOK_CALENDAR
     organisation_id: UUID = field(default_factory=uuid4)
+    credentials: dict[str, str] = field(
+        default_factory=lambda: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+    )
+    access_token_expires_at: datetime | None = None
 
 
 @dataclass
@@ -68,6 +77,7 @@ def _make_service(org_id: UUID | None = None) -> TranscriptService:
     svc.organisation_id = org_id or uuid4()
     svc._teams = MagicMock()
     svc._google_meet = MagicMock()
+    svc._enable_recall_transcripts = False
     return svc
 
 
@@ -513,15 +523,15 @@ class TestFetchTeams:
         assert result.meeting == meeting
 
     @pytest.mark.asyncio
-    async def test_nango_connection_error_is_retryable(self) -> None:
-        """NangoConnectionError is caught and returns retryable failure."""
+    async def test_transcript_auth_error_is_retryable(self) -> None:
+        """TranscriptAuthError is caught and returns retryable failure."""
         svc = _make_service()
         event = FakeCalendarEvent()
         integration = FakeIntegration()
         meeting = FakeMeeting()
 
         svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
-        svc._teams.resolve_meeting_id = AsyncMock(side_effect=NangoConnectionError("token expired"))
+        svc._teams.resolve_meeting_id = AsyncMock(side_effect=TranscriptAuthError("token expired"))
 
         result = await svc._fetch_teams(event, integration, None)  # type: ignore[arg-type]
 
@@ -554,6 +564,57 @@ class TestFetchTeams:
 
 class TestFetchTranscriptForEvent:
     """Tests for TranscriptService.fetch_transcript_for_event."""
+
+    @pytest.mark.asyncio
+    async def test_ready_recall_artifact_is_preferred_over_calendar_integrations(self) -> None:
+        """Recall webhook readiness materializes before Teams/Google fallback."""
+        svc = _make_service()
+        svc._enable_recall_transcripts = True
+        event = FakeCalendarEvent()
+        existing = FakeMeeting(transcript_fetch_attempts=0)
+        recall_meeting = FakeMeeting(status="ready")
+
+        svc.get_meeting_by_event = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+        svc._fetch_recall_transcript = AsyncMock(  # type: ignore[method-assign]
+            return_value=TranscriptFetchResult(success=True, meeting=recall_meeting),
+        )
+        svc._update_attempts = AsyncMock()  # type: ignore[method-assign]
+        svc.find_integrations_for_event = AsyncMock()  # type: ignore[method-assign]
+
+        result = await svc.fetch_transcript_for_event(event, max_attempts=2)  # type: ignore[arg-type]
+
+        assert result.status == "fetched"
+        assert result.fetched_with == MeetingRecordingProvider.RECALL_AI.value
+        svc._update_attempts.assert_awaited_once_with(recall_meeting.meeting_id, 1)
+        svc.find_integrations_for_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_recall_fetch_preserves_created_meeting_for_status_update(self) -> None:
+        """Recall-only failures update the created Meeting instead of inserting again."""
+        svc = _make_service()
+        svc._enable_recall_transcripts = True
+        event = FakeCalendarEvent()
+        created_meeting = FakeMeeting(transcript_fetch_attempts=0)
+
+        svc.get_meeting_by_event = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        svc._fetch_recall_transcript = AsyncMock(  # type: ignore[method-assign]
+            return_value=TranscriptFetchResult(
+                success=False,
+                meeting=created_meeting,
+                error="download failed",
+                should_retry=True,
+            ),
+        )
+        svc.find_integrations_for_event = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        svc._save_meeting_status = AsyncMock()  # type: ignore[method-assign]
+
+        result = await svc.fetch_transcript_for_event(event, max_attempts=2)  # type: ignore[arg-type]
+
+        assert result.status == "pending"
+        svc._save_meeting_status.assert_awaited_once()
+        call_args = svc._save_meeting_status.call_args
+        assert call_args[0][1] == created_meeting.meeting_id
+        assert call_args[0][3] == MeetingStatus.PENDING
 
     @pytest.mark.asyncio
     async def test_no_integrations_pending_status(self) -> None:
@@ -590,6 +651,36 @@ class TestFetchTranscriptForEvent:
         assert result.status == "not_available"
         call_args = svc._save_meeting_status.call_args
         assert call_args[0][3] == MeetingStatus.NOT_AVAILABLE
+
+
+class TestRecallTranscriptParsing:
+    """Tests for Recall transcript artifact parsing."""
+
+    def test_parse_recall_transcript_words_into_segments(self) -> None:
+        meeting_id = uuid4()
+        payload = [
+            {
+                "participant": {"id": 100, "name": "Alice"},
+                "words": [
+                    {"text": "hello", "start_timestamp": {"relative": 1.0}},
+                    {"text": "there", "end_timestamp": {"relative": 2.2}},
+                ],
+            },
+            {
+                "participant": {"id": 200, "name": "Bob"},
+                "text": "hi Alice",
+            },
+        ]
+
+        full_text, segments = TranscriptService._parse_recall_transcript(payload, meeting_id)
+
+        assert full_text == "Alice: hello there\nBob: hi Alice"
+        assert len(segments) == 2
+        assert segments[0].speaker_name == "Alice"
+        assert segments[0].speaker_external_id == "100"
+        assert segments[0].start_time_seconds == 1.0
+        assert segments[0].end_time_seconds == 2.2
+        assert segments[1].content == "hi Alice"
 
     @pytest.mark.asyncio
     async def test_success_returns_fetched(self) -> None:

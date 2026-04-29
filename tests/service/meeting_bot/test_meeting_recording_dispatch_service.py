@@ -505,12 +505,14 @@ class TestMeetingRecordingDispatchService:
             return result
 
         monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
+        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=3))  # noqa: SLF001
         monkeypatch.setattr(service, "dispatch_event", _fake_dispatch_event)
 
         result = await service.dispatch_unsent_upcoming()
 
         assert result == {
             "meetings_found": 3,
+            "actionable_meetings_found": 3,
             "recordings_sent": 1,
             "already_sent": 1,
             "rescheduled": 1,
@@ -534,18 +536,48 @@ class TestMeetingRecordingDispatchService:
             raise RuntimeError("provider temporary failure")
 
         monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
+        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=1))  # noqa: SLF001
         monkeypatch.setattr(service, "dispatch_event", _fake_dispatch_event)
 
         result = await service.dispatch_unsent_upcoming()
 
         assert result == {
             "meetings_found": 1,
+            "actionable_meetings_found": 1,
             "recordings_sent": 0,
             "already_sent": 0,
             "rescheduled": 0,
             "skipped": 0,
             "failed": 1,
         }
+
+    @pytest.mark.asyncio
+    async def test_dispatch_unsent_upcoming_reports_total_upcoming_when_none_need_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Logs distinguish total upcoming meetings from fallback-actionable meetings."""
+        organisation_id = uuid4()
+        service = MeetingRecordingDispatchService(organisation_id)
+
+        async def _fake_list_event_ids():
+            return []
+
+        monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
+        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=4))  # noqa: SLF001
+        monkeypatch.setattr(service, "dispatch_event", AsyncMock())
+
+        result = await service.dispatch_unsent_upcoming()
+
+        assert result == {
+            "meetings_found": 4,
+            "actionable_meetings_found": 0,
+            "recordings_sent": 0,
+            "already_sent": 0,
+            "rescheduled": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
+        service.dispatch_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unsent_upcoming_query_selects_ordered_columns_for_postgres(

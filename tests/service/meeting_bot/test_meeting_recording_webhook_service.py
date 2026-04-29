@@ -126,7 +126,7 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recording_done_fetches_transcript_artifact_when_available(monkeypatch) -> None:
+async def test_recording_done_updates_status_without_fetching_transcript(monkeypatch) -> None:
     organisation_id = uuid4()
     existing = MeetingRecordingSession(
         organisation_id=organisation_id,
@@ -142,21 +142,11 @@ async def test_recording_done_fetches_transcript_artifact_when_available(monkeyp
     )
     updated = MeetingRecordingSession.model_validate(existing.model_dump())
     updated.status = MeetingRecordingStatus.COMPLETED
-    updated.transcript_status = MeetingTranscriptStatus.READY
     service = _make_service(organisation_id)
     service.session_service.get_by_provider_session_id.return_value = existing
     service.session_service.apply_webhook_update.return_value = updated
 
-    fetch_mock = AsyncMock(
-        return_value=(
-            {"id": "bot_123", "recordings": [{"id": "rec_1"}]},
-            {
-                "recording_id": "rec_1",
-                "transcript_id": "transcript_1",
-                "download_url": "https://download.example/transcript",
-            },
-        )
-    )
+    fetch_mock = AsyncMock()
     monkeypatch.setattr(service, "_fetch_transcript_artifact", fetch_mock)
 
     payload = {
@@ -171,16 +161,16 @@ async def test_recording_done_fetches_transcript_artifact_when_available(monkeyp
     result = await service.process_recall_webhook(payload)
 
     assert result["status"] == "processed"
-    fetch_mock.assert_awaited_once_with("bot_123")
+    fetch_mock.assert_not_awaited()
     kwargs = service.session_service.apply_webhook_update.await_args.kwargs
     assert kwargs["status"] == MeetingRecordingStatus.COMPLETED
-    assert kwargs["transcript_status"] == MeetingTranscriptStatus.READY
-    assert kwargs["transcript_ready_at"] == datetime(2026, 4, 23, 12, 35, tzinfo=UTC)
-    assert kwargs["provider_payload"]["transcript_artifact"]["transcript_id"] == "transcript_1"
+    assert kwargs["transcript_status"] is None
+    assert kwargs["transcript_ready_at"] is None
+    assert "transcript_artifact" not in kwargs["provider_payload"]
 
 
 @pytest.mark.asyncio
-async def test_recording_done_preserves_transcript_status_when_artifact_missing(
+async def test_recording_done_preserves_transcript_status(
     monkeypatch,
 ) -> None:
     organisation_id = uuid4()

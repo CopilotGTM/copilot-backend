@@ -30,6 +30,7 @@ def verify_recall_webhook_signature(
     variants documented by Recall. The secret is expected to be the `whsec_...`
     value from Recall.
     """
+    secret = secret.strip()
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     # Keep header reads case-insensitive; proxy/CDN layers can mutate case and
     # still preserve values.
@@ -55,7 +56,7 @@ def verify_recall_webhook_signature(
         hmac.new(secret_key, signed_content, hashlib.sha256).digest()
     ).decode("utf-8")
 
-    for versioned_signature in signature_header.split(" "):
+    for versioned_signature in signature_header.split():
         # Signature transport may include multiple schemes; skip malformed entries
         # instead of hard-failing the entire verification.
         try:
