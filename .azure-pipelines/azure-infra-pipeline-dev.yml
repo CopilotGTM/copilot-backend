@@ -3,31 +3,12 @@
 # Location: .azure-pipelines/azure-infra-pipeline-dev.yml
 # =========================================================================
 # This pipeline handles DEV environment deployments.
-# Triggered on: main branch
+# Manual-only. Backend dev deploys still run automatically on main merges.
 # =========================================================================
 
-trigger:
-  branches:
-    include:
-      - main
-      - feature/*
-  paths:
-    include:
-      - infra/terraform/azure/dev/**
-      - infra/terraform/azure/modules/**
-      - .azure-pipelines/azure-infra-pipeline-dev.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+trigger: none
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - infra/terraform/azure/dev/**
-      - infra/terraform/azure/modules/**
-      - .azure-pipelines/azure-infra-pipeline-dev.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+pr: none
 
 variables:
   - name: TF_VERSION
@@ -37,7 +18,7 @@ variables:
 
 stages:
   # -------------------------------------------------------------------------
-  # DEV: Triggered on main branch push (plan + apply)
+  # DEV: Manual run only (plan + apply)
   # -------------------------------------------------------------------------
   - template: templates/terraform-env-stage.yml
     parameters:

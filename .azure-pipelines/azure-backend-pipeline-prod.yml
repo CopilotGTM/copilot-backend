@@ -2,14 +2,14 @@
 # Azure DevOps Pipeline - Backend PROD Environment
 # ============================================================================
 # This pipeline handles PROD deployments only.
-# Triggers on: release/* branches
+# Triggers on: release/backend/* branches
 # Deploys to: Prod AKS cluster via Helm (with approval gate)
 # ============================================================================
 
 trigger:
   branches:
     include:
-      - release/*
+      - release/backend/*
   paths:
     exclude:
       - infra/**
@@ -61,6 +61,7 @@ stages:
   # ==========================================================================
   - stage: CheckChanges
     displayName: Check for Code Changes
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/backend/'))
     jobs:
       - job: DetectChanges
         displayName: Detect if only docs changed
