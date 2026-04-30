@@ -5,39 +5,21 @@
 # NOTE: This file contains both dev and prod stages in one pipeline.
 # For cleaner separation, use the environment-specific pipelines:
 #   - azure-infra-pipeline-dev.yml  -> DEV only (main branch)
-#   - azure-infra-pipeline-prod.yml -> PROD only (release/* branches)
+#   - azure-infra-pipeline-prod.yml -> PROD only (release/infra/* branches)
+# Automatic triggers are disabled to avoid overlapping with the split pipelines.
 # =========================================================================
 # Design goals:
 # - Supports SOC2 private-access controls (Key Vault/Storage via Private Link)
 # - Runs Terraform from a self-hosted agent inside the VNet (required for PE-only resources)
 # - Promotion model:
 #   - main -> dev (auto apply)
-#   - release/* -> uat (auto apply)
-#   - release/* -> prod (requires approval)
+#   - release/infra/* -> uat (auto apply)
+#   - release/infra/* -> prod (requires approval)
 # =========================================================================
 
-trigger:
-  branches:
-    include:
-      - main
-      - release/*
-      - feature/*
-      - hotfix/*
-  paths:
-    include:
-      - infra/terraform/azure/**
-      - .azure-pipelines/azure-infra-pipeline.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+trigger: none
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - infra/terraform/azure/**
-      - .azure-pipelines/azure-infra-pipeline.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
+pr: none
 
 variables:
   - name: TF_VERSION
@@ -70,7 +52,7 @@ stages:
       artifactName: tfplan-dev
 
   # -------------------------------------------------------------------------
-  # UAT: Triggered on release/* branch push (plan + apply)
+  # UAT: Triggered on release/infra/* branch push (plan + apply)
   # -------------------------------------------------------------------------
   # - template: templates/terraform-env-stage.yml
   #   parameters:
@@ -82,13 +64,13 @@ stages:
   #     agentPoolName: $(SELF_HOSTED_AGENT_POOL)
   #     tfVersion: $(TF_VERSION)
   #     dependsOn: []
-  #     stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'uat'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
-  #     applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'uat'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'), ne(variables['Build.Reason'], 'PullRequest'))
   #     approvalEnvironment: terraform-uat
   #     artifactName: tfplan-uat
 
   # -------------------------------------------------------------------------
-  # PROD: Triggered on release/* branch, requires approval via environment gate
+  # PROD: Triggered on release/infra/* branch, requires approval via environment gate
   # -------------------------------------------------------------------------
   - template: templates/terraform-env-stage.yml
     parameters:
@@ -100,7 +82,7 @@ stages:
       agentPoolName: $(PROD_AGENT_POOL)
       tfVersion: ${{ variables.TF_VERSION }}
       dependsOn: []  # No dependency on UAT for now (can add back later)
-      stageCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
-      applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+      stageCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'))
+      applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-prod
       artifactName: tfplan-prod

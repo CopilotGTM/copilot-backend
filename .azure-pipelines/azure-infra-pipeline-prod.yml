@@ -3,14 +3,14 @@
 # Location: .azure-pipelines/azure-infra-pipeline-prod.yml
 # =========================================================================
 # This pipeline handles PROD environment deployments.
-# Triggered on: release/* branches
+# Triggered on: release/infra/* branches
 # Requires approval via environment gate
 # =========================================================================
 
 trigger:
   branches:
     include:
-      - release/*
+      - release/infra/*
   paths:
     include:
       - infra/terraform/azure/prod/**
@@ -21,7 +21,7 @@ trigger:
 pr:
   branches:
     include:
-      - release/*
+      - release/infra/*
   paths:
     include:
       - infra/terraform/azure/prod/**
@@ -37,7 +37,7 @@ variables:
 
 stages:
   # -------------------------------------------------------------------------
-  # PROD: Triggered on release/* branch push (plan + apply)
+  # PROD: Triggered on release/infra/* branch push (plan + apply)
   # -------------------------------------------------------------------------
   - template: templates/terraform-env-stage.yml
     parameters:
@@ -49,9 +49,9 @@ stages:
       agentPoolName: $(PROD_AGENT_POOL)
       tfVersion: ${{ variables.TF_VERSION }}
       dependsOn: []
-      stageCondition: succeeded()
-      # Allow terraform apply from release/* branches only
+      stageCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'))
+      # Allow terraform apply from release/infra/* branches only
       # Still prevents apply on Pull Requests - only actual branch pushes
-      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+      applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/infra/'), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-prod
       artifactName: tfplan-prod
