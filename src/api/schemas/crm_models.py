@@ -345,6 +345,10 @@ class StakeholderDetail(BaseModel):
         ...,
         description="Approval status (APPROVED, PENDING, REJECTED). Only APPROVED stakeholders are used for deal matching.",
     )
+    active_research_job: DealJobResponse | None = Field(
+        None,
+        description="Active manual stakeholder research job for reconnect, if any.",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -422,6 +426,10 @@ class StakeholderFullDetail(BaseModel):
         None,
         description="When the stakeholder research was last generated",
     )
+    active_research_job: DealJobResponse | None = Field(
+        None,
+        description="Active manual stakeholder research job for reconnect, if any.",
+    )
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -429,6 +437,12 @@ class StakeholderFullDetail(BaseModel):
 
 
 class StakeholderLink(BaseModel):
+    """External profile link attached to a stakeholder for UI display.
+
+    The schema carries both raw link data and optional display labels so clients
+    can render compact contact cards without looking up platform metadata.
+    """
+
     platform: str = Field(..., description="Platform name (e.g., linkedin, twitter, crm)")
     url: str = Field(..., description="The URL")
     label: str | None = Field(None, description="Optional display label")
@@ -720,6 +734,29 @@ class DealJobResponse(BaseModel):
     status: str = Field(..., description="Current status of the job")
 
 
+class CreateStakeholderResponse(BaseModel):
+    """Response for manual stakeholder creation.
+
+    The stakeholder row is created synchronously. Any post-create background work
+    is returned as deal jobs so clients can show progress and reconnect.
+    """
+
+    stakeholder: StakeholderDetail
+    processing_jobs: list[DealJobResponse] = Field(default_factory=list)
+    research_job: DealJobResponse | None = Field(
+        None,
+        description="Research job for the added/restored stakeholder, if one was started.",
+    )
+
+
+class StakeholderConflictResponse(BaseModel):
+    """Metadata returned when a create request targets an existing stakeholder."""
+
+    stakeholder_id: UUID
+    approval_status: str
+    is_deleted: bool
+
+
 class MeetingJobsStatus(BaseModel):
     """Active jobs for a meeting, keyed by job type.
 
@@ -739,7 +776,7 @@ class DealSummaryJobsStatus(BaseModel):
     """
 
     deal_summary: DealJobResponse | None = None
-    # Future: stakeholder_analysis, deal_risk_analysis, etc.
+    stakeholder_processing: list[DealJobResponse] = Field(default_factory=list)
 
 
 # Meeting Models

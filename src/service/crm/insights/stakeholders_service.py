@@ -82,6 +82,7 @@ class StakeholdersService:
 
     @property
     def session(self) -> AsyncSession:
+        """Return the org-scoped DB session for this service instance."""
         return self.org_session
 
     async def _get_internal_domains(self) -> set[str]:
@@ -141,7 +142,8 @@ class StakeholdersService:
         if domain in PERSONAL_EMAIL_DOMAINS:
             return None
 
-        # Check if a CRMContact already exists by email in this org
+        # If the same email already exists in this org, reuse it to avoid creating
+        # duplicate local CRM contacts for multiple stakeholders.
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.email) == email_normalized,
@@ -208,7 +210,9 @@ class StakeholdersService:
         if not integration:
             return False
 
-        # Load the deal to check its integration
+        # Validate the deal belongs to this org and internal CRM so participant writes
+        # stay inside CRM-scoped data; external deals must not get internal
+        # CRM participants.
         deal = await self.session.get(CRMDeal, deal_id)
         if (
             not deal
@@ -219,7 +223,8 @@ class StakeholdersService:
 
         email_normalized = email.lower().strip()
 
-        # Check if participant already exists
+        # Preserve idempotency: if this contact is already linked on the deal,
+        # skip re-adding the participant record.
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.deal_id) == deal_id,
             col(CRMDealParticipant.related_email) == email_normalized,
@@ -318,6 +323,91 @@ class StakeholdersService:
 
         return serialized
 
+    async def _reactivate_removed_stakeholder(
+        self,
+        deal_id: UUID,
+        stakeholder: DealStakeholder,
+        request: CreateStakeholderRequest,
+        email_normalized: str,
+    ) -> StakeholderDetail:
+        """Restore a previously removed stakeholder from the manual add flow."""
+        contact_id = stakeholder.contact_id
+        if not contact_id:
+            contact_id = await self._ensure_contact_for_stakeholder(
+                email=email_normalized,
+                name=request.name,
+                job_title=request.job_title,
+                phone_number=request.phone_number,
+            )
+            stakeholder.contact_id = contact_id
+
+        if contact_id:
+            await self._ensure_deal_participant(
+                deal_id=deal_id,
+                contact_id=contact_id,
+                email=email_normalized,
+                name=request.name or stakeholder.name,
+            )
+
+        explicit_fields = request.model_fields_set
+        if "name" in explicit_fields:
+            stakeholder.name = request.name
+        if "job_title" in explicit_fields:
+            stakeholder.job_title = request.job_title
+        if "phone_number" in explicit_fields:
+            stakeholder.phone_number = request.phone_number
+        if "department" in explicit_fields:
+            stakeholder.department = request.department
+        if "external_links" in explicit_fields:
+            stakeholder.external_links = self._serialize_external_links(request.external_links)
+        if "stance" in explicit_fields:
+            stakeholder.stance = request.stance
+        if "decision_power" in explicit_fields:
+            stakeholder.decision_power = request.decision_power
+        if "champion_potential" in explicit_fields and request.champion_potential is not None:
+            stakeholder.champion_potential = request.champion_potential
+        if "motivation" in explicit_fields:
+            stakeholder.motivation = request.motivation
+        if "pain_points" in explicit_fields:
+            stakeholder.pain_points = request.pain_points
+
+        stakeholder.email = email_normalized
+        stakeholder.source = StakeholderSource.MANUAL
+        stakeholder.approval_status = ApprovalStatus.APPROVED
+        stakeholder.is_deleted = False
+        stakeholder.updated_at = datetime.now(UTC)
+
+        from sqlalchemy import delete
+        from src.domain.models.organisation_tables.sync.timeline_models import (
+            DealTimelineEvent,
+        )
+
+        for event_type in (
+            TimelineEventType.STAKEHOLDER_ADDED,
+            TimelineEventType.STAKEHOLDER_REMOVED,
+        ):
+            delete_stmt = delete(DealTimelineEvent).where(
+                col(DealTimelineEvent.deal_id) == deal_id,
+                col(DealTimelineEvent.event_type) == event_type,
+                col(DealTimelineEvent.source_record_id) == str(stakeholder.stakeholder_id),
+            )
+            await self.session.execute(delete_stmt)
+
+        await self.session.refresh(stakeholder)
+
+        timeline_event = build_stakeholder_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            stakeholder=stakeholder,
+            event_type=TimelineEventType.STAKEHOLDER_ADDED,
+        )
+        self.session.add(timeline_event)
+
+        await self.session.commit()
+        await self.session.refresh(stakeholder)
+
+        return StakeholderDetail.model_validate(stakeholder)
+
     async def list_stakeholders_by_deal(
         self,
         deal_id: UUID,
@@ -335,7 +425,9 @@ class StakeholdersService:
             StakeholderListResponse with company_domain for frontend validation
             and list of stakeholders filtered by approval_status.
         """
-        # Get deal to fetch company_domain for frontend validation
+        # Fetch deal fields needed by the UI contract before filtering stakeholders.
+        # Keeping query-scoped org checks here prevents cross-org data leakage in list
+        # endpoints.
         deal_stmt = select(CRMDeal).where(
             col(CRMDeal.deal_id) == deal_id,
             col(CRMDeal.organisation_id) == self.organisation_id,
@@ -434,6 +526,7 @@ class StakeholdersService:
             "engagement_history": engagement_history,
             "stakeholder_research": stakeholder.stakeholder_research,
             "last_researched_at": stakeholder.last_researched_at,
+            "active_research_job": None,
             "created_at": stakeholder.created_at,
             "updated_at": stakeholder.updated_at,
         }
@@ -540,7 +633,8 @@ class StakeholdersService:
         # Refresh stakeholder after DELETE to prevent expired-attribute lazy-load errors
         await self.session.refresh(stakeholder)
 
-        # Create fresh timeline event for the removal
+        # Recreate the removal event in the same flush context so downstream
+        # subscribers see a single ordered timeline sequence per update.
         timeline_event = build_stakeholder_timeline_event(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -600,7 +694,15 @@ class StakeholdersService:
                     data=conflict_data,
                 )
 
-            # Stakeholder exists but is REMOVED, REJECTED, or soft-deleted
+            if status == ApprovalStatus.REMOVED:
+                return await self._reactivate_removed_stakeholder(
+                    deal_id=deal_id,
+                    stakeholder=existing_stakeholder,
+                    request=request,
+                    email_normalized=email_normalized,
+                )
+
+            # Stakeholder exists but is REJECTED or soft-deleted
             # Let the user decide — they can re-approve via the approve endpoint
             raise StakeholdersServiceError(
                 f"Stakeholder exists but is currently {conflict_data['approval_status']}. "
@@ -611,13 +713,16 @@ class StakeholdersService:
 
         external_links_data = self._serialize_external_links(request.external_links)
 
-        # Create the stakeholder with manual source
-        # Use neutral defaults for optional numeric fields
+        # Manually added stakeholders are intentionally tagged by source so
+        # downstream automation keeps approval and research behavior explicit.
+        # Optional metrics use neutral defaults because they are updated later by
+        # usage signals.
         champion_potential = (
             request.champion_potential if request.champion_potential is not None else 50.0
         )
 
-        # Link to CRMContact (find existing or create new under internal CRM)
+        # Link to CRMContact when available so repeated stakeholders reuse profile
+        # IDs and keep contact-level identity stable.
         contact_id = await self._ensure_contact_for_stakeholder(
             email=email_normalized,
             name=request.name,
@@ -625,7 +730,8 @@ class StakeholdersService:
             phone_number=request.phone_number,
         )
 
-        # Create CRMDealParticipant if internal CRM deal
+        # Build DealParticipant only for internal CRM deals to avoid leaking
+        # ad-hoc participants into integrations that do not track them.
         if contact_id:
             await self._ensure_deal_participant(
                 deal_id=deal_id,
@@ -655,7 +761,8 @@ class StakeholdersService:
         )
         self.session.add(new_stakeholder)
 
-        # Create timeline event for the new stakeholder
+        # Persist the add-event so downstream consumers can replay audit history
+        # and rebuild timelines without inferring it from row timestamps alone.
         timeline_event = build_stakeholder_timeline_event(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -783,7 +890,8 @@ class StakeholdersService:
         result = await self.session.execute(stmt)
         contacts_map = {c.contact_id: c for c in result.scalars().all()}
 
-        # Get existing stakeholder emails for this deal
+        # Build existing stakeholder/email membership once so the add loop can
+        # enforce idempotency by email and contact id without N+1 checks.
         existing_stmt = select(DealStakeholder.email, DealStakeholder.contact_id).where(  # type: ignore
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
@@ -796,12 +904,13 @@ class StakeholdersService:
         for contact_id in contact_ids:
             contact = contacts_map.get(contact_id)
 
-            # Contact not found
+            # Ignore stale IDs from the client payload so partial syncs remain resilient.
             if not contact:
                 skipped.append(SkippedContact(contact_id=contact_id, reason="Contact not found"))
                 continue
 
-            # No email
+            # Skip entries that cannot resolve to contact points; email is required
+            # for identity and downstream matching.
             if not contact.email or not contact.email.strip():
                 skipped.append(
                     SkippedContact(
@@ -811,7 +920,8 @@ class StakeholdersService:
                 )
                 continue
 
-            # Already exists by email
+            # De-duplicate by email first because it is the matching key in all
+            # discovery and dedupe paths.
             if contact.email.lower() in existing_emails:
                 skipped.append(
                     SkippedContact(
@@ -821,7 +931,8 @@ class StakeholdersService:
                 )
                 continue
 
-            # Already exists by contact_id
+            # De-duplicate by contact_id to prevent the same CRM record from becoming
+            # two stakeholders on the same deal.
             if contact_id in existing_contact_ids:
                 skipped.append(
                     SkippedContact(
@@ -831,14 +942,16 @@ class StakeholdersService:
                 )
                 continue
 
-            # Build name from contact
+            # Build a name from CRM contact fields so created rows always include a
+            # human-friendly identifier when possible.
             name = (
                 contact.full_name
                 or " ".join(filter(None, [contact.first_name, contact.last_name]))
                 or None
             )
 
-            # Create the stakeholder
+            # Insert a CRM-derived stakeholder row with source=CRM for audit and
+            # lifecycle clarity.
             new_stakeholder = DealStakeholder(
                 organisation_id=self.organisation_id,
                 deal_id=deal_id,
@@ -850,7 +963,8 @@ class StakeholdersService:
             )
             self.session.add(new_stakeholder)
 
-            # Create timeline event for the new stakeholder
+            # Emit timeline event so stakeholder additions are recoverable in activity
+            # feeds and support incident debugging.
             timeline_event = build_stakeholder_timeline_event(
                 organisation_id=self.organisation_id,
                 deal_id=deal_id,

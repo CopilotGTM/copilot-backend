@@ -228,7 +228,8 @@ async def _get_integration_types_map(
     result = await session.execute(stmt)
     integrations = result.scalars().all()
 
-    # Create mapping of integration_id -> is_internal
+    # Build an org-scoped lookup so job visibility and data hydration only run
+    # for internal-CRM deals; external integrations must not reuse internal paths.
     return {
         integration.integration_id: integration.integration_type == IntegrationType.INTERNAL_CRM
         for integration in integrations
@@ -754,7 +755,8 @@ async def get_deal(
                 "Could not fetch active deal jobs for %s: %s", deal_id, jobs_err, exc_info=True
             )
 
-        # Get deal summary data (frontend derives status from active_deal_jobs and deal_summary_data)
+        # Keep `deal_summary_data` for UI-only detail caching. Reconnect uses the
+        # active job payload and should not derive state from this historical blob.
         deal_summary_data = getattr(deal, "deal_summary_data", None)
 
         # Determine if deal is from internal CRM
@@ -1290,6 +1292,55 @@ async def generate_deal_summary(
 
 
 @deals_router.get(
+    "/deals/{deal_id}/jobs/{job_id}/stream",
+    tags=["crm", "deals", "jobs"],
+    summary="SSE stream for a deal job",
+    description="""
+    Generic SSE stream for any user-visible deal job.
+
+    Subscribe with the job_id returned by a deal or stakeholder mutation. The stream
+    emits progress frames from Redis and supports reconnect through Last-Event-ID.
+    """,
+)
+async def deal_job_stream(
+    deal_id: UUID,
+    job_id: UUID,
+    request: Request,
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    """SSE stream for any user-visible deal job."""
+    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    if can_access is None:
+        raise HTTPException(status_code=404, detail="Job stream not found")
+    if can_access is False:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
+
+    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    resume_from_id = last_event_id or None
+
+    logger.info(
+        "Client connected to generic deal job SSE: org=%s deal=%s job=%s",
+        user_ids.organisation_id,
+        deal_id,
+        job_id,
+    )
+
+    async def event_generator():
+        """Stream frames from the SSE service and always close service resources."""
+        try:
+            async for ev in sse_service.stream_events(resume_from_id=resume_from_id):
+                yield ev
+        finally:
+            try:
+                await sse_service.close()
+            except Exception:
+                logger.debug("DealJobSSE service close failed", exc_info=True)
+
+    return EventSourceResponse(event_generator())
+
+
+@deals_router.get(
     "/deals/{deal_id}/deal-summary/stream/{job_id}",
     tags=["crm", "deals", "ai"],
     summary="SSE stream for deal summary job",
@@ -1315,7 +1366,9 @@ async def deal_summary_stream(
     Subscribe with the job_id from POST /deals/{deal_id}/deal-summary/generate.
     """
     sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
-    can_access = await sse_service.ensure_user_access()
+    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    if can_access is None:
+        raise HTTPException(status_code=404, detail="Job stream not found")
     if can_access is False:
         raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
 
@@ -1330,6 +1383,7 @@ async def deal_summary_stream(
     )
 
     async def event_generator():
+        """Stream frames from summary SSE while ensuring stream cleanup on disconnect."""
         try:
             async for ev in sse_service.stream_events(resume_from_id=resume_from_id):
                 yield ev

@@ -17,7 +17,7 @@ from tests.api.routers.crm.conftest import (
 )
 
 # =============================================================================
-# GET /deals - List Deals Tests
+# Deal list endpoint tests
 # =============================================================================
 
 
@@ -198,6 +198,7 @@ def test_list_deals_returns_currency_symbol_and_normalized_code(
 def test_list_deals_currency_normalization_handles_code_with_symbol(
     client: TestClient, deals_dependency_overrides
 ):
+    """Currency should normalize mixed "INR (₹)" input to canonical code and symbol."""
     deals_service = deals_dependency_overrides["deals_service"]
     org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
 
@@ -214,6 +215,7 @@ def test_list_deals_currency_normalization_handles_code_with_symbol(
 def test_list_deals_hides_active_import_job_links(
     client: TestClient, deals_dependency_overrides, monkeypatch
 ):
+    """List endpoint should hide import links when an active import job exists."""
     deals_service = deals_dependency_overrides["deals_service"]
     deal_id = uuid4()
     deal = SimpleNamespace(
@@ -257,7 +259,7 @@ def test_list_deals_hides_active_import_job_links(
 
 
 # =============================================================================
-# GET /deals/stats - Deal Statistics Tests
+# Deal statistics endpoint tests
 # =============================================================================
 
 
@@ -314,7 +316,7 @@ def test_deals_stats_by_pipeline(client: TestClient, deals_dependency_overrides)
 
 
 # =============================================================================
-# GET /deals/{deal_id} - Get Deal Detail Tests
+# Deal detail endpoint tests
 # =============================================================================
 
 
@@ -725,12 +727,65 @@ def test_get_deal_with_active_jobs(client: TestClient, deals_dependency_override
     assert "deal_summary_status" in data
 
 
+def test_get_deal_with_active_stakeholder_processing_jobs(
+    client: TestClient, deals_dependency_overrides
+):
+    """Deal detail exposes active stakeholder processing jobs for reconnect."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    job_service = deals_dependency_overrides["job_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deal = create_deal(org_id, name="Stakeholder Job Deal")
+    deals_service.add_deal(deal)
+
+    from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
+
+    from tests.api.routers.crm.conftest import FakeDealJob as ConfTestFakeDealJob
+
+    job_service.add_job(
+        ConfTestFakeDealJob(
+            job_id=uuid4(),
+            deal_id=deal.deal_id,
+            organisation_id=org_id,
+            job_type=DealJobType.DEAL_EMAIL_REMATCH,
+            status=JobStatus.PENDING,
+        )
+    )
+    job_service.add_job(
+        ConfTestFakeDealJob(
+            job_id=uuid4(),
+            deal_id=deal.deal_id,
+            organisation_id=org_id,
+            job_type=DealJobType.STAKEHOLDER_SYNC,
+            status=JobStatus.IN_PROGRESS,
+        )
+    )
+    job_service.add_job(
+        ConfTestFakeDealJob(
+            job_id=uuid4(),
+            deal_id=deal.deal_id,
+            organisation_id=org_id,
+            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            status=JobStatus.IN_PROGRESS,
+        )
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+
+    assert resp.status_code == 200
+    active_jobs = resp.json()["data"]["active_deal_jobs"]
+    assert [job["job_type"] for job in active_jobs["stakeholder_processing"]] == [
+        "deal_email_rematch",
+        "stakeholder_sync",
+    ]
+
+
 def test_get_deal_age_calculation(client: TestClient, deals_dependency_overrides):
     """Test deal age is calculated correctly."""
     deals_service = deals_dependency_overrides["deals_service"]
     org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
 
-    # Create deal with source_created_at 10 days ago
+    # Use a fixed historical create timestamp so age assertions are deterministic.
     deal = create_deal(
         org_id,
         name="Age Test Deal",
@@ -849,10 +904,147 @@ def test_generate_summary_service_error(client: TestClient, deals_dependency_ove
 
 
 # =============================================================================
-# GET /deals/{deal_id}/deal-summary/stream/{job_id} - SSE Stream Tests
+# SSE stream endpoint tests
 # =============================================================================
 
 # Note: SSE endpoints are difficult to test with synchronous TestClient
 # as they create long-lived streaming connections. Full SSE testing
 # requires async test infrastructure with proper timeout handling.
 # The endpoint is verified to exist and be routable via integration tests.
+
+
+def test_generic_deal_job_stream_returns_sse(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    """Generic deal job stream endpoint returns SSE using DealJobSSEService."""
+    deal_id = uuid4()
+    job_id = uuid4()
+    created_services = []
+
+    class FakeDealJobSSEService:
+        """Fake SSE service that exposes resume handling for list-stream assertions."""
+
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.organisation_id = organisation_id
+            self.job_id = created_job_id
+            self.user_id = user_id
+            self.resume_from_id = None
+            created_services.append(self)
+
+        async def ensure_user_access(self, deal_id=None):
+            """Allow stream access for this success-path test."""
+            return True
+
+        async def stream_events(self, *, resume_from_id=None):
+            """Emit a single completion frame to satisfy endpoint contract."""
+            self.resume_from_id = resume_from_id
+            yield {"event": "complete", "data": "{}"}
+
+        async def close(self):
+            """Close hook required by DealJobSSEService contract."""
+            return None
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
+    resp = client.get(
+        f"/users/crm/deals/{deal_id}/jobs/{job_id}/stream",
+        headers={"Last-Event-ID": "12-0"},
+    )
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    assert created_services[0].job_id == job_id
+    assert created_services[0].resume_from_id == "12-0"
+
+
+def test_generic_deal_job_stream_rejects_cross_user_job(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    """Generic deal job stream endpoint uses DealJobSSEService authorization."""
+    deal_id = uuid4()
+    job_id = uuid4()
+
+    class FakeDealJobSSEService:
+        """Fake SSE service that denies access to validate endpoint error handling."""
+
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.organisation_id = organisation_id
+            self.job_id = created_job_id
+            self.user_id = user_id
+
+        async def ensure_user_access(self, deal_id=None):
+            """Deny access so endpoint returns authorization error."""
+            return False
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal_id}/jobs/{job_id}/stream")
+
+    assert resp.status_code == 403
+
+
+def test_generic_deal_job_stream_returns_404_for_missing_job(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    """Missing job streams should fail fast instead of waiting on an empty Redis key."""
+    deal_id = uuid4()
+    job_id = uuid4()
+
+    class FakeDealJobSSEService:
+        """Fake SSE service that reports unknown job status."""
+
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.organisation_id = organisation_id
+            self.job_id = created_job_id
+            self.user_id = user_id
+
+        async def ensure_user_access(self, deal_id=None):
+            """Return None to represent a missing/unavailable job."""
+            return None
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal_id}/jobs/{job_id}/stream")
+
+    assert resp.status_code == 404
+
+
+def test_generic_deal_job_stream_rejects_job_from_different_deal(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    """Generic deal job stream must authorize against the requested deal_id."""
+    deal_id = uuid4()
+    job_id = uuid4()
+    checked_deal_ids = []
+
+    class FakeDealJobSSEService:
+        """Fake SSE service that records the requested deal_id for auth checks."""
+
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.organisation_id = organisation_id
+            self.job_id = created_job_id
+            self.user_id = user_id
+
+        async def ensure_user_access(self, deal_id=None):
+            """Track the requested deal_id and deny access for assertion branch."""
+            checked_deal_ids.append(deal_id)
+            return False
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal_id}/jobs/{job_id}/stream")
+
+    assert resp.status_code == 403
+    assert checked_deal_ids == [deal_id]

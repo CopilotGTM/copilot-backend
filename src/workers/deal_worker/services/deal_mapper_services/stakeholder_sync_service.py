@@ -77,6 +77,7 @@ class StakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return True when every stakeholder sync step for the deal succeeded."""
         return len(self.errors) == 0
 
     @property
@@ -101,6 +102,7 @@ class OrgStakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return True when the organization sync completed without failed deals."""
         return self.failed_deals == 0
 
     @property
@@ -129,14 +131,22 @@ class StakeholderSyncService:
             # Dispatch Task 2/3
     """
 
-    def __init__(self, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        organisation_id: UUID,
+        *,
+        suppress_research_dispatch: bool = False,
+    ) -> None:
         """
         Initialize the stakeholder sync service.
 
         Args:
             organisation_id: UUID of the organisation
+            suppress_research_dispatch: When True, newly synced stakeholders
+                are not sent to the automated research dispatcher.
         """
         self.organisation_id = organisation_id
+        self._suppress_research_dispatch = suppress_research_dispatch
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
         self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
 
@@ -476,7 +486,8 @@ class StakeholderSyncService:
                     existing.is_deleted = False
                     changed = True
 
-            # Update name from participant when not manually overridden
+            # Preserve manual user edits; only auto-fill when the caller has not
+            # overridden the name.
             if "name" not in manual_overrides and participant.related_name and not existing.name:
                 existing.name = participant.related_name
                 changed = True
@@ -502,25 +513,26 @@ class StakeholderSyncService:
 
             return False
 
-        # Create new stakeholder
-        # NOTE: job_title is NOT set from participant.relationship_role
+        # Seed stable identity fields first (email, source mapping, source_reference)
+        # then enrich optional attributes from CRMContact. This keeps existing
+        # stakeholders deterministic even if enrichment data is delayed.
+        # NOTE: job_title comes from CRMContact, not participant.relationship_role.
         # relationship_role contains HubSpot association type (e.g., "deal_to_contact")
         # job_title will be enriched from CRMContact.job_title below
-        stakeholder = DealStakeholder(
-            organisation_id=self.organisation_id,
-            integration_id=deal.integration_id,
-            deal_id=deal.deal_id,
-            email=email,
-            name=participant.related_name,
-            source=StakeholderSource.CRM,
-            source_reference_id=participant.participant_id,
-            approval_status=ApprovalStatus.APPROVED,  # CRM is always trusted
-            job_title=None,  # Will be enriched from CRMContact
-            stance=StakeholderStance.UNKNOWN,
-            temperature=StakeholderTemperature.UNKNOWN,
-            engagement_score=0.0,
-            last_contact_at=None,
-        )
+        stakeholder = DealStakeholder()
+        stakeholder.organisation_id = self.organisation_id
+        stakeholder.integration_id = deal.integration_id
+        stakeholder.deal_id = deal.deal_id
+        stakeholder.email = email
+        stakeholder.name = participant.related_name
+        stakeholder.source = StakeholderSource.CRM
+        stakeholder.source_reference_id = participant.participant_id
+        stakeholder.approval_status = ApprovalStatus.APPROVED  # CRM is always trusted
+        stakeholder.job_title = None  # Will be enriched from CRMContact
+        stakeholder.stance = StakeholderStance.UNKNOWN
+        stakeholder.temperature = StakeholderTemperature.UNKNOWN
+        stakeholder.engagement_score = 0.0
+        stakeholder.last_contact_at = None
 
         # Enrich from CRMContact if available
         await self._enrich_from_contact(session, stakeholder, email)
@@ -533,6 +545,9 @@ class StakeholderSyncService:
     async def _dispatch_pending_research(self) -> None:
         """Dispatch research for stakeholders queued during sync."""
         if not self._pending_research:
+            return
+        if self._suppress_research_dispatch:
+            self._pending_research.clear()
             return
         try:
             from src.workers.deal_worker.utils.stakeholder_research_dispatch import (

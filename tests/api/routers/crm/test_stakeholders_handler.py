@@ -8,10 +8,15 @@ Tests cover:
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from src.api.routers.crm.stakeholders_handler import _to_deal_job_response
+from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
     DecisionPower,
     StakeholderSource,
     StakeholderStance,
@@ -24,6 +29,210 @@ from tests.api.routers.crm.conftest import (
     create_contact,
     create_stakeholder,
 )
+
+
+class TestCreateStakeholder:
+    """Tests for POST /{deal_id}/stakeholders endpoint."""
+
+    def test_deal_job_response_conversion_accepts_string_backed_job_fields(self):
+        """Create response job mapping handles ORM jobs hydrated with string enum values."""
+        job_id = uuid4()
+        response = _to_deal_job_response(
+            SimpleNamespace(
+                job_id=job_id,
+                job_type="deal_email_rematch",
+                status="pending",
+            )
+        )
+
+        assert response.job_id == job_id
+        assert response.job_type == "deal_email_rematch"
+        assert response.status == "pending"
+
+    def test_deal_job_response_conversion_accepts_enum_backed_job_fields(self):
+        """Create response job mapping still handles fake/unit jobs using enum values."""
+        job_id = uuid4()
+        response = _to_deal_job_response(
+            SimpleNamespace(
+                job_id=job_id,
+                job_type=DealJobType.DEAL_EMAIL_REMATCH,
+                status=JobStatus.PENDING,
+            )
+        )
+
+        assert response.job_id == job_id
+        assert response.job_type == "deal_email_rematch"
+        assert response.status == "pending"
+
+    def test_create_stakeholder_returns_nested_stakeholder_with_processing_jobs(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Manual create response exposes stakeholder plus reconnectable processing jobs."""
+        research_job_id = uuid4()
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            dispatch_research.return_value = str(research_job_id)
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={
+                    "email": "new.buyer@example.com",
+                    "name": "New Buyer",
+                    "job_title": "VP Engineering",
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Stakeholder created successfully"
+        assert body["data"]["stakeholder"]["email"] == "new.buyer@example.com"
+        assert body["data"]["stakeholder"]["name"] == "New Buyer"
+        assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
+            "deal_email_rematch",
+            "deal_calendar_rematch",
+            "stakeholder_sync",
+        ]
+        assert {job["status"] for job in body["data"]["processing_jobs"]} == {"pending"}
+        assert "stakeholder_research" not in {
+            job["job_type"] for job in body["data"]["processing_jobs"]
+        }
+        assert body["data"]["research_job"] == {
+            "job_id": str(research_job_id),
+            "job_type": "stakeholder_research",
+            "status": "pending",
+        }
+        dispatch_research.assert_awaited_once()
+
+    def test_create_stakeholder_dispatches_research_separately_from_processing_jobs(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Adding a stakeholder researches that stakeholder but keeps processing jobs separate."""
+        research_job_id = uuid4()
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            dispatch_research.return_value = str(research_job_id)
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={
+                    "email": "research.auto@example.com",
+                    "name": "Research Auto",
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        dispatch_research.assert_awaited_once()
+        assert dispatch_research.await_args.kwargs["deal_id"] == test_deal_id
+        assert dispatch_research.await_args.kwargs["user_id"] == test_user_ids["user_id"]
+        assert body["data"]["research_job"] == {
+            "job_id": str(research_job_id),
+            "job_type": "stakeholder_research",
+            "status": "pending",
+        }
+        assert "stakeholder_research" not in {
+            job["job_type"] for job in body["data"]["processing_jobs"]
+        }
+
+    def test_create_reactivates_removed_stakeholder_with_processing_jobs(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Re-adding a removed stakeholder restores the row and returns visible jobs."""
+        removed = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="removed-again@example.com",
+            name="Old Name",
+            job_title="Old Title",
+        )
+        removed.approval_status = ApprovalStatus.REMOVED
+        fake_stakeholders_service.add_stakeholder(removed)
+
+        research_job_id = uuid4()
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            dispatch_research.return_value = str(research_job_id)
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={
+                    "email": "removed-again@example.com",
+                    "name": "Restored Name",
+                    "job_title": "Restored Title",
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["data"]["stakeholder"]["stakeholder_id"] == str(removed.stakeholder_id)
+        assert body["data"]["stakeholder"]["approval_status"] == "APPROVED"
+        assert body["data"]["stakeholder"]["name"] == "Restored Name"
+        assert body["data"]["stakeholder"]["job_title"] == "Restored Title"
+        assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
+            "deal_email_rematch",
+            "deal_calendar_rematch",
+            "stakeholder_sync",
+        ]
+        dispatch_research.assert_awaited_once()
+        assert dispatch_research.await_args.kwargs["stakeholder_id"] == removed.stakeholder_id
+        assert body["data"]["research_job"] == {
+            "job_id": str(research_job_id),
+            "job_type": "stakeholder_research",
+            "status": "pending",
+        }
+
+    def test_create_duplicate_active_stakeholder_returns_typed_conflict(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Duplicate conflicts include metadata without tripping response validation."""
+        active = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="already-active@example.com",
+            name="Already Active",
+        )
+        fake_stakeholders_service.add_stakeholder(active)
+
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={
+                "email": "already-active@example.com",
+                "name": "Duplicate",
+            },
+        )
+
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["status"] == "ERROR"
+        assert body["data"] == {
+            "stakeholder_id": str(active.stakeholder_id),
+            "approval_status": "APPROVED",
+            "is_deleted": False,
+        }
 
 
 class TestGetDealStakeholders:
@@ -952,6 +1161,51 @@ class TestGetStakeholderDetail:
         assert "created_at" in data
         assert "updated_at" in data
 
+    def test_returns_active_research_job_for_reconnect(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        fake_deal_job_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Stakeholder detail exposes active manual research job for SSE reconnect."""
+        from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
+
+        from tests.api.routers.crm.conftest import FakeDealJob
+
+        stakeholder = FakeStakeholder(
+            stakeholder_id=uuid4(),
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="research.active@acme.com",
+            name="Research Active",
+            source=StakeholderSource.MANUAL,
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+        job = FakeDealJob(
+            job_id=uuid4(),
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            stakeholder_id=stakeholder.stakeholder_id,
+            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            status=JobStatus.IN_PROGRESS,
+        )
+        fake_deal_job_service.add_job(job)
+
+        resp = client.get(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
+        )
+
+        assert resp.status_code == 200
+        active_job = resp.json()["data"]["active_research_job"]
+        assert active_job == {
+            "job_id": str(job.job_id),
+            "job_type": "stakeholder_research",
+            "status": "in_progress",
+        }
+
     def test_returns_engagement_history(
         self,
         client: TestClient,
@@ -1120,6 +1374,7 @@ class TestUpdateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
+        """PATCH should persist editable stakeholder fields and enforce manual overrides."""
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -1164,6 +1419,7 @@ class TestUpdateStakeholder:
         stakeholders_dependency_overrides,
         test_deal_id,
     ):
+        """Unknown stakeholder id should return 404 from update endpoint."""
         resp = client.patch(
             f"/users/crm/deals/{test_deal_id}/stakeholders/{uuid4()}",
             json={"name": "Updated"},
@@ -1182,6 +1438,7 @@ class TestUpdateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
+        """Empty update payload should be rejected as invalid request."""
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -1207,6 +1464,7 @@ class TestUpdateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
+        """Champion potential outside allowed range should return validation error."""
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -1500,3 +1758,45 @@ class TestRemoveStakeholder:
         resp = client.delete(f"/users/crm/deals/{test_deal_id}/stakeholders/not-a-uuid")
 
         assert resp.status_code == 422
+
+
+class TestTriggerStakeholderResearch:
+    """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/research endpoint."""
+
+    def test_returns_deal_job_response_for_manual_research(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Manual research returns the same generic job DTO used by other deal jobs."""
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="research.target@example.com",
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+        job_id = uuid4()
+
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+            return_value=str(job_id),
+        ):
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders/"
+                f"{stakeholder.stakeholder_id}/research"
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Research job dispatched"
+        assert body["data"] == {
+            "job_id": str(job_id),
+            "job_type": "stakeholder_research",
+            "status": "pending",
+        }

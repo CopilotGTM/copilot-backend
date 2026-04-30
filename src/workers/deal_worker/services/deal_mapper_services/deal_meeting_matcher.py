@@ -67,6 +67,8 @@ class DealMeetingMatcher:
         self,
         organisation_id: UUID,
         session: AsyncSession | None = None,
+        *,
+        suppress_research_dispatch: bool = False,
     ):
         """
         Initialize the matcher with organisation context.
@@ -76,9 +78,12 @@ class DealMeetingMatcher:
             session: Optional async database session. If not provided,
                      process_organisation() will acquire fresh sessions.
                      Required for process_deal().
+            suppress_research_dispatch: When True, discovered stakeholders are
+                     persisted but research is not auto-dispatched.
         """
         self.organisation_id = organisation_id
         self._session = session  # Optional - used by process_deal()
+        self._suppress_research_dispatch = suppress_research_dispatch
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._contact_cache_by_external: dict[str, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
@@ -490,6 +495,9 @@ class DealMeetingMatcher:
     async def _dispatch_pending_research(self) -> None:
         """Dispatch research for stakeholders queued during sync."""
         if not self._pending_research:
+            return
+        if self._suppress_research_dispatch:
+            self._pending_research.clear()
             return
         try:
             from src.workers.deal_worker.utils.stakeholder_research_dispatch import (

@@ -110,6 +110,8 @@ class TestMatchCalendarToDealsTaskParameters:
         sig = inspect.signature(match_calendar_to_deals_task)
         assert "organisation_id" in sig.parameters
         assert "deal_id" in sig.parameters
+        assert "job_id" in sig.parameters
+        assert sig.parameters["job_id"].default is None
 
 
 # Tests that don't require task imports

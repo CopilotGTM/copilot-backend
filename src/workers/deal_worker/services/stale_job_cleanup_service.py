@@ -44,6 +44,9 @@ JOB_TYPE_THRESHOLDS: dict[DealJobType, dict[str, float]] = {
     # Stakeholder jobs
     DealJobType.STAKEHOLDER_ANALYSIS: {"pending": 2, "in_progress": 0.58},
     DealJobType.STAKEHOLDER_ENRICHMENT: {"pending": 2, "in_progress": 0.58},
+    DealJobType.DEAL_EMAIL_REMATCH: {"pending": 2, "in_progress": 0.58},
+    DealJobType.DEAL_CALENDAR_REMATCH: {"pending": 2, "in_progress": 0.58},
+    DealJobType.STAKEHOLDER_SYNC: {"pending": 2, "in_progress": 0.58},
     # Deal-level jobs
     DealJobType.DEAL_SUMMARY: {"pending": 2, "in_progress": 0.58},
     DealJobType.DEAL_RISK_ANALYSIS: {"pending": 2, "in_progress": 0.58},

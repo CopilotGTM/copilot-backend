@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.infra.database.sessions import (
     acquire_master_async_session,
 )
@@ -49,6 +50,9 @@ from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
 )
 from src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks import (
     match_email_to_deals_task,
+)
+from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
+    VisibleDealJobTracker,
 )
 
 logger = get_logger(__name__)
@@ -71,6 +75,7 @@ def sync_deal_stakeholders_task(
     integration_id: str | None = None,
     integration_type: str | None = None,
     trigger_rematching: bool = True,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Task 1: Sync stakeholders for a deal based on CRM participant changes.
 
@@ -102,9 +107,17 @@ def sync_deal_stakeholders_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
+        tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.STAKEHOLDER_SYNC)
+        await tracker.start(
+            "searching_related_stakeholders",
+            "Searching related stakeholders",
+            0.25,
+        )
 
         # Deal-level: service manages its own fresh session lifecycle.
-        service = StakeholderSyncService(org_uuid)
+        service = StakeholderSyncService(
+            org_uuid,
+        )
         result = await service.sync_for_deal(deal_uuid)
 
         rematching_triggered = False
@@ -136,7 +149,7 @@ def sync_deal_stakeholders_task(
             },
         )
 
-        return {
+        response = {
             "status": "success" if result.success else "partial",
             "deal_id": deal_id,
             "change_type": change_type,
@@ -151,6 +164,8 @@ def sync_deal_stakeholders_task(
             "integration_type": integration_type,
             "errors": result.errors,
         }
+        await tracker.complete(response, "saving_stakeholders", "Saving stakeholders")
+        return response
 
     try:
         return run_async(_run())
@@ -170,6 +185,13 @@ def sync_deal_stakeholders_task(
 
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+
+        if job_id:
+            run_async(
+                VisibleDealJobTracker(
+                    UUID(organisation_id), job_id, DealJobType.STAKEHOLDER_SYNC
+                ).fail(str(exc))
+            )
 
         return {
             "status": "failed",

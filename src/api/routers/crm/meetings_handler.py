@@ -193,7 +193,9 @@ async def meeting_job_stream(
     Handles reconnection - if user disconnects and reconnects, the stream resumes.
     """
     sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
-    can_access = await sse_service.ensure_user_access()
+    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    if can_access is None:
+        raise HTTPException(status_code=404, detail="Job stream not found")
     if can_access is False:
         raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
 

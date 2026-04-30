@@ -103,6 +103,8 @@ class DealEmailMatcher:
         self,
         organisation_id: UUID,
         session: AsyncSession | None = None,
+        *,
+        suppress_research_dispatch: bool = False,
     ):
         """
         Initialize the matcher with organisation context.
@@ -112,9 +114,12 @@ class DealEmailMatcher:
             session: Optional async database session. If not provided,
                      process_organisation() will acquire fresh sessions per batch.
                      Required for process_deal().
+            suppress_research_dispatch: When True, discovered stakeholders are
+                     persisted but research is not auto-dispatched.
         """
         self.organisation_id = organisation_id
         self._session = session  # Optional - used by process_deal()
+        self._suppress_research_dispatch = suppress_research_dispatch
 
         # In-memory lookup maps (populated by _build_stakeholder_maps)
         self._team_email_to_deals: dict[str, set[UUID]] = {}
@@ -275,7 +280,8 @@ class DealEmailMatcher:
             if not domain or domain not in info.company_domains:
                 continue
 
-            # Check if stakeholder already exists
+            # Skip email addresses already present on this deal to avoid duplicate
+            # candidates in a single processing pass.
             stmt = select(DealStakeholder).where(
                 col(DealStakeholder.deal_id) == deal_id,
                 col(DealStakeholder.email) == participant_email,
@@ -307,7 +313,8 @@ class DealEmailMatcher:
             contact_result = await session.execute(contact_stmt)
             found_contact_id = contact_result.scalar_one_or_none()
 
-            # Create stakeholder
+            # Build this stakeholder from the current participant edge; keep
+            # defaults aligned with the discovery approval threshold.
             stakeholder = DealStakeholder(
                 organisation_id=self.organisation_id,
                 integration_id=info.integration_id,
@@ -346,6 +353,9 @@ class DealEmailMatcher:
     async def _dispatch_pending_research(self) -> None:
         """Dispatch research for stakeholders queued during sync."""
         if not self._pending_research:
+            return
+        if self._suppress_research_dispatch:
+            self._pending_research.clear()
             return
         try:
             from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
@@ -583,13 +593,14 @@ class DealEmailMatcher:
         # Find potential deal matches
         potential_deals: set[UUID] = set()
 
-        # Check if sender is a stakeholder
+        # Build deal candidates from explicit participant direction first.
         if from_email in self._team_email_to_deals:
             potential_deals.update(self._team_email_to_deals[from_email])
         if from_email in self._contact_email_to_deals:
             potential_deals.update(self._contact_email_to_deals[from_email])
 
-        # Check if any recipient is a stakeholder
+        # Extend candidates from recipients so inbound and outbound directions
+        # participate in match scoring.
         for recipient in all_recipients:
             if recipient in self._team_email_to_deals:
                 potential_deals.update(self._team_email_to_deals[recipient])
@@ -779,8 +790,8 @@ class DealEmailMatcher:
 
         Returns the created association or None if it already exists.
         """
-        # Create new association using INSERT ... ON CONFLICT DO NOTHING
-        # This handles race conditions when multiple tasks process the same org
+        # Use ON CONFLICT DO NOTHING so repeated scans/tasks remain idempotent.
+        # This avoids duplicate associations when workers replay the same org.
         if not email.internet_message_id:
             logger.warning(
                 "Email %s has no internet_message_id, skipping",
@@ -825,9 +836,11 @@ class DealEmailMatcher:
         )
         result = await session.execute(stmt)
 
-        # Only create timeline event if insert succeeded (not a duplicate)
+        # Skip timeline side-effects for duplicates so progress indicators stay
+        # aligned with true first-write events.
         if (getattr(result, "rowcount", 0) or 0) > 0:
-            # Create timeline event inline (same transaction)
+            # Keep timeline + last-contact updates in the same transaction as
+            # the insert so recovery remains replay-safe.
             resolved_source = resolve_email_event_source(integration_type)
             timeline_event = build_email_timeline_event(
                 organisation_id=self.organisation_id,
@@ -862,7 +875,7 @@ class DealEmailMatcher:
         Returns:
             Stats dictionary with processing results.
         """
-        stats = {
+        stats: dict[str, Any] = {
             "emails_processed": 0,
             "emails_matched": 0,
             "associations_created": 0,
@@ -1080,16 +1093,17 @@ class DealEmailMatcher:
 
         # Store in lookup maps for matching
         self._deal_info[deal.deal_id] = info
-        for email in info.team_emails:
-            if email not in self._team_email_to_deals:
-                self._team_email_to_deals[email] = set()
-            self._team_email_to_deals[email].add(deal.deal_id)
-        for email in info.contact_emails:
-            if email not in self._contact_email_to_deals:
-                self._contact_email_to_deals[email] = set()
-            self._contact_email_to_deals[email].add(deal.deal_id)
+        for team_email in info.team_emails:
+            if team_email not in self._team_email_to_deals:
+                self._team_email_to_deals[team_email] = set()
+            self._team_email_to_deals[team_email].add(deal.deal_id)
+        for contact_email in info.contact_emails:
+            if contact_email not in self._contact_email_to_deals:
+                self._contact_email_to_deals[contact_email] = set()
+            self._contact_email_to_deals[contact_email].add(deal.deal_id)
 
-        # Get all emails involving this deal's stakeholders
+        # Pull only mail where any stakeholder email participates in sender/recipient
+        # fields to limit work to match-relevant messages.
         all_stakeholder_emails = list(info.team_emails | info.contact_emails)
         emails = await self._get_emails_for_stakeholders(session, all_stakeholder_emails)
 
@@ -1117,15 +1131,15 @@ class DealEmailMatcher:
             integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
 
         # Match and create associations
-        for email in emails:
+        for email_record in emails:
             stats["emails_processed"] += 1
 
             # Skip calendar invite emails (already matched via calendar sync)
-            if self._is_calendar_invite_email(email):
+            if self._is_calendar_invite_email(email_record):
                 stats["calendar_invites_skipped"] += 1
                 continue
 
-            matches = self._match_email_to_deals(email)
+            matches = self._match_email_to_deals(email_record)
             # Filter to only this deal
             matches = [m for m in matches if m.deal_id == deal_id]
 
@@ -1134,16 +1148,16 @@ class DealEmailMatcher:
                 for match in matches:
                     association = await self._create_association(
                         session,
-                        email,
+                        email_record,
                         match,
-                        integration_type=integration_type_by_id.get(email.integration_id),
+                        integration_type=integration_type_by_id.get(email_record.integration_id),
                     )
                     if association:
                         stats["associations_created"] += 1
 
                         # Discover new stakeholders from email participants
                         discovered = await self._discover_stakeholders_from_email(
-                            session, email, match.deal_id, info
+                            session, email_record, match.deal_id, info
                         )
                         stats["stakeholders_discovered"] += discovered
 
@@ -1186,7 +1200,12 @@ class DealEmailMatcher:
         if not stakeholder_emails:
             return []
 
-        # Query emails where sender or recipient matches stakeholders
+        # Match messages where a stakeholder appears in sender, to, or cc fields.
+        to_emails_column = cast(Any, Email.to_emails)
+        cc_emails_column = cast(Any, Email.cc_emails)
+        recipient_filters = [
+            to_emails_column.contains([recipient]) for recipient in stakeholder_emails
+        ] + [cc_emails_column.contains([recipient]) for recipient in stakeholder_emails]
         stmt = (
             select(Email)
             .where(
@@ -1197,7 +1216,7 @@ class DealEmailMatcher:
             .where(
                 or_(
                     func.lower(Email.from_email).in_(stakeholder_emails),
-                    # Check if any to/cc email matches (using array overlap would be better but this works)
+                    *recipient_filters,
                 )
             )
             .order_by(col(Email.received_at).desc())

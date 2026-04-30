@@ -71,6 +71,7 @@ async def dispatch_stakeholder_research_async(
             return None
 
         email = stakeholder.email
+        resolved_deal_id = deal_id or stakeholder.deal_id
 
         # When force=True (manual trigger), skip cooldown — user explicitly wants fresh research
         if not force:
@@ -157,16 +158,49 @@ async def dispatch_stakeholder_research_async(
                     },
                 )
             else:
+                if (
+                    user_id is not None
+                    and existing.user_id == AUTOMATED_PIPELINE_USER_ID
+                    and existing.deal_id == resolved_deal_id
+                ):
+                    existing.user_id = user_id
+                    existing.stakeholder_id = stakeholder_id
+                    existing.job_metadata = {
+                        **(existing.job_metadata or {}),
+                        "trigger": "manual_research",
+                        "claimed_from": "automated_pipeline",
+                        "stakeholder_id": str(stakeholder_id),
+                        "deal_id": str(resolved_deal_id),
+                    }
+                    await session.commit()
+                    logger.info(
+                        "Stakeholder research active automated job claimed by user",
+                        extra={
+                            "event": "stakeholder_research_job_claimed",
+                            "organisation_id": str(organisation_id),
+                            "job_id": str(existing.job_id),
+                            "stakeholder_id": str(stakeholder_id),
+                            "user_id": str(user_id),
+                        },
+                    )
                 logger.debug(
                     "dispatch_stakeholder_research: active job exists for email=%s",
                     email,
                 )
                 return str(existing.job_id)
 
-        # Resolve deal_id from stakeholder if not provided
-        resolved_deal_id = deal_id or stakeholder.deal_id
+        is_manual_trigger = user_id is not None
+        metadata = {
+            "trigger": "manual_research" if is_manual_trigger else "stakeholder_created",
+            "stakeholder_id": str(stakeholder_id),
+            "deal_id": str(resolved_deal_id),
+        }
+        if not is_manual_trigger:
+            metadata["source"] = "automated_pipeline"
 
-        # Create job
+        # Keep one row per dispatch request so user-visible job streams and
+        # retries stay tied to who/what triggered research instead of collapsing
+        # multiple manual calls into one invisible action.
         job = DealJobs(
             organisation_id=organisation_id,
             user_id=user_id or AUTOMATED_PIPELINE_USER_ID,
@@ -174,10 +208,7 @@ async def dispatch_stakeholder_research_async(
             deal_id=resolved_deal_id,
             stakeholder_id=stakeholder_id,
             status=JobStatus.PENDING,
-            job_metadata={
-                "source": "automated_pipeline",
-                "trigger": "stakeholder_created",
-            },
+            job_metadata=metadata,
         )
         session.add(job)
         await session.commit()

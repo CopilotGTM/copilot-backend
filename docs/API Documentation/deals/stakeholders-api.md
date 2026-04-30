@@ -155,6 +155,12 @@ Controls whether a stakeholder is used for deal matching (calendar/email associa
 ```ts
 type UUID = string;
 
+export interface DealJobResponse {
+  job_id: UUID | null;
+  job_type: string;
+  status: string;
+}
+
 /**
  * Stakeholder detail returned in list views.
  * Use this for displaying stakeholder cards/lists.
@@ -211,6 +217,7 @@ export interface StakeholderDetail {
   temperature: StakeholderTemperature;  // HOT/WARM/COLD based on recency
   source: StakeholderSource;            // How stakeholder was discovered
   approval_status: ApprovalStatus;      // APPROVED/PENDING/REJECTED/REMOVED for matching
+  active_research_job: DealJobResponse | null; // Present when stakeholder research is active
 }
 
 /**
@@ -227,6 +234,10 @@ export interface StakeholderFullDetail extends StakeholderDetail {
    * Use for trend visualization (e.g., "Was COLD, now HOT").
    */
   engagement_history: StakeholderEngagementSnapshot[];
+
+  stakeholder_research: string | null;  // Markdown research profile, when generated
+  last_researched_at: string | null;    // ISO8601
+  active_research_job: DealJobResponse | null; // Reconnect target for active stakeholder research
 
   created_at: string | null;         // ISO8601
   updated_at: string | null;         // ISO8601
@@ -253,6 +264,19 @@ export interface StakeholderListResponse {
   company_domain: string | null;     // Domain for validation (e.g., "acmecorp.com")
   company_name: string | null;       // Company name for display
   stakeholders: StakeholderDetail[]; // List of stakeholders
+}
+
+export interface CreateStakeholderResponse {
+  stakeholder: StakeholderDetail;
+  /**
+   * User-visible post-create jobs for deterministic rematching/sync work.
+   * This never includes stakeholder_research.
+   */
+  processing_jobs: DealJobResponse[];
+  /**
+   * Research job for the added/restored stakeholder, when dispatch succeeds.
+   */
+  research_job: DealJobResponse | null;
 }
 
 export interface StakeholderLink {
@@ -691,27 +715,57 @@ Fields are categorized to help frontend build appropriate UI:
 
 ### Success Response (201) (Add Stakeholder)
 
+The stakeholder row is created synchronously. The response also returns three
+visible post-create processing jobs for related email rematch, calendar rematch,
+and stakeholder sync. Stakeholder research is not started here; use the manual
+research trigger endpoint when the user explicitly requests research.
+
 ```json
 {
   "status": "SUCCESS",
   "message": "Stakeholder created successfully",
   "data": {
-    "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
-    "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "contact_id": null,
-    "email": "john.smith@prospect.com",
-    "name": "John Smith",
-    "job_title": "CTO",
-    "phone_number": "+1 (555) 123-4567",
-    "stance": "SUPPORTER",
-    "decision_power": "DECISION_MAKER",
-    "champion_potential": 75.0,
-    "motivation": "Looking to modernize their tech stack",
-    "pain_points": ["Legacy systems", "Manual processes"],
-    "engagement_score": 0.0,
-    "temperature": "UNKNOWN",
-    "source": "MANUAL",
-    "approval_status": "APPROVED"
+    "stakeholder": {
+      "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
+      "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "contact_id": null,
+      "email": "john.smith@prospect.com",
+      "name": "John Smith",
+      "job_title": "CTO",
+      "phone_number": "+1 (555) 123-4567",
+      "stance": "SUPPORTER",
+      "decision_power": "DECISION_MAKER",
+      "champion_potential": 75.0,
+      "motivation": "Looking to modernize their tech stack",
+      "pain_points": ["Legacy systems", "Manual processes"],
+      "engagement_score": 0.0,
+      "temperature": "UNKNOWN",
+      "source": "MANUAL",
+      "approval_status": "APPROVED",
+      "active_research_job": null
+    },
+    "processing_jobs": [
+      {
+        "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
+        "job_type": "deal_email_rematch",
+        "status": "pending"
+      },
+      {
+        "job_id": "0df77c72-ff0a-4cc5-80f0-ded2a84690af",
+        "job_type": "deal_calendar_rematch",
+        "status": "pending"
+      },
+      {
+        "job_id": "6f1145c6-2b30-43cf-a6cd-3c147e88e58b",
+        "job_type": "stakeholder_sync",
+        "status": "pending"
+      }
+    ],
+    "research_job": {
+      "job_id": "8b1f9e8e-9500-4b2a-8d3a-6ac597a2c317",
+      "job_type": "stakeholder_research",
+      "status": "pending"
+    }
   }
 }
 ```
@@ -758,6 +812,18 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 ```
 
 ### Frontend Integration Notes (Add Stakeholder)
+
+After a successful add, register every `processing_jobs[]` item in the global
+activity surface and subscribe to `GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream`.
+Show these as deal-level processing. They run sequentially in this order: email
+rematch, calendar rematch, then stakeholder sync. `research_job` is separate from
+that processing chain and represents research for the added/restored stakeholder.
+That returned research job is user-owned and can be subscribed to by the same
+authenticated user through the generic deal job stream.
+If the rematch/sync chain discovers additional stakeholders, those services may
+dispatch research for the newly discovered stakeholders through the normal
+dedupe/cooldown path. Refresh deal detail, stakeholders, meetings, timeline, and
+related activity when the jobs complete.
 
 **Form Layout Suggestion:**
 
@@ -957,11 +1023,22 @@ Returns `StakeholderFullDetail` with engagement history.
         "decision_power": "INFLUENCER"
       }
     ],
+    "stakeholder_research": "## Professional background\nJane leads IT modernization...",
+    "last_researched_at": "2026-04-29T10:20:00Z",
+    "active_research_job": {
+      "job_id": "a58573fd-a0f3-4b42-89ee-02d87a70a7c6",
+      "job_type": "stakeholder_research",
+      "status": "in_progress"
+    },
     "created_at": "2024-09-15T08:00:00Z",
     "updated_at": "2024-11-08T14:00:00Z"
   }
 }
 ```
+
+`active_research_job` is `null` unless a `stakeholder_research` job is currently
+`pending` or `in_progress` for this stakeholder. Use it to
+recover an open research modal or row state after refresh/reconnect.
 
 ### Understanding Engagement History
 
@@ -993,7 +1070,63 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f6
 
 ---
 
-## 7. Approve Stakeholder
+## 7. Trigger Stakeholder Research
+
+Manually starts stakeholder research for a specific stakeholder. Stakeholder
+add/re-add also returns `research_job` for the added/restored stakeholder, while
+this endpoint is used when the user explicitly triggers research later.
+
+### Endpoint (Trigger Stakeholder Research)
+
+```http
+POST /{deal_id}/stakeholders/{stakeholder_id}/research
+```
+
+### Path Parameters (Trigger Stakeholder Research)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+| `stakeholder_id` | UUID | Yes | The stakeholder to research |
+
+### Success Response (200) (Research Dispatched)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Research job dispatched",
+  "data": {
+    "job_id": "a58573fd-a0f3-4b42-89ee-02d87a70a7c6",
+    "job_type": "stakeholder_research",
+    "status": "pending"
+  }
+}
+```
+
+If the server skips dispatch because recent research is already available, the
+same response shape is returned with `job_id: null` and `status: "completed"`.
+
+Subscribe to the generic deal job stream with the returned `job_id`:
+
+```http
+GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream
+```
+
+The stream emits normal job frames: `ready`, `progress.update`, optional
+`answer.replace` on completed reconnect, `finalize`, and `complete`.
+
+### Error Responses (Trigger Stakeholder Research)
+
+| Code | Description |
+|------|-------------|
+| `401` | Missing or invalid authentication token |
+| `403` | User cannot access this stakeholder/job |
+| `404` | Stakeholder not found for this deal |
+| `500` | Internal server error |
+
+---
+
+## 8. Approve Stakeholder
 
 Approve a PENDING stakeholder for deal matching. Changes approval_status from PENDING to APPROVED.
 
@@ -1052,7 +1185,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f
 
 ---
 
-## 8. Reject Stakeholder
+## 9. Reject Stakeholder
 
 Reject a stakeholder to exclude from deal matching. Works for PENDING or APPROVED stakeholders.
 
@@ -1116,7 +1249,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f
 
 ---
 
-## 9. Remove Stakeholder
+## 10. Remove Stakeholder
 
 Remove an approved stakeholder from the deal. This is different from rejection - removal is for stakeholders that were previously active but should no longer be associated with the deal.
 

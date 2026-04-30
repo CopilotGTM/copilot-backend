@@ -21,7 +21,11 @@ from src.api.routers.crm.deals_handler import (
 from src.api.routers.crm.meetings_handler import get_deal_meeting_job_service, get_meetings_service
 from src.api.routers.crm.risks_blockers_handler import get_risk_blocker_service
 from src.api.routers.crm.stakeholder_insights_handler import get_insight_service
-from src.api.routers.crm.stakeholders_handler import get_stakeholders_service
+from src.api.routers.crm.stakeholders_handler import (
+    get_stakeholder_deal_job_service,
+    get_stakeholder_job_visibility_service,
+    get_stakeholders_service,
+)
 from src.api.routers.crm.tasks_handler import get_tasks_access_service
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
@@ -221,16 +225,17 @@ class FakeStakeholdersService:
         self._contacts: dict[UUID, FakeContact] = {}  # contact_id -> contact
 
     async def close(self):
+        """Release fake stakeholder service resources after tests complete."""
         pass
 
     def add_stakeholder(self, stakeholder: FakeStakeholder):
-        """Helper to add stakeholders for testing."""
+        """Add a seeded stakeholder row to the fake service."""
         if stakeholder.deal_id not in self._stakeholders:
             self._stakeholders[stakeholder.deal_id] = []
         self._stakeholders[stakeholder.deal_id].append(stakeholder)
 
     def add_contact(self, contact: FakeContact):
-        """Helper to add contacts for testing."""
+        """Add a seeded contact row for CRM enrichment lookups."""
         self._contacts[contact.contact_id] = contact
 
     async def list_stakeholders_by_deal(
@@ -375,6 +380,74 @@ class FakeStakeholdersService:
         stakeholder.stakeholder_data = stakeholder_data
         stakeholder.updated_at = datetime.now(UTC)
         return stakeholder
+
+    async def create_stakeholder(self, deal_id: UUID, request):
+        """Create a manual stakeholder for route contract tests."""
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
+
+        email = request.email.lower().strip()
+        existing = [
+            s
+            for s in self._stakeholders.get(deal_id, [])
+            if s.email.lower() == email and not s.is_deleted
+        ]
+        if existing:
+            stakeholder = existing[0]
+            if stakeholder.approval_status == ApprovalStatus.REMOVED:
+                stakeholder.approval_status = ApprovalStatus.APPROVED
+                stakeholder.source = StakeholderSource.MANUAL
+                stakeholder.name = request.name
+                stakeholder.job_title = request.job_title
+                stakeholder.phone_number = request.phone_number
+                stakeholder.department = request.department
+                stakeholder.stance = request.stance
+                stakeholder.decision_power = request.decision_power
+                if request.champion_potential is not None:
+                    stakeholder.champion_potential = request.champion_potential
+                stakeholder.motivation = request.motivation
+                stakeholder.pain_points = request.pain_points or []
+                stakeholder.external_links = [
+                    link.model_dump() for link in request.external_links or []
+                ]
+                stakeholder.updated_at = datetime.now(UTC)
+                return stakeholder
+
+            raise StakeholdersServiceError(
+                "A stakeholder with this email already exists for this deal",
+                status_code=409,
+                data={
+                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "approval_status": stakeholder.approval_status.value,
+                    "is_deleted": stakeholder.is_deleted,
+                },
+            )
+
+        stakeholder = FakeStakeholder(
+            stakeholder_id=uuid4(),
+            deal_id=deal_id,
+            organisation_id=self.organisation_id,
+            email=email,
+            name=request.name,
+            job_title=request.job_title,
+            phone_number=request.phone_number,
+            department=request.department,
+            source=StakeholderSource.MANUAL,
+            approval_status=ApprovalStatus.APPROVED,
+            stance=request.stance,
+            decision_power=request.decision_power,
+            champion_potential=request.champion_potential
+            if request.champion_potential is not None
+            else 50.0,
+            motivation=request.motivation,
+            pain_points=request.pain_points,
+            external_links=[link.model_dump() for link in request.external_links or []],
+        )
+        self.add_stakeholder(stakeholder)
+        return stakeholder
+
+    async def trigger_deal_mapping_if_ready(self, deal_id: UUID) -> None:
+        """No-op stand-in for the current post-create mapping dispatch."""
+        return None
 
     async def get_stakeholder_detail(self, deal_id: UUID, stakeholder_id: UUID) -> dict | None:
         """Get full stakeholder detail including engagement history."""
@@ -566,10 +639,11 @@ class FakeStakeholderInsightService:
         self._insights: dict[UUID, list[FakeInsight]] = {}  # deal_id -> insights
 
     async def close(self):
+        """Release fake insight service state after test scopes are torn down."""
         pass
 
     def add_insight(self, insight: FakeInsight):
-        """Helper to add insights for testing."""
+        """Seed an insight result tied to a synthetic deal."""
         if insight.deal_id not in self._insights:
             self._insights[insight.deal_id] = []
         self._insights[insight.deal_id].append(insight)
@@ -765,17 +839,21 @@ class FakeDeal:
         stage_name: str | None = "Qualification",
         stage_label: str | None = "Qualification",
         stage_external_id: str | None = None,
+        stage_id: UUID | None = None,
         pipeline_external_id: str | None = None,
         pipeline_name: str | None = "default",
         pipeline_label: str | None = "Default Pipeline",
         pipeline_id: UUID | None = None,
         integration_id: UUID | None = None,
+        owner_id: UUID | None = None,
         owner_external_id: str | None = None,
         owner_name: str | None = None,
         owner_email: str | None = None,
+        company_id: UUID | None = None,
         company_external_id: str | None = None,
         company_name: str | None = None,
         company_domain: str | None = None,
+        primary_contact_id: UUID | None = None,
         primary_contact_external_id: str | None = None,
         primary_contact_name: str | None = None,
         primary_contact_email: str | None = None,
@@ -817,17 +895,21 @@ class FakeDeal:
         self.stage_name = stage_name
         self.stage_label = stage_label
         self.stage_external_id = stage_external_id
+        self.stage_id = stage_id
         self.pipeline_external_id = pipeline_external_id
         self.pipeline_name = pipeline_name
         self.pipeline_label = pipeline_label
         self.pipeline_id = pipeline_id or uuid4()
         self.integration_id = integration_id
+        self.owner_id = owner_id
         self.owner_external_id = owner_external_id
         self.owner_name = owner_name
         self.owner_email = owner_email
+        self.company_id = company_id
         self.company_external_id = company_external_id
         self.company_name = company_name
         self.company_domain = company_domain
+        self.primary_contact_id = primary_contact_id
         self.primary_contact_external_id = primary_contact_external_id
         self.primary_contact_name = primary_contact_name
         self.primary_contact_email = primary_contact_email
@@ -883,14 +965,58 @@ class FakeDealJob:
         organisation_id: UUID,
         job_type: DealJobType = DealJobType.DEAL_SUMMARY,
         status: JobStatus = JobStatus.PENDING,
+        stakeholder_id: UUID | None = None,
+        user_id: UUID | None = None,
     ):
         self.job_id = job_id
         self.deal_id = deal_id
         self.organisation_id = organisation_id
+        self.user_id = user_id
         self.job_type = job_type
         self.status = status
+        self.stakeholder_id = stakeholder_id
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
+
+
+class FakeStakeholderJobVisibilityService:
+    """Fake stakeholder job visibility orchestration for route tests."""
+
+    def __init__(self, organisation_id: UUID):
+        self.organisation_id = organisation_id
+        self.created_jobs: list[FakeDealJob] = []
+
+    async def create_stakeholder_processing_jobs(
+        self,
+        deal_id: UUID,
+        stakeholder_id: UUID,
+    ) -> list[FakeDealJob]:
+        """Return all user-visible processing jobs created by stakeholder updates."""
+        jobs = [
+            FakeDealJob(
+                job_id=uuid4(),
+                deal_id=deal_id,
+                organisation_id=self.organisation_id,
+                job_type=DealJobType.DEAL_EMAIL_REMATCH,
+                stakeholder_id=stakeholder_id,
+            ),
+            FakeDealJob(
+                job_id=uuid4(),
+                deal_id=deal_id,
+                organisation_id=self.organisation_id,
+                job_type=DealJobType.DEAL_CALENDAR_REMATCH,
+                stakeholder_id=stakeholder_id,
+            ),
+            FakeDealJob(
+                job_id=uuid4(),
+                deal_id=deal_id,
+                organisation_id=self.organisation_id,
+                job_type=DealJobType.STAKEHOLDER_SYNC,
+                stakeholder_id=stakeholder_id,
+            ),
+        ]
+        self.created_jobs.extend(jobs)
+        return jobs
 
 
 # =============================================================================
@@ -908,20 +1034,21 @@ class FakeDealsAccessService:
         self._companies: dict[str, FakeCompany] = {}  # external_id -> company
 
     async def close(self):
+        """Release fake deals service resources after test scope ends."""
         pass
 
     def add_deal(self, deal: FakeDeal):
-        """Helper to add deals for testing."""
+        """Seed a synthetic deal for service list/get assertions."""
         self._deals[deal.deal_id] = deal
 
     def add_team_member(self, deal_id: UUID, member: dict):
-        """Helper to add team members for testing."""
+        """Attach one team-member row to a deal for bulk team lookups."""
         if deal_id not in self._team_members:
             self._team_members[deal_id] = []
         self._team_members[deal_id].append(member)
 
     def add_company(self, company: FakeCompany):
-        """Helper to add companies for testing."""
+        """Seed a company fixture by external id for resolution tests."""
         self._companies[company.external_id] = company
 
     async def list_deals(
@@ -1111,10 +1238,13 @@ class FakeDealJobService:
         self._error_status = 500
 
     async def close(self):
+        """Release fake job service resources after test scope ends."""
         pass
 
     def add_job(self, job: FakeDealJob):
-        """Helper to add jobs for testing."""
+        """Seed a job row and keep user and deal indexes consistent."""
+        if job.user_id is None:
+            job.user_id = self.user_id
         self._jobs[job.job_id] = job
         if job.deal_id not in self._deal_jobs:
             self._deal_jobs[job.deal_id] = []
@@ -1122,7 +1252,7 @@ class FakeDealJobService:
 
     async def create_deal_summary_job(self, deal_id: UUID) -> FakeDealJob:
         """Create or get existing deal summary job."""
-        from src.service.crm.deal_job_service import DealJobServiceError
+        from src.service.crm.jobs.deal_job_service import DealJobServiceError
 
         if self._should_error:
             raise DealJobServiceError(self._error_message, status_code=self._error_status)
@@ -1136,7 +1266,8 @@ class FakeDealJobService:
             ):
                 return job
 
-        # Create new job
+        # Reuse an active summary job if one exists; create a new row only when
+        # no pending/in-progress job is available.
         job = FakeDealJob(
             job_id=uuid4(),
             deal_id=deal_id,
@@ -1160,10 +1291,48 @@ class FakeDealJobService:
             if job.job_type == DealJobType.DEAL_SUMMARY:
                 result["deal_summary"] = {
                     "job_id": job.job_id,
+                    "job_type": job.job_type.value,
                     "status": job.status.value if hasattr(job.status, "value") else str(job.status),
                 }
+        stakeholder_processing = [
+            {
+                "job_id": job.job_id,
+                "job_type": job.job_type.value,
+                "status": job.status.value if hasattr(job.status, "value") else str(job.status),
+            }
+            for job in active_jobs
+            if job.job_type
+            in {
+                DealJobType.DEAL_EMAIL_REMATCH,
+                DealJobType.DEAL_CALENDAR_REMATCH,
+                DealJobType.STAKEHOLDER_SYNC,
+            }
+        ]
+        if stakeholder_processing:
+            result["stakeholder_processing"] = stakeholder_processing
 
         return result if result else None
+
+    async def get_active_stakeholder_research_job(
+        self,
+        deal_id: UUID,
+        stakeholder_id: UUID,
+    ) -> dict | None:
+        """Get active stakeholder research job for detail reconnect tests."""
+        jobs = self._deal_jobs.get(deal_id, [])
+        for job in jobs:
+            if (
+                job.job_type == DealJobType.STAKEHOLDER_RESEARCH
+                and job.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS)
+                and job.user_id == self.user_id
+                and getattr(job, "stakeholder_id", None) == stakeholder_id
+            ):
+                return {
+                    "job_id": job.job_id,
+                    "job_type": job.job_type.value,
+                    "status": job.status.value if hasattr(job.status, "value") else str(job.status),
+                }
+        return None
 
 
 # =============================================================================
@@ -1203,6 +1372,12 @@ def fake_stakeholders_service(test_user_ids):
 
 
 @pytest.fixture(scope="function")
+def fake_stakeholder_job_visibility_service(test_user_ids):
+    """Create a FakeStakeholderJobVisibilityService for route contract tests."""
+    return FakeStakeholderJobVisibilityService(test_user_ids["organisation_id"])
+
+
+@pytest.fixture(scope="function")
 def fake_insight_service(test_user_ids):
     """Create a FakeStakeholderInsightService with test data."""
     service = FakeStakeholderInsightService(
@@ -1214,7 +1389,13 @@ def fake_insight_service(test_user_ids):
 
 
 @pytest.fixture(scope="function")
-def stakeholders_dependency_overrides(client, test_user_ids, fake_stakeholders_service):
+def stakeholders_dependency_overrides(
+    client,
+    test_user_ids,
+    fake_stakeholders_service,
+    fake_stakeholder_job_visibility_service,
+    fake_deal_job_service,
+):
     """Override dependencies for stakeholders API tests."""
 
     def _override_user():
@@ -1231,10 +1412,23 @@ def stakeholders_dependency_overrides(client, test_user_ids, fake_stakeholders_s
         finally:
             await fake_stakeholders_service.close()
 
+    async def _override_job_visibility_service():
+        yield fake_stakeholder_job_visibility_service
+
+    async def _override_deal_job_service():
+        try:
+            yield fake_deal_job_service
+        finally:
+            await fake_deal_job_service.close()
+
     from src.infra.utils.app_state import fastapp as app
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_stakeholders_service] = _override_service
+    app.dependency_overrides[get_stakeholder_job_visibility_service] = (
+        _override_job_visibility_service
+    )
+    app.dependency_overrides[get_stakeholder_deal_job_service] = _override_deal_job_service
     yield
     app.dependency_overrides = {}
 
@@ -1377,6 +1571,7 @@ class FakeDealNotesService:
         self.session = FakeSession()
 
     async def close(self):
+        """Release fake notes service resources for test cleanup."""
         pass
 
     def add_deal(self, deal_id: UUID):
@@ -1524,9 +1719,11 @@ class FakeSession:
     """Fake async session for testing."""
 
     async def commit(self):
+        """No-op commit to satisfy code paths needing an awaitable."""
         pass
 
     async def rollback(self):
+        """No-op rollback to satisfy code paths needing an awaitable."""
         pass
 
 
@@ -1588,6 +1785,7 @@ class FakeMeetingsService:
         self._meeting_by_event: dict[UUID, FakeMeeting] = {}  # event_id -> meeting
 
     async def close(self):
+        """Release fake meetings service resources for test cleanup."""
         pass
 
     def add_meeting(self, meeting: FakeMeeting):
@@ -1640,6 +1838,7 @@ class FakeDealMeetingJobService:
         self._valid_events: dict[UUID, UUID] = {}  # event_id -> deal_id
 
     async def close(self):
+        """Release fake meeting-job service resources for test cleanup."""
         pass
 
     def add_valid_event(self, event_id: UUID, deal_id: UUID):
@@ -1666,7 +1865,8 @@ class FakeDealMeetingJobService:
             if existing.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS):
                 return existing
 
-        # Create new job
+        # Keep one active job per (deal, event, type) key to avoid duplicate
+        # work if the caller retries the same request.
         job = FakeMeetingJob(
             job_id=uuid4(),
             deal_id=deal_id,
@@ -1778,6 +1978,7 @@ class FakeRiskBlockerService:
         self._valid_deals: set[UUID] = set()
 
     async def close(self):
+        """Release fake risk/blocker service resources for test cleanup."""
         pass
 
     def add_deal(self, deal_id: UUID):
