@@ -88,9 +88,7 @@ def test_copilot_callback_preserves_backend_error_message(
     callback_service = integrations_dependency_overrides["copilot_callback_service"]
     callback_service.should_raise_value_error = True
     callback_service.value_error_message = (
-        "Personal email addresses are not allowed for integrations. "
-        "The connected account uses gmail.com, which is a personal email domain. "
-        "Please connect with your work email."
+        "Gmail permission was not granted. Please reconnect and allow Gmail access."
     )
 
     resp = client.get(
@@ -102,4 +100,4 @@ def test_copilot_callback_preserves_backend_error_message(
     location = resp.headers["location"]
     assert "/integrations/oauth/popup-complete" in location
     assert "success=false" in location
-    assert "Personal+email+addresses+are+not+allowed+for+integrations." in location
+    assert "Gmail+permission+was+not+granted." in location
