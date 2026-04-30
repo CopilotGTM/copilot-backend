@@ -142,6 +142,26 @@ class DealEmailMatcher:
             return None
         return email.split("@")[1].lower()
 
+    def _normalize_company_domain(self, domain: str | None) -> str | None:
+        """Normalize a company domain from user-facing fields."""
+        if not domain:
+            return None
+
+        cleaned = domain.strip().lower()
+        if not cleaned:
+            return None
+
+        if cleaned.startswith("http://"):
+            cleaned = cleaned[len("http://") :]
+        elif cleaned.startswith("https://"):
+            cleaned = cleaned[len("https://") :]
+
+        if cleaned.startswith("www."):
+            cleaned = cleaned[len("www.") :]
+
+        cleaned = cleaned.split("/")[0].split("?")[0].split("#")[0]
+        return cleaned or None
+
     def _is_calendar_invite_email(self, email: Email) -> bool:
         """Check if email is a calendar invite based on subject patterns.
 
@@ -173,6 +193,10 @@ class DealEmailMatcher:
                     domain = self._extract_domain(participant.related_email)
                     if domain:
                         domains.add(domain)
+
+        account_domain = self._normalize_company_domain(deal.company_domain)
+        if account_domain:
+            domains.add(account_domain)
 
         return domains
 
@@ -246,9 +270,6 @@ class DealEmailMatcher:
         Returns:
             Number of stakeholders discovered.
         """
-        if not info.company_domains:
-            return 0
-
         discovered = 0
         contact_time = self._resolve_email_contact_time(email)
 
@@ -266,6 +287,31 @@ class DealEmailMatcher:
             if normalized:
                 all_participants.add(normalized)
 
+        if not info.company_domains:
+            participant_domains = sorted(
+                {
+                    domain
+                    for participant_email in all_participants
+                    if (domain := self._extract_domain(participant_email)) is not None
+                }
+            )
+            logger.info(
+                "Email stakeholder discovery skipped for deal %s because company domains are empty",
+                deal_id,
+                extra={
+                    "event": "deal_email_discovery_no_company_domains",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "email_id": str(email.email_id),
+                    "internet_message_id": email.internet_message_id,
+                    "participant_count": len(all_participants),
+                    "participant_domains": participant_domains,
+                },
+            )
+            return 0
+
+        skipped_domain_mismatch: dict[str, int] = {}
+
         for participant_email in all_participants:
             # Skip team members
             if participant_email in info.team_emails:
@@ -278,6 +324,9 @@ class DealEmailMatcher:
             # Only add if domain matches customer domains
             domain = self._extract_domain(participant_email)
             if not domain or domain not in info.company_domains:
+                skipped_domain_mismatch[domain or "missing"] = (
+                    skipped_domain_mismatch.get(domain or "missing", 0) + 1
+                )
                 continue
 
             # Skip email addresses already present on this deal to avoid duplicate
@@ -347,6 +396,21 @@ class DealEmailMatcher:
                         "approval_status": approval_status.value,
                     },
                 )
+
+        if discovered == 0 and skipped_domain_mismatch:
+            logger.info(
+                "Email stakeholder discovery found no eligible participants for deal %s",
+                deal_id,
+                extra={
+                    "event": "deal_email_discovery_domain_mismatch",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "email_id": str(email.email_id),
+                    "internet_message_id": email.internet_message_id,
+                    "company_domains": sorted(info.company_domains),
+                    "skipped_domain_counts": skipped_domain_mismatch,
+                },
+            )
 
         return discovered
 
@@ -1160,6 +1224,15 @@ class DealEmailMatcher:
                             session, email_record, match.deal_id, info
                         )
                         stats["stakeholders_discovered"] += discovered
+
+        # Re-scan all previously associated emails for this single deal to catch
+        # stakeholders added from older thread history after the initial email
+        # association was created.
+        existing_association_discovered = await self._discover_from_existing_email_associations(
+            session, deal_id, info
+        )
+        if existing_association_discovered:
+            stats["stakeholders_discovered"] += existing_association_discovered
 
         await session.commit()
         await self._dispatch_pending_research()

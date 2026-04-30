@@ -280,6 +280,26 @@ class DealMeetingMatcher:
             return None
         return email.split("@")[1].lower()
 
+    def _normalize_company_domain(self, domain: str | None) -> str | None:
+        """Normalize a company domain from user-facing fields."""
+        if not domain:
+            return None
+
+        cleaned = domain.strip().lower()
+        if not cleaned:
+            return None
+
+        if cleaned.startswith("http://"):
+            cleaned = cleaned[len("http://") :]
+        elif cleaned.startswith("https://"):
+            cleaned = cleaned[len("https://") :]
+
+        if cleaned.startswith("www."):
+            cleaned = cleaned[len("www.") :]
+
+        cleaned = cleaned.split("/")[0].split("?")[0].split("#")[0]
+        return cleaned or None
+
     def _resolve_completed_contact_time(self, event: CalendarEvent) -> datetime | None:
         """Return event contact time only for completed meetings (never upcoming)."""
         candidate = event.end_at or event.start_at
@@ -331,6 +351,10 @@ class DealMeetingMatcher:
                 domain = self._extract_domain(participant.related_email)
                 if domain:
                     domains.add(domain)
+
+        account_domain = self._normalize_company_domain(deal.company_domain)
+        if account_domain:
+            domains.add(account_domain)
 
         return domains
 
@@ -401,11 +425,36 @@ class DealMeetingMatcher:
         Returns:
             Number of stakeholders discovered.
         """
-        if not event.attendees or not customer_domains:
+        if not event.attendees:
             return 0
 
         discovered = 0
         contact_time = self._resolve_completed_contact_time(event)
+
+        if not customer_domains:
+            attendee_domains = sorted(
+                {
+                    domain
+                    for attendee in event.attendees
+                    if attendee.email
+                    and (domain := self._extract_domain(attendee.email)) is not None
+                }
+            )
+            logger.info(
+                "Calendar stakeholder discovery skipped for deal %s because customer domains are empty",
+                deal.deal_id,
+                extra={
+                    "event": "deal_meeting_discovery_no_customer_domains",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal.deal_id),
+                    "event_id": str(event.event_id),
+                    "attendee_count": len(event.attendees),
+                    "attendee_domains": attendee_domains,
+                },
+            )
+            return 0
+
+        skipped_domain_mismatch: dict[str, int] = {}
 
         for attendee in event.attendees:
             if not attendee.email:
@@ -420,6 +469,9 @@ class DealMeetingMatcher:
             # Only add if domain matches customer domains
             domain = self._extract_domain(email)
             if not domain or domain not in customer_domains:
+                skipped_domain_mismatch[domain or "missing"] = (
+                    skipped_domain_mismatch.get(domain or "missing", 0) + 1
+                )
                 continue
 
             # Discovery is idempotent across matcher reruns; an attendee already on
@@ -489,6 +541,20 @@ class DealMeetingMatcher:
                         "approval_status": approval_status.value,
                     },
                 )
+
+        if discovered == 0 and skipped_domain_mismatch:
+            logger.info(
+                "Calendar stakeholder discovery found no eligible attendees for deal %s",
+                deal.deal_id,
+                extra={
+                    "event": "deal_meeting_discovery_domain_mismatch",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal.deal_id),
+                    "event_id": str(event.event_id),
+                    "customer_domains": sorted(customer_domains),
+                    "skipped_domain_counts": skipped_domain_mismatch,
+                },
+            )
 
         return discovered
 
