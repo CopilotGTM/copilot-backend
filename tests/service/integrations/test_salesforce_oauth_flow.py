@@ -197,10 +197,13 @@ async def test_callback_reactivates_existing_salesforce_integration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_callback_rejects_personal_email_accounts() -> None:
+async def test_callback_allows_personal_email_accounts_temporarily() -> None:
     service = CopilotCallbackService()
     user_id = uuid4()
     organisation_id = uuid4()
+    duplicate_session = _make_session(FakeResult(scalar=None))
+    reactivate_session = _make_session(FakeResult(scalar=None))
+    create_session = _make_session()
 
     provider = AsyncMock()
     provider.provider_key = "salesforce"
@@ -231,9 +234,18 @@ async def test_callback_rejects_personal_email_accounts() -> None:
             "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
             return_value=provider,
         ),
-        pytest.raises(ValueError, match="connected account uses gmail.com"),
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_org_async_session",
+            side_effect=_session_generator([duplicate_session, reactivate_session, create_session]),
+        ),
+        patch.object(service, "_save_connection_mapping", AsyncMock()),
+        patch.object(service, "_trigger_initial_sync"),
     ):
-        await service.handle_oauth_callback(code="abc", state="signed-state")
+        result = await service.handle_oauth_callback(code="abc", state="signed-state")
+
+    assert result["integration_email"] == "seller@gmail.com"
+    created = create_session.add.call_args[0][0]
+    assert created.integration_email == "seller@gmail.com"
 
 
 @pytest.mark.asyncio

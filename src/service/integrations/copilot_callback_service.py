@@ -14,7 +14,6 @@ from src.domain.models.organisation_tables.sync import (
 from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
 from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
@@ -223,14 +222,7 @@ class CopilotCallbackService:
             if not integration_email:
                 raise ValueError("Provider did not return an email for the connected account")
 
-            # B2B product — only allow work emails, reject personal/free providers
-            email_domain = integration_email.rsplit("@", 1)[-1]
-            if email_domain in FREE_EMAIL_DOMAINS:
-                raise ValueError(
-                    f"Personal email addresses are not allowed for integrations. "
-                    f"The connected account uses {email_domain}, which is a personal email domain. "
-                    "Please connect with your work email."
-                )
+            # TODO: Reintroduce business-domain validation after Google app-review access is unblocked.
         except Exception as e:
             logger.error("Failed to exchange OAuth code for %s: %s", integration_type.value, e)
             raise
