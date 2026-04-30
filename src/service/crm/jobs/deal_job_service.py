@@ -26,6 +26,16 @@ logger = get_logger(__name__)
 # Task name for deal summary processing (dedicated task for deal-level jobs)
 DEAL_SUMMARY_TASK_NAME = "deal_summary_task.process"
 
+# Active jobs are the only jobs clients should reconnect to.
+ACTIVE_JOB_STATUSES = {JobStatus.PENDING, JobStatus.IN_PROGRESS}
+
+# Deterministic post-stakeholder-create operations surfaced as deal-level activity.
+STAKEHOLDER_PROCESSING_JOB_TYPES = {
+    DealJobType.DEAL_EMAIL_REMATCH,
+    DealJobType.DEAL_CALENDAR_REMATCH,
+    DealJobType.STAKEHOLDER_SYNC,
+}
+
 # Deal-level job types (not tied to a specific event)
 DEAL_LEVEL_JOB_TYPES = {
     DealJobType.DEAL_SUMMARY,
@@ -33,6 +43,18 @@ DEAL_LEVEL_JOB_TYPES = {
     DealJobType.DEAL_NEXT_STEPS,
     DealJobType.STAKEHOLDER_ANALYSIS,
 }
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _job_response(job: DealJobs) -> dict:
+    return {
+        "job_id": job.job_id,
+        "job_type": _enum_value(job.job_type),
+        "status": _enum_value(job.status),
+    }
 
 
 class DealJobServiceError(Exception):
@@ -85,14 +107,16 @@ class DealJobService:
         Raises:
             DealJobServiceError: If job type is not a deal-level job or task fails to enqueue
         """
-        # Validate job type is a deal-level job
+        # Validate operation scope: only top-level deal jobs are allowed here;
+        # meeting and event-level tasks must be created through the meeting job service.
         if job_type not in DEAL_LEVEL_JOB_TYPES:
             raise DealJobServiceError(
                 f"{job_type.value} is not a deal-level job type. Use DealMeetingJobService for meeting jobs.",
                 status_code=400,
             )
 
-        # Create job with event_id=None (deal-level)
+        # event_id=None marks this as a deal-scoped job, which keeps replay and
+        # SSE reconnect semantics aligned with deal-level workflows.
         job = DealJobs(
             organisation_id=self.organisation_id,
             user_id=self.user_id,
@@ -146,7 +170,8 @@ class DealJobService:
         """
         job_type = DealJobType.DEAL_SUMMARY
 
-        # Check if already generating (idempotent)
+        # Return the active job if present so callers reconnect instead of enqueuing
+        # duplicate work.
         active_job = await self.get_active_job(deal_id, job_type)
         if active_job:
             logger.info(
@@ -189,6 +214,53 @@ class DealJobService:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def get_active_stakeholder_processing_jobs(self, deal_id: UUID) -> list[dict]:
+        """Return active deterministic stakeholder post-create jobs for a deal."""
+        stmt = (
+            select(DealJobs)
+            .where(
+                col(DealJobs.organisation_id) == self.organisation_id,
+                col(DealJobs.deal_id) == deal_id,
+                col(DealJobs.job_type).in_(list(STAKEHOLDER_PROCESSING_JOB_TYPES)),
+                col(DealJobs.event_id).is_(None),
+                col(DealJobs.status).in_(list(ACTIVE_JOB_STATUSES)),
+            )
+            .order_by(col(DealJobs.created_at).asc())
+        )
+        result = await self.session.execute(stmt)
+        jobs = result.scalars().all()
+
+        return [
+            _job_response(job)
+            for job in jobs
+            if job.job_type in STAKEHOLDER_PROCESSING_JOB_TYPES
+            and job.status in ACTIVE_JOB_STATUSES
+        ]
+
+    async def get_active_stakeholder_research_job(
+        self,
+        deal_id: UUID,
+        stakeholder_id: UUID,
+    ) -> dict | None:
+        """Return the active manual stakeholder research job for one stakeholder."""
+        stmt = (
+            select(DealJobs)
+            .where(
+                col(DealJobs.organisation_id) == self.organisation_id,
+                col(DealJobs.user_id) == self.user_id,
+                col(DealJobs.deal_id) == deal_id,
+                col(DealJobs.stakeholder_id) == stakeholder_id,
+                col(DealJobs.job_type) == DealJobType.STAKEHOLDER_RESEARCH,
+                col(DealJobs.status).in_(list(ACTIVE_JOB_STATUSES)),
+            )
+            .order_by(col(DealJobs.created_at).desc())
+        )
+        result = await self.session.execute(stmt)
+        job = result.scalars().first()
+        if not job:
+            return None
+        return _job_response(job)
+
     async def get_active_deal_jobs_status(self, deal_id: UUID) -> dict | None:
         """
         Get active deal-level jobs status for API response.
@@ -203,33 +275,33 @@ class DealJobService:
             Dict with job info (job_id, job_type, status) keyed by job type, or None
         """
         active_summary_job = await self.get_active_job(deal_id, DealJobType.DEAL_SUMMARY)
+        stakeholder_processing = await self.get_active_stakeholder_processing_jobs(deal_id)
 
-        if not active_summary_job:
+        if not active_summary_job and not stakeholder_processing:
             logger.debug("No active deal summary job found for deal %s", deal_id)
             return None
 
+        response: dict = {}
+
         # Ensure job_id exists before returning
-        if not active_summary_job.job_id:
+        if active_summary_job and not active_summary_job.job_id:
             logger.warning(
                 "Active deal summary job found but job_id is None for deal %s",
                 deal_id,
             )
-            return None
+        elif active_summary_job:
+            logger.debug(
+                "Active deal summary job found: deal=%s job_id=%s status=%s",
+                deal_id,
+                active_summary_job.job_id,
+                active_summary_job.status,
+            )
+            response["deal_summary"] = _job_response(active_summary_job)
 
-        logger.debug(
-            "Active deal summary job found: deal=%s job_id=%s status=%s",
-            deal_id,
-            active_summary_job.job_id,
-            active_summary_job.status,
-        )
+        if stakeholder_processing:
+            response["stakeholder_processing"] = stakeholder_processing
 
-        return {
-            "deal_summary": {
-                "job_id": active_summary_job.job_id,
-                "job_type": str(active_summary_job.job_type),
-                "status": str(active_summary_job.status),
-            }
-        }
+        return response or None
 
     async def get_job(self, job_id: UUID) -> DealJobs | None:
         """Get a job by ID."""

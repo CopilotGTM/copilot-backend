@@ -8,6 +8,7 @@ This handler demonstrates the clean pattern for FastAPI responses:
 
 from __future__ import annotations
 
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -21,6 +22,9 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
     CreateStakeholderRequest,
+    CreateStakeholderResponse,
+    DealJobResponse,
+    StakeholderConflictResponse,
     StakeholderDetail,
     StakeholderFullDetail,
     StakeholderListResponse,
@@ -32,6 +36,10 @@ from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
     StakeholdersServiceError,
 )
+from src.service.crm.jobs.deal_job_service import DealJobService
+from src.service.crm.jobs.stakeholder_job_visibility_service import (
+    StakeholderJobVisibilityService,
+)
 
 logger = get_logger(__name__)
 
@@ -39,6 +47,60 @@ logger = get_logger(__name__)
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 stakeholders_router = APIRouter()
+
+
+def _enum_or_string_value(value: object) -> str:
+    """Return stable API enum text from either ORM strings or Enum instances."""
+    enum_value = getattr(value, "value", value)
+    return str(enum_value)
+
+
+def _to_deal_job_response(job: Any) -> DealJobResponse:
+    """Serialize a DealJobs-like object without assuming enum hydration mode."""
+    return DealJobResponse(
+        job_id=job.job_id,
+        job_type=_enum_or_string_value(job.job_type),
+        status=_enum_or_string_value(job.status),
+    )
+
+
+async def _dispatch_auto_stakeholder_research(
+    *,
+    organisation_id: UUID,
+    stakeholder_id: UUID,
+    deal_id: UUID,
+    user_id: UUID | None,
+) -> DealJobResponse | None:
+    """Dispatch research for the stakeholder that was explicitly added/restored."""
+    try:
+        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+            dispatch_stakeholder_research_async,
+        )
+
+        job_id = await dispatch_stakeholder_research_async(
+            organisation_id=organisation_id,
+            stakeholder_id=stakeholder_id,
+            deal_id=deal_id,
+            user_id=user_id,
+        )
+        if not job_id:
+            return None
+        return DealJobResponse(
+            job_id=job_id,
+            job_type="stakeholder_research",
+            status="pending",
+        )
+    except Exception:
+        logger.error(
+            "Failed to dispatch stakeholder research",
+            extra={
+                "organisation_id": str(organisation_id),
+                "stakeholder_id": str(stakeholder_id),
+                "deal_id": str(deal_id),
+            },
+            exc_info=True,
+        )
+        return None
 
 
 async def get_stakeholders_service(
@@ -54,6 +116,31 @@ async def get_stakeholders_service(
             await service.close()
         except Exception:
             logger.debug("Stakeholders service close failed", exc_info=True)
+
+
+async def get_stakeholder_job_visibility_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields stakeholder job visibility orchestration."""
+    service = StakeholderJobVisibilityService(
+        session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+    )
+    yield service
+
+
+async def get_stakeholder_deal_job_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields deal job lookup service for stakeholder routes."""
+    service = DealJobService(session, user_ids.organisation_id, user_ids.user_id)
+    try:
+        yield service
+    finally:
+        await service.close()
 
 
 @stakeholders_router.get(
@@ -181,15 +268,19 @@ async def get_deal_stakeholders(
 
 @stakeholders_router.post(
     "/{deal_id}/stakeholders",
-    response_model=GenericResponse[StakeholderDetail],
+    response_model=GenericResponse[CreateStakeholderResponse | StakeholderConflictResponse],
     summary="Manually add a new stakeholder",
 )
 async def create_stakeholder(
     deal_id: UUID,
     request: CreateStakeholderRequest,
     response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
     service: StakeholdersService = Depends(get_stakeholders_service),
-) -> GenericResponse[StakeholderDetail]:
+    job_visibility_service: StakeholderJobVisibilityService = Depends(
+        get_stakeholder_job_visibility_service
+    ),
+) -> GenericResponse[CreateStakeholderResponse | StakeholderConflictResponse]:
     """Manually add a new stakeholder to a deal.
 
     Use this endpoint when you want to add a stakeholder who is not in your CRM contacts.
@@ -205,53 +296,24 @@ async def create_stakeholder(
     """
     try:
         stakeholder = await service.create_stakeholder(deal_id, request)
-        await service.trigger_deal_mapping_if_ready(deal_id)
-
-        # Dispatch research after mapping tasks are queued (ensures Celery client
-        # is initialized and mapper tasks don't race with the research dispatch)
-        try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
-            )
-
-            logger.info(
-                "Stakeholder research dispatch requested",
-                extra={
-                    "event": "stakeholder_research_dispatch_requested",
-                    "organisation_id": str(service.organisation_id),
-                    "stakeholder_id": str(stakeholder.stakeholder_id),
-                    "deal_id": str(deal_id),
-                },
-            )
-            job_id = await dispatch_stakeholder_research_async(
-                organisation_id=service.organisation_id,
-                stakeholder_id=stakeholder.stakeholder_id,
-                deal_id=deal_id,
-            )
-            logger.info(
-                "Stakeholder research dispatch completed",
-                extra={
-                    "event": "stakeholder_research_dispatch_completed",
-                    "organisation_id": str(service.organisation_id),
-                    "stakeholder_id": str(stakeholder.stakeholder_id),
-                    "deal_id": str(deal_id),
-                    "job_id": job_id,
-                },
-            )
-        except Exception:
-            logger.error(
-                "Failed to dispatch stakeholder research",
-                extra={
-                    "organisation_id": str(service.organisation_id),
-                    "stakeholder_id": str(stakeholder.stakeholder_id),
-                    "deal_id": str(deal_id),
-                },
-                exc_info=True,
-            )
+        processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
+            deal_id,
+            stakeholder.stakeholder_id,
+        )
+        research_job = await _dispatch_auto_stakeholder_research(
+            organisation_id=service.organisation_id,
+            stakeholder_id=stakeholder.stakeholder_id,
+            deal_id=deal_id,
+            user_id=user_ids.user_id,
+        )
 
         return Response.created_response(
             message="Stakeholder created successfully",
-            data=stakeholder,
+            data=CreateStakeholderResponse(
+                stakeholder=stakeholder,
+                processing_jobs=[_to_deal_job_response(job) for job in processing_jobs],
+                research_job=research_job,
+            ),
             response=response,
         )
     except StakeholdersServiceError as e:
@@ -264,7 +326,10 @@ async def create_stakeholder(
             },
         )
         return Response.error_response(
-            message=e.message, status_code=e.status_code, data=e.data, response=response
+            message=e.message,
+            status_code=e.status_code,
+            data=cast(CreateStakeholderResponse | StakeholderConflictResponse | None, e.data),
+            response=response,
         )
     except Exception:
         logger.exception(
@@ -289,6 +354,7 @@ async def get_stakeholder_detail(
     stakeholder_id: UUID,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
+    deal_job_service: DealJobService = Depends(get_stakeholder_deal_job_service),
 ) -> GenericResponse[StakeholderFullDetail]:
     """Get full details of a specific stakeholder including engagement history.
 
@@ -308,7 +374,14 @@ async def get_stakeholder_detail(
             return Response.error_response(
                 message="Stakeholder not found", status_code=404, response=response
             )
-        return Response.success_response(message="Stakeholder detail retrieved", data=detail)
+        detail["active_research_job"] = await deal_job_service.get_active_stakeholder_research_job(
+            deal_id,
+            stakeholder_id,
+        )
+        return Response.success_response(
+            message="Stakeholder detail retrieved",
+            data=cast(StakeholderFullDetail, detail),
+        )
     except StakeholdersServiceError as e:
         logger.warning(
             "Get stakeholder detail error",
@@ -399,7 +472,10 @@ async def approve_stakeholder(
     """
     try:
         stakeholder = await service.approve_stakeholder(deal_id, stakeholder_id)
-        return Response.success_response(message="Stakeholder approved", data=stakeholder)
+        return Response.success_response(
+            message="Stakeholder approved",
+            data=cast(StakeholderDetail, stakeholder),
+        )
     except StakeholdersServiceError as e:
         logger.warning(
             "Approve stakeholder error",
@@ -450,7 +526,10 @@ async def reject_stakeholder(
     """
     try:
         stakeholder = await service.reject_stakeholder(deal_id, stakeholder_id)
-        return Response.success_response(message="Stakeholder rejected", data=stakeholder)
+        return Response.success_response(
+            message="Stakeholder rejected",
+            data=cast(StakeholderDetail, stakeholder),
+        )
     except StakeholdersServiceError as e:
         logger.warning(
             "Reject stakeholder error",
@@ -480,7 +559,7 @@ async def reject_stakeholder(
 
 @stakeholders_router.post(
     "/{deal_id}/stakeholders/{stakeholder_id}/research",
-    response_model=GenericResponse[dict],
+    response_model=GenericResponse[DealJobResponse],
     summary="Trigger stakeholder research",
 )
 async def trigger_stakeholder_research(
@@ -489,7 +568,7 @@ async def trigger_stakeholder_research(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholdersService = Depends(get_stakeholders_service),
-) -> GenericResponse[dict]:
+) -> GenericResponse[DealJobResponse]:
     """Manually trigger LinkedIn research for a stakeholder.
 
     Dispatches a research job to enrich the stakeholder's profile.
@@ -531,12 +610,20 @@ async def trigger_stakeholder_research(
             )
             return Response.success_response(
                 message="Research job dispatched",
-                data={"job_id": job_id},
+                data=DealJobResponse(
+                    job_id=job_id,
+                    job_type="stakeholder_research",
+                    status="pending",
+                ),
             )
 
         return Response.success_response(
             message="Research skipped — already researched recently",
-            data={"job_id": None},
+            data=DealJobResponse(
+                job_id=None,
+                job_type="stakeholder_research",
+                status="completed",
+            ),
         )
     except StakeholdersServiceError as e:
         return Response.error_response(
@@ -583,7 +670,10 @@ async def remove_stakeholder(
     """
     try:
         stakeholder = await service.remove_stakeholder(deal_id, stakeholder_id)
-        return Response.success_response(message="Stakeholder removed", data=stakeholder)
+        return Response.success_response(
+            message="Stakeholder removed",
+            data=cast(StakeholderDetail, stakeholder),
+        )
     except StakeholdersServiceError as e:
         logger.warning(
             "Remove stakeholder error",

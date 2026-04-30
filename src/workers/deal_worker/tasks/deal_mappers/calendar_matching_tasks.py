@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
@@ -43,6 +44,9 @@ from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher import (
     DealMeetingMatcher,
+)
+from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
+    VisibleDealJobTracker,
 )
 
 logger = get_logger(__name__)
@@ -167,6 +171,7 @@ def match_calendar_to_deals_task(
     self: Task,
     organisation_id: str,
     deal_id: str,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Match calendar events to a single deal.
 
@@ -208,13 +213,18 @@ def match_calendar_to_deals_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
+        tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.DEAL_CALENDAR_REMATCH)
+        await tracker.start("matching_meetings", "Finding meetings", 0.25)
 
         # Deal-level: Pass session to constructor (process_deal requires it)
         async for session in acquire_org_async_session(org_uuid):
-            matcher = DealMeetingMatcher(org_uuid, session=session)
+            matcher = DealMeetingMatcher(
+                org_uuid,
+                session=session,
+            )
             stats = await matcher.process_deal(deal_uuid)
 
-            return {
+            result = {
                 "status": "success",
                 "organisation_id": organisation_id,
                 "deal_id": deal_id,
@@ -224,8 +234,10 @@ def match_calendar_to_deals_task(
                 "meetings_linked": stats.get("meetings_linked", 0),
                 "cancelled_rejected": stats.get("cancelled_rejected", 0),
             }
+            await tracker.complete(result, "saving_meeting_links", "Saving meeting links")
+            return result
 
-        return {
+        result = {
             "status": "failed",
             "organisation_id": organisation_id,
             "deal_id": deal_id,
@@ -233,6 +245,8 @@ def match_calendar_to_deals_task(
             "completed_at": datetime.now(UTC).isoformat(),
             "error": "Failed to acquire database session",
         }
+        await tracker.fail(result["error"])
+        return result
 
     try:
         return run_async(_run())
@@ -250,6 +264,13 @@ def match_calendar_to_deals_task(
 
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
+
+        if job_id:
+            run_async(
+                VisibleDealJobTracker(
+                    UUID(organisation_id), job_id, DealJobType.DEAL_CALENDAR_REMATCH
+                ).fail(str(exc))
+            )
 
         return {
             "status": "failed",

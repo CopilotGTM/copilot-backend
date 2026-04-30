@@ -94,6 +94,28 @@ def test_meeting_matcher_resolve_completed_contact_time_skips_upcoming() -> None
     assert matcher._resolve_completed_contact_time(upcoming_event) is None  # noqa: SLF001
 
 
+def test_email_matcher_collects_normalized_account_domain() -> None:
+    matcher = DealEmailMatcher(uuid4())
+    deal = SimpleNamespace(
+        primary_contact_email=None,
+        participants=[],
+        company_domain="https://www.Acme.com/products?ref=crm",
+    )
+
+    assert matcher._collect_company_domains(deal) == {"acme.com"}  # noqa: SLF001
+
+
+def test_meeting_matcher_collects_normalized_account_domain() -> None:
+    matcher = DealMeetingMatcher(uuid4())
+    deal = SimpleNamespace(
+        primary_contact_email=None,
+        participants=[],
+        company_domain="https://www.Acme.com/products?ref=crm",
+    )
+
+    assert matcher._collect_customer_domains(deal) == {"acme.com"}  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_meeting_matcher_updates_last_contact_only_for_completed_events() -> None:
     matcher = DealMeetingMatcher(uuid4())

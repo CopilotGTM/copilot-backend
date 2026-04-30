@@ -336,7 +336,26 @@ GET /users/crm/deals/{deal_id}
     "associated_company_count": 1,
     "note_count": 2,
     "deal_summary_data": null,
-    "active_deal_jobs": null,
+    "active_deal_jobs": {
+      "deal_summary": null,
+      "stakeholder_processing": [
+        {
+          "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
+          "job_type": "deal_email_rematch",
+          "status": "in_progress"
+        },
+        {
+          "job_id": "0df77c72-ff0a-4cc5-80f0-ded2a84690af",
+          "job_type": "deal_calendar_rematch",
+          "status": "pending"
+        },
+        {
+          "job_id": "6f1145c6-2b30-43cf-a6cd-3c147e88e58b",
+          "job_type": "stakeholder_sync",
+          "status": "pending"
+        }
+      ]
+    },
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-22T12:00:00Z"
   }
@@ -354,6 +373,54 @@ GET /users/crm/deals/{deal_id}
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`) for consistent detail rendering. |
 | `company_country` | string \| null | Country/geography of the associated company. Populated from the linked CRM company record. |
 | `source_modified_at` / `last_seen_at` / `synced_at` | datetime | System read-only sync metadata for advanced view and troubleshooting. |
+| `active_deal_jobs` | object \| null | Active deal-level jobs for reconnect. `stakeholder_processing` contains active `deal_email_rematch`, `deal_calendar_rematch`, and `stakeholder_sync` jobs created by stakeholder add. |
+
+`active_deal_jobs.stakeholder_processing` is empty or omitted when no active
+post-stakeholder-create processing is running. Use it to restore a deal-level
+banner after a page reload. Stakeholder research is not included here; it is
+returned on stakeholder detail as `active_research_job`.
+
+---
+
+## 3.1 Generic Deal Job Stream
+
+Subscribe to any user-visible deal job returned by deal or stakeholder APIs.
+This stream is used for stakeholder add processing jobs and stakeholder research
+jobs returned from add/re-add or manual research triggers.
+
+### Endpoint
+
+```http
+GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream
+```
+
+### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | Deal that owns the job |
+| `job_id` | UUID | Yes | Job returned by a mutation or active job recovery response |
+
+### Authorization
+
+The job must belong to the authenticated user and to the requested `deal_id`.
+If the user owns the job but requests it through a different deal URL, the API
+returns `403`. If the job does not exist or cannot be loaded, the API returns
+`404` instead of opening an idle stream.
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `ready` | Stream connected and includes the `job_id` |
+| `progress.update` | Job stage/progress update |
+| `answer.replace` | Optional final result payload replayed for completed jobs |
+| `finalize` | Terminal job frame; `reason` is `done` or `error` |
+| `complete` | Job finished; close the stream and refresh affected data |
+| `timeout` | Stream timed out; reconnect if the job is still active |
+| `error` | Stream error; reconnect if appropriate |
+
+Use `Last-Event-ID` on reconnect when the client has a previous stream event id.
 
 ---
 

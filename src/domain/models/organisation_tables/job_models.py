@@ -182,6 +182,9 @@ class DealJobType(StrEnum):
     # Stakeholder-related jobs
     STAKEHOLDER_ANALYSIS = "stakeholder_analysis"  # Deep stakeholder analysis
     STAKEHOLDER_ENRICHMENT = "stakeholder_enrichment"  # Enrich stakeholder data
+    DEAL_EMAIL_REMATCH = "deal_email_rematch"  # Re-match deal emails after stakeholder changes
+    DEAL_CALENDAR_REMATCH = "deal_calendar_rematch"  # Re-match meetings after stakeholder changes
+    STAKEHOLDER_SYNC = "stakeholder_sync"  # Sync stakeholder set after stakeholder changes
 
     # Deal-related jobs
     DEAL_SUMMARY = "deal_summary"  # Deal overview summary

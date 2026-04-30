@@ -152,6 +152,8 @@ class TestSyncDealStakeholdersTaskParameters:
         assert params["integration_id"].default is None
         assert "trigger_rematching" in params
         assert params["trigger_rematching"].default is True
+        assert "job_id" in params
+        assert params["job_id"].default is None
 
 
 class TestSyncAllDealsStakeholdersOrgTaskParameters:

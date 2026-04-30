@@ -18,7 +18,7 @@ from src.domain.models.master_tables.organisation_models import (
     Organisation,
     OrganisationStatus,
 )
-from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -34,6 +34,7 @@ from src.workers.deal_worker.services.deal_insight_services import (
     StakeholderResearchError,
     StakeholderResearchService,
 )
+from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 
 logger = get_logger(__name__)
 
@@ -75,6 +76,12 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
         )
         return {"status": "skipped", "reason": "already_running"}
 
+    publisher = DealJobRedisPublisher(
+        UUID(organisation_id),
+        UUID(job_id),
+        DealJobType.STAKEHOLDER_RESEARCH.value,
+    )
+
     async def _run():
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
@@ -90,6 +97,8 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
 
             job.status = JobStatus.IN_PROGRESS
             await session.commit()
+            publisher.publish_progress("Queued", "queued", 0.0)
+            publisher.publish_progress("Researching stakeholder", "researching", 0.35)
 
         if not stakeholder_id:
             raise RuntimeError(f"Stakeholder research job {job_id} has no stakeholder_id")
@@ -120,16 +129,19 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
                     job.error_message = e.message
                     await session.commit()
             if not e.retryable:
+                publisher.publish_error(e.message, "stakeholder_research_failed")
+                publisher.publish_finalize("error")
                 return {"status": "failed", "error": e.message}
             raise
 
         # Phase 3: Save result + token usage (fresh session)
         token_usage = service.last_token_usage
+        result_data = {"research_length": len(markdown)}
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if job:
                 job.status = JobStatus.COMPLETED
-                job.result_data = {"research_length": len(markdown)}
+                job.result_data = result_data
                 if token_usage:
                     job.token_usage = token_usage.to_dict()
                     job.model_name = token_usage.model_name
@@ -140,6 +152,10 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
                     if token_usage.duration_seconds is not None:
                         job.latency_ms = int(token_usage.duration_seconds * 1000)
                 await session.commit()
+
+        publisher.publish_result(result_data)
+        publisher.publish_progress("Saving research", "saving_research", 0.9)
+        publisher.publish_finalize("done")
 
         logger.info(
             "Stakeholder research completed",
@@ -166,7 +182,12 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
             },
             exc_info=True,
         )
-        raise self.retry(exc=e, countdown=30 * (2**self.request.retries)) from e
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e, countdown=30 * (2**self.request.retries)) from e
+
+        publisher.publish_error(str(e), "stakeholder_research_failed")
+        publisher.publish_finalize("error")
+        return {"status": "failed", "job_id": job_id, "error": str(e)}
     finally:
         release_task_lock(lock_key)
 

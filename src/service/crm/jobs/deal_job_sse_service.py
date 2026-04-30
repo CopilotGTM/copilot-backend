@@ -19,6 +19,9 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger("deal_job_sse_service")
 
+FRAME_TYPE_ANSWER_REPLACE = "answer.replace"
+FRAME_TYPE_FINALIZE = "finalize"
+
 
 class DealJobSSEService:
     """
@@ -87,13 +90,23 @@ class DealJobSSEService:
             return
 
         if job_status == JobStatus.COMPLETED:
-            # Job already done — send complete so frontend stops reconnecting.
-            # Frontend fetches fresh data from meetings list query anyway.
+            # Job already done: replay a final frame before completion so reconnecting
+            # clients can use the same terminal handling path as live streams.
             logger.info(
                 "Deal job SSE: job already completed org=%s job=%s",
                 self.organisation_id,
                 self.job_id,
             )
+            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
+            if result_data is not None:
+                yield {
+                    "event": "frame",
+                    "data": json.dumps({"type": FRAME_TYPE_ANSWER_REPLACE, "content": result_data}),
+                }
+            yield {
+                "event": "frame",
+                "data": json.dumps({"type": FRAME_TYPE_FINALIZE, "reason": "done"}),
+            }
             yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
             return
 
@@ -103,12 +116,38 @@ class DealJobSSEService:
                 self.organisation_id,
                 self.job_id,
             )
+            error_message = "Job failed"
+            if result_data:
+                error_message = str(
+                    result_data.get("error") or result_data.get("message") or error_message
+                )
+            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
             yield {
                 "event": "error",
                 "data": json.dumps(
                     {
                         "job_id": self.job_id,
-                        "message": "Job failed",
+                        "message": error_message,
+                        "reconnect": False,
+                    }
+                ),
+            }
+            yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
+            return
+
+        if job_status == JobStatus.CANCELLED:
+            logger.info(
+                "Deal job SSE: job cancelled org=%s job=%s",
+                self.organisation_id,
+                self.job_id,
+            )
+            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "job_id": self.job_id,
+                        "message": "Job cancelled",
                         "reconnect": False,
                     }
                 ),
@@ -203,12 +242,15 @@ class DealJobSSEService:
         finally:
             await self.close()
 
-    async def ensure_user_access(self) -> bool | None:
+    async def ensure_user_access(self, deal_id: UUID | None = None) -> bool | None:
         """Check whether the current user can access this job.
 
+        If a route is deal-scoped, pass the requested deal_id so a valid user
+        cannot subscribe to one of their jobs through another deal URL.
+
         Returns:
-            True: Job exists and belongs to the current user.
-            False: Job exists but belongs to a different user.
+            True: Job exists and belongs to the current user and requested deal.
+            False: Job exists but belongs to a different user or deal.
             None: Job missing or status check unavailable.
         """
         try:
@@ -216,7 +258,9 @@ class DealJobSSEService:
                 job = await session.get(DealJobs, UUID(self.job_id))
                 if not job:
                     return None
-                return str(job.user_id) == self.user_id
+                if str(job.user_id) != self.user_id:
+                    return False
+                return deal_id is None or job.deal_id == deal_id
         except Exception:
             logger.debug("Failed to validate deal job access", exc_info=True)
         return None
@@ -230,7 +274,11 @@ class DealJobSSEService:
                     return None, None, False
                 if str(job.user_id) != self.user_id:
                     return None, None, True
-                return job.status, job.result_data, False
+                result_data = job.result_data
+                if job.status == JobStatus.FAILED and job.error_message:
+                    result_data = {"error": job.error_message}
+                return job.status, result_data, False
+            return None, None, False
         except Exception:
             logger.debug("Failed to check job status", exc_info=True)
             return None, None, False

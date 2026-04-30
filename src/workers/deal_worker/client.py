@@ -28,7 +28,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
-from celery import Celery
+from celery import Celery, chain
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infra.observability.context import correlation_headers
@@ -138,6 +138,31 @@ def send_deal_task(
     return str(result.id)
 
 
+def send_deal_task_chain(
+    task_signatures: list[dict],
+    queue: str = "deal",
+    headers: dict | None = None,
+) -> str:
+    """Send deal worker tasks as one ordered Celery chain."""
+    client = get_deal_celery_client()
+    task_headers = correlation_headers(headers)
+    signatures = [
+        client.signature(
+            task["task_name"],
+            args=task.get("args") or [],
+            kwargs=task.get("kwargs") or {},
+            queue=task.get("queue") or queue,
+            routing_key=task.get("routing_key") or task.get("queue") or queue,
+            headers=task_headers,
+            immutable=True,
+        )
+        for task in task_signatures
+    ]
+
+    result = chain(*signatures).apply_async()
+    return str(result.id)
+
+
 async def send_deal_task_async(
     task_name: str,
     args: list | None = None,
@@ -164,6 +189,27 @@ async def send_deal_task_async(
         kwargs,
         queue,
         routing_key,
+        headers,
+    )
+
+    return task_id
+
+
+async def send_deal_task_chain_async(
+    task_signatures: list[dict],
+    queue: str = "deal",
+    headers: dict | None = None,
+) -> str:
+    """Send an ordered deal worker chain without blocking the asyncio event loop."""
+    loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
+
+    task_id = await loop.run_in_executor(
+        _executor,
+        ctx.run,
+        send_deal_task_chain,
+        task_signatures,
+        queue,
         headers,
     )
 
