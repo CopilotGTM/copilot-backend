@@ -347,6 +347,30 @@ async def test_create_task_creates_reminder_only_when_requested_with_due_date() 
 
 
 @pytest.mark.asyncio
+async def test_create_task_preserves_whatsapp_channel_for_reminder_delivery() -> None:
+    context = _direct_context(channel="whatsapp")
+    context.metadata = {"user_timezone": "UTC"}
+    due_date = datetime(2030, 6, 15, 17, tzinfo=UTC)
+    task = _created_task(due_date=due_date)
+
+    with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
+        service = MagicMock()
+        service.create_task = AsyncMock(return_value=task)
+        service_cls = MagicMock(return_value=service)
+        loader.return_value = (service_cls, _FakeTasksWriteServiceError)
+
+        await create_task(
+            context=context,
+            title="Send proposal",
+            due_date="2030-06-15T17:00:00+00:00",
+            reminder="1h_before",
+        )
+
+    payload = service.create_task.await_args.args[0]
+    assert payload["reminder"]["delivery_channel"] == "whatsapp"
+
+
+@pytest.mark.asyncio
 async def test_create_task_rejects_reminder_without_due_date() -> None:
     context = _direct_context()
     result = await create_task(context=context, title="Follow up", reminder="at_due")

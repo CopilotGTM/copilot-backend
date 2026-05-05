@@ -31,6 +31,7 @@ def voice_realtime_sideband(
     call_id: str,
     runtime_config: dict[str, object],
     job_id: str | None = None,
+    user_timezone: str | None = None,
 ):
     """Own one live voice sideband session inside the chat worker."""
 
@@ -54,6 +55,7 @@ def voice_realtime_sideband(
             call_id=call_id,
             runtime_config=UserRealtimeRuntimeConfig.model_validate(runtime_config),
             job_id=UUID(job_id) if job_id else None,
+            user_timezone=user_timezone,
         )
         run_async(service.run())
         logger.info("Voice realtime sideband completed call=%s", call_id)

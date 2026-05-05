@@ -112,6 +112,20 @@ async def test_resolve_user_by_name_returns_none_for_ambiguous_partial_name(
 
 
 @pytest.mark.asyncio
+async def test_resolve_user_by_name_rejects_single_token_match_for_multi_word_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _user("John", "Smith", "john.smith@copilotgtm.com")
+
+    monkeypatch.setattr(
+        "src.infra.database.sessions.acquire_master_async_session",
+        lambda: _session_scope([target]),
+    )
+
+    assert await _resolve_user_by_name(ORG_ID, "John Doe") is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_user_by_name_never_returns_cross_org_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

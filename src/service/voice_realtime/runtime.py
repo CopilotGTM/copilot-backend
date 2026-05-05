@@ -80,6 +80,7 @@ class VoiceRealtimeSidebandService:
         call_id: str,
         runtime_config: UserRealtimeRuntimeConfig,
         job_id: UUID | None = None,
+        user_timezone: str | None = None,
         transport_factory: Callable[..., RealtimeSidebandTransport] | None = None,
     ):
         self.organisation_id = organisation_id
@@ -89,6 +90,7 @@ class VoiceRealtimeSidebandService:
         self.session_id = session_id
         self.call_id = call_id
         self.runtime_config = runtime_config
+        self.user_timezone = user_timezone
         self.transport_factory = transport_factory or create_aiohttp_transport
         self.state_service = VoiceRealtimeStateService(
             organisation_id=organisation_id,
@@ -115,6 +117,10 @@ class VoiceRealtimeSidebandService:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         try:
+            metadata: dict[str, Any] = {"chat_session_id": self.chat_session_id}
+            if self.user_timezone:
+                metadata["user_timezone"] = self.user_timezone
+
             runtime = VoiceRealtimeSidebandRuntime(
                 runtime_config=self.runtime_config,
                 transport=self.transport_factory(
@@ -129,7 +135,7 @@ class VoiceRealtimeSidebandService:
                         user_id=self.user_id,
                         user_email=self.user_email,
                         channel="voice",
-                        metadata={"chat_session_id": self.chat_session_id},
+                        metadata=metadata,
                     ),
                     allowed_tools=list(self.runtime_config.allowed_tools),
                 ),

@@ -320,6 +320,7 @@ async def _resolve_user_by_name(
         if len(ordered_matches) == 1:
             match = ordered_matches[0]
             return (match.user_id, display_name(match))
+        return None
 
     if len(users) == 1:
         return (users[0].user_id, display_name(users[0]))
@@ -890,7 +891,7 @@ async def create_task(
                 "timezone": timezone_name,
             }
             channel = (context.channel or "").lower()
-            if channel in {"teams", "slack"}:
+            if channel in {"teams", "slack", "whatsapp"}:
                 reminder_cfg["delivery_channel"] = channel
             write_payload["reminder"] = reminder_cfg
 
