@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
+
+import pytest
+from src.agents.context import AgentContext
+from src.agents.tools.crm.create_deal import create_create_deal, create_deal_direct
+from src.service.crm.internal.deal_write_service import DealWriteServiceError
+
+
+class _AsyncSessionContext:
+    def __init__(self, session: MagicMock) -> None:
+        self.session = session
+
+    async def __aenter__(self) -> MagicMock:
+        return self.session
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+async def _single_session(session: MagicMock):
+    yield session
+
+
+def _context(*, user_id: UUID | None = None) -> AgentContext:
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=user_id or UUID("22222222-2222-2222-2222-222222222222"),
+        channel="teams",
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(MagicMock()))
+    return context
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_requires_name() -> None:
+    result = await create_deal_direct(context=_context(), name=" ")
+
+    assert result["status"] == "error"
+    assert "deal name" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_creates_name_only_with_defaults_and_context_owner() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    master_session = MagicMock()
+    deal_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        name="Acme Expansion",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(master_session),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(context=context, name=" Acme Expansion ")
+
+    service_cls.assert_called_once_with(
+        org_session=org_session,
+        master_session=master_session,
+        organisation_id=context.organisation_id,
+        actor_user_id=context.user_id,
+    )
+    service.create_deal.assert_awaited_once_with(
+        {
+            "name": "Acme Expansion",
+            "owner_user_id": context.user_id,
+            "created_via": "agent_create_deal",
+        }
+    )
+    org_session.commit.assert_awaited_once()
+    org_session.rollback.assert_not_awaited()
+    assert result == {
+        "status": "created",
+        "deal_id": str(deal_id),
+        "name": "Acme Expansion",
+        "pipeline_name": "Sales Pipeline",
+        "stage_name": "Discovery",
+        "message": "Created deal **Acme Expansion** in Sales Pipeline > Discovery.",
+        "_bot_channel_payload": {
+            "type": "message",
+            "content": {
+                "text": " ",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "content": {
+                            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                            "type": "AdaptiveCard",
+                            "version": "1.4",
+                            "body": [
+                                {
+                                    "type": "TextBlock",
+                                    "text": "Deal created",
+                                    "size": "Medium",
+                                    "weight": "Bolder",
+                                    "wrap": True,
+                                    "color": "Good",
+                                },
+                                {
+                                    "type": "FactSet",
+                                    "facts": [
+                                        {"title": "Name", "value": "Acme Expansion"},
+                                        {"title": "Pipeline", "value": "Sales Pipeline"},
+                                        {"title": "Stage", "value": "Discovery"},
+                                    ],
+                                },
+                                {
+                                    "type": "TextBlock",
+                                    "text": (
+                                        "TODO: Add next-action buttons for add stakeholder, "
+                                        "add note, and update stage."
+                                    ),
+                                    "isVisible": False,
+                                },
+                            ],
+                        },
+                    }
+                ],
+            },
+            "text_fallback": "Created deal Acme Expansion in Sales Pipeline > Discovery.",
+            "attachments": None,
+            "source_text": None,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_defaults_currency_when_amount_has_no_currency() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Budget Deal",
+        amount=12000,
+        currency="USD",
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(context=context, name="Budget Deal", amount=12000)
+
+    payload = service.create_deal.await_args.args[0]
+    assert payload["amount"] == 12000
+    assert payload["currency"] == "USD"
+    assert result["amount"] == 12000
+    assert result["currency"] == "USD"
+    assert "Amount: USD 12,000.00" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_returns_structured_failure_for_write_service_error() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(
+            side_effect=DealWriteServiceError("No default pipeline found", status_code=500)
+        )
+        service_cls.return_value = service
+
+        result = await create_deal_direct(context=context, name="Pipeline Missing")
+
+    org_session.commit.assert_not_awaited()
+    org_session.rollback.assert_awaited_once()
+    assert result == {
+        "status": "error",
+        "message": "Could not create deal: No default pipeline found",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_deal_tool_uses_direct_create_path() -> None:
+    context = _context()
+    tool = create_create_deal(context, lambda: None)
+
+    with patch("src.agents.tools.crm.create_deal.create_deal_direct") as direct_create:
+        direct_create.return_value = {
+            "status": "created",
+            "name": "Acme",
+            "_bot_channel_payload": {"type": "message", "content": {"text": "card"}},
+        }
+
+        result = await tool(name="Acme")
+
+    assert result == {"status": "created", "name": "Acme"}
+    direct_create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_builds_slack_success_card() -> None:
+    context = _context()
+    context.channel = "slack"
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Slack Deal",
+        amount=50000,
+        currency="USD",
+        pipeline_name="Sales Pipeline",
+        stage_name="Proposal",
+        company_name="Acme",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(
+            context=context,
+            name="Slack Deal",
+            amount=50000,
+            account_name="Acme",
+        )
+
+    channel_payload = result["_bot_channel_payload"]
+    assert channel_payload["type"] == "message"
+    assert (
+        channel_payload["text_fallback"] == "Created deal Slack Deal in Sales Pipeline > Proposal."
+    )
+    blocks = channel_payload["content"]["blocks"]
+    assert blocks[0]["type"] == "header"
+    assert blocks[0]["text"]["text"] == "Deal created"
+    assert any(
+        field["text"] == "*Amount*\nUSD 50,000.00"
+        for block in blocks
+        if block.get("type") == "section" and "fields" in block
+        for field in block["fields"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_builds_whatsapp_text_payload() -> None:
+    context = _context()
+    context.channel = "whatsapp"
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="WhatsApp Deal",
+        amount=7500,
+        currency="USD",
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+        company_name="Acme",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(
+            context=context,
+            name="WhatsApp Deal",
+            amount=7500,
+            account_name="Acme",
+        )
+
+    channel_payload = result["_bot_channel_payload"]
+    assert channel_payload == {
+        "type": "message",
+        "content": {
+            "text": (
+                "Deal created\n"
+                "Name: WhatsApp Deal\n"
+                "Amount: USD 7,500.00\n"
+                "Pipeline: Sales Pipeline\n"
+                "Stage: Discovery\n"
+                "Account: Acme"
+            )
+        },
+        "text_fallback": "Created deal WhatsApp Deal in Sales Pipeline > Discovery.",
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
+    context = _context()
+    context.channel = "web"
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Web Deal",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(context=context, name="Web Deal")
+
+    assert result["status"] == "created"
+    assert result["name"] == "Web Deal"
+    assert result["ui_card"] == {
+        "kind": "deal_created_confirmation",
+        "version": "1.0",
+        "tone": "success",
+        "title": "Deal created",
+        "message": "Created deal Web Deal in Sales Pipeline > Discovery.",
+        "entity": {
+            "type": "deal",
+            "id": str(deal.deal_id),
+            "name": "Web Deal",
+        },
+        "facts": [
+            {"label": "Name", "value": "Web Deal"},
+            {"label": "Pipeline", "value": "Sales Pipeline"},
+            {"label": "Stage", "value": "Discovery"},
+        ],
+        "actions": [],
+    }
+    assert result["_bot_channel_payload"] == {
+        "type": "ui_card",
+        "content": {"card": result["ui_card"]},
+        "text_fallback": "Created deal Web Deal in Sales Pipeline > Discovery.",
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_voice_includes_ui_card_payload() -> None:
+    context = _context()
+    context.channel = "voice"
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Voice Deal",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(context=context, name="Voice Deal")
+
+    assert result["ui_card"]["kind"] == "deal_created_confirmation"
+    assert result["ui_card"]["entity"] == {
+        "type": "deal",
+        "id": str(deal.deal_id),
+        "name": "Voice Deal",
+    }
+    assert result["_bot_channel_payload"] == {
+        "type": "ui_card",
+        "content": {"card": result["ui_card"]},
+        "text_fallback": "Created deal Voice Deal in Sales Pipeline > Discovery.",
+        "attachments": None,
+        "source_text": None,
+    }

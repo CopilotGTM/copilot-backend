@@ -12,7 +12,11 @@ from src.domain.models.user_models import (
     UserRealtimeRuntimeConfig,
 )
 from src.service.users.voice_realtime_contract import build_voice_realtime_tool_schemas
-from src.service.voice_realtime.runtime import VoiceRealtimeSidebandRuntime
+from src.service.voice_realtime import runtime as runtime_module
+from src.service.voice_realtime.runtime import (
+    VoiceRealtimeSidebandRuntime,
+    VoiceRealtimeSidebandService,
+)
 from src.service.voice_realtime.tool_executor import (
     BackendRealtimeToolExecutor,
     ToolExecutionResult,
@@ -121,3 +125,60 @@ async def test_backend_realtime_tool_executor_rejects_disallowed_tool() -> None:
             "message": "Tool 'create_deal' is not allowed.",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_voice_realtime_sideband_service_passes_user_timezone_to_tool_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStateService:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def update_call_state(self, **_kwargs: object) -> None:
+            return None
+
+        def refresh_lock(self) -> None:
+            return None
+
+        def release_lock(self) -> None:
+            return None
+
+    class CapturingToolExecutor:
+        def __init__(self, *, context, allowed_tools):
+            captured["context"] = context
+            captured["allowed_tools"] = allowed_tools
+
+        async def execute(
+            self, tool_name: str, arguments: dict[str, object]
+        ) -> ToolExecutionResult:
+            return ToolExecutionResult(ok=True, payload={"ok": True})
+
+    monkeypatch.setattr(runtime_module, "VoiceRealtimeStateService", FakeStateService)
+    monkeypatch.setattr(runtime_module, "BackendRealtimeToolExecutor", CapturingToolExecutor)
+    monkeypatch.setattr(
+        runtime_module.openai_config,
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(runtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(runtime_module.agent_config, "VOICE_REALTIME_MODEL", "gpt-realtime-mini")
+
+    service = VoiceRealtimeSidebandService(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        user_email="test@example.com",
+        chat_session_id=str(uuid4()),
+        session_id="azure-session-123",
+        call_id="call-123",
+        runtime_config=_make_runtime_config(),
+        user_timezone="Asia/Kolkata",
+        transport_factory=lambda **_kwargs: FakeTransport(),
+    )
+
+    await service.run()
+
+    context = captured["context"]
+    assert context.metadata["user_timezone"] == "Asia/Kolkata"

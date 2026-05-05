@@ -1,11 +1,9 @@
-"""Create Deal tool - sends a confirmation preview card for deal creation.
+"""Create Deal agent tool and legacy confirmation-card fallback.
 
-This tool builds a read-only Adaptive Card with deal details extracted by
-the agent, and sends it to the user's chat. The user clicks Confirm to
-create the deal, Edit to switch to an editable form, or Cancel to discard.
-
-The actual deal creation happens when the user clicks Confirm,
-handled by CreateDealFormHandler in src/service/bots/form_handlers/.
+The normal agent path creates an internal CRM deal directly once the user has
+provided a deal name. The card/form helpers remain for previously sent Teams
+and Slack cards, whose submissions are still handled by CreateDealFormHandler
+in src/service/bots/form_handlers/.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -18,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -29,14 +28,69 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStage,
     CRMPipeline,
 )
+from src.infra.database.sessions import acquire_master_async_session
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
+from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+_BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _parse_close_date(value: str | None) -> datetime | None:
+    cleaned = _clean_optional(value)
+    if cleaned is None:
+        return None
+
+    normalized = cleaned.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        logger.warning("create_deal_direct: invalid close_date: %s", value)
+        return None
+
+
+def _created_deal_result(deal: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "created",
+        "deal_id": str(deal.deal_id),
+        "name": deal.name,
+        "pipeline_name": deal.pipeline_name,
+        "stage_name": deal.stage_name,
+    }
+
+    message = f"Created deal **{deal.name}**"
+    if deal.pipeline_name and deal.stage_name:
+        message += f" in {deal.pipeline_name} > {deal.stage_name}"
+    elif deal.pipeline_name:
+        message += f" in {deal.pipeline_name}"
+    elif deal.stage_name:
+        message += f" at stage {deal.stage_name}"
+
+    if deal.amount is not None:
+        result["amount"] = deal.amount
+        result["currency"] = deal.currency
+        currency = deal.currency or "USD"
+        message += f". Amount: {currency} {deal.amount:,.2f}"
+
+    result["message"] = f"{message}."
+    return result
+
+
+def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in result.items() if not key.startswith("_")}
 
 
 def _escape_slack_mrkdwn(value: str) -> str:
@@ -55,6 +109,146 @@ def _slack_quote(value: str) -> str:
     escaped = _escape_slack_mrkdwn(value)
     lines = escaped.splitlines() or [escaped]
     return "\n".join(f"> {line}" if line else ">" for line in lines)
+
+
+def _deal_created_text_fallback(deal: Any) -> str:
+    message = f"Created deal {deal.name}"
+    if deal.pipeline_name and deal.stage_name:
+        message += f" in {deal.pipeline_name} > {deal.stage_name}"
+    elif deal.pipeline_name:
+        message += f" in {deal.pipeline_name}"
+    elif deal.stage_name:
+        message += f" at stage {deal.stage_name}"
+    return f"{message}."
+
+
+def _success_card_facts(deal: Any) -> list[dict[str, str]]:
+    facts = [{"title": "Name", "value": str(deal.name)}]
+    if getattr(deal, "amount", None) is not None:
+        currency = getattr(deal, "currency", None) or "USD"
+        facts.append({"title": "Amount", "value": f"{currency} {deal.amount:,.2f}"})
+    if getattr(deal, "pipeline_name", None):
+        facts.append({"title": "Pipeline", "value": str(deal.pipeline_name)})
+    if getattr(deal, "stage_name", None):
+        facts.append({"title": "Stage", "value": str(deal.stage_name)})
+    if getattr(deal, "company_name", None):
+        facts.append({"title": "Account", "value": str(deal.company_name)})
+    return facts
+
+
+def _success_ui_card_facts(deal: Any) -> list[dict[str, str]]:
+    return [{"label": fact["title"], "value": fact["value"]} for fact in _success_card_facts(deal)]
+
+
+def _build_deal_created_ui_card(deal: Any) -> dict[str, Any]:
+    return {
+        "kind": "deal_created_confirmation",
+        "version": "1.0",
+        "tone": "success",
+        "title": "Deal created",
+        "message": _deal_created_text_fallback(deal),
+        "entity": {
+            "type": "deal",
+            "id": str(deal.deal_id),
+            "name": str(deal.name),
+        },
+        "facts": _success_ui_card_facts(deal),
+        "actions": [],
+    }
+
+
+def _build_teams_success_payload(deal: Any) -> dict[str, Any]:
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": "Deal created",
+                "size": "Medium",
+                "weight": "Bolder",
+                "wrap": True,
+                "color": "Good",
+            },
+            {"type": "FactSet", "facts": _success_card_facts(deal)},
+            {
+                "type": "TextBlock",
+                "text": "TODO: Add next-action buttons for add stakeholder, add note, and update stage.",
+                "isVisible": False,
+            },
+        ],
+    }
+    return {
+        "type": "message",
+        "content": {
+            "text": " ",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": card,
+                }
+            ],
+        },
+        "text_fallback": _deal_created_text_fallback(deal),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_slack_success_payload(deal: Any) -> dict[str, Any]:
+    fields = [_slack_field(fact["title"], fact["value"]) for fact in _success_card_facts(deal)]
+    return {
+        "type": "message",
+        "content": {
+            "text": _deal_created_text_fallback(deal),
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Deal created"},
+                },
+                {"type": "section", "fields": fields},
+            ],
+        },
+        "text_fallback": _deal_created_text_fallback(deal),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_whatsapp_success_payload(deal: Any) -> dict[str, Any]:
+    lines = ["Deal created"]
+    lines.extend(f"{fact['title']}: {fact['value']}" for fact in _success_card_facts(deal))
+    return {
+        "type": "message",
+        "content": {"text": "\n".join(lines)},
+        "text_fallback": _deal_created_text_fallback(deal),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_ui_card_success_payload(deal: Any) -> dict[str, Any]:
+    return {
+        "type": "ui_card",
+        "content": {"card": _build_deal_created_ui_card(deal)},
+        "text_fallback": _deal_created_text_fallback(deal),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_deal_created_channel_payload(context: AgentContext, deal: Any) -> dict[str, Any] | None:
+    channel = (context.channel or "").lower()
+    if channel == "slack":
+        return _build_slack_success_payload(deal)
+    if channel == "teams":
+        return _build_teams_success_payload(deal)
+    if channel == "whatsapp":
+        return _build_whatsapp_success_payload(deal)
+    if channel in {"web", "voice"}:
+        return _build_ui_card_success_payload(deal)
+    return None
 
 
 async def create_deal_form(
@@ -398,6 +592,98 @@ async def create_deal_form(
         }
 
 
+async def create_deal_direct(
+    *,
+    context: AgentContext,
+    name: str | None = None,
+    amount: float | None = None,
+    currency: str | None = None,
+    description: str | None = None,
+    close_date: str | None = None,
+    priority: str | None = None,
+    account_name: str | None = None,
+    account_domain: str | None = None,
+) -> dict[str, Any]:
+    """Create a deal directly through the internal CRM write service."""
+    organisation_id = context.organisation_id
+    user_id = context.user_id
+    deal_name = _clean_optional(name)
+
+    if not organisation_id:
+        logger.warning("create_deal_direct: missing organisation_id in context")
+        return {"status": "error", "message": "Cannot create deal: missing organisation context."}
+    if not user_id:
+        logger.warning("create_deal_direct: missing user_id in context")
+        return {"status": "error", "message": "Could not identify your account. Please sign in."}
+    if not deal_name:
+        return {
+            "status": "error",
+            "message": "Deal name is required. Please ask the user for a deal name.",
+        }
+
+    payload: dict[str, Any] = {
+        "name": deal_name,
+        "owner_user_id": user_id,
+        "created_via": "agent_create_deal",
+    }
+
+    if amount is not None:
+        payload["amount"] = amount
+        payload["currency"] = (_clean_optional(currency) or "USD").upper()
+
+    optional_fields = {
+        "description": _clean_optional(description),
+        "close_date": _parse_close_date(close_date),
+        "priority": _clean_optional(priority),
+    }
+    for field, value in optional_fields.items():
+        if value is not None:
+            payload[field] = value
+
+    clean_account_name = _clean_optional(account_name)
+    clean_account_domain = _clean_optional(account_domain)
+    if clean_account_name or clean_account_domain:
+        payload["account"] = {
+            "name": clean_account_name,
+            "domain": clean_account_domain,
+        }
+
+    async for master_session in acquire_master_async_session():
+        async with context.acquire_session() as org_session:
+            service = DealWriteService(
+                org_session=org_session,
+                master_session=master_session,
+                organisation_id=organisation_id,
+                actor_user_id=user_id,
+            )
+            try:
+                deal = await service.create_deal(payload)
+                await org_session.commit()
+                result = _created_deal_result(deal)
+                channel_payload = _build_deal_created_channel_payload(context, deal)
+                if channel_payload:
+                    if channel_payload.get("type") == "ui_card":
+                        result["ui_card"] = channel_payload["content"]["card"]
+                    result[_BOT_CHANNEL_PAYLOAD_KEY] = channel_payload
+                return result
+            except DealWriteServiceError as exc:
+                await org_session.rollback()
+                logger.warning("create_deal_direct: DealWriteServiceError: %s", exc.message)
+                return {
+                    "status": "error",
+                    "message": f"Could not create deal: {exc.message}",
+                }
+            except Exception:
+                await org_session.rollback()
+                logger.exception("create_deal_direct: unexpected error")
+                return {
+                    "status": "error",
+                    "message": "An unexpected error occurred while creating the deal.",
+                }
+
+    return {"status": "error", "message": "Could not acquire database session."}
+
+
 def create_create_deal(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
@@ -417,14 +703,12 @@ def create_create_deal(
         account_name: str | None = None,
         account_domain: str | None = None,
     ) -> dict[str, Any] | None:
-        """Send a deal creation confirmation preview to the user's chat.
+        """Create a new deal directly once the deal name is known.
 
         Use this tool when the user wants to create a new deal. Extract deal
-        details from the conversation and pass them as pre-filled values.
-        A confirmation preview will be sent for the user to review and confirm.
-        If only the deal name is known, still call this tool immediately.
-        Do not ask follow-up questions for optional fields like account/company
-        before sending the preview.
+        details from the conversation and pass them as values. If only the deal
+        name is known, still call this tool immediately. Do not ask follow-up
+        questions for optional fields like account/company before creating it.
 
         name is REQUIRED. If the user says "create a deal" without providing a
         name, ask them for the deal name first before calling this tool.
@@ -440,7 +724,7 @@ def create_create_deal(
             account_domain: Account website domain to pre-fill (e.g. "acme.com")
 
         Returns:
-            Status dict indicating whether the confirmation preview was sent.
+            Structured status dict with created deal details or an error message.
         """
         logger.info(
             "[TOOL CALLED] create_deal - name='%s', amount=%s, currency='%s'",
@@ -456,7 +740,7 @@ def create_create_deal(
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateDeal",
-            tool_func=create_deal_form,
+            tool_func=create_deal_direct,
             parameters={
                 "context": context,
                 "name": name,
@@ -480,12 +764,13 @@ def create_create_deal(
         else:
             logger.info("[TOOL RESULT] create_deal returned None (error)")
 
-        return dict(result) if result else None
+        return _public_tool_result(dict(result)) if result else None
 
     return create_deal_tool
 
 
 __all__ = [
+    "create_deal_direct",
     "create_deal_form",
     "create_create_deal",
 ]

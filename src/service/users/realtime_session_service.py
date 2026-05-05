@@ -307,6 +307,7 @@ class RealtimeSessionService:
                     attach_request.call_id,
                     attach_request.runtime_config.model_dump(mode="json"),
                     str(voice_job.job_id),
+                    self.user_ids.user_timezone,
                 ],
                 queue=VOICE_REALTIME_QUEUE,
             )

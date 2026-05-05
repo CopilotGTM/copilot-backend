@@ -37,5 +37,16 @@ def test_delivery_context_is_ready_requires_complete_slack_context() -> None:
     )
 
 
+def test_delivery_context_is_ready_requires_complete_whatsapp_context() -> None:
+    assert _delivery_context_is_ready(
+        "whatsapp",
+        {"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+    )
+    assert not _delivery_context_is_ready(
+        "whatsapp",
+        {"phone_number_id": "phone-123"},
+    )
+
+
 def test_provider_name_accepts_enum_and_string() -> None:
     assert _provider_name("slack") == "slack"

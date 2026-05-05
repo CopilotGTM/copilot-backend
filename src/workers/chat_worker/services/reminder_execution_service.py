@@ -364,6 +364,7 @@ class ReminderExecutionService:
         required_keys = {
             "teams": ("service_url", "conversation_id"),
             "slack": ("team_id", "channel_id"),
+            "whatsapp": ("phone_number_id", "recipient_wa_id"),
         }.get(delivery_channel)
         if not required_keys:
             return False
@@ -405,6 +406,22 @@ class ReminderExecutionService:
 
             bot_service = SlackBotService()
             return await bot_service._send_message(team_id, channel_id, text)
+
+        if delivery_channel == "whatsapp":
+            from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+            phone_number_id = delivery_context.get("phone_number_id", "")
+            recipient_wa_id = delivery_context.get("recipient_wa_id", "")
+            if not phone_number_id or not recipient_wa_id:
+                logger.error("WhatsApp reminder missing delivery context")
+                return False
+
+            bot_service = WhatsAppBotService()
+            return await bot_service.send_text_message(
+                phone_number_id=phone_number_id,
+                recipient_wa_id=recipient_wa_id,
+                text=text,
+            )
 
         logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
         return False
@@ -458,6 +475,35 @@ class ReminderExecutionService:
                 )
 
             return await bot_service._send_message(team_id, channel_id, text)
+
+        if delivery_channel == "whatsapp":
+            from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+            from src.workers.chat_worker.services.bot_message_processing_service import (
+                BotMessageProcessingService,
+            )
+
+            phone_number_id = delivery_context.get("phone_number_id", "")
+            recipient_wa_id = delivery_context.get("recipient_wa_id", "")
+            if not phone_number_id or not recipient_wa_id:
+                logger.error("WhatsApp reminder missing delivery context")
+                return False
+
+            text = (
+                payload.content.get("text")
+                or payload.text_fallback
+                or response_text
+                or f"Scheduled Alert: {title}"
+            )
+            bot_service = WhatsAppBotService()
+            for chunk in BotMessageProcessingService._split_whatsapp_text(text):
+                sent = await bot_service.send_text_message(
+                    phone_number_id=phone_number_id,
+                    recipient_wa_id=recipient_wa_id,
+                    text=chunk,
+                )
+                if not sent:
+                    return False
+            return True
 
         logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
         return False

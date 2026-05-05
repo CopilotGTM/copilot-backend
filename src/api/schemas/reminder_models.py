@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     ReminderType,
 )
 
-VALID_DELIVERY_CHANNELS = {"teams", "slack"}
+VALID_DELIVERY_CHANNELS = {"teams", "slack", "whatsapp"}
 
 
 class ReminderCreateRequest(BaseModel):
@@ -37,7 +37,9 @@ class ReminderCreateRequest(BaseModel):
     recurrence_end_at: datetime | None = Field(
         None, description="Stop recurring after this UTC datetime"
     )
-    delivery_channel: str = Field(..., description="Where to deliver: 'teams' or 'slack'")
+    delivery_channel: str = Field(
+        ..., description="Where to deliver: 'teams', 'slack', or 'whatsapp'"
+    )
 
     @model_validator(mode="after")
     def validate_type_content(self) -> ReminderCreateRequest:

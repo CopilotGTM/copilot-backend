@@ -1,14 +1,9 @@
-"""Add Stakeholder tool - sends an interactive stakeholder form to the user's chat channel.
+"""Add Stakeholder agent tool and legacy interactive-form fallback.
 
-This tool builds a FormDefinition with stakeholder fields (optionally
-pre-filled), renders it via the appropriate card builder, and sends it
-as a proactive message to the user's chat.
-
-The LLM is responsible for resolving the deal first (via search_deals),
-then calling this tool with a confirmed deal_id and deal_name.
-
-The actual stakeholder creation happens when the user submits the form,
-handled by AddStakeholderFormHandler in src/service/bots/form_handlers/.
+The normal agent path creates the stakeholder directly once the deal and
+stakeholder email are known. The form helper remains for previously sent
+Teams and Slack cards, whose submissions are still handled by
+AddStakeholderFormHandler in src/service/bots/form_handlers/.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -21,16 +16,34 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from src.adapters.card_builders import FormDefinition, FormField, get_card_builder
 from src.agents.tools.base import execute_with_capabilities
+from src.api.schemas.crm_models import CreateStakeholderRequest
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    DecisionPower,
+    StakeholderStance,
+)
 from src.service.crm.guards.internal_user_guard import is_internal_email
+from src.service.crm.insights.stakeholders_service import (
+    StakeholdersService,
+    StakeholdersServiceError,
+)
+from src.service.crm.jobs.stakeholder_job_visibility_service import (
+    StakeholderJobVisibilityService,
+)
+from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+    dispatch_stakeholder_research_async,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+_BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
 
 STANCE_CHOICES: list[dict[str, str]] = [
     {"title": "Unknown", "value": "UNKNOWN"},
@@ -49,6 +62,326 @@ DECISION_POWER_CHOICES: list[dict[str, str]] = [
     {"title": "Gatekeeper", "value": "GATEKEEPER"},
     {"title": "End User", "value": "END_USER"},
 ]
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+def _enum_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def _parse_stance(value: str | None) -> StakeholderStance | None | dict[str, Any]:
+    cleaned = _clean_optional(value)
+    if cleaned is None:
+        return None
+    try:
+        return StakeholderStance(cleaned.upper())
+    except ValueError:
+        allowed = ", ".join(item.value for item in StakeholderStance)
+        return {
+            "status": "error",
+            "message": f"Invalid stance '{cleaned}'. Use one of: {allowed}.",
+        }
+
+
+def _parse_decision_power(value: str | None) -> DecisionPower | None | dict[str, Any]:
+    cleaned = _clean_optional(value)
+    if cleaned is None:
+        return None
+    try:
+        return DecisionPower(cleaned.upper())
+    except ValueError:
+        allowed = ", ".join(item.value for item in DecisionPower)
+        return {
+            "status": "error",
+            "message": f"Invalid decision_power '{cleaned}'. Use one of: {allowed}.",
+        }
+
+
+def _job_summary(job: Any) -> dict[str, str]:
+    return {
+        "job_id": str(job.job_id),
+        "job_type": _enum_value(job.job_type) or "",
+        "status": _enum_value(job.status) or "",
+    }
+
+
+def _research_job_summary(job_id: UUID | None) -> dict[str, str | None] | None:
+    if not job_id:
+        return None
+    return {
+        "job_id": str(job_id),
+        "job_type": "stakeholder_research",
+        "status": "pending",
+    }
+
+
+def _stakeholder_name(stakeholder: Any) -> str:
+    return stakeholder.name or stakeholder.email
+
+
+def _stakeholder_added_text_fallback(stakeholder: Any, deal_name: str) -> str:
+    return f"Added {_stakeholder_name(stakeholder)} as a stakeholder to {deal_name}."
+
+
+def _success_card_facts(stakeholder: Any, deal_name: str) -> list[dict[str, str]]:
+    facts = [
+        {"title": "Deal", "value": deal_name},
+        {"title": "Email", "value": str(stakeholder.email)},
+    ]
+    if getattr(stakeholder, "name", None):
+        facts.append({"title": "Name", "value": str(stakeholder.name)})
+    if getattr(stakeholder, "job_title", None):
+        facts.append({"title": "Title", "value": str(stakeholder.job_title)})
+    if _enum_value(getattr(stakeholder, "stance", None)):
+        facts.append({"title": "Stance", "value": _enum_value(stakeholder.stance) or ""})
+    if _enum_value(getattr(stakeholder, "decision_power", None)):
+        facts.append(
+            {"title": "Decision Power", "value": _enum_value(stakeholder.decision_power) or ""}
+        )
+    return facts
+
+
+def _escape_slack_mrkdwn(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _slack_field(label: str, value: Any) -> dict[str, str]:
+    return {"type": "mrkdwn", "text": f"*{label}*\n{_escape_slack_mrkdwn(str(value))}"}
+
+
+def _build_teams_success_payload(stakeholder: Any, deal_name: str) -> dict[str, Any]:
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": "Stakeholder added",
+                "size": "Medium",
+                "weight": "Bolder",
+                "wrap": True,
+                "color": "Good",
+            },
+            {"type": "FactSet", "facts": _success_card_facts(stakeholder, deal_name)},
+        ],
+    }
+    return {
+        "type": "message",
+        "content": {
+            "text": " ",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": card,
+                }
+            ],
+        },
+        "text_fallback": _stakeholder_added_text_fallback(stakeholder, deal_name),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_slack_success_payload(stakeholder: Any, deal_name: str) -> dict[str, Any]:
+    fields = [
+        _slack_field(fact["title"], fact["value"])
+        for fact in _success_card_facts(stakeholder, deal_name)
+    ]
+    return {
+        "type": "message",
+        "content": {
+            "text": _stakeholder_added_text_fallback(stakeholder, deal_name),
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Stakeholder added"},
+                },
+                {"type": "section", "fields": fields},
+            ],
+        },
+        "text_fallback": _stakeholder_added_text_fallback(stakeholder, deal_name),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_stakeholder_added_channel_payload(
+    context: AgentContext,
+    stakeholder: Any,
+    deal_name: str,
+) -> dict[str, Any] | None:
+    channel = (context.channel or "").lower()
+    if channel == "teams":
+        return _build_teams_success_payload(stakeholder, deal_name)
+    if channel == "slack":
+        return _build_slack_success_payload(stakeholder, deal_name)
+    return None
+
+
+def _created_stakeholder_result(
+    *,
+    context: AgentContext,
+    deal_id: UUID,
+    deal_name: str,
+    stakeholder: Any,
+    processing_jobs: list[Any],
+    research_job_id: UUID | None,
+) -> dict[str, Any]:
+    processing_job_summaries = [_job_summary(job) for job in processing_jobs]
+    result: dict[str, Any] = {
+        "status": "created",
+        "stakeholder_id": str(stakeholder.stakeholder_id),
+        "deal_id": str(deal_id),
+        "deal_name": deal_name,
+        "email": stakeholder.email,
+        "name": stakeholder.name,
+        "job_title": getattr(stakeholder, "job_title", None),
+        "phone_number": getattr(stakeholder, "phone_number", None),
+        "stance": _enum_value(getattr(stakeholder, "stance", None)),
+        "decision_power": _enum_value(getattr(stakeholder, "decision_power", None)),
+        "champion_potential": getattr(stakeholder, "champion_potential", None),
+        "approval_status": _enum_value(getattr(stakeholder, "approval_status", None)),
+        "processing_jobs": processing_job_summaries,
+        "research_job": _research_job_summary(research_job_id),
+        "message": (
+            f"Added **{_stakeholder_name(stakeholder)}** as a stakeholder to **{deal_name}**."
+        ),
+    }
+
+    channel_payload = _build_stakeholder_added_channel_payload(context, stakeholder, deal_name)
+    if channel_payload:
+        result[_BOT_CHANNEL_PAYLOAD_KEY] = channel_payload
+    return result
+
+
+async def add_stakeholder_direct(
+    *,
+    context: AgentContext,
+    deal_id: str,
+    deal_name: str,
+    email: str | None = None,
+    name: str | None = None,
+    job_title: str | None = None,
+    phone_number: str | None = None,
+    department: str | None = None,
+    stance: str | None = None,
+    decision_power: str | None = None,
+    champion_potential: float | None = None,
+    motivation: str | None = None,
+    pain_points: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a stakeholder directly through the CRM stakeholder service."""
+    organisation_id = context.organisation_id
+    user_id = context.user_id
+    clean_deal_name = _clean_optional(deal_name)
+    clean_email = _clean_optional(email)
+
+    if not organisation_id:
+        logger.warning("add_stakeholder_direct: missing organisation_id in context")
+        return {
+            "status": "error",
+            "message": "Cannot add stakeholder: missing organisation context.",
+        }
+    if not user_id:
+        logger.warning("add_stakeholder_direct: missing user_id in context")
+        return {"status": "error", "message": "Could not identify your account. Please sign in."}
+    if not clean_deal_name:
+        return {"status": "error", "message": "Deal name is required before adding a stakeholder."}
+    if not clean_email:
+        return {
+            "status": "error",
+            "message": "Stakeholder email is required. Please ask the user for the email.",
+        }
+
+    try:
+        deal_uuid = UUID(deal_id)
+    except (TypeError, ValueError):
+        return {
+            "status": "error",
+            "message": "Invalid deal information. Please search the deal again.",
+        }
+
+    parsed_stance = _parse_stance(stance)
+    if isinstance(parsed_stance, dict):
+        return parsed_stance
+    parsed_decision_power = _parse_decision_power(decision_power)
+    if isinstance(parsed_decision_power, dict):
+        return parsed_decision_power
+
+    try:
+        request = CreateStakeholderRequest(
+            email=clean_email,
+            name=_clean_optional(name),
+            job_title=_clean_optional(job_title),
+            phone_number=_clean_optional(phone_number),
+            department=_clean_optional(department),
+            stance=parsed_stance or StakeholderStance.UNKNOWN,
+            decision_power=parsed_decision_power or DecisionPower.UNKNOWN,
+            champion_potential=champion_potential,
+            motivation=_clean_optional(motivation),
+            pain_points=pain_points,
+            external_links=None,
+        )
+    except ValueError as exc:
+        return {"status": "error", "message": f"Invalid stakeholder details: {exc}"}
+
+    async with context.acquire_session() as session:
+        service = StakeholdersService(session, organisation_id, user_id)
+        try:
+            stakeholder = await service.create_stakeholder(deal_uuid, request)
+            job_visibility_service = StakeholderJobVisibilityService(
+                session,
+                organisation_id,
+                user_id,
+            )
+            processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
+                deal_uuid,
+                stakeholder.stakeholder_id,
+            )
+            research_job_id = await dispatch_stakeholder_research_async(
+                organisation_id=organisation_id,
+                stakeholder_id=stakeholder.stakeholder_id,
+                deal_id=deal_uuid,
+                user_id=user_id,
+            )
+            return _created_stakeholder_result(
+                context=context,
+                deal_id=deal_uuid,
+                deal_name=clean_deal_name,
+                stakeholder=stakeholder,
+                processing_jobs=processing_jobs,
+                research_job_id=research_job_id,
+            )
+        except StakeholdersServiceError as exc:
+            logger.warning("add_stakeholder_direct: StakeholdersServiceError: %s", exc.message)
+            result: dict[str, Any] = {
+                "status": "error",
+                "message": f"Could not add stakeholder: {exc.message}",
+            }
+            if exc.data:
+                result["conflict"] = exc.data
+            return result
+        except Exception:
+            logger.exception("add_stakeholder_direct: unexpected error")
+            return {
+                "status": "error",
+                "message": "An unexpected error occurred while adding the stakeholder.",
+            }
 
 
 async def add_stakeholder_form(
@@ -259,42 +592,50 @@ def create_add_stakeholder(
         name: str | None = None,
         job_title: str | None = None,
         phone_number: str | None = None,
+        department: str | None = None,
         stance: str | None = None,
         decision_power: str | None = None,
+        champion_potential: float | None = None,
+        motivation: str | None = None,
+        pain_points: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Send an interactive form to add a stakeholder to an existing deal.
+        """Create a stakeholder directly on an existing deal.
 
         IMPORTANT: Only add EXTERNAL contacts (clients, prospects, partners) as
         stakeholders. Do NOT add internal team members or anyone from your own
-        organisation. Internal emails are rejected automatically.
+        organisation. Internal emails are rejected automatically by the service.
 
         IMPORTANT: Before calling this tool, you MUST first use search_deals to
-        find the deal and confirm it with the user. Do NOT call this tool without
-        a confirmed deal_id.
+        find the deal. Do NOT call this tool without a resolved deal_id.
+
+        email is REQUIRED. If the user asks to add a stakeholder but does not
+        provide an email address, ask for the email before calling this tool.
 
         Workflow:
         1. User asks to add a stakeholder to a deal
         2. You call search_deals to find matching deals
         3. If multiple matches, ask user which deal they mean
-        4. Once confirmed, call this tool with the deal_id and deal_name
-        5. Pre-fill any stakeholder details the user mentioned (email, name, etc.)
-
-        After the form is sent successfully, respond with a brief confirmation
-        only. Do not add extra suggestions.
+        4. Once the deal and email are known, call this tool with any optional
+           stakeholder details the user mentioned
 
         Args:
             deal_id: UUID of the deal (from search_deals result)
             deal_name: Name of the deal (from search_deals result)
-            email: Optional email address to pre-fill
-            name: Optional stakeholder name to pre-fill
-            job_title: Optional job title to pre-fill
-            stance: Optional stance to pre-fill (UNKNOWN/CHAMPION/SUPPORTER/
+            email: Stakeholder email address (REQUIRED)
+            name: Optional stakeholder name
+            job_title: Optional job title
+            phone_number: Optional phone number
+            department: Optional department
+            stance: Optional stance (UNKNOWN/CHAMPION/SUPPORTER/
                     NEUTRAL/DETRACTOR/BLOCKER)
-            decision_power: Optional decision power to pre-fill (UNKNOWN/
+            decision_power: Optional decision power (UNKNOWN/
                            DECISION_MAKER/INFLUENCER/EVALUATOR/GATEKEEPER/END_USER)
+            champion_potential: Optional 0-100 champion potential score
+            motivation: Optional motivation/context
+            pain_points: Optional list of pain points
 
         Returns:
-            Status dict indicating whether the form was sent successfully.
+            Structured status dict with created stakeholder details or an error.
         """
         logger.info(
             "[TOOL CALLED] add_stakeholder - deal_id='%s', deal_name='%s', email=%s",
@@ -310,7 +651,7 @@ def create_add_stakeholder(
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="AddStakeholder",
-            tool_func=add_stakeholder_form,
+            tool_func=add_stakeholder_direct,
             parameters={
                 "context": context,
                 "deal_id": deal_id,
@@ -319,8 +660,12 @@ def create_add_stakeholder(
                 "name": name,
                 "job_title": job_title,
                 "phone_number": phone_number,
+                "department": department,
                 "stance": stance,
                 "decision_power": decision_power,
+                "champion_potential": champion_potential,
+                "motivation": motivation,
+                "pain_points": pain_points,
             },
             description="Adding stakeholder",
             fallback_value=None,
@@ -334,12 +679,13 @@ def create_add_stakeholder(
         else:
             logger.info("[TOOL RESULT] add_stakeholder returned None (error)")
 
-        return dict(result) if result else None
+        return _public_tool_result(dict(result)) if result else None
 
     return add_stakeholder_tool
 
 
 __all__ = [
+    "add_stakeholder_direct",
     "add_stakeholder_form",
     "create_add_stakeholder",
 ]

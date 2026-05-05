@@ -51,11 +51,13 @@ reminders_router = APIRouter()
 _CHANNEL_TO_PROVIDER = {
     "teams": ExternalIdentityProvider.TEAMS,
     "slack": ExternalIdentityProvider.SLACK,
+    "whatsapp": ExternalIdentityProvider.WHATSAPP,
 }
 
 _REQUIRED_DELIVERY_CONTEXT_KEYS = {
     "teams": ("service_url", "conversation_id"),
     "slack": ("team_id", "channel_id"),
+    "whatsapp": ("phone_number_id", "recipient_wa_id"),
 }
 
 
@@ -92,6 +94,7 @@ def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict | N
 
 async def _resolve_delivery_context(
     master_session: AsyncSession,
+    organisation_id: UUID,
     user_id: UUID,
     delivery_channel: str,
 ) -> dict | None:
@@ -109,6 +112,7 @@ async def _resolve_delivery_context(
         ExternalIdentityMapping.external_tenant_id,
     ).where(
         and_(
+            ExternalIdentityMapping.organisation_id == organisation_id,
             ExternalIdentityMapping.user_id == user_id,
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.is_active == True,  # noqa: E712
@@ -167,6 +171,7 @@ async def get_available_channels(
         ).where(
             and_(
                 ExternalIdentityMapping.user_id == user.user_id,
+                ExternalIdentityMapping.organisation_id == user.organisation_id,
                 ExternalIdentityMapping.is_active == True,  # noqa: E712
             )
         )
@@ -176,6 +181,7 @@ async def get_available_channels(
         provider_map: dict[str, dict[str, UUID | bool | str | None]] = {
             "teams": {"mapping_id": None, "available": False},
             "slack": {"mapping_id": None, "available": False},
+            "whatsapp": {"mapping_id": None, "available": False},
         }
         for row in rows:
             provider = _provider_name(row.provider)
@@ -207,6 +213,12 @@ async def get_available_channels(
                 label="Slack",
                 mapping_id=provider_map["slack"]["mapping_id"],
             ),
+            DeliveryChannelInfo(
+                channel="whatsapp",
+                available=bool(provider_map["whatsapp"]["available"]),
+                label="WhatsApp",
+                mapping_id=provider_map["whatsapp"]["mapping_id"],
+            ),
         ]
 
         return Response.success_response(
@@ -236,7 +248,7 @@ async def create_reminder(
 ) -> GenericResponse[ReminderDetail]:
     try:
         delivery_context = await _resolve_delivery_context(
-            master_session, user.user_id, body.delivery_channel
+            master_session, user.organisation_id, user.user_id, body.delivery_channel
         )
         if delivery_context is None or not _delivery_context_is_ready(
             body.delivery_channel, delivery_context
@@ -446,7 +458,7 @@ async def update_reminder(
         # When delivery_channel changes, resolve new delivery_context
         if "delivery_channel" in updates:
             delivery_context = await _resolve_delivery_context(
-                master_session, user.user_id, updates["delivery_channel"]
+                master_session, user.organisation_id, user.user_id, updates["delivery_channel"]
             )
             if delivery_context is None or not _delivery_context_is_ready(
                 updates["delivery_channel"], delivery_context

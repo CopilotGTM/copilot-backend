@@ -66,12 +66,13 @@ class FakeOrgSession:
         return None
 
 
-def _make_user_ids() -> UserIDs:
+def _make_user_ids(*, user_timezone: str | None = None) -> UserIDs:
     return UserIDs(
         user_id=uuid4(),
         organisation_id=uuid4(),
         user_name="Test User",
         user_email="test@example.com",
+        user_timezone=user_timezone,
     )
 
 
@@ -138,7 +139,8 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     assert result.runtime_config.control_mode.value == "backend_sideband"
     assert result.runtime_config.tool_policy.value == "guardrailed_auto"
     assert "search_internal_knowledge" in result.runtime_config.allowed_tools
-    assert "create_deal" not in result.runtime_config.allowed_tools
+    assert "create_deal" in result.runtime_config.allowed_tools
+    assert "create_task" in result.runtime_config.allowed_tools
     assert result.runtime_config.session_update["type"] == "session.update"
     assert result.runtime_config.session_update["session"]["type"] == "realtime"
     assert "modalities" not in result.runtime_config.session_update["session"]
@@ -338,7 +340,7 @@ async def test_attach_call_rejects_tampered_runtime_config() -> None:
 
 @pytest.mark.asyncio
 async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
-    user_ids = _make_user_ids()
+    user_ids = _make_user_ids(user_timezone="Asia/Kolkata")
     service = RealtimeSessionService(user_ids)
     chat_session_id = str(uuid4())
     runtime_config = realtime_module._build_runtime_config(
@@ -435,6 +437,7 @@ async def test_attach_call_dispatches_worker_task(monkeypatch) -> None:
     assert dispatched["args"][3] == chat_session_id
     assert dispatched["args"][5] == "call-123"
     assert dispatched["args"][7] == str(created_job_id)
+    assert dispatched["args"][8] == "Asia/Kolkata"
     assert dispatched["job_chat_session_id"] == chat_session_id
     assert dispatched["job_session_id"] == "azure-session-123"
     assert dispatched["job_call_id"] == "call-123"

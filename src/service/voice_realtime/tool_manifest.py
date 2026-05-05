@@ -130,6 +130,91 @@ def _build_get_email_details_factory(context: AgentContext) -> Callable[[], Call
     return partial(create_get_email_details, context, _build_empty_capabilities)
 
 
+def _build_create_deal_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.crm.create_deal import create_create_deal
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_deal, voice_context, _build_empty_capabilities)
+
+
+def _build_create_task_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.tasks.create_task import create_create_task
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_task, voice_context, _build_empty_capabilities)
+
+
+def _build_create_reminder_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.create_reminder import create_create_reminder
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_reminder, voice_context, _build_empty_capabilities)
+
+
+def _build_list_reminders_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.list_reminders import create_list_reminders
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_list_reminders, voice_context, _build_empty_capabilities)
+
+
+def _build_cancel_reminder_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.cancel_reminder import create_cancel_reminder
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_cancel_reminder, voice_context, _build_empty_capabilities)
+
+
 VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.SEARCH_INTERNAL_KNOWLEDGE,
@@ -180,6 +265,102 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "additionalProperties": False,
         },
         factory_builder=_build_list_deals_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_DEAL,
+        description=(
+            "Create a new CRM deal directly once the user clearly provides the deal name."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "amount": {"type": "number"},
+                "currency": {"type": "string"},
+                "description": {"type": "string"},
+                "close_date": {"type": "string"},
+                "priority": {"type": "string"},
+                "account_name": {"type": "string"},
+                "account_domain": {"type": "string"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_deal_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_TASK,
+        description=(
+            "Create a CRM task directly once the user clearly provides a meaningful task title."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "priority": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"]},
+                "due_date": {"type": "string"},
+                "deal_name": {"type": "string"},
+                "deal_id": {"type": "string"},
+                "assign_to": {"type": "string"},
+                "reminder": {
+                    "type": "string",
+                    "enum": ["at_due", "15m_before", "1h_before", "1d_before"],
+                },
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_task_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_REMINDER,
+        description=(
+            "Create a reminder directly once the user provides a meaningful title and trigger time."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "trigger_time": {"type": "string"},
+                "reminder_type": {"type": "string", "enum": ["static", "agentic"]},
+                "message": {"type": "string"},
+                "agent_prompt": {"type": "string"},
+                "deal_id": {"type": "string"},
+                "recurrence": {
+                    "type": "string",
+                    "enum": ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"],
+                },
+            },
+            "required": ["title", "trigger_time"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_reminder_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.LIST_REMINDERS,
+        description="List the user's active reminders and scheduled alerts.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "include_completed": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_list_reminders_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CANCEL_REMINDER,
+        description="Cancel one of the user's reminders by reminder ID.",
+        parameters={
+            "type": "object",
+            "properties": {"reminder_id": {"type": "string"}},
+            "required": ["reminder_id"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_cancel_reminder_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.GET_DEAL_DETAILS,

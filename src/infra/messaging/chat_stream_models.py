@@ -106,6 +106,7 @@ class ToolUsage(FrameBase):
     status: Literal["starting", "in_progress", "completed", "failed"] = "starting"
     parameters: dict[str, Any] | None = None
     result_summary: str | None = None
+    channel_payload: dict[str, Any] | None = None
     duration_ms: int | None = None
 
 
