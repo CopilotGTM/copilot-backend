@@ -111,6 +111,7 @@ class LeadsAccessService:
 
     async def create_lead(self, payload: dict[str, Any]) -> CRMLead:
         """Create a manual/API lead in the current organisation."""
+        self._reject_direct_converted_status(payload)
         actor_crm_user_id = await self._resolve_actor_crm_user_id()
         lead = CRMLead(
             **payload,
@@ -143,6 +144,7 @@ class LeadsAccessService:
 
     async def update_lead(self, lead_id: UUID, payload: dict[str, Any]) -> CRMLead:
         """Update mutable lead fields and audit status transitions."""
+        self._reject_direct_converted_status(payload)
         lead = await self._get_lead_or_404(lead_id)
         old_status = lead.status
         actor_crm_user_id = await self._resolve_actor_crm_user_id()
@@ -298,6 +300,17 @@ class LeadsAccessService:
             lead.qualified_at = now
         elif status_value == CRMLeadStatus.UNQUALIFIED.value:
             lead.disqualified_at = now
+
+    @staticmethod
+    def _reject_direct_converted_status(payload: dict[str, Any]) -> None:
+        status = payload.get("status")
+        status_value = status.value if hasattr(status, "value") else status
+        if status_value == CRMLeadStatus.CONVERTED.value:
+            raise LeadsAccessServiceError(
+                "Use the lead conversion endpoint to set converted status",
+                status_code=422,
+                data={"code": "converted_status_not_allowed", "field": "status"},
+            )
 
     @staticmethod
     def _build_deal_payload_from_lead(lead: CRMLead, payload: dict[str, Any]) -> dict[str, Any]:

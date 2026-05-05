@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from src.api.schemas.lead_form_models import (
     MAX_PUBLIC_SCALAR_STRING_LENGTH,
     MAX_PUBLIC_SUBMISSION_FIELDS,
@@ -25,11 +26,14 @@ from src.api.schemas.lead_form_models import (
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.master_tables.public_ingress_key_models import PublicIngressKey
 from src.domain.models.organisation_tables.sync.crm.lead_forms import (
+    LeadForm,
     LeadFormField,
     LeadFormFieldDataType,
     LeadFormFieldTargetType,
     LeadFormStatus,
+    LeadFormSubmission,
 )
+from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
 from src.service.crm.access.lead_forms_service import (
     LeadFormsService,
     LeadFormsServiceError,
@@ -40,10 +44,11 @@ from src.service.crm.access.lead_forms_service import (
 class RecordingAsyncSession:
     """Lightweight session stub that records call order for assertion in tests."""
 
-    def __init__(self, name: str, log: list[str]):
+    def __init__(self, name: str, log: list[str], *, flush_error: Exception | None = None):
         self.name = name
         self.log = log
         self.added: list[object] = []
+        self.flush_error = flush_error
 
     def add(self, instance: object) -> None:
         """Record which model type would be added to the session."""
@@ -53,6 +58,8 @@ class RecordingAsyncSession:
     async def flush(self) -> None:
         """Record a flush call boundary so transaction ordering is observable."""
         self.log.append(f"{self.name}.flush")
+        if self.flush_error:
+            raise self.flush_error
 
     async def commit(self) -> None:
         """Record a commit call boundary to validate session ordering."""
@@ -450,3 +457,215 @@ def test_form_submission_rejects_unknown_field_keys() -> None:
     assert exc_info.value.status_code == 422
     assert exc_info.value.data["code"] == "unknown_field"
     assert exc_info.value.data["field"] == "company"
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_persists_idempotency_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Form private-key submissions store replay keys on the submission row."""
+    log: list[str] = []
+    org_session = RecordingAsyncSession("org", log)
+    org_id = uuid4()
+    form = LeadForm(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        name="Website demo",
+        status=LeadFormStatus.ACTIVE,
+        current_version=3,
+        settings={},
+    )
+    field = LeadFormField(
+        organisation_id=org_id,
+        form_id=form.form_id,
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=form.form_id,
+        public_form_key="skid_form",
+    )
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        return None
+
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    lead, submission, replayed = await service.submit_private(
+        fields_payload={"email": "buyer@example.com"},
+        context={},
+        key_id="skid_form",
+        idempotency_key=" form-lead-123 ",
+        user_agent="pytest",
+        submitter_ip="203.0.113.10",
+    )
+
+    assert replayed is False
+    assert isinstance(lead, CRMLead)
+    assert isinstance(submission, LeadFormSubmission)
+    assert submission in org_session.added
+    assert submission.ingestion_key_id == "skid_form"
+    assert submission.idempotency_key == "form-lead-123"
+    assert submission.context["_copilotgtm"]["ingestion"]["idempotency_key"] == "form-lead-123"
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_replays_by_persisted_idempotency_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry lookup returns the existing submission/lead pair before any write."""
+    log: list[str] = []
+    org_session = RecordingAsyncSession("org", log)
+    org_id = uuid4()
+    lead = CRMLead(organisation_id=org_id, email="buyer@example.com")
+    submission = LeadFormSubmission(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        form_version=1,
+        lead_id=lead.lead_id,
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=submission.form_id,
+        public_form_key="skid_form",
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        calls.append((key_id, idempotency_key))
+        return lead, submission
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    returned_lead, returned_submission, replayed = await service.submit_private(
+        fields_payload={"email": "buyer@example.com"},
+        context={},
+        key_id="skid_form",
+        idempotency_key="form-lead-123",
+        user_agent=None,
+        submitter_ip=None,
+    )
+
+    assert returned_lead is lead
+    assert returned_submission is submission
+    assert replayed is True
+    assert calls == [("skid_form", "form-lead-123")]
+    assert org_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_unique_race_reloads_existing_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DB unique conflict should rollback and replay the committed submission pair."""
+    log: list[str] = []
+    existing_lead = CRMLead(organisation_id=uuid4(), email="buyer@example.com")
+    existing_submission = LeadFormSubmission(
+        organisation_id=existing_lead.organisation_id,
+        form_id=uuid4(),
+        form_version=1,
+        lead_id=existing_lead.lead_id,
+    )
+    form = LeadForm(
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        name="Website demo",
+        status=LeadFormStatus.ACTIVE,
+        current_version=1,
+        settings={},
+    )
+    field = LeadFormField(
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+    org_session = RecordingAsyncSession(
+        "org",
+        log,
+        flush_error=IntegrityError("insert", {}, Exception("unique violation")),
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        public_form_key="skid_form",
+    )
+    lookup_count = 0
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        nonlocal lookup_count
+        lookup_count += 1
+        return None if lookup_count == 1 else (existing_lead, existing_submission)
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+
+    returned_lead, returned_submission, replayed = await service.submit_private(
+        fields_payload={"email": "buyer@example.com"},
+        context={},
+        key_id="skid_form",
+        idempotency_key="form-lead-123",
+        user_agent=None,
+        submitter_ip=None,
+    )
+
+    assert returned_lead is existing_lead
+    assert returned_submission is existing_submission
+    assert replayed is True
+    assert "org.rollback" in log
+    assert lookup_count == 2

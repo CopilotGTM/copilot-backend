@@ -9,16 +9,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.leads.leads_handler import get_leads_access_service
+from src.api.schemas.crm_lead_models import CreateLeadRequest, UpdateLeadRequest
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadParticipantType,
     CRMLeadSourceType,
     CRMLeadStatus,
 )
-from src.service.crm.access.leads_access_service import LeadsAccessService
+from src.service.crm.access.leads_access_service import LeadsAccessService, LeadsAccessServiceError
 
 
 class FakeLead:
@@ -315,6 +318,18 @@ def test_convert_lead_to_deal(client: TestClient, test_user_ids):
         app.dependency_overrides = {}
 
 
+def test_create_and_update_lead_request_models_reject_converted_status():
+    """Only the conversion endpoint may set a lead to converted."""
+    with pytest.raises(ValidationError) as create_exc:
+        CreateLeadRequest.model_validate({"full_name": "Jane Buyer", "status": "converted"})
+
+    with pytest.raises(ValidationError) as update_exc:
+        UpdateLeadRequest.model_validate({"status": "converted"})
+
+    assert create_exc.value.errors()[0]["loc"] == ("status",)
+    assert update_exc.value.errors()[0]["loc"] == ("status",)
+
+
 def test_convert_lead_payload_carries_lead_owner_when_not_overridden(test_user_ids):
     """Building a deal payload should default owner to lead owner when not overridden."""
     lead = FakeLead(test_user_ids["organisation_id"])
@@ -323,3 +338,28 @@ def test_convert_lead_payload_carries_lead_owner_when_not_overridden(test_user_i
     payload = LeadsAccessService._build_deal_payload_from_lead(lead, {})
 
     assert payload["owner_user_id"] == test_user_ids["user_id"]
+
+
+@pytest.mark.asyncio
+async def test_lead_service_rejects_converted_status_outside_conversion(test_user_ids):
+    """Service-level guard protects non-router callers from direct converted writes."""
+    service = LeadsAccessService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=test_user_ids["organisation_id"],
+    )
+
+    try:
+        await service.create_lead({"status": CRMLeadStatus.CONVERTED})
+    except LeadsAccessServiceError as exc:
+        assert exc.status_code == 422
+        assert exc.data == {"code": "converted_status_not_allowed", "field": "status"}
+    else:
+        raise AssertionError("create_lead accepted converted status")
+
+    try:
+        await service.update_lead(uuid4(), {"status": CRMLeadStatus.CONVERTED})
+    except LeadsAccessServiceError as exc:
+        assert exc.status_code == 422
+        assert exc.data == {"code": "converted_status_not_allowed", "field": "status"}
+    else:
+        raise AssertionError("update_lead accepted converted status")

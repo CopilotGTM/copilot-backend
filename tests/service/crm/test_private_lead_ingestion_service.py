@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from src.api.schemas.private_lead_ingestion_models import (
     CreateLeadIngestionKeyRequest,
     PrivateLeadIngestionRequest,
@@ -31,21 +32,34 @@ from src.service.crm.access.private_lead_ingestion_service import (
 class RecordingAsyncSession:
     """Minimal async session stub capturing commit/refresh behavior for service tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, commit_error: Exception | None = None) -> None:
+        """Initialize counters used by tests to assert transaction behavior."""
         self.added: list[object] = []
         self.commits = 0
         self.refreshed: list[object] = []
+        self.rollbacks = 0
+        self.commit_error = commit_error
 
     def add(self, instance: object) -> None:
+        """Record every added model instance for assertions."""
         self.added.append(instance)
 
     async def commit(self) -> None:
+        """Record the commit call and optionally inject the configured commit failure."""
         self.commits += 1
+        if self.commit_error:
+            raise self.commit_error
+
+    async def rollback(self) -> None:
+        """Track rollback calls so race-recovery paths can be asserted."""
+        self.rollbacks += 1
 
     async def refresh(self, instance: object) -> None:
+        """Track refresh calls for write-path assertions."""
         self.refreshed.append(instance)
 
     async def close(self) -> None:
+        """A no-op close to match the async session interface in tests."""
         pass
 
 
@@ -77,6 +91,7 @@ async def test_create_key_returns_secret_and_stores_hash_only(
     )
 
     async def generate_key_id() -> str:
+        """Stubbed key generator used to make this test deterministic."""
         return "skid_test123"
 
     service._generate_unique_key_id = generate_key_id  # type: ignore[method-assign]
@@ -108,6 +123,7 @@ async def test_create_form_private_key_scopes_key_to_lead_form(
     )
 
     async def generate_key_id() -> str:
+        """Stubbed key generator that returns a unique scoped key value."""
         return "skid_form123"
 
     service._generate_unique_key_id = generate_key_id  # type: ignore[method-assign]
@@ -137,6 +153,7 @@ async def test_auth_rejects_expired_key(monkeypatch: pytest.MonkeyPatch) -> None
         key_id: str,
         **_kwargs,
     ) -> PublicIngressKey:
+        """Return a deterministic expired key to drive the authorization rejection path."""
         org_id = uuid4()
         return PublicIngressKey(
             organisation_id=org_id,
@@ -180,6 +197,109 @@ async def test_private_ingestion_requires_idempotency_key() -> None:
         )
 
     assert exc_info.value.code == "missing_idempotency_key"
+
+
+@pytest.mark.asyncio
+async def test_private_ingestion_persists_idempotency_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct private ingestion stores replay keys in dedicated DB columns."""
+    session = RecordingAsyncSession()
+    org_id = uuid4()
+    service = PrivateLeadIngestionService(
+        org_session=session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+    )
+
+    async def _find_existing(
+        self: PrivateLeadIngestionService, *, key_id: str, idempotency_key: str
+    ):
+        """Force find_existing to miss so new ingestion can proceed."""
+        return None
+
+    monkeypatch.setattr(PrivateLeadIngestionService, "_find_existing", _find_existing)
+
+    lead, replayed = await service.ingest(
+        payload=PrivateLeadIngestionRequest(email="Buyer@Example.com"),
+        key_id="skid_direct",
+        idempotency_key=" lead-123 ",
+    )
+
+    assert replayed is False
+    assert lead in session.added
+    assert lead.ingestion_key_id == "skid_direct"
+    assert lead.idempotency_key == "lead-123"
+    assert lead.data_payload["ingestion"]["idempotency_key"] == "lead-123"
+
+
+@pytest.mark.asyncio
+async def test_private_ingestion_replays_by_persisted_idempotency_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry lookup should use the persisted columns, not JSON metadata traversal."""
+    session = RecordingAsyncSession()
+    org_id = uuid4()
+    existing_lead = object()
+    service = PrivateLeadIngestionService(
+        org_session=session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def _find_existing(
+        self: PrivateLeadIngestionService, *, key_id: str, idempotency_key: str
+    ):
+        calls.append((key_id, idempotency_key))
+        return existing_lead
+
+    monkeypatch.setattr(PrivateLeadIngestionService, "_find_existing", _find_existing)
+
+    lead, replayed = await service.ingest(
+        payload=PrivateLeadIngestionRequest(email="buyer@example.com"),
+        key_id="skid_direct",
+        idempotency_key="lead-123",
+    )
+
+    assert lead is existing_lead
+    assert replayed is True
+    assert calls == [("skid_direct", "lead-123")]
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_private_ingestion_unique_race_reloads_existing_lead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DB unique conflict should rollback and replay the committed winner row."""
+    existing_lead = object()
+    session = RecordingAsyncSession(
+        commit_error=IntegrityError("insert", {}, Exception("unique violation"))
+    )
+    service = PrivateLeadIngestionService(
+        org_session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+    )
+    lookup_count = 0
+
+    async def _find_existing(
+        self: PrivateLeadIngestionService, *, key_id: str, idempotency_key: str
+    ):
+        nonlocal lookup_count
+        lookup_count += 1
+        return None if lookup_count == 1 else existing_lead
+
+    monkeypatch.setattr(PrivateLeadIngestionService, "_find_existing", _find_existing)
+
+    lead, replayed = await service.ingest(
+        payload=PrivateLeadIngestionRequest(email="buyer@example.com"),
+        key_id="skid_direct",
+        idempotency_key="lead-123",
+    )
+
+    assert lead is existing_lead
+    assert replayed is True
+    assert session.rollbacks == 1
+    assert lookup_count == 2
 
 
 def test_private_ingestion_rejects_form_source_type() -> None:

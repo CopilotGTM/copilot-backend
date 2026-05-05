@@ -96,6 +96,17 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
             "converted_deal_id",
             postgresql_where=text("converted_deal_id IS NOT NULL"),
         ),
+        Index(
+            "uq_crm_lead_private_ingestion_idempotency",
+            "organisation_id",
+            "ingestion_key_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "source_type = 'api' AND ingestion_key_id IS NOT NULL "
+                "AND idempotency_key IS NOT NULL AND form_submission_id IS NULL"
+            ),
+        ),
         CheckConstraint(
             "status != 'converted' OR (converted_deal_id IS NOT NULL AND converted_at IS NOT NULL)",
             name="ck_crm_lead_converted_requires_deal",
@@ -118,6 +129,10 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
         description="Provider lead ID when synced from an external CRM.",
     )
 
+    # For private API ingestions, enforce replay safety on first-write rows only:
+    # direct API leads without form_submission_id must keep one active row per
+    # org/key/idempotency_token.
+
     source_type: CRMLeadSourceType = Field(
         default=CRMLeadSourceType.MANUAL,
         sa_column=Column(String(32), nullable=False, server_default=text("'manual'")),
@@ -137,6 +152,18 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(255), nullable=True),
         description="External campaign ID, form slug, import ID, or source reference.",
+    )
+    # Persisted replay keys let private API ingests short-circuit before writing a second
+    # lead row when clients retry with the same idempotency token.
+    ingestion_key_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Private ingestion key id used as the replay scope for API-created leads.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Client replay token for private API-created leads.",
     )
 
     status: CRMLeadStatus = Field(

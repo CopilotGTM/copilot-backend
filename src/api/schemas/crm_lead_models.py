@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadParticipantType,
     CRMLeadPriority,
@@ -162,6 +162,14 @@ class CreateLeadRequest(BaseModel):
     properties: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("status")
+    @classmethod
+    def reject_converted_status(cls, status: CRMLeadStatus) -> CRMLeadStatus:
+        """Lead conversion owns converted status because it must stamp deal metadata."""
+        if status == CRMLeadStatus.CONVERTED:
+            raise ValueError("Use the lead conversion endpoint to set converted status")
+        return status
+
 
 class UpdateLeadRequest(BaseModel):
     """Request to update a lead."""
@@ -201,6 +209,14 @@ class UpdateLeadRequest(BaseModel):
     consent: dict[str, Any] | None = None
     properties: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
+
+    @field_validator("status")
+    @classmethod
+    def reject_converted_status(cls, status: CRMLeadStatus | None) -> CRMLeadStatus | None:
+        """Lead conversion owns converted status because it must stamp deal metadata."""
+        if status == CRMLeadStatus.CONVERTED:
+            raise ValueError("Use the lead conversion endpoint to set converted status")
+        return status
 
 
 class CreateLeadParticipantRequest(BaseModel):

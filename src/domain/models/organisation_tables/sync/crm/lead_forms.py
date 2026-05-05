@@ -116,12 +116,35 @@ class LeadFormSubmission(FlexibleSyncedRecordMixin, table=True):
     __table_args__ = (
         Index("ix_lead_form_submission_form_received", "organisation_id", "form_id", "received_at"),
         Index("ix_lead_form_submission_lead", "lead_id"),
+        # Store idempotency state separately from payload JSON so private-form retries
+        # can do an exact lookup instead of JSON-path matching on every retry.
+        Index(
+            "uq_lead_form_submission_private_idempotency",
+            "organisation_id",
+            "form_id",
+            "ingestion_key_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("ingestion_key_id IS NOT NULL AND idempotency_key IS NOT NULL"),
+        ),
     )
 
     submission_id: UUID = Field(default_factory=uuid4, primary_key=True)
     form_id: UUID = Field(foreign_key="lead_forms.form_id", index=True)
     form_version: int = Field(nullable=False)
     lead_id: UUID | None = Field(default=None, foreign_key="crm_leads.lead_id", index=True)
+    # Persisted replay keys let private-form clients recover deterministic state on
+    # retry by matching on a concrete org/form/key/token tuple instead of JSON.
+    ingestion_key_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Form-scoped private key id used as the replay scope.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Client replay token for private mapped form submissions.",
+    )
     raw_payload: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),

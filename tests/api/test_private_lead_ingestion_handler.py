@@ -72,6 +72,49 @@ async def test_private_lead_ingestion_rejects_unknown_fields(
 
 
 @pytest.mark.asyncio
+async def test_private_lead_ingestion_rejects_converted_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private ingestion cannot set converted; conversion endpoint owns that transition."""
+
+    async def _authenticate(self, *, key_id, authorization, client_ip):
+        return SimpleNamespace(
+            organisation_id=uuid4(),
+            public_key="skid_test",
+            key_id=uuid4(),
+        )
+
+    monkeypatch.setattr(PrivateLeadIngestionAuthService, "authenticate", _authenticate)
+
+    async def _acquire_master_session():
+        yield object()
+
+    monkeypatch.setattr(
+        private_lead_ingestion_handler,
+        "acquire_master_async_session",
+        _acquire_master_session,
+    )
+
+    response = await ingest_private_lead(
+        body={
+            "email": "buyer@example.com",
+            "status": "converted",
+        },
+        request=SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.10")),  # type: ignore[arg-type]
+        response=FastAPIResponse(),
+        key_id="skid_test",
+        authorization="Bearer cgtm_live_secret",
+        idempotency_key="idem-1",
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 422
+    body = json.loads(response.body)
+    assert body["error"]["code"] == "invalid_payload"
+    assert body["error"]["field"] == "status"
+
+
+@pytest.mark.asyncio
 async def test_private_form_submission_uses_form_scoped_key_and_requires_idempotency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

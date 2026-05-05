@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import secrets
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.api.schemas.lead_form_models import (
@@ -505,6 +506,8 @@ class PublicLeadFormSubmissionService:
             source_ref=self.public_form_key,
             require_origin=True,
             ingestion_metadata=None,
+            ingestion_key_id=None,
+            idempotency_key=None,
         )
 
     async def submit_private(
@@ -540,17 +543,34 @@ class PublicLeadFormSubmissionService:
             "idempotency_key": normalized_idempotency_key,
             "received_at": datetime.now(UTC).isoformat(),
         }
-        lead, submission = await self._submit_mapped_form(
-            fields_payload=fields_payload,
-            context=context,
-            origin=None,
-            user_agent=user_agent,
-            submitter_ip=submitter_ip,
-            source_type=CRMLeadSourceType.API,
-            source_ref=key_id,
-            require_origin=False,
-            ingestion_metadata=ingestion_metadata,
-        )
+        # Fast-path lookup protects normal retries. If no match is found, we try a
+        # fresh write because concurrent retries can race before the first commit.
+        try:
+            lead, submission = await self._submit_mapped_form(
+                fields_payload=fields_payload,
+                context=context,
+                origin=None,
+                user_agent=user_agent,
+                submitter_ip=submitter_ip,
+                source_type=CRMLeadSourceType.API,
+                source_ref=key_id,
+                require_origin=False,
+                ingestion_metadata=ingestion_metadata,
+                ingestion_key_id=key_id,
+                idempotency_key=normalized_idempotency_key,
+            )
+        except IntegrityError:
+            # Unique violations are expected under race between retries; we rollback
+            # and re-query so the winner row can be returned as a replay response.
+            await self.org_session.rollback()
+            existing = await self._find_existing_private_submission(
+                key_id=key_id,
+                idempotency_key=normalized_idempotency_key,
+            )
+            if existing:
+                lead, submission = existing
+                return lead, submission, True
+            raise
         return lead, submission, False
 
     async def _submit_mapped_form(
@@ -565,6 +585,8 @@ class PublicLeadFormSubmissionService:
         source_ref: str,
         require_origin: bool,
         ingestion_metadata: dict[str, Any] | None,
+        ingestion_key_id: str | None,
+        idempotency_key: str | None,
     ) -> tuple[CRMLead, LeadFormSubmission]:
         """Create one submission audit row and one lead from a mapped form payload."""
         self._validate_payload_shape(fields_payload)
@@ -583,6 +605,8 @@ class PublicLeadFormSubmissionService:
             organisation_id=self.organisation_id,
             form_id=form.form_id,
             form_version=form.current_version,
+            ingestion_key_id=ingestion_key_id,
+            idempotency_key=idempotency_key,
             raw_payload=fields_payload,
             mapped_payload=mapped_lead,
             context=submission_context,
@@ -615,6 +639,8 @@ class PublicLeadFormSubmissionService:
             captured_at=now,
         )
         self.org_session.add(lead)
+        # Insert submission and lead in separate flushes so both IDs are allocated
+        # before the unique key constraint is evaluated and before commit.
         await self.org_session.flush()
         submission.lead_id = lead.lead_id
         self.org_session.add(submission)
@@ -630,26 +656,29 @@ class PublicLeadFormSubmissionService:
         idempotency_key: str,
     ) -> tuple[CRMLead, LeadFormSubmission] | None:
         """Return the existing mapped private submission for a retry token, if present."""
-        data_payload = cast(Any, CRMLead.data_payload)
-        stmt = select(CRMLead).where(
-            col(CRMLead.organisation_id) == self.organisation_id,
-            col(CRMLead.is_deleted).is_(False),
-            col(CRMLead.source_type) == CRMLeadSourceType.API.value,
-            col(CRMLead.form_id) == self.form_id,
-            data_payload["ingestion"]["key_id"].as_string() == key_id,
-            data_payload["ingestion"]["idempotency_key"].as_string() == idempotency_key,
-        )
-        lead = (await self.org_session.execute(stmt)).scalars().first()
-        if not lead or not lead.form_submission_id:
-            return None
         submission_stmt = select(LeadFormSubmission).where(
             col(LeadFormSubmission.organisation_id) == self.organisation_id,
-            col(LeadFormSubmission.submission_id) == lead.form_submission_id,
             col(LeadFormSubmission.form_id) == self.form_id,
-            col(LeadFormSubmission.is_deleted).is_(False),
+            col(LeadFormSubmission.ingestion_key_id) == key_id,
+            col(LeadFormSubmission.idempotency_key) == idempotency_key,
         )
         submission = (await self.org_session.execute(submission_stmt)).scalars().first()
-        if not submission:
+        if not submission or not submission.lead_id:
+            return None
+
+        # Org + form/replay token is the trust boundary. If we load by the stored
+        # pair and require the linked lead to still exist, we avoid stale JSON-based
+        # reads and accidental cross-org replay collisions.
+
+        lead_stmt = select(CRMLead).where(
+            col(CRMLead.organisation_id) == self.organisation_id,
+            col(CRMLead.lead_id) == submission.lead_id,
+            col(CRMLead.form_id) == self.form_id,
+            col(CRMLead.form_submission_id) == submission.submission_id,
+            col(CRMLead.source_type) == CRMLeadSourceType.API.value,
+        )
+        lead = (await self.org_session.execute(lead_stmt)).scalars().first()
+        if not lead:
             return None
         return lead, submission
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.api.schemas.private_lead_ingestion_models import (
@@ -86,21 +87,34 @@ class PrivateLeadIngestionService:
         lead = CRMLead(
             **lead_payload,
             organisation_id=self.organisation_id,
+            ingestion_key_id=key_id,
+            idempotency_key=idempotency_key,
         )
         self.org_session.add(lead)
-        await self.org_session.commit()
+        # Commit can race under concurrent retries with the same private key. Roll
+        # back and requery so a uniqueness conflict returns the winner row instead
+        # of failing the request.
+        try:
+            await self.org_session.commit()
+        except IntegrityError:
+            await self.org_session.rollback()
+            existing = await self._find_existing(key_id=key_id, idempotency_key=idempotency_key)
+            if existing:
+                return existing, True
+            raise
         await self.org_session.refresh(lead)
         return lead, False
 
     async def _find_existing(self, *, key_id: str, idempotency_key: str) -> CRMLead | None:
         """Find an existing lead by ingestion key and idempotency token."""
-        data_payload = cast(Any, CRMLead.data_payload)
+        # Use dedicated replay columns for an exact indexed lookup. The org id + key
+        # + idempotency tuple is the tenancy boundary and replay contract.
         stmt = select(CRMLead).where(
             col(CRMLead.organisation_id) == self.organisation_id,
-            col(CRMLead.is_deleted).is_(False),
             col(CRMLead.source_type) == CRMLeadSourceType.API.value,
-            data_payload["ingestion"]["key_id"].as_string() == key_id,
-            data_payload["ingestion"]["idempotency_key"].as_string() == idempotency_key,
+            col(CRMLead.form_submission_id).is_(None),
+            col(CRMLead.ingestion_key_id) == key_id,
+            col(CRMLead.idempotency_key) == idempotency_key,
         )
         return (await self.org_session.execute(stmt)).scalars().first()
 
@@ -112,6 +126,14 @@ class PrivateLeadIngestionService:
                 "Private ingestion cannot create form-sourced leads",
                 422,
                 "source_type",
+            )
+        status_value = payload.status.value if hasattr(payload.status, "value") else payload.status
+        if status_value == "converted":
+            raise PrivateLeadIngestionServiceError(
+                "converted_status_not_allowed",
+                "Use the lead conversion endpoint to set converted status",
+                422,
+                "status",
             )
         if not any([payload.email, payload.phone, payload.full_name, payload.company_name]):
             raise PrivateLeadIngestionServiceError(

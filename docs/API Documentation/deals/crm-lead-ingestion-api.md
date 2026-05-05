@@ -9,6 +9,11 @@ The direct `/private/v1/crm/leads` endpoint remains available as an advanced Dir
 Lead API for callers that already send normalized lead objects. It does not use
 lead-form mappings and cannot create `source_type = "form"` leads.
 
+Lead `status = "converted"` is reserved for
+`POST /users/crm/leads/{lead_id}/convert`. Authenticated lead create/update and
+private ingestion reject `converted` because conversion must also stamp
+`converted_deal_id` and `converted_at`.
+
 ## Authenticated Lead Form Management
 
 Base path: `/users/crm`
@@ -140,7 +145,10 @@ Success:
 
 Rules:
 
-- Origin policy uses the form's `allowed_origins`.
+- Browser CORS uses the form's `allowed_origins`; exact origin matches receive
+  `Access-Control-Allow-Origin` on preflight and successful responses.
+- Origins that are not listed on the form do not receive CORS headers and
+  browser preflight requests are rejected.
 - Public rate limits are scoped by form key and client IP.
 - Unknown submitted field keys are rejected.
 - Public submissions create `CRMLead.source_type = "form"`.
@@ -189,8 +197,10 @@ Rules:
 
 - The key must have `key_type = "private_api"` and `resource_type = "lead_form"`.
 - The form id is resolved from the key's `resource_id`.
-- `Idempotency-Key` is required. Retries with the same key return the existing
-  accepted result.
+- `Idempotency-Key` is required and scoped to the form plus private key id.
+  Retries with the same key return the existing accepted submission/lead pair.
+- Idempotency is enforced by dedicated database columns and unique indexes; the
+  replay token is immutable and is not freed by later soft deletion.
 - Key status, expiry, IP allowlist, and key-scoped rate limits are enforced.
 - Unknown submitted field keys are rejected.
 - Private mapped form submissions create `CRMLead.source_type = "api"` while
@@ -250,7 +260,11 @@ Success:
 Rules:
 
 - Direct keys use `resource_type = "lead_ingestion"` and `resource_id = organisation_id`.
-- `Idempotency-Key` is required.
+- `Idempotency-Key` is required and scoped to the private key id. Retries with
+  the same key return the existing accepted lead.
+- Idempotency is enforced by dedicated database columns and unique indexes; the
+  replay token is immutable and is not freed by later soft deletion.
 - Unknown top-level fields are rejected.
 - At least one of `email`, `phone`, `full_name`, or `company_name` is required.
 - `source_type = "form"` is rejected.
+- `status = "converted"` is rejected; use the authenticated conversion endpoint.

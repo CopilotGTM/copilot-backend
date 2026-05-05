@@ -27,6 +27,7 @@ configure_logging(component="api")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from src.api.middleware.public_form_cors import PublicLeadFormCORSMiddleware
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
@@ -175,6 +176,10 @@ def create_fastapi_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Add per-public-form CORS checks on top of app-level auth CORS. This lets
+    # public lead-form routes enforce a form-specific allow-list before normal
+    # route/auth middleware while reusing browser session behavior for app routes.
+    fastapp.add_middleware(PublicLeadFormCORSMiddleware)
 
     fastapp.add_middleware(RequestContextMiddleware)
 

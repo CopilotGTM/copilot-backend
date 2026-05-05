@@ -35,6 +35,8 @@ def upgrade() -> None:
         sa.Column("source_channel", sa.String(length=128), nullable=True),
         sa.Column("source_name", sa.String(length=255), nullable=True),
         sa.Column("source_ref", sa.String(length=255), nullable=True),
+        sa.Column("ingestion_key_id", sa.String(length=128), nullable=True),
+        sa.Column("idempotency_key", sa.String(length=255), nullable=True),
         sa.Column("status", sa.String(length=32), nullable=False, server_default=sa.text("'new'")),
         sa.Column("priority", sa.String(length=32), nullable=True),
         sa.Column("score", sa.Numeric(8, 2), nullable=True),
@@ -217,6 +219,16 @@ def _create_indexes() -> None:
         "crm_leads",
         ["organisation_id", "converted_deal_id"],
         postgresql_where=sa.text("converted_deal_id IS NOT NULL"),
+    )
+    op.create_index(
+        "uq_crm_lead_private_ingestion_idempotency",
+        "crm_leads",
+        ["organisation_id", "ingestion_key_id", "idempotency_key"],
+        unique=True,
+        postgresql_where=sa.text(
+            "source_type = 'api' AND ingestion_key_id IS NOT NULL "
+            "AND idempotency_key IS NOT NULL AND form_submission_id IS NULL"
+        ),
     )
 
     op.create_index("ix_crm_lead_participants_organisation_id", "crm_lead_participants", ["organisation_id"])

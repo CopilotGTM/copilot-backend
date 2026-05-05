@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.domain.models.master_tables import PublicIngressKeyStatus
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadPriority,
@@ -112,6 +112,14 @@ class PrivateLeadIngestionRequest(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     data_payload: dict[str, Any] = Field(default_factory=dict)
     source_created_at: datetime | None = None
+
+    @field_validator("status")
+    @classmethod
+    def reject_converted_status(cls, status: CRMLeadStatus) -> CRMLeadStatus:
+        """Lead conversion owns converted status because it must stamp deal metadata."""
+        if status == CRMLeadStatus.CONVERTED:
+            raise ValueError("Use the lead conversion endpoint to set converted status")
+        return status
 
 
 class PrivateLeadIngestionResponse(BaseModel):

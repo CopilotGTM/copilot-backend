@@ -78,6 +78,8 @@ def upgrade() -> None:
         sa.Column("form_id", sa.Uuid(), nullable=False),
         sa.Column("form_version", sa.Integer(), nullable=False),
         sa.Column("lead_id", sa.Uuid(), nullable=True),
+        sa.Column("ingestion_key_id", sa.String(length=128), nullable=True),
+        sa.Column("idempotency_key", sa.String(length=255), nullable=True),
         sa.Column("raw_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=JSONB_EMPTY),
         sa.Column("mapped_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=JSONB_EMPTY),
         sa.Column("context", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=JSONB_EMPTY),
@@ -142,4 +144,13 @@ def _create_indexes() -> None:
         "ix_lead_form_submission_lead",
         "lead_form_submissions",
         ["lead_id"],
+    )
+    op.create_index(
+        "uq_lead_form_submission_private_idempotency",
+        "lead_form_submissions",
+        ["organisation_id", "form_id", "ingestion_key_id", "idempotency_key"],
+        unique=True,
+        postgresql_where=sa.text(
+            "ingestion_key_id IS NOT NULL AND idempotency_key IS NOT NULL"
+        ),
     )
