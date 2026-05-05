@@ -1,4 +1,8 @@
-"""CRM routers package."""
+"""CRM routers package for authenticated and org-scoped API surfaces.
+
+This module centralizes router-level imports and a single `__all__` export list so
+route groups can be mounted consistently from the shared application factory.
+"""
 
 from .accounts_handler import accounts_router
 from .contacts_handler import contacts_router
@@ -10,6 +14,12 @@ from .deal_notes_handler import deal_notes_router
 from .deal_participants_handler import deal_participants_router
 from .deal_timeline_handler import deal_timeline_router
 from .deals_handler import deals_router
+from .leads import (
+    lead_forms_router,
+    lead_ingestion_keys_router,
+    leads_router,
+    public_lead_forms_router,
+)
 from .meetings_handler import meetings_router
 from .pipelines_handler import pipelines_router
 from .risks_blockers_handler import risks_blockers_router
@@ -30,6 +40,10 @@ __all__ = [
     "custom_fields_router",
     "deal_timeline_router",
     "deals_router",
+    "lead_forms_router",
+    "lead_ingestion_keys_router",
+    "public_lead_forms_router",
+    "leads_router",
     "meetings_router",
     "pipelines_router",
     "risks_blockers_router",

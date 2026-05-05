@@ -1,11 +1,9 @@
-"""Per-user rate limiting dependency using Redis.
+"""Rate limiting primitives for user and ingress endpoints.
 
-Applies simple fixed-window counters for 1-minute and 1-hour windows.
-Defaults are conservative for testing and can be overridden via env vars:
- - RATE_LIMIT_PER_MINUTE (default: 5)
- - RATE_LIMIT_PER_HOUR (default: 5)
-
-Usage: include as a router dependency on user-protected endpoints.
+This module is called by both authenticated routes and public/private ingestion
+flows. It keeps a fixed-window accounting model so
+teams can tune protections per path through config and keep operational behavior
+predictable across endpoints.
 """
 
 from __future__ import annotations
@@ -26,18 +24,29 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+PUBLIC_FORM_READ_PER_MINUTE = rate_limit_config.PUBLIC_FORM_READ_PER_MINUTE
+PUBLIC_FORM_READ_PER_HOUR = rate_limit_config.PUBLIC_FORM_READ_PER_HOUR
+PUBLIC_FORM_SUBMIT_PER_MINUTE = rate_limit_config.PUBLIC_FORM_SUBMIT_PER_MINUTE
+PUBLIC_FORM_SUBMIT_PER_HOUR = rate_limit_config.PUBLIC_FORM_SUBMIT_PER_HOUR
+PUBLIC_FORM_SUBMIT_PER_DAY = rate_limit_config.PUBLIC_FORM_SUBMIT_PER_DAY
+PRIVATE_LEAD_INGESTION_PER_MINUTE = rate_limit_config.PRIVATE_LEAD_INGESTION_PER_MINUTE
+PRIVATE_LEAD_INGESTION_PER_HOUR = rate_limit_config.PRIVATE_LEAD_INGESTION_PER_HOUR
+
 
 def _incr_with_ttl(key: str, ttl_seconds: int) -> int:
-    """Increment a Redis key and set TTL on first hit.
+    """Increment a Redis key and return the updated count.
 
-    Returns the incremented count.
+    TTL is attached on first creation so fixed windows always expire even if a
+    caller never sends traffic again. Without this, stale buckets can accumulate
+    and hide inactive keys during incident analysis.
     """
     client = get_redis_client()
     try:
         count_raw = client.incr(key)
         count = cast(int, count_raw)
         if count == 1:
-            # Set TTL only on first creation
+            # Fresh buckets are short-lived by default, which keeps abuse windows
+            # tight and avoids retaining many zero/idle counters in Redis.
             client.expire(key, ttl_seconds)
         return count
     except Exception as e:
@@ -91,22 +100,18 @@ async def _get_email_from_request(req: Request) -> str | None:
     return None
 
 
-def _enforce_rate_limit_for(subject_kind: str, subject_id: str, category: str) -> None:
-    """Core limiter logic with simple fixed windows and optional category.
-
-    subject_kind: short prefix like 'u' (user) or 'a' (admin) to separate key spaces.
-    subject_id: identifier string for the subject to rate limit.
-    """
-    # Limits come from central config; allow distinct budgets per category
-    if category == "read":
-        per_minute_limit = getattr(
-            rate_limit_config, "READ_PER_MINUTE", rate_limit_config.PER_MINUTE
-        )
-        per_hour_limit = getattr(rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR)
-    else:
-        per_minute_limit = rate_limit_config.PER_MINUTE
-        per_hour_limit = rate_limit_config.PER_HOUR
-
+def _enforce_rate_limit_for_limits(
+    subject_kind: str,
+    subject_id: str,
+    category: str,
+    *,
+    per_minute_limit: int,
+    per_hour_limit: int,
+) -> None:
+    """Core limiter logic with explicit fixed-window budgets."""
+    # Use fixed buckets instead of token buckets to keep enforcement simple and
+    # easy to reason about in operational incidents (how many hits landed in the
+    # current minute/hour window).
     now = int(time.time())
     minute_window = 60
     hour_window = 3600
@@ -136,6 +141,55 @@ def _enforce_rate_limit_for(subject_kind: str, subject_id: str, category: str) -
             detail="Too many requests (per-hour limit exceeded)",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+def _enforce_daily_rate_limit_for_limit(
+    subject_kind: str,
+    subject_id: str,
+    category: str,
+    *,
+    per_day_limit: int,
+) -> None:
+    """Core fixed-window daily limiter for anonymous write surfaces."""
+    now = int(time.time())
+    day_window = 86400
+    day_bucket = now // day_window
+    day_key = f"rl:{subject_kind}:{subject_id}:cat:{category}:d:{day_bucket}"
+    day_count = _incr_with_ttl(day_key, day_window)
+
+    if day_count and day_count > per_day_limit:
+        retry_after = _ttl_seconds(day_key) or day_window
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests (daily limit exceeded)",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _enforce_rate_limit_for(subject_kind: str, subject_id: str, category: str) -> None:
+    """Core limiter wrapper that chooses a budget for authenticated API subjects.
+
+    subject_kind: short prefix like 'u' (user) or 'a' (admin) to separate key spaces.
+    subject_id: identifier string for the subject to rate limit.
+    """
+    # Limits come from central config; allow distinct budgets per category so read
+    # requests can be tuned separately from write/bulk request patterns.
+    if category == "read":
+        per_minute_limit = getattr(
+            rate_limit_config, "READ_PER_MINUTE", rate_limit_config.PER_MINUTE
+        )
+        per_hour_limit = getattr(rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR)
+    else:
+        per_minute_limit = rate_limit_config.PER_MINUTE
+        per_hour_limit = rate_limit_config.PER_HOUR
+
+    _enforce_rate_limit_for_limits(
+        subject_kind,
+        subject_id,
+        category,
+        per_minute_limit=per_minute_limit,
+        per_hour_limit=per_hour_limit,
+    )
 
 
 def _enforce_rate_limit(user: UserIDs, category: str = "global") -> None:
@@ -172,6 +226,81 @@ def rate_limit_admin_read(admin: SuperAdmin = Depends(admin_auth)) -> None:
     Uses lenient 'read' budget separate from org user limits.
     """
     _enforce_rate_limit_for("a", str(admin.admin_id), "read")
+
+
+def client_ip_for_external_ingress(request: Request) -> str:
+    """Return the client IP used for ingress-side rate limiting."""
+    # Trusting only verified proxies prevents spoofed headers from resetting
+    # quotas and makes quota boundaries hard to abuse from direct traffic.
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for and rate_limit_config.TRUST_EXTERNAL_PROXY_HEADERS:
+        first_ip = forwarded_for.split(",", maxsplit=1)[0].strip()
+        if first_ip:
+            return first_ip[:128]
+
+    return (request.client.host if request.client else "unknown")[:128]
+
+
+def _public_form_subject_id(request: Request, public_form_key: str) -> str:
+    return f"{public_form_key}:{client_ip_for_external_ingress(request)}"
+
+
+def enforce_public_lead_form_read_rate_limit(request: Request, public_form_key: str) -> None:
+    """Limit public form definition reads by form key and client IP."""
+    # A single anonymous form key is scoped by IP, not by app user identity,
+    # because form definitions are loaded by browser clients and bots.
+    _enforce_rate_limit_for_limits(
+        "public_form",
+        _public_form_subject_id(request, public_form_key),
+        "definition",
+        per_minute_limit=PUBLIC_FORM_READ_PER_MINUTE,
+        per_hour_limit=PUBLIC_FORM_READ_PER_HOUR,
+    )
+
+
+def enforce_public_lead_form_submit_rate_limit(request: Request, public_form_key: str) -> None:
+    """Limit public form submissions by form key and client IP."""
+    # Submissions are more abuse-prone than reads, so we enforce a separate
+    # profile at minute, hour, and daily boundaries.
+    subject_id = _public_form_subject_id(request, public_form_key)
+    _enforce_rate_limit_for_limits(
+        "public_form",
+        subject_id,
+        "submission",
+        per_minute_limit=PUBLIC_FORM_SUBMIT_PER_MINUTE,
+        per_hour_limit=PUBLIC_FORM_SUBMIT_PER_HOUR,
+    )
+    _enforce_daily_rate_limit_for_limit(
+        "public_form",
+        subject_id,
+        "submission",
+        per_day_limit=PUBLIC_FORM_SUBMIT_PER_DAY,
+    )
+
+
+def enforce_private_lead_ingestion_rate_limit(
+    key_id: str,
+    policy: dict | None = None,
+) -> None:
+    """Limit private lead ingestion writes by private ingress key id."""
+    # Policy is optional so callers can define stricter per-key quotas without
+    # changing global defaults (for example partner keys with lower abuse tolerance).
+    policy = policy or {}
+    per_minute_limit = int(
+        policy.get("per_minute")
+        or policy.get("per_minute_limit")
+        or PRIVATE_LEAD_INGESTION_PER_MINUTE
+    )
+    per_hour_limit = int(
+        policy.get("per_hour") or policy.get("per_hour_limit") or PRIVATE_LEAD_INGESTION_PER_HOUR
+    )
+    _enforce_rate_limit_for_limits(
+        "private_lead_ingestion",
+        key_id,
+        "submission",
+        per_minute_limit=per_minute_limit,
+        per_hour_limit=per_hour_limit,
+    )
 
 
 async def rate_limit_login(request: Request) -> None:
@@ -350,7 +479,9 @@ async def rate_limit_password_reset(request: Request) -> None:
     # Client IP (behind proxy you may want X-Forwarded-For)
     ip = request.client.host if request.client else "unknown"
 
-    # Get email if present (for more granular limiting)
+    # If email is present, combine IP+email for brute-force protection per
+    # account while still falling back to IP-only limits when unknown to avoid
+    # over-restricting unauthenticated or malformed callers.
     email = await _get_email_from_request(request)
 
     now = int(time.time())
@@ -400,4 +531,8 @@ __all__ = [
     "rate_limit_password_reset",
     "rate_limit_user_read",
     "rate_limit_admin_read",
+    "enforce_public_lead_form_read_rate_limit",
+    "enforce_public_lead_form_submit_rate_limit",
+    "client_ip_for_external_ingress",
+    "enforce_private_lead_ingestion_rate_limit",
 ]

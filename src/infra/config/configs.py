@@ -1,3 +1,10 @@
+"""Central runtime configuration objects and typed environment-backed config blocks.
+
+Each config class owns a subsystem boundary (master DB, integrations, rate limits,
+uploads, etc.) and should be read directly instead of replicating settings in
+callers.
+"""
+
 import asyncio
 import os
 import threading
@@ -8,7 +15,7 @@ import google.auth
 from dotenv import load_dotenv
 from google.auth.credentials import Credentials
 
-# Load environment variables at the beginning of config module
+# Load env vars before constructing config classes so defaults can resolve correctly.
 load_dotenv(override=False)
 
 from ..utils.logger import get_logger
@@ -321,12 +328,14 @@ class SecuritySecretsConfig:
     _refresh_lock: asyncio.Lock | None = None
 
     async def preload_required(self, *, include_voice_realtime: bool = False) -> None:
+        """Eagerly load secrets that startup and request handlers need.\n\n        Voice-realtime secrets are optional, so this flag avoids unnecessary\n        Key Vault calls when voice-realtime is not in use.\n"""
         await self.get_session_secret()
         await self.get_oauth_state_secret()
         if include_voice_realtime:
             await self.get_voice_realtime_config_secret()
 
     async def get_session_secret(self) -> str:
+        """Return session secret used by auth/session cookies and JWT validation."""
         await self._ensure_loaded(include_voice_realtime=False)
         if self._session_secret:
             return self._session_secret
@@ -336,9 +345,11 @@ class SecuritySecretsConfig:
         )
 
     def get_session_secret_sync(self) -> str:
+        """Synchronous session secret accessor for startup paths that cannot await."""
         return _run_coro_sync(self.get_session_secret())
 
     async def get_oauth_state_secret(self) -> str:
+        """Return OAuth callback state secret used in authorization flows."""
         await self._ensure_loaded(include_voice_realtime=False)
         if self._oauth_state_secret:
             return self._oauth_state_secret
@@ -348,6 +359,7 @@ class SecuritySecretsConfig:
         )
 
     async def get_voice_realtime_config_secret(self) -> str:
+        """Return voice-realtime secret when voice endpoints authenticate calls."""
         await self._ensure_loaded(include_voice_realtime=True)
         if self._voice_realtime_config_secret:
             return self._voice_realtime_config_secret
@@ -1401,8 +1413,8 @@ class ThumbnailConfig:
         ).split(",")
         if item.strip()
     ]
-    # Backward-compatible prefix list (kept narrow). If you want to allow every image/* type
-    # set THUMBNAIL_ENABLE_IMAGE_PREFIX_FALLBACK=true — otherwise we only accept explicit list.
+    # Keep MIME handling explicit by default; enable broad image/* matching only when the
+    # environment explicitly opts into fallback handling.
     IMAGE_PREFIXES: list[str] = ["image/"]
     ENABLE_IMAGE_PREFIX_FALLBACK: bool = (
         os.getenv("THUMBNAIL_ENABLE_IMAGE_PREFIX_FALLBACK", "false").lower() == "true"
@@ -1448,7 +1460,8 @@ class ThumbnailConfig:
     }
 
     @classmethod
-    def all_supported_mimetypes(cls) -> set[str]:  # convenient aggregated accessor
+    def all_supported_mimetypes(cls) -> set[str]:
+        """Aggregate every allowed MIME type for central validation and UI hints."""
         return (
             set(cls.PDF_MIMETYPES)
             | set(cls.TEXT_LABEL_MAP.keys())
@@ -1457,6 +1470,7 @@ class ThumbnailConfig:
 
     @classmethod
     def is_supported(cls, mimetype: str) -> bool:
+        """Return whether a MIME type is supported for thumbnail generation."""
         if not mimetype:
             return False
         if mimetype in cls.IMAGE_MIMETYPES:
@@ -1486,6 +1500,29 @@ class RateLimitConfig:
     READ_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_READ_PER_MINUTE", "120"))
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "2000"))
 
+    # Public lead forms need more headroom because anonymous website traffic is
+    # scoped per form and client IP, not per authenticated user.
+    PUBLIC_FORM_READ_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_PUBLIC_FORM_READ_PER_MINUTE", "240")
+    )
+    PUBLIC_FORM_READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_PUBLIC_FORM_READ_PER_HOUR", "5000"))
+    PUBLIC_FORM_SUBMIT_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_PUBLIC_FORM_SUBMIT_PER_MINUTE", "180")
+    )
+    PUBLIC_FORM_SUBMIT_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_PUBLIC_FORM_SUBMIT_PER_HOUR", "3000")
+    )
+    PUBLIC_FORM_SUBMIT_PER_DAY: int = int(os.getenv("RATE_LIMIT_PUBLIC_FORM_SUBMIT_PER_DAY", "100"))
+    PRIVATE_LEAD_INGESTION_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_PRIVATE_LEAD_INGESTION_PER_MINUTE", "300")
+    )
+    PRIVATE_LEAD_INGESTION_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_PRIVATE_LEAD_INGESTION_PER_HOUR", "10000")
+    )
+    TRUST_EXTERNAL_PROXY_HEADERS: bool = (
+        os.getenv("TRUST_EXTERNAL_PROXY_HEADERS", "false").lower() == "true"
+    )
+
     # Strict limits for authentication (login attempts) - per IP+email
     AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "50"))
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "100"))
@@ -1495,7 +1532,7 @@ class RateLimitConfig:
     LOGIN_IP_TOTAL_PER_HOUR: int = int(os.getenv("RATE_LIMIT_LOGIN_IP_TOTAL_PER_HOUR", "300"))
 
 
-# Create config instances
+# Instantiate config objects once so all code paths share stateful config instances.
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
 app_config = AppConfig()
@@ -1763,6 +1800,8 @@ otel_config = OTelConfig()
 
 
 class Config:
+    """Singleton wrapper around selected environment configuration map."""
+
     _instance = None
     _initialized = False
 
@@ -1781,5 +1820,6 @@ class Config:
 
     @property
     def get_redis_client_details(self):
+        """Return redis host, port, and password for selected environment config."""
         redis_details = self._config["redis_client"]
         return redis_details["host"], redis_details["port"], redis_details["password"]

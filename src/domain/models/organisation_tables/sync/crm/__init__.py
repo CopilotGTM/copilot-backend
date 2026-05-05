@@ -30,6 +30,23 @@ from .deals import (
     CRMPipeline,
     CRMStageState,
 )
+from .lead_forms import (
+    LeadForm,
+    LeadFormField,
+    LeadFormFieldDataType,
+    LeadFormFieldTargetType,
+    LeadFormStatus,
+    LeadFormSubmission,
+)
+from .leads import (
+    CRMLead,
+    CRMLeadParticipant,
+    CRMLeadParticipantType,
+    CRMLeadPriority,
+    CRMLeadSourceType,
+    CRMLeadStatus,
+    CRMLeadStatusHistory,
+)
 from .stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -74,6 +91,20 @@ __all__ = [
     "CRMDealStageHistory",
     "CRMDealStatus",
     "CRMParticipantType",
+    # Leads
+    "CRMLead",
+    "CRMLeadParticipant",
+    "CRMLeadParticipantType",
+    "CRMLeadPriority",
+    "CRMLeadSourceType",
+    "CRMLeadStatus",
+    "CRMLeadStatusHistory",
+    "LeadForm",
+    "LeadFormField",
+    "LeadFormFieldDataType",
+    "LeadFormFieldTargetType",
+    "LeadFormStatus",
+    "LeadFormSubmission",
     # Companies
     "CRMCompany",
     # Users
