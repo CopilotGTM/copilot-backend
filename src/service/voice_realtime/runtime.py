@@ -128,7 +128,7 @@ class VoiceRealtimeSidebandService:
                         organisation_id=self.organisation_id,
                         user_id=self.user_id,
                         user_email=self.user_email,
-                        channel="web",
+                        channel="voice",
                         metadata={"chat_session_id": self.chat_session_id},
                     ),
                     allowed_tools=list(self.runtime_config.allowed_tools),

@@ -31,7 +31,6 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.infra.auth.email_service import email_service
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
@@ -582,6 +581,8 @@ class TasksWriteService:
             due_date_str = task.due_date.strftime("%B %d, %Y at %I:%M %p")
 
         try:
+            from src.infra.auth.email_service import email_service
+
             await email_service.send_task_assignment_email(
                 to_email=task.external_assignee_email,
                 assignee_name=task.external_assignee_name,

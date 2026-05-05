@@ -1,23 +1,25 @@
-"""Create Task tool — lets the GeneralAgent create a CRM task from natural language.
+"""Create Task tool and legacy confirmation-card fallback.
 
 The LLM extracts the user's intent (title, description, priority, due date, deal)
-and passes it to this tool. The tool resolves the due date server-side, optionally
-resolves a deal by name, and sends a preview card for the user to confirm or cancel.
+and passes it to this tool. The normal agent path creates the CRM task directly
+once the title is known. The preview-card helpers remain for previously sent
+Teams and Slack cards, whose submissions are still handled by
+ConfirmTaskFormHandler in src/service/bots/form_handlers/.
 
-Actual task creation happens in ConfirmTaskFormHandler when the user clicks Confirm.
-No database row is created until confirmation — all state lives in the card payload.
+Legacy preview mode does not create a DB row until confirmation.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
 - user_id: Scopes task ownership
 
-This tool supports Teams and Slack chats.
+This tool supports Teams, Slack, WhatsApp, Web, and Voice.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+_BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
 
 # Priority display labels and emoji indicators for preview cards
 _PRIORITY_LABELS = {
@@ -57,6 +61,62 @@ _REMINDER_LABELS = {
     "1h_before": "1 hour before",
     "1d_before": "1 day before",
 }
+
+_PLACEHOLDER_TASK_TITLES = {
+    "task",
+    "todo",
+    "to-do",
+    "new task",
+    "a task",
+    "the task",
+    "create task",
+    "create a task",
+    "add task",
+    "add a task",
+    "assign it to me",
+    "assign this to me",
+    "create a task and assign it to me",
+    "test task",
+}
+
+_REMINDER_OFFSETS = {
+    "at_due": timedelta(0),
+    "15m_before": timedelta(minutes=15),
+    "1h_before": timedelta(hours=1),
+    "1d_before": timedelta(days=1),
+}
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+def _load_tasks_write_service() -> tuple[type[Any], type[Exception]]:
+    from src.service.crm.internal.tasks_write_service import (
+        TasksWriteService,
+        TasksWriteServiceError,
+    )
+
+    return TasksWriteService, TasksWriteServiceError
+
+
+def _task_title_missing_message() -> str:
+    return (
+        "The task title is too generic. What should the task be about? "
+        "Please provide a meaningful task title before I create it."
+    )
+
+
+def _is_placeholder_task_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", title.strip().lower()).strip(" .!?")
+    return normalized in _PLACEHOLDER_TASK_TITLES
 
 
 def _escape_slack_mrkdwn(value: str) -> str:
@@ -173,7 +233,7 @@ async def _resolve_user_by_name(
     Returns (user_id, display_name) for the best match, or None.
     Queries the public.users table filtered by organisation_id.
     """
-    from sqlalchemy import or_, select
+    from sqlalchemy import func, or_, select
     from sqlmodel import col
 
     from src.domain.models.master_tables.user_models import User
@@ -184,6 +244,17 @@ async def _resolve_user_by_name(
     if not search:
         return None
 
+    def same_org(user: Any) -> bool:
+        return getattr(user, "organisation_id", None) == organisation_id
+
+    def display_name(user: Any) -> str:
+        return build_user_display_name(user) or str(getattr(user, "email", search))
+
+    def normalized_full_name(user: Any) -> str:
+        first = getattr(user, "first_name", "") or ""
+        last = getattr(user, "last_name", "") or ""
+        return f"{first} {last}".strip().lower()
+
     async for session in acquire_master_async_session():
         # Try exact email match first
         if "@" in search:
@@ -193,44 +264,73 @@ async def _resolve_user_by_name(
             )
             result = await session.execute(stmt)
             user = result.scalars().first()
-            if user:
-                return (user.user_id, build_user_display_name(user) or search)
+            if user and same_org(user):
+                return (user.user_id, display_name(user))
             return None
 
-        # Name search — case-insensitive on first_name, last_name, or concat
+        # Name search is token-aware so "Nikhil Singhal" can match separate
+        # first_name/last_name columns instead of searching the full phrase in
+        # each column independently.
         lower_search = search.lower()
+        tokens = [token for token in re.split(r"\s+", lower_search) if token]
+        full_name_expr = func.concat(col(User.first_name), " ", col(User.last_name))
+        conditions: list[Any] = [
+            full_name_expr.ilike(f"%{lower_search}%"),
+            col(User.first_name).ilike(f"%{lower_search}%"),
+            col(User.last_name).ilike(f"%{lower_search}%"),
+            col(User.email).ilike(f"%{lower_search}%"),
+        ]
+        for token in tokens:
+            conditions.extend(
+                [
+                    col(User.first_name).ilike(f"%{token}%"),
+                    col(User.last_name).ilike(f"%{token}%"),
+                    col(User.email).ilike(f"%{token}%"),
+                ]
+            )
+
         stmt = (
             select(User)
             .where(
                 col(User.organisation_id) == organisation_id,
-                or_(
-                    col(User.first_name).ilike(f"%{lower_search}%"),
-                    col(User.last_name).ilike(f"%{lower_search}%"),
-                    col(User.email).ilike(f"%{lower_search}%"),
-                ),
+                or_(*conditions),
             )
-            .limit(5)
+            .limit(10)
         )
         result = await session.execute(stmt)
-        users = result.scalars().all()
+        users = [user for user in result.scalars().all() if same_org(user)]
 
     if not users:
         return None
 
+    # Full names are unambiguous when the user provides both first and last name.
+    for u in users:
+        if normalized_full_name(u) == lower_search:
+            return (u.user_id, display_name(u))
+
+    if len(tokens) >= 2:
+        first_token = tokens[0]
+        last_token = tokens[-1]
+        ordered_matches = [
+            u
+            for u in users
+            if (getattr(u, "first_name", "") or "").lower().startswith(first_token)
+            and (getattr(u, "last_name", "") or "").lower().startswith(last_token)
+        ]
+        if len(ordered_matches) == 1:
+            match = ordered_matches[0]
+            return (match.user_id, display_name(match))
+
     if len(users) == 1:
-        return (users[0].user_id, build_user_display_name(users[0]) or search)
+        return (users[0].user_id, display_name(users[0]))
 
-    # Multiple matches — prefer exact first_name match, then first result
+    # A partial name with multiple candidates is unsafe for assignment. Ask for
+    # an email or full name instead of silently assigning to the first result.
     for u in users:
-        full = f"{u.first_name or ''} {u.last_name or ''}".strip().lower()
-        if full == lower_search:
-            return (u.user_id, build_user_display_name(u) or search)
+        if (getattr(u, "email", "") or "").lower() == lower_search:
+            return (u.user_id, display_name(u))
 
-    for u in users:
-        if (u.first_name or "").lower() == lower_search:
-            return (u.user_id, build_user_display_name(u) or search)
-
-    return (users[0].user_id, build_user_display_name(users[0]) or search)
+    return None
 
 
 async def _resolve_deal_by_name(
@@ -517,7 +617,314 @@ def _build_teams_preview(
     }
 
 
+def _task_created_text_fallback(task: Any) -> str:
+    return f"Created task {task.subject or 'Untitled task'}."
+
+
+def _format_status(value: str | None) -> str:
+    return (value or "NOT_STARTED").replace("_", " ").capitalize()
+
+
+def _task_success_facts(task: Any) -> list[dict[str, str]]:
+    facts = [
+        {"title": "Title", "value": str(task.subject or "Untitled task")},
+        {"title": "Priority", "value": _PRIORITY_LABELS.get(str(task.priority), "Medium")},
+        {"title": "Status", "value": _format_status(getattr(task, "status", None))},
+    ]
+    if getattr(task, "due_date", None):
+        facts.append({"title": "Due", "value": task.due_date.isoformat()})
+    if getattr(task, "related_name", None):
+        facts.append({"title": "Deal", "value": str(task.related_name)})
+    return facts
+
+
+def _task_success_ui_facts(task: Any) -> list[dict[str, str]]:
+    return [{"label": fact["title"], "value": fact["value"]} for fact in _task_success_facts(task)]
+
+
+def _build_task_created_ui_card(task: Any) -> dict[str, Any]:
+    return {
+        "kind": "task_created_confirmation",
+        "version": "1.0",
+        "tone": "success",
+        "title": "Task created",
+        "message": _task_created_text_fallback(task),
+        "entity": {
+            "type": "task",
+            "id": str(task.activity_id),
+            "name": str(task.subject or "Untitled task"),
+        },
+        "facts": _task_success_ui_facts(task),
+        "actions": [],
+    }
+
+
+def _build_teams_success_payload(task: Any) -> dict[str, Any]:
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": "Task created",
+                "size": "Medium",
+                "weight": "Bolder",
+                "wrap": True,
+                "color": "Good",
+            },
+            {"type": "FactSet", "facts": _task_success_facts(task)},
+        ],
+    }
+    return {
+        "type": "message",
+        "content": {
+            "text": " ",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": card,
+                }
+            ],
+        },
+        "text_fallback": _task_created_text_fallback(task),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_slack_success_payload(task: Any) -> dict[str, Any]:
+    fields = [
+        {
+            "type": "mrkdwn",
+            "text": f"*{fact['title']}*\n{_escape_slack_mrkdwn(fact['value'])}",
+        }
+        for fact in _task_success_facts(task)
+    ]
+    return {
+        "type": "message",
+        "content": {
+            "text": _task_created_text_fallback(task),
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Task created"},
+                },
+                {"type": "section", "fields": fields},
+            ],
+        },
+        "text_fallback": _task_created_text_fallback(task),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_whatsapp_success_payload(task: Any) -> dict[str, Any]:
+    lines = ["Task created"]
+    lines.extend(f"{fact['title']}: {fact['value']}" for fact in _task_success_facts(task))
+    return {
+        "type": "message",
+        "content": {"text": "\n".join(lines)},
+        "text_fallback": _task_created_text_fallback(task),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_ui_card_success_payload(task: Any) -> dict[str, Any]:
+    return {
+        "type": "ui_card",
+        "content": {"card": _build_task_created_ui_card(task)},
+        "text_fallback": _task_created_text_fallback(task),
+        "attachments": None,
+        "source_text": None,
+    }
+
+
+def _build_task_created_channel_payload(context: AgentContext, task: Any) -> dict[str, Any] | None:
+    channel = (context.channel or "").lower()
+    if channel == "slack":
+        return _build_slack_success_payload(task)
+    if channel == "teams":
+        return _build_teams_success_payload(task)
+    if channel == "whatsapp":
+        return _build_whatsapp_success_payload(task)
+    if channel in {"web", "voice"}:
+        return _build_ui_card_success_payload(task)
+    return None
+
+
+def _created_task_result(task: Any, *, assignee_name: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "created",
+        "task_id": str(task.activity_id),
+        "title": task.subject,
+        "priority": task.priority,
+        "message": f"Created task **{task.subject}**.",
+    }
+    if getattr(task, "due_date", None):
+        result["due_date"] = task.due_date.isoformat()
+    if getattr(task, "related_name", None):
+        result["deal_name"] = task.related_name
+    if assignee_name:
+        result["assignee_name"] = assignee_name
+    return result
+
+
 async def create_task(
+    *,
+    context: AgentContext,
+    title: str,
+    description: str | None = None,
+    priority: str = "MEDIUM",
+    due_date: str | None = None,
+    deal_name: str | None = None,
+    deal_id: str | None = None,
+    assign_to: str | None = None,
+    reminder: str | None = None,
+) -> dict[str, Any]:
+    """Create a CRM task directly through TasksWriteService."""
+    organisation_id = context.organisation_id
+    user_id = context.user_id
+
+    if not user_id:
+        return {"status": "error", "message": "Cannot create task: user not identified."}
+
+    if not title or not title.strip():
+        return {"status": "error", "message": "Task title is required."}
+    title = title.strip()
+
+    if _is_placeholder_task_title(title):
+        return {
+            "status": "error",
+            "message": _task_title_missing_message(),
+        }
+
+    priority_upper = priority.upper() if priority else "MEDIUM"
+    if priority_upper not in _VALID_PRIORITIES:
+        return {
+            "status": "error",
+            "message": (f"Invalid priority '{priority}'. Use: LOW, MEDIUM, HIGH, or URGENT."),
+        }
+
+    if reminder and reminder not in _VALID_REMINDER_OPTIONS:
+        return {
+            "status": "error",
+            "message": (
+                f"Invalid reminder option '{reminder}'. "
+                "Use: at_due, 15m_before, 1h_before, or 1d_before."
+            ),
+        }
+    if reminder and not due_date:
+        return {
+            "status": "error",
+            "message": "A due date is required before creating a task-linked reminder.",
+        }
+
+    timezone_name = context.metadata.get("user_timezone") or "UTC"
+    due_dt: datetime | None = None
+    if due_date:
+        due_dt = _resolve_due_date(due_date, timezone_name)
+        if not due_dt:
+            return {
+                "status": "error",
+                "message": (
+                    f"Could not understand the date '{due_date}'. "
+                    "Try something like 'Friday', 'March 20', or '2026-03-20T17:00:00'."
+                ),
+            }
+
+    resolved_deal_id: UUID | None = None
+    if deal_id:
+        try:
+            resolved_deal_id = UUID(deal_id)
+        except ValueError:
+            return {"status": "error", "message": f"Invalid deal_id '{deal_id}'."}
+    elif deal_name:
+        match = await _resolve_deal_by_name(context, deal_name.strip())
+        if match:
+            resolved_deal_id = match[0]
+        else:
+            return {
+                "status": "error",
+                "message": (
+                    f"Could not find a deal matching '{deal_name}'. "
+                    "Please check the deal name and try again, or provide the exact deal name."
+                ),
+            }
+
+    owner_user_id = user_id
+    assignee_name: str | None = None
+    if assign_to:
+        match = await _resolve_user_by_name(organisation_id, assign_to.strip())
+        if match:
+            owner_user_id = match[0]
+            assignee_name = match[1]
+        else:
+            return {
+                "status": "error",
+                "message": (
+                    f"Could not find a team member matching '{assign_to}'. "
+                    "Please provide their full name or email address so I can look them up."
+                ),
+            }
+
+    write_payload: dict[str, Any] = {
+        "subject": title,
+        "owner_user_id": owner_user_id,
+        "priority": priority_upper,
+        "status": "NOT_STARTED",
+        "created_via": "agent_create_task",
+    }
+    if description := _clean_optional(description):
+        write_payload["body"] = description
+    if due_dt:
+        write_payload["due_date"] = due_dt
+    if reminder and due_dt:
+        trigger_time = due_dt - _REMINDER_OFFSETS[reminder]
+        if trigger_time > datetime.now(UTC):
+            reminder_cfg: dict[str, Any] = {
+                "enabled": True,
+                "trigger_time": trigger_time,
+                "recurrence": "NONE",
+                "timezone": timezone_name,
+            }
+            channel = (context.channel or "").lower()
+            if channel in {"teams", "slack"}:
+                reminder_cfg["delivery_channel"] = channel
+            write_payload["reminder"] = reminder_cfg
+
+    service_cls, service_error_cls = _load_tasks_write_service()
+
+    async with context.acquire_session() as session:
+        service = service_cls(session, organisation_id, user_id)
+        try:
+            task = await service.create_task(write_payload, deal_id=resolved_deal_id)
+            await session.commit()
+            result = _created_task_result(task, assignee_name=assignee_name)
+            channel_payload = _build_task_created_channel_payload(context, task)
+            if channel_payload:
+                if channel_payload.get("type") == "ui_card":
+                    result["ui_card"] = channel_payload["content"]["card"]
+                result[_BOT_CHANNEL_PAYLOAD_KEY] = channel_payload
+            return result
+        except service_error_cls as exc:
+            await session.rollback()
+            logger.warning("create_task: TasksWriteServiceError: %s", exc.message)
+            return {
+                "status": "error",
+                "message": f"Could not create task: {exc.message}",
+            }
+        except Exception:
+            await session.rollback()
+            logger.exception("create_task: unexpected error")
+            return {
+                "status": "error",
+                "message": "An unexpected error occurred while creating the task.",
+            }
+
+
+async def create_task_form(
     *,
     context: AgentContext,
     title: str,
@@ -545,14 +952,10 @@ async def create_task(
     title = title.strip()
 
     # Reject generic placeholder titles — the LLM should extract a real title
-    generic_titles = {"task", "todo", "to-do", "new task", "a task", "the task"}
-    if title.lower() in generic_titles:
+    if _is_placeholder_task_title(title):
         return {
             "status": "error",
-            "message": (
-                "The title is too generic. Ask the user what the task is about "
-                "so you can provide a meaningful title."
-            ),
+            "message": _task_title_missing_message(),
         }
 
     # Validate priority
@@ -797,12 +1200,12 @@ def create_create_task(
         assign_to: str | None = None,
         reminder: str | None = None,
     ) -> dict[str, Any]:
-        """Create a task or to-do item.
+        """Create a task or to-do item directly.
 
         Call this tool IMMEDIATELY when the user asks to create a task, add a
         to-do, or track an action item. Do NOT ask the user for missing fields —
         extract what you can from their message and let the defaults handle the rest.
-        The user will see a preview card and can cancel if anything is wrong.
+        The task is created directly once a meaningful title is known.
 
         IMPORTANT: The title must describe the actual work. Never use generic titles
         like "Task" or "New task". If the user's message does not describe what needs
@@ -877,6 +1280,10 @@ def create_create_task(
         )
 
         logger.info("[TOOL RESULT] create_task status=%s", result.get("status"))
-        return dict(result) if result else {"status": "error", "message": "Unknown error."}
+        return (
+            _public_tool_result(dict(result))
+            if result
+            else {"status": "error", "message": "Unknown error."}
+        )
 
     return create_task_tool

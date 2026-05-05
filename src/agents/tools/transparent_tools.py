@@ -58,6 +58,13 @@ class TransparentToolManager:
                 sanitized[key] = str(value)[:100]
         return sanitized
 
+    @staticmethod
+    def _public_tool_result(result: Any) -> Any:
+        """Remove private transport metadata before summarizing tool output."""
+        if isinstance(result, dict):
+            return {key: value for key, value in result.items() if not str(key).startswith("_")}
+        return result
+
     async def use_tool(
         self,
         tool_name: str,
@@ -111,6 +118,10 @@ class TransparentToolManager:
             )
 
             duration_ms = int((time.time() - start_time) * 1000)
+            public_result = self._public_tool_result(result)
+            channel_payload = (
+                result.get("_bot_channel_payload") if isinstance(result, dict) else None
+            )
 
             # Emit completion frame
             await self._emit_frame(
@@ -120,8 +131,11 @@ class TransparentToolManager:
                     tool_name=tool_name,
                     status="completed",
                     result_summary=(
-                        str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
+                        str(public_result)[:200] + "..."
+                        if len(str(public_result)) > 200
+                        else str(public_result)
                     ),
+                    channel_payload=channel_payload,
                     duration_ms=duration_ms,
                 ),
             )

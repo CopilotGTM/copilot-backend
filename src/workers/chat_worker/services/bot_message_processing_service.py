@@ -165,11 +165,13 @@ class BotMessageProcessingService:
             )
 
             adapter = get_adapter(provider)
+            payload_override: ChannelPayload | None = None
             if result.error_message:
                 payload = adapter.render_error(_STATIC_ERROR_MESSAGE)
             else:
                 response = AgentResponse.from_frames(result.frames)
                 payload = adapter.render(response)
+                payload_override = self._channel_payload_override_from_frames(result.frames)
 
                 # Persist assistant response for personal chat
                 if session_id and job_id:
@@ -180,7 +182,14 @@ class BotMessageProcessingService:
                             session_id, assistant_text, user_msg_id or UUID(int=0)
                         )
 
-            success = run_async(self._send_payload(provider, reply_context, payload))
+            success = run_async(
+                self._send_payload_with_optional_override(
+                    provider,
+                    reply_context,
+                    payload,
+                    payload_override if not result.error_message else None,
+                )
+            )
 
             # Finalize job with token usage data
             if job_id:
@@ -1200,6 +1209,50 @@ class BotMessageProcessingService:
         else:
             logger.error("Unsupported bot provider: %s", provider)
             return False
+
+    @staticmethod
+    def _channel_payload_override_from_frames(frames: list[Frame]) -> ChannelPayload | None:
+        """Return the last completed tool-provided channel payload, if any."""
+        from src.adapters import ChannelPayload
+
+        for frame in reversed(frames):
+            if getattr(frame, "type", "") != "tool.usage":
+                continue
+            if getattr(frame, "status", "") != "completed":
+                continue
+
+            raw_payload = getattr(frame, "channel_payload", None)
+            if not isinstance(raw_payload, dict):
+                continue
+
+            content = raw_payload.get("content")
+            if not isinstance(content, dict):
+                continue
+
+            return ChannelPayload(
+                type=str(raw_payload.get("type") or "message"),
+                content=content,
+                text_fallback=raw_payload.get("text_fallback"),
+                attachments=raw_payload.get("attachments"),
+                source_text=raw_payload.get("source_text"),
+            )
+
+        return None
+
+    async def _send_payload_with_optional_override(
+        self,
+        provider: str,
+        reply_context: dict,
+        rendered_payload: ChannelPayload,
+        override_payload: ChannelPayload | None,
+    ) -> bool:
+        """Send a tool-provided rich payload first, falling back to rendered text."""
+        if override_payload:
+            if await self._send_payload(provider, reply_context, override_payload):
+                return True
+            logger.warning("Tool channel payload failed, falling back to rendered response")
+
+        return await self._send_payload(provider, reply_context, rendered_payload)
 
     async def _send_teams_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
         """Send rendered payload to Teams via proactive messaging.

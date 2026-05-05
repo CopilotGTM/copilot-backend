@@ -60,7 +60,7 @@ class ToolName(str, Enum):
     GET_DEAL_CHANGE_HISTORY = "get_deal_change_history"  # Stage transition history
     GET_DEAL_MEMORY = "get_deal_memory"  # Persistent deal memory document
     GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
-    CREATE_DEAL = "create_deal"  # Send interactive deal creation form to chat
+    CREATE_DEAL = "create_deal"  # Create an internal CRM deal directly from chat
     ADD_DEAL_NOTE = "add_deal_note"  # Send interactive note form for existing deal
     ADD_STAKEHOLDER = "add_stakeholder"  # Send interactive stakeholder form for existing deal
     UPDATE_DEAL_STAGE = "update_deal_stage"
@@ -169,14 +169,12 @@ REMINDER_MANAGEMENT_TOOLS = {
 }
 
 VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
-    ToolName.CREATE_DEAL,
     ToolName.ADD_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
     ToolName.UPDATE_DEAL_FIELDS,
     ToolName.UPDATE_DEAL_LIFECYCLE,
     ToolName.UPDATE_DEAL_ACCOUNT,
-    ToolName.CREATE_TASK,
     ToolName.CREATE_REMINDER,
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
@@ -194,11 +192,11 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
 CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
     ToolName.CREATE_VISUALIZATION_CARD: {"teams"},
-    ToolName.CREATE_DEAL: {"teams", "slack"},
+    ToolName.CREATE_DEAL: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.ADD_DEAL_NOTE: {"teams", "slack"},
     ToolName.ADD_STAKEHOLDER: {"teams", "slack"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
-    ToolName.CREATE_TASK: {"teams", "slack"},
+    ToolName.CREATE_TASK: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_REMINDER: {"teams", "slack"},
     ToolName.LIST_REMINDERS: {"teams", "slack"},
     ToolName.CANCEL_REMINDER: {"teams", "slack"},

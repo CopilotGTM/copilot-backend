@@ -288,7 +288,7 @@ class VoiceRealtimeSidebandService:
                         organisation_id=self.organisation_id,
                         user_id=self.user_id,
                         user_email=self.user_email,
-                        channel="web",
+                        channel="voice",
                         metadata={"chat_session_id": self.chat_session_id},
                     ),
                     allowed_tools=list(self.runtime_config.allowed_tools),
@@ -392,6 +392,7 @@ def _build_voice_tool_factories(
 ) -> dict[ToolName, Callable[[], Callable[..., Any]]]:
     from src.agents.tools.communication.get_email_details import create_get_email_details
     from src.agents.tools.communication.list_emails import create_list_deal_emails
+    from src.agents.tools.crm.create_deal import create_create_deal
     from src.agents.tools.crm.get_deal_details import create_get_deal_details
     from src.agents.tools.crm.get_deal_summary import create_get_deal_summary
     from src.agents.tools.crm.get_risks_blockers import create_get_existing_risks_blockers
@@ -417,6 +418,7 @@ def _build_voice_tool_factories(
         ),
         ToolName.SEARCH_DEALS: partial(create_search_deals, context, empty_capabilities),
         ToolName.LIST_DEALS: partial(create_list_deals, context, empty_capabilities),
+        ToolName.CREATE_DEAL: partial(create_create_deal, context, empty_capabilities),
         ToolName.GET_DEAL_DETAILS: partial(create_get_deal_details, context, empty_capabilities),
         ToolName.GET_DEAL_SUMMARY: partial(create_get_deal_summary, context, empty_capabilities),
         ToolName.GET_EXISTING_RISKS_BLOCKERS: partial(

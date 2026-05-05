@@ -1,6 +1,8 @@
 from uuid import uuid4
 
 import pytest
+from src.adapters import ChannelPayload
+from src.infra.messaging.chat_stream_models import ToolUsage
 from src.workers.chat_worker.services.bot_message_processing_service import (
     BotMessageProcessingService,
 )
@@ -461,3 +463,64 @@ async def test_send_payload_dispatches_google_chat_reply(
         "text": "Done",
         "thread_name": "spaces/AAA/threads/THREAD1",
     }
+
+
+def test_channel_payload_override_from_completed_tool_usage() -> None:
+    service = BotMessageProcessingService(uuid4())
+
+    payload = service._channel_payload_override_from_frames(
+        [
+            ToolUsage(tool_name="CreateDeal", status="starting"),
+            ToolUsage(
+                tool_name="CreateDeal",
+                status="completed",
+                channel_payload={
+                    "type": "message",
+                    "content": {
+                        "text": " ",
+                        "attachments": [{"content": {"type": "AdaptiveCard"}}],
+                    },
+                    "text_fallback": "Created deal Acme.",
+                },
+            ),
+        ]
+    )
+
+    assert isinstance(payload, ChannelPayload)
+    assert payload.content["attachments"][0]["content"]["type"] == "AdaptiveCard"
+    assert payload.text_fallback == "Created deal Acme."
+
+
+@pytest.mark.asyncio
+async def test_send_payload_prefers_tool_card_override_and_falls_back_to_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    sent: list[ChannelPayload] = []
+
+    async def fake_send_payload(_provider: str, _reply_context: dict, payload: ChannelPayload):
+        sent.append(payload)
+        return len(sent) > 1
+
+    monkeypatch.setattr(service, "_send_payload", fake_send_payload)
+
+    rendered_text = ChannelPayload(
+        type="message",
+        content={"text": "Created deal Acme."},
+        text_fallback="Created deal Acme.",
+    )
+    override = ChannelPayload(
+        type="message",
+        content={"text": " ", "attachments": [{"content": {"type": "AdaptiveCard"}}]},
+        text_fallback="Created deal Acme.",
+    )
+
+    success = await service._send_payload_with_optional_override(
+        "teams",
+        {"service_url": "https://svc", "conversation_id": "conv"},
+        rendered_text,
+        override,
+    )
+
+    assert success is True
+    assert sent == [override, rendered_text]
