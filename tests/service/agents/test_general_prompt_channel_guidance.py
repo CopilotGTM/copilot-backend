@@ -28,6 +28,30 @@ def test_general_prompt_does_not_collect_optional_create_deal_fields_via_preview
     assert "optional details can be provided later" in create_deal_section
 
 
+def test_general_prompt_instructs_direct_stakeholder_and_note_creation() -> None:
+    prompt = get_general_prompt("Acme")
+
+    assert "resolve/search the deal first" in prompt
+    assert "call `AddStakeholder` directly once deal_id, deal_name, and email are known" in prompt
+    assert (
+        "call `AddDealNote` directly once deal_id, deal_name, and note_content are known" in prompt
+    )
+    assert "Do not describe stakeholder or note preview cards as the normal path" in prompt
+
+
+def test_general_prompt_no_longer_uses_preview_cards_for_normal_stakeholder_or_note_flow() -> None:
+    prompt = get_general_prompt("Acme")
+    crm_write_section = prompt[
+        prompt.index("**CRM write behavior on supported channels") : prompt.index(
+            "**Visualizations (Teams only):**"
+        )
+    ]
+
+    assert "send a preview" not in crm_write_section.lower()
+    assert "send a form" not in crm_write_section.lower()
+    assert "click confirm" not in crm_write_section.lower()
+
+
 def test_general_prompt_requires_meaningful_task_title_before_create_task() -> None:
     prompt = get_general_prompt("Acme")
 

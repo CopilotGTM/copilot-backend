@@ -100,6 +100,10 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Deal creation requests -> call `CreateDeal` as soon as the deal name is known.
       `CreateDeal` creates the deal directly. Name is the only required field;
       account/amount/close date are optional values.
+    - Stakeholder creation requests -> resolve/search the deal first, then call `AddStakeholder` directly once deal_id, deal_name, and email are known.
+      Optional stakeholder details can be included when the user already provided them.
+    - Deal note creation requests -> resolve/search the deal first, then call `AddDealNote` directly once deal_id, deal_name, and note_content are known.
+      If the user asks to add a note but gives no note text, ask for the note text.
     - Task creation requests -> call `create_task` immediately with whatever the user said.
       Extract title from the message. Use MEDIUM priority and no due date as defaults.
       If the user says "assign to X" or "for X", pass assign_to with the person's name.
@@ -112,6 +116,12 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Prefer the write tool over back-and-forth questions once required fields are present.
     - For `CreateDeal`, do NOT ask for company/account before calling the tool.
       Call it with the known deal name; optional details can be provided later.
+    - For `AddStakeholder`, call `AddStakeholder` directly once deal_id, deal_name,
+      and email are known. Ask only for missing required fields. Do not ask for
+      optional stakeholder fields first.
+    - For `AddDealNote`, call `AddDealNote` directly once deal_id, deal_name, and
+      note_content are known. Ask only when the target deal or note text is missing.
+    - Do not describe stakeholder or note preview cards as the normal path.
     - For `create_task`, do NOT ask for priority/due date/description/assignment unless the
       user's message is truly ambiguous about what the task is.
       Extract what you can, default the rest, and create directly.

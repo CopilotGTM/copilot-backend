@@ -427,7 +427,7 @@ The Alembic migration that creates the `user_reminders` table in every `org_*` s
 
 ### Step 3: Agent Tools — Creating Alerts
 **`src/agents/tools/reminders/create_reminder.py`**
-The `create_reminder` function validates all inputs (type, recurrence, trigger time, content), extracts delivery context from `context.metadata`, builds the `UserReminder` record, and persists it. The factory function `create_create_reminder()` wraps it with the tool docstring that the LLM sees.
+The `create_reminder` function validates all inputs (type, recurrence, trigger time, content), resolves a single delivery target from the current channel or connected chat identity mappings, creates an ACTIVE `UserReminder` through `ReminderService`, and schedules it immediately. The legacy `create_reminder_form` path is retained only for old preview-confirm cards. The factory function `create_create_reminder()` wraps the direct-create tool docstring that the LLM sees.
 
 ### Step 4: Agent Tools — Listing Alerts
 **`src/agents/tools/reminders/list_reminders.py`**
@@ -442,7 +442,7 @@ Validates ownership (org + user), sets `status = CANCELLED`. The factory docstri
 Search for `REMINDERS` and `CREATE_REMINDER` to find the additions:
 - `ToolCategory.REMINDERS` enum value
 - Three `ToolName` entries: `CREATE_REMINDER`, `LIST_REMINDERS`, `CANCEL_REMINDER`
-- All three in `CHANNEL_ONLY_TOOLS` restricted to `{"teams"}`
+- All three in `CHANNEL_ONLY_TOOLS` for Teams, Slack, WhatsApp, Web, and Voice
 - All three in `AGENT_TOOLS["GeneralAgent"]`
 - All three in `TOOL_CATEGORIES` mapping
 - Factory registrations in `_register_tool_factories()`
@@ -462,7 +462,7 @@ The three task functions:
 **`src/workers/chat_worker/services/reminder_execution_service.py`**
 The core business logic. `ReminderExecutionService` handles:
 - `_load_and_lock()` — row locking and dedup
-- `_execute_static()` — plain text delivery via `TeamsBotService`
+- `_execute_static()` — plain text delivery via Teams, Slack, or WhatsApp bot services
 - `_execute_agentic()` — full agent pipeline in background (AgentContext → GeneralAgent → TeamsAdapter → delivery)
 - `_mark_success()` / `_mark_failure()` — status updates and recurrence computation
 - `_compute_next_trigger()` — DST-aware timezone math

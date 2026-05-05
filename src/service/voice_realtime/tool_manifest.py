@@ -164,6 +164,57 @@ def _build_create_task_factory(context: AgentContext) -> Callable[[], Callable[.
     return partial(create_create_task, voice_context, _build_empty_capabilities)
 
 
+def _build_create_reminder_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.create_reminder import create_create_reminder
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_reminder, voice_context, _build_empty_capabilities)
+
+
+def _build_list_reminders_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.list_reminders import create_list_reminders
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_list_reminders, voice_context, _build_empty_capabilities)
+
+
+def _build_cancel_reminder_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.reminders.cancel_reminder import create_cancel_reminder
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_cancel_reminder, voice_context, _build_empty_capabilities)
+
+
 VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.SEARCH_INTERNAL_KNOWLEDGE,
@@ -261,6 +312,55 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "additionalProperties": False,
         },
         factory_builder=_build_create_task_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_REMINDER,
+        description=(
+            "Create a reminder directly once the user provides a meaningful title and trigger time."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "trigger_time": {"type": "string"},
+                "reminder_type": {"type": "string", "enum": ["static", "agentic"]},
+                "message": {"type": "string"},
+                "agent_prompt": {"type": "string"},
+                "deal_id": {"type": "string"},
+                "recurrence": {
+                    "type": "string",
+                    "enum": ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"],
+                },
+            },
+            "required": ["title", "trigger_time"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_reminder_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.LIST_REMINDERS,
+        description="List the user's active reminders and scheduled alerts.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "include_completed": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_list_reminders_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CANCEL_REMINDER,
+        description="Cancel one of the user's reminders by reminder ID.",
+        parameters={
+            "type": "object",
+            "properties": {"reminder_id": {"type": "string"}},
+            "required": ["reminder_id"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_cancel_reminder_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.GET_DEAL_DETAILS,

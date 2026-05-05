@@ -17,11 +17,18 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
     excluded_tools = VOICE_REALTIME_WRITE_EXCLUDED_TOOLS - {
         ToolName.CREATE_DEAL,
         ToolName.CREATE_TASK,
+        ToolName.CREATE_REMINDER,
+        ToolName.LIST_REMINDERS,
+        ToolName.CANCEL_REMINDER,
     }
     assert allowed_tool_names.isdisjoint({tool.value for tool in excluded_tools})
     assert ToolName.CREATE_DEAL.value in allowed_tool_names
     assert ToolName.CREATE_TASK.value in allowed_tool_names
+    assert ToolName.CREATE_REMINDER.value in allowed_tool_names
+    assert ToolName.LIST_REMINDERS.value in allowed_tool_names
+    assert ToolName.CANCEL_REMINDER.value in allowed_tool_names
     assert ToolName.CREATE_TASK not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.CREATE_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
 
 
 def test_every_voice_schema_name_is_in_allowed_tools() -> None:
@@ -54,3 +61,13 @@ def test_create_task_voice_schema_is_available_for_direct_write() -> None:
     assert schema["parameters"]["required"] == ["title"]
     assert "due_date" in schema["parameters"]["properties"]
     assert "reminder" in schema["parameters"]["properties"]
+
+
+def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.CREATE_REMINDER.value]
+    assert schema["description"].startswith("Create a reminder")
+    assert schema["parameters"]["required"] == ["title", "trigger_time"]
+    assert "message" in schema["parameters"]["properties"]
+    assert "agent_prompt" in schema["parameters"]["properties"]

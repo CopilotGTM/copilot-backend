@@ -175,9 +175,6 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
     ToolName.UPDATE_DEAL_FIELDS,
     ToolName.UPDATE_DEAL_LIFECYCLE,
     ToolName.UPDATE_DEAL_ACCOUNT,
-    ToolName.CREATE_REMINDER,
-    ToolName.LIST_REMINDERS,
-    ToolName.CANCEL_REMINDER,
     ToolName.ENRICH_STAKEHOLDER,
 }
 
@@ -197,9 +194,9 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.ADD_STAKEHOLDER: {"teams", "slack"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
     ToolName.CREATE_TASK: {"teams", "slack", "whatsapp", "web", "voice"},
-    ToolName.CREATE_REMINDER: {"teams", "slack"},
-    ToolName.LIST_REMINDERS: {"teams", "slack"},
-    ToolName.CANCEL_REMINDER: {"teams", "slack"},
+    ToolName.CREATE_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.LIST_REMINDERS: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
 }
 
 

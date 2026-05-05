@@ -43,7 +43,7 @@ def test_create_deal_is_available_on_web_voice_whatsapp_slack_and_teams() -> Non
         assert "create_deal_tool" in tool_names
 
 
-def test_reminder_tools_are_available_on_slack_and_teams() -> None:
+def test_reminder_tools_are_available_on_supported_chat_and_voice_channels() -> None:
     reminder_tools = (
         ToolName.CREATE_REMINDER,
         ToolName.LIST_REMINDERS,
@@ -51,7 +51,17 @@ def test_reminder_tools_are_available_on_slack_and_teams() -> None:
     )
 
     for tool_name in reminder_tools:
-        assert CHANNEL_ONLY_TOOLS[tool_name] == {"teams", "slack"}
+        assert CHANNEL_ONLY_TOOLS[tool_name] == {
+            "teams",
+            "slack",
+            "whatsapp",
+            "web",
+            "voice",
+        }
+
+    assert ToolName.CREATE_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.LIST_REMINDERS not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.CANCEL_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
 
 
 def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:

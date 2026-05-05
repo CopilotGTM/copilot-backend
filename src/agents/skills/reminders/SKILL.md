@@ -34,9 +34,14 @@ There are two types. Classify based on user intent:
    - `deal_id`: for agentic alerts, include if the analysis targets a specific deal. Search for the deal first if the user mentions a deal name.
    - `recurrence`: default "none". Set if user says "every day", "daily", "weekly", etc. See `references/recurrence-guide.md`.
 
-2. **Call `CreateReminder`** with all extracted parameters. Do not ask the user for their timezone — it is detected automatically.
+2. If content, time, or reminder intent is missing, ask only for the missing piece:
+   - Missing content: "What should I remind you about?"
+   - Missing time: "When should I remind you?"
+   - Generic intent/title such as "set a reminder": ask what the reminder is about.
 
-3. **Confirm to the user** that a preview card has been sent. The user must click **Confirm** on the card to activate the reminder.
+3. **Call `CreateReminder`** once the mandatory fields are known. Do not ask the user for their timezone — it is detected automatically.
+
+4. **Confirm to the user** that the reminder was created. No preview confirmation card is required in the normal path.
 
 ### Listing reminders
 
@@ -67,12 +72,12 @@ There are two types. Classify based on user intent:
 - **Never convert time to UTC** — pass the user's expression verbatim. The server resolves it.
 - **Never ask for timezone** — it is auto-detected from the channel context.
 - **Always include content** — static needs `message`, agentic needs `agent_prompt`. Tool will error without them.
-- **Preview card required** — the reminder is NOT active until the user confirms the preview card. Always tell the user to check and confirm.
+- **Create directly** — once mandatory fields are known, call `CreateReminder`; the reminder is active immediately.
 - **Agentic prompts must be self-contained** — at trigger time, the agent runs independently. Include enough context (deal name, what to analyze) in the `agent_prompt`.
 
 ## Output contract
 
-After creating: tell the user a preview card was sent and they need to confirm.
+After creating: tell the user the reminder was created and summarize when it will run.
 After listing: present a clean table or list of reminders.
 After cancelling: confirm which reminder was cancelled.
 
