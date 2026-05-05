@@ -39,6 +39,12 @@ from .organisation_models import (
     OrganisationEventType,
     OrganisationStatus,
 )
+from .public_ingress_key_models import (
+    PublicIngressKey,
+    PublicIngressKeyStatus,
+    PublicIngressKeyType,
+    PublicIngressResourceType,
+)
 from .super_admin_models import (
     AdminRole,
     AdminUserStatus,
@@ -63,6 +69,10 @@ __all__ = [
     "OrganisationActionHistory",
     "OrganisationEventType",
     "OrganisationIntegrationDetails",
+    "PublicIngressKey",
+    "PublicIngressKeyStatus",
+    "PublicIngressKeyType",
+    "PublicIngressResourceType",
     # Organisation Job Models
     "OrganisationJob",
     "OrganisationJobStatus",

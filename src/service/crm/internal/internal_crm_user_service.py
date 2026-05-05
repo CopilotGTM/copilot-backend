@@ -132,6 +132,7 @@ class InternalCRMUserService:
 
         now = datetime.now(UTC)
         crm_user = CRMUser(
+            user_id=app_user.user_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
             external_id=str(app_user.user_id),
@@ -186,7 +187,7 @@ class InternalCRMUserService:
             logger.info("No users to sync for org %s", self.organisation_id)
             return 0
 
-        # Get existing CRM users for this integration
+        # Cache the current user set once per call to avoid full table scans per app user.
         existing_stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
             col(CRMUser.integration_id) == integration_id,
@@ -203,12 +204,13 @@ class InternalCRMUserService:
 
             if not crm_user:
                 crm_user = CRMUser(
+                    user_id=app_user.user_id,
                     organisation_id=self.organisation_id,
                     integration_id=integration_id,
                     external_id=external_id,
                 )
 
-            # Update fields from app user
+            # Keep crm_users row aligned with public.users metadata for display and identity.
             crm_user.email = str(app_user.email) if app_user.email else None
             crm_user.first_name = app_user.first_name
             crm_user.last_name = app_user.last_name

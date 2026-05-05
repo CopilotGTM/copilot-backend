@@ -1,10 +1,7 @@
-"""FastAPI application factory and configuration.
+"""FastAPI application factory and global app wiring.
 
-This module creates and configures the FastAPI application with:
-- CORS middleware
-- Request context middleware
-- Redis connection pool management
-- GC tuning for reduced pause times
+This module builds the shared API app object, wires lifecycle startup/shutdown,
+and mounts all routers for public, private, user, and admin entrypoints.
 """
 
 import gc
@@ -18,11 +15,8 @@ from src.infra.observability.otel import async_init_otel, instrument_fastapi_app
 from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import configure_logging
 
-# Configure Python garbage collector to reduce pause times
-# This helps prevent health check timeouts caused by GC pauses
-# - threshold0: Collect young generation less frequently (default 700)
-# - threshold1: Collect middle generation less frequently (default 10)
-# - threshold2: Collect old generation less frequently (default 10)
+# Tune Python GC to reduce long pauses during request bursts.
+# Stable p95 latency depends on avoiding full old-generation pauses during load spikes.
 gc.set_threshold(50000, 500, 100)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -33,6 +27,7 @@ configure_logging(component="api")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from src.api.middleware.public_form_cors import PublicLeadFormCORSMiddleware
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
@@ -56,8 +51,12 @@ from src.api.routers.crm import (
     deal_participants_router,
     deal_timeline_router,
     deals_router,
+    lead_forms_router,
+    lead_ingestion_keys_router,
+    leads_router,
     meetings_router,
     pipelines_router,
+    public_lead_forms_router,
     risks_blockers_router,
     settings_router,
     stakeholder_insights_router,
@@ -73,6 +72,7 @@ from src.api.routers.knowledge_base.upload_handler import (
     upload_router as knowledge_upload_router,
 )
 from src.api.routers.meeting_bot import meeting_bot_router
+from src.api.routers.private import private_lead_ingestion_router
 from src.api.routers.reminders import reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
@@ -90,6 +90,7 @@ from ..infra.utils.logger import get_logger
 # Secret maintenance removed; no background task required
 
 logger = get_logger()
+EXTERNAL_API_VERSION = "v1"
 
 # Suppress uvicorn's plain-text access log — replaced by our structured middleware
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -175,6 +176,10 @@ def create_fastapi_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Add per-public-form CORS checks on top of app-level auth CORS. This lets
+    # public lead-form routes enforce a form-specific allow-list before normal
+    # route/auth middleware while reusing browser session behavior for app routes.
+    fastapp.add_middleware(PublicLeadFormCORSMiddleware)
 
     fastapp.add_middleware(RequestContextMiddleware)
 
@@ -199,6 +204,16 @@ def create_fastapi_app():
     # Include routers here
     # Public health endpoint (safe for external access)
     fastapp.include_router(public_health_router, tags=["health"])
+    fastapp.include_router(
+        public_lead_forms_router,
+        prefix=f"/public/{EXTERNAL_API_VERSION}",
+        tags=["public-lead-forms"],
+    )
+    fastapp.include_router(
+        private_lead_ingestion_router,
+        prefix=f"/private/{EXTERNAL_API_VERSION}",
+        tags=["private-lead-ingestion"],
+    )
 
     # Internal health endpoints (restricted access)
     fastapp.include_router(healthcheck_router, tags=["internal", "healthcheck"])
@@ -259,6 +274,13 @@ def create_fastapi_app():
     fastapp.include_router(custom_fields_router, prefix="/users/crm", tags=["crm-custom-fields"])
     fastapp.include_router(pipelines_router, prefix="/users/crm", tags=["pipelines"])
     fastapp.include_router(deals_router, prefix="/users/crm", tags=["deals"])
+    fastapp.include_router(lead_forms_router, prefix="/users/crm", tags=["lead-forms"])
+    fastapp.include_router(
+        lead_ingestion_keys_router,
+        prefix="/users/crm",
+        tags=["lead-ingestion-keys"],
+    )
+    fastapp.include_router(leads_router, prefix="/users/crm", tags=["crm-leads"])
     fastapp.include_router(deal_participants_router, prefix="/users/crm", tags=["participants"])
     fastapp.include_router(deal_import_router, prefix="/users/crm/deals", tags=["deals"])
     fastapp.include_router(stakeholders_router, prefix="/users/crm/deals", tags=["stakeholders"])
