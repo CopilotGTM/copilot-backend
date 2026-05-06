@@ -111,6 +111,53 @@ async def test_refresh_single_token_updates_credentials_and_preserves_refresh_to
 
 
 @pytest.mark.asyncio
+async def test_refresh_single_token_reactivates_reauth_integration_on_success() -> None:
+    organisation_id = uuid4()
+    integration = _make_integration(
+        is_active=False,
+        requires_reauth=True,
+        last_sync_status="auth_failed",
+        last_sync_error="Token refresh failed: stale client credentials",
+        consecutive_sync_failures=1,
+        connection_metadata={
+            "token_refresh_failures": 2,
+            "last_refresh_failure_at": datetime.utcnow().isoformat(),
+        },
+    )
+    session = _make_session(FakeResult(scalar=integration))
+    provider = AsyncMock()
+    provider.provider_key = "google"
+    provider.refresh_token.return_value = {
+        "access_token": "new-access",
+        "expires_in": 3600,
+        "scope": "gmail.readonly profile",
+    }
+
+    service = CustomTokenRefreshService(organisation_id=organisation_id)
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([session]),
+        ),
+        patch(
+            "src.service.integrations.custom_token_refresh_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await service.refresh_single_token_async(integration.integration_id)
+
+    assert result["success"] is True
+    assert integration.is_active is True
+    assert integration.requires_reauth is False
+    assert integration.last_sync_status == "success"
+    assert integration.last_sync_error is None
+    assert integration.consecutive_sync_failures == 0
+    assert "token_refresh_failures" not in integration.connection_metadata
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_refresh_single_token_fails_when_refresh_token_missing() -> None:
     organisation_id = uuid4()
     integration = _make_integration(credentials={"access_token": "old-access"})
@@ -214,3 +261,35 @@ async def test_refresh_org_tokens_summarises_results() -> None:
         "deactivated": 1,
     }
     assert refresh_single.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_org_tokens_includes_reauth_integrations_for_recovery() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    query_session = _make_session(FakeResult(rows=[(integration_id,)]))
+
+    service = CustomTokenRefreshService(organisation_id=organisation_id)
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([query_session]),
+        ),
+        patch.object(
+            service,
+            "_refresh_single_integration",
+            AsyncMock(
+                return_value={
+                    "success": True,
+                    "integration_id": str(integration_id),
+                    "deactivated": False,
+                }
+            ),
+        ),
+    ):
+        result = await service.refresh_org_tokens_async(buffer_hours=2)
+
+    executed_stmt = query_session.execute.await_args.args[0]
+    assert "requires_reauth" in str(executed_stmt)
+    assert result["summary"]["successful"] == 1

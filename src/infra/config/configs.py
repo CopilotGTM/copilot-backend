@@ -895,6 +895,19 @@ class GoogleIntegrationConfig:
 
         return self._client_id or "", self._client_secret or ""
 
+    async def refresh_credentials(self) -> tuple[str, str]:
+        """Force a Key Vault reload after Google rejects cached app credentials."""
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            await self._load_from_vault()
+
+        return self._client_id or "", self._client_secret or ""
+
     def _is_expired(self) -> bool:
         if self._credentials_loaded_at is None:
             return True
