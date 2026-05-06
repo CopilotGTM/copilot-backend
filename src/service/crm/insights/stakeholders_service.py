@@ -1,4 +1,10 @@
-"""CRM service layer for managing deal stakeholders."""
+"""CRM service layer for org-scoped stakeholder lifecycle operations.
+
+This service owns write-path business rules for creating, updating, and syncing
+stakeholders on a per-organization deal scope. All DB queries include
+`organisation_id` checks so tenant isolation is enforced at the data-access
+layer.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.crm_models import (
+from src.contracts.crm.stakeholders import (
     AddContactsAsStakeholdersResponse,
     AvailableContactItem,
     CreateStakeholderRequest,
@@ -34,6 +40,8 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
 
 logger = get_logger("stakeholders_service")
 
+# Personal consumer providers are skipped to reduce false-positive internal
+# participant linking for manually-added external stakeholders.
 PERSONAL_EMAIL_DOMAINS = frozenset(
     {
         "gmail.com",
@@ -68,7 +76,12 @@ class StakeholdersServiceError(Exception):
 
 
 class StakeholdersService:
-    """Service for managing CRM deal stakeholders."""
+    """Service for managing CRM deal stakeholders.
+
+    Boundaries:
+    - Called with one org-scoped session and explicit organization context.
+    - Responsible for idempotent writes and timeline visibility.
+    """
 
     def __init__(
         self,
@@ -76,6 +89,7 @@ class StakeholdersService:
         organisation_id: UUID,
         user_id: UUID | None = None,
     ):
+        """Capture immutable tenant context for the service instance."""
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.user_id = user_id
@@ -301,7 +315,11 @@ class StakeholdersService:
 
     @staticmethod
     def _serialize_external_links(external_links: list | None) -> list[dict] | None:
-        """Serialize external links to JSON-friendly dicts."""
+        """Serialize external links to JSON-friendly dicts.
+
+        The service stores external links as JSON-like payloads; callers can pass
+        either DTO instances or raw dictionaries from form payloads.
+        """
         if external_links is None:
             return None
 
@@ -671,7 +689,8 @@ class StakeholdersService:
                 status_code=403,
             )
 
-        # Check for duplicate email — but allow re-adding REMOVED/REJECTED stakeholders
+        # Check for duplicate email while preserving the rollback-safe re-add
+        # flow for previously removed stakeholders.
         existing_stmt = select(DealStakeholder).where(
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,

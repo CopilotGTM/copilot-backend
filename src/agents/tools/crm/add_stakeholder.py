@@ -1,9 +1,12 @@
-"""Add Stakeholder agent tool and legacy interactive-form fallback.
+"""Agent tool used by chat workflows to add CRM stakeholders.
 
-The normal agent path creates the stakeholder directly once the deal and
-stakeholder email are known. The form helper remains for previously sent
-Teams and Slack cards, whose submissions are still handled by
-AddStakeholderFormHandler in src/service/bots/form_handlers/.
+The direct path creates the stakeholder immediately once a resolved `deal_id` and
+email are available. The form path is used for Teams/Slack interactive cards
+and delegates submission handling to existing form handlers.
+
+The tool is invoked with an immutable `organisation_id` context from the agent
+runtime, which prevents cross-org writes and keeps stakeholder mutation logic in
+the CRM service boundary.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -20,7 +23,7 @@ from uuid import UUID
 
 from src.adapters.card_builders import FormDefinition, FormField, get_card_builder
 from src.agents.tools.base import execute_with_capabilities
-from src.api.schemas.crm_models import CreateStakeholderRequest
+from src.contracts.crm.stakeholders import CreateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DecisionPower,
     StakeholderStance,
@@ -65,6 +68,7 @@ DECISION_POWER_CHOICES: list[dict[str, str]] = [
 
 
 def _clean_optional(value: str | None) -> str | None:
+    """Normalize optional user input while preserving explicit empty submissions."""
     if value is None:
         return None
     cleaned = value.strip()
@@ -72,10 +76,16 @@ def _clean_optional(value: str | None) -> str | None:
 
 
 def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Filter internal metadata from tool payload before returning to chat.
+
+    The caller may only see a subset of keys; internal transport payloads like
+    `_bot_channel_payload` are intentionally hidden from UI-facing handlers.
+    """
     return {key: value for key, value in result.items() if not key.startswith("_")}
 
 
 def _enum_value(value: Any) -> str | None:
+    """Convert enum-like values to string in a safe, API-friendly format."""
     if value is None:
         return None
     if hasattr(value, "value"):
@@ -286,6 +296,8 @@ async def add_stakeholder_direct(
     pain_points: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a stakeholder directly through the CRM stakeholder service."""
+    # Security boundary check is deliberately early: the tool cannot execute for
+    # missing org/user context because those IDs are the only safe tenant filter.
     organisation_id = context.organisation_id
     user_id = context.user_id
     clean_deal_name = _clean_optional(deal_name)
@@ -340,6 +352,8 @@ async def add_stakeholder_direct(
     except ValueError as exc:
         return {"status": "error", "message": f"Invalid stakeholder details: {exc}"}
 
+    # Keep DB session scope tight to this path; all writes stay in-service and
+    # can fail independently from the outbound research dispatch.
     async with context.acquire_session() as session:
         service = StakeholdersService(session, organisation_id, user_id)
         try:
@@ -411,6 +425,8 @@ async def add_stakeholder_form(
     Returns:
         Dict with status and message, or None on error
     """
+    # Channel-specific interactive forms are only valid for Teams/Slack payloads
+    # and therefore enforce channel metadata before any card is built.
     organisation_id = context.organisation_id
 
     if not organisation_id:
@@ -440,6 +456,7 @@ async def add_stakeholder_form(
     channel_id = context.metadata.get("channel_id", "")
 
     if channel == "slack":
+        # Slack cards require team/channel identity to route the outgoing message.
         if not team_id or not channel_id:
             logger.warning("add_stakeholder_form: missing Slack team_id/channel_id in metadata")
             return {
