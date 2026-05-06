@@ -561,29 +561,30 @@ services:
   #   profiles: ["deal"]
 
   # ---------------------------------------------------------------------------
-  # Flower - Celery Monitoring UI (Optional)
+  # Flower - disabled intentionally (optional monitoring UI)
+  # Re-enable by uncommenting this block and adding --profile monitoring.
   # ---------------------------------------------------------------------------
-  flower:
-    image: mher/flower:latest
-    container_name: copilot-flower
-    <<: *common-security
-    ports:
-      - "5555:5555"
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - FLOWER_PORT=5555
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - copilot-network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-    profiles:
-      - monitoring
+  # flower:
+  #   image: mher/flower:latest
+  #   container_name: copilot-flower
+  #   <<: *common-security
+  #   ports:
+  #     - "5555:5555"
+  #   environment:
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - FLOWER_PORT=5555
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   networks:
+  #     - copilot-network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.5'
+  #         memory: 256M
+  #   profiles:
+  #     - monitoring
 
 # =============================================================================
 # Networks
