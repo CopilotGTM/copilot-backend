@@ -380,6 +380,7 @@ class ContactsAccessService:
 
         self.org_session.add(contact)
         await self.org_session.flush()
+        await self.org_session.commit()
         await self.org_session.refresh(contact)
         return contact
 
@@ -464,6 +465,7 @@ class ContactsAccessService:
 
         self.org_session.add(contact)
         await self.org_session.flush()
+        await self.org_session.commit()
         await self.org_session.refresh(contact)
         return contact
 
