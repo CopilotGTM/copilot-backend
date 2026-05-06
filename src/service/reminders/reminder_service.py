@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.reminder_models import (
+from src.contracts.reminders import (
     ReminderDetail,
     ReminderListItem,
     ReminderRunListItem,
