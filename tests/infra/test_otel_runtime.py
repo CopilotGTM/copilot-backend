@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import json
 import logging
@@ -5,6 +6,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import reload
+from pathlib import Path
 
 import pytest
 import src.api.fastapi_app as fastapi_app
@@ -72,6 +74,56 @@ def test_configure_logging_serializes_non_json_extra_values(capsys, monkeypatch)
     assert payload["logger"] == "stdlib_logger"
     assert payload["event"] == "test_event"
     assert isinstance(payload["bad_value"], str)
+
+
+def test_manual_calendar_sync_completion_logging_avoids_reserved_created_field(
+    capsys, monkeypatch
+) -> None:
+    monkeypatch.setenv("ENV", "dev")
+    configure_logging(component="worker", force=True)
+
+    task_path = (
+        Path(__file__).parents[2]
+        / "src"
+        / "workers"
+        / "integrations_worker"
+        / "tasks"
+        / "calendar"
+        / "integration_task.py"
+    )
+    tree = ast.parse(task_path.read_text())
+
+    completion_log = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "info"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "Manual calendar sync complete"
+    )
+    extra_keyword = next(keyword for keyword in completion_log.keywords if keyword.arg == "extra")
+    assert isinstance(extra_keyword.value, ast.Dict)
+
+    extra_keys = {
+        key.value
+        for key in extra_keyword.value.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+
+    assert "created" not in extra_keys
+    assert "records_created" in extra_keys
+
+    logger = logging.getLogger("manual_calendar_sync_test")
+    logger.info(
+        "Manual calendar sync complete",
+        extra={key: f"value-{key}" for key in extra_keys},
+    )
+
+    payload = _structured_lines(capsys.readouterr().err)[-1]
+    assert payload["message"] == "Manual calendar sync complete"
+    assert payload["records_created"] == "value-records_created"
 
 
 def test_request_context_access_logs_include_structured_http_fields(capsys, monkeypatch):
