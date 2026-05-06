@@ -14,7 +14,11 @@ from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationType,
+    KnowledgeIntegration,
+    SyncStatus,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
@@ -45,6 +49,7 @@ class CustomTokenRefreshService:
         Refreshes tokens that:
         1. Have no expiry set (NULL)
         2. Are expiring within buffer_hours
+        3. Are marked requires_reauth but still have a refresh token to try
         """
         expiry_threshold = datetime.utcnow() + timedelta(hours=buffer_hours)
 
@@ -58,11 +63,15 @@ class CustomTokenRefreshService:
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = select(col(KnowledgeIntegration.integration_id)).where(
                 and_(
-                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    or_(
+                        col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                        col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
+                    ),
                     col(KnowledgeIntegration.connection_id).isnot(None),
                     col(KnowledgeIntegration.integration_type)
                     != IntegrationType.INTERNAL_CRM.value,
                     or_(
+                        col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
                         col(KnowledgeIntegration.access_token_expires_at).is_(None),
                         col(KnowledgeIntegration.access_token_expires_at) <= expiry_threshold,
                     ),
@@ -204,6 +213,11 @@ class CustomTokenRefreshService:
                 )
 
                 self._reset_failure_count(integration)
+                integration.is_active = True
+                integration.requires_reauth = False
+                integration.last_sync_status = SyncStatus.SUCCESS.value
+                integration.last_sync_error = None
+                integration.consecutive_sync_failures = 0
                 integration.updated_at = datetime.utcnow()
                 session.add(integration)
                 await session.commit()

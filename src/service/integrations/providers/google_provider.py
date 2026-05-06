@@ -56,6 +56,14 @@ class GoogleProvider(BaseIntegrationProvider):
         self._client_id = client_id
         self._client_secret = client_secret
 
+    async def _reload_credentials(self) -> None:
+        """Bypass the TTL cache after Google rejects the current app credential pair."""
+        client_id, client_secret = await google_integration_config.refresh_credentials()
+        if not client_id or not client_secret:
+            raise RuntimeError("Google OAuth credentials not available after forced reload")
+        self._client_id = client_id
+        self._client_secret = client_secret
+
     @property
     def provider_key(self) -> str:
         return "google"
@@ -187,7 +195,21 @@ class GoogleProvider(BaseIntegrationProvider):
             if isinstance(json_response, dict):
                 return json_response
             return {}
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                logger.warning(
+                    "Google token refresh returned 401; reloading OAuth app credentials once"
+                )
+                await self._reload_credentials()
+                data["client_id"] = self._client_id
+                data["client_secret"] = self._client_secret
+                response = await self._request_with_retry("POST", self.TOKEN_URL, data=data)
+                response.raise_for_status()
+                json_response = response.json()
+                if isinstance(json_response, dict):
+                    return json_response
+                return {}
+
             # Re-raise as-is so _is_permanent_auth_error() can inspect the response body
             raise
         except Exception as e:
