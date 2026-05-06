@@ -50,6 +50,10 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_sync_service import build_email_timeline_event
 from src.service.crm.timeline.timeline_event_source_resolver import resolve_email_event_source
+from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
+    EMAIL_MATCHER_INTEGRATION_TYPES,
+    get_active_integration_emails_for_users,
+)
 
 logger = get_logger(__name__)
 
@@ -497,7 +501,7 @@ class DealEmailMatcher:
             )
 
             # Collect team emails (owner + technical owner from participants)
-            self._collect_team_emails(deal, info)
+            await self._collect_team_emails(session, deal, info)
 
             # Collect contact emails from DealStakeholder table
             await self._collect_stakeholder_emails(session, deal.deal_id, info)
@@ -533,29 +537,64 @@ class DealEmailMatcher:
             },
         )
 
-    def _collect_team_emails(self, deal: CRMDeal, info: DealStakeholderInfo) -> None:
+    async def _collect_team_emails(
+        self,
+        session: AsyncSession,
+        deal: CRMDeal,
+        info: DealStakeholderInfo,
+    ) -> None:
         """
         Collect team member emails from deal owner and USER participants.
 
         Team emails come from:
-        1. CRMDeal.owner_email - Primary deal owner
-        2. CRMDealParticipant where participant_type = USER
+        1. CRMDeal.owner_id - User-owned integration email expansion
+        2. CRMDealParticipant.related_local_id for USER participants
            - Includes: owner, collaborator, split_owner, technical_owner roles
         """
-        # 1. Deal owner email (from deal property)
-        owner_email = self._normalize_email(deal.owner_email)
-        if owner_email:
-            info.team_emails.add(owner_email)
+        participant_user_ids: set[UUID] = set()
 
-        # 2. All USER participants (collaborators, split_owners, etc.)
+        # Keep CRM emails as team aliases while also expanding connected accounts by user ID.
+        owner_id = deal.owner_id
+        if owner_id:
+            participant_user_ids.add(owner_id)
+        if deal.owner_email:
+            normalized_owner_email = self._normalize_email(deal.owner_email)
+            if normalized_owner_email:
+                info.team_emails.add(normalized_owner_email)
+
         participants = cast(list[CRMDealParticipant] | None, getattr(deal, "participants", None))
         if participants:
             for participant in participants:
                 if participant.participant_type != CRMParticipantType.USER:
                     continue
+                if participant.related_local_id:
+                    participant_user_ids.add(participant.related_local_id)
+
                 email = self._normalize_email(participant.related_email)
                 if email:
                     info.team_emails.add(email)
+
+        if participant_user_ids:
+            integration_emails = await get_active_integration_emails_for_users(
+                session=session,
+                organisation_id=self.organisation_id,
+                created_by_user_ids=participant_user_ids,
+                integration_types=EMAIL_MATCHER_INTEGRATION_TYPES,
+            )
+            info.team_emails.update(integration_emails)
+
+        logger.info(
+            "Resolved deal email matcher team emails for deal %s",
+            deal.deal_id,
+            extra={
+                "event": "deal_email_team_emails_resolved",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal.deal_id),
+                "participant_user_ids": sorted(str(user_id) for user_id in participant_user_ids),
+                "team_email_count": len(info.team_emails),
+                "team_emails": sorted(info.team_emails),
+            },
+        )
 
     async def _collect_stakeholder_emails(
         self, session: AsyncSession, deal_id: UUID, info: DealStakeholderInfo
@@ -1139,7 +1178,7 @@ class DealEmailMatcher:
             deal_id=deal.deal_id,
             integration_id=deal.integration_id,
         )
-        self._collect_team_emails(deal, info)
+        await self._collect_team_emails(session, deal, info)
         await self._collect_stakeholder_emails(session, deal.deal_id, info)
         info.company_domains = self._collect_company_domains(deal)
 
