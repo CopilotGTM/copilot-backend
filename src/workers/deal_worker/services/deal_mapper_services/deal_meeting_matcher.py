@@ -53,6 +53,10 @@ from src.service.meeting_bot.session_service import (
     MeetingRecordingSessionService,
 )
 from src.workers.deal_worker.client import send_deal_task_async
+from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
+    CALENDAR_MATCHER_INTEGRATION_TYPES,
+    get_active_integration_emails_for_users,
+)
 
 logger = get_logger(__name__)
 
@@ -199,7 +203,7 @@ class DealMeetingMatcher:
 
         return emails
 
-    def _collect_team_emails(self, deal: CRMDeal) -> set[str]:
+    async def _collect_team_emails(self, session: AsyncSession, deal: CRMDeal) -> set[str]:
         """Collect all team member (USER participant) emails for a deal.
 
         This includes all users with roles like owner, collaborator, split_owner, etc.
@@ -212,20 +216,47 @@ class DealMeetingMatcher:
             Set of normalized email addresses for all team members.
         """
         emails: set[str] = set()
+        participant_user_ids: set[UUID] = set()
+
+        if deal.owner_id:
+            participant_user_ids.add(deal.owner_id)
+        owner_email = self._normalize_email(deal.owner_email)
+        if owner_email:
+            emails.add(owner_email)
 
         for participant in self._get_participants(deal):
             if participant.participant_type != CRMParticipantType.USER:
                 continue
 
+            if participant.related_local_id:
+                participant_user_ids.add(participant.related_local_id)
+
             normalized = self._normalize_email(participant.related_email)
             if normalized:
                 emails.add(normalized)
 
-        # Fallback: include deal.owner_email if no USER participants found with emails
-        if not emails:
-            owner_email = self._normalize_email(deal.owner_email)
-            if owner_email:
-                emails.add(owner_email)
+        # Expand active user-owned calendar integrations.
+        if participant_user_ids:
+            integration_emails = await get_active_integration_emails_for_users(
+                session,
+                organisation_id=self.organisation_id,
+                created_by_user_ids=participant_user_ids,
+                integration_types=CALENDAR_MATCHER_INTEGRATION_TYPES,
+            )
+            emails.update(integration_emails)
+
+        logger.info(
+            "Resolved deal meeting matcher team emails for deal %s",
+            deal.deal_id,
+            extra={
+                "event": "deal_meeting_team_emails_resolved",
+                "organisation_id": str(self.organisation_id),
+                "deal_id": str(deal.deal_id),
+                "participant_user_ids": sorted(str(user_id) for user_id in participant_user_ids),
+                "team_email_count": len(emails),
+                "team_emails": sorted(emails),
+            },
+        )
 
         return emails
 
@@ -655,7 +686,7 @@ class DealMeetingMatcher:
                 stats["deals_processed"] += 1
                 # Collect customer domains from deal participants
                 customer_domains = self._collect_customer_domains(deal)
-                team_emails = self._collect_team_emails(deal)
+                team_emails = await self._collect_team_emails(session, deal)
 
                 linked_count = await self._find_and_link_meetings(
                     session, deal, customer_domains, team_emails
@@ -713,7 +744,7 @@ class DealMeetingMatcher:
 
         # Collect customer domains from deal participants
         customer_domains = self._collect_customer_domains(deal)
-        team_emails = self._collect_team_emails(deal)
+        team_emails = await self._collect_team_emails(session, deal)
 
         linked_count = await self._find_and_link_meetings(
             session, deal, customer_domains, team_emails
