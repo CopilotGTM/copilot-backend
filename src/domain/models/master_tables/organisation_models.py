@@ -12,10 +12,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
@@ -145,6 +147,11 @@ class Organisation(TimestampMixin, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Timestamp when the organisation was approved.",
+    )
+    preferences: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="Organisation-level product preferences and defaults.",
     )
 
     # Relationships
