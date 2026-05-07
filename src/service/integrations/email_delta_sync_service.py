@@ -171,6 +171,35 @@ def _persist_cursors(
         )
 
 
+def _record_folder_cursor_update(
+    *,
+    folder_data: FolderSyncData,
+    folder_name: str,
+    new_cursor: str | None,
+    cursor_updates: dict[str, str | None],
+) -> None:
+    if new_cursor:
+        cursor_updates[folder_data.external_folder_id] = new_cursor
+        logger.info(
+            "Delta link captured for folder",
+            extra={
+                "event": "email_folder_delta_link_captured",
+                "folder_name": folder_name,
+                "external_folder_id": folder_data.external_folder_id,
+                "cursor_length": len(new_cursor),
+            },
+        )
+    else:
+        logger.warning(
+            "No delta link returned for folder — next sync will be full re-fetch",
+            extra={
+                "event": "email_folder_no_delta_link",
+                "folder_name": folder_name,
+                "external_folder_id": folder_data.external_folder_id,
+            },
+        )
+
+
 async def _fetch_folders_for_provider(
     *,
     sync_data: IntegrationSyncData,
@@ -641,29 +670,13 @@ class EmailDeltaSyncService:
                 token_info=token_info,
             )
 
-            # Track cursor for later persistence (Phase 5 will write to DB)
-            if new_cursor:
-                delta_link_updates[folder_data.external_folder_id] = new_cursor
-                logger.info(
-                    "Delta link captured for folder",
-                    extra={
-                        "event": "email_folder_delta_link_captured",
-                        "folder_name": folder_name,
-                        "external_folder_id": folder_data.external_folder_id,
-                        "cursor_length": len(new_cursor),
-                    },
-                )
-            else:
-                logger.warning(
-                    "No delta link returned for folder — next sync will be full re-fetch",
-                    extra={
-                        "event": "email_folder_no_delta_link",
-                        "folder_name": folder_name,
-                        "external_folder_id": folder_data.external_folder_id,
-                    },
-                )
-
             if not messages_data:
+                _record_folder_cursor_update(
+                    folder_data=folder_data,
+                    folder_name=folder_name,
+                    new_cursor=new_cursor,
+                    cursor_updates=delta_link_updates,
+                )
                 return {
                     "folder_id": str(folder_data.folder_id),
                     "folder_name": folder_name,
@@ -676,6 +689,7 @@ class EmailDeltaSyncService:
             # Write messages to DB (fresh session)
             # ─────────────────────────────────────────────────────────────────
             messages_synced = 0
+            write_committed = False
 
             async for session in acquire_org_async_session(org_id):
                 email_service = EmailSyncService(session=session, organisation_id=org_id)
@@ -730,7 +744,18 @@ class EmailDeltaSyncService:
                     folder.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
 
                 await session.commit()
+                write_committed = True
             # Session released
+
+            if not write_committed:
+                raise RuntimeError("Failed to acquire database session for email message write")
+
+            _record_folder_cursor_update(
+                folder_data=folder_data,
+                folder_name=folder_name,
+                new_cursor=new_cursor,
+                cursor_updates=delta_link_updates,
+            )
 
             logger.info(
                 "Folder messages synced",

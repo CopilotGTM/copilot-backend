@@ -202,6 +202,15 @@ def sync_calendar_integration_task(
             calendar_delta_link = None
             if integration_row.last_synced_at is not None:
                 calendar_delta_link = get_calendar_delta_link(connection_metadata, int_type)
+                if calendar_delta_link is None:
+                    logger.warning(
+                        "Calendar incremental sync missing stored cursor",
+                        extra={
+                            "integration_id": integration_id,
+                            "integration_type": int_type.value,
+                            "last_synced_at_present": True,
+                        },
+                    )
 
             fetch_data = IntegrationFetchData(
                 integration_id=integration_row.integration_id,
@@ -277,7 +286,13 @@ def sync_calendar_integration_task(
             "Calendar events fetched",
             extra={
                 "integration_id": integration_id,
+                "provider": fetch_data.provider,
                 "events_fetched": len(events),
+                "cursor_present": fetch_data.calendar_delta_link is not None,
+                "cursor_used": (
+                    not fetch_data.is_initial and fetch_data.calendar_delta_link is not None
+                ),
+                "cursor_returned": new_calendar_delta_link is not None,
             },
         )
 
@@ -310,6 +325,7 @@ def sync_calendar_integration_task(
                 events=events,
             )
             records_synced = sync_result.get("records_processed", 0)
+            cursor_saved = new_calendar_delta_link is not None
 
             # Persist cursor after successful sync.
             updated_metadata = dict(integration_db.connection_metadata or {})
@@ -327,6 +343,23 @@ def sync_calendar_integration_task(
                     },
                 )
             integration_db.connection_metadata = updated_metadata
+
+            logger.info(
+                "Calendar sync persistence diagnostics",
+                extra={
+                    "integration_id": integration_id,
+                    "provider": fetch_data.provider,
+                    "events_fetched": len(events),
+                    "upsert_candidate_count": sync_result.get("created", 0)
+                    + sync_result.get("updated", 0),
+                    "unchanged_count": sync_result.get("skipped", 0),
+                    "cursor_present": fetch_data.calendar_delta_link is not None,
+                    "cursor_used": (
+                        not fetch_data.is_initial and fetch_data.calendar_delta_link is not None
+                    ),
+                    "cursor_saved": cursor_saved,
+                },
+            )
 
             # Strip tzinfo — column is `timestamp without time zone`; asyncpg
             # rejects tz-aware datetimes for tz-naive columns.

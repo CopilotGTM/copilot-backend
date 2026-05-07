@@ -77,6 +77,8 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
+        if status == 400 and _is_permanent_oauth_error_response(exc):
+            return SyncFailureType.AUTH_FAILED
         if status == 401:
             return SyncFailureType.AUTH_FAILED
         if status == 403 and is_insufficient_scope_error(exc):
@@ -98,6 +100,25 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
         return SyncFailureType.PROVIDER_ERROR
 
     return SyncFailureType.INTERNAL_ERROR
+
+
+def _is_permanent_oauth_error_response(exc: httpx.HTTPStatusError) -> bool:
+    """Detect OAuth refresh failures that cannot succeed through retry."""
+    body = exc.response.text.lower()
+    return (
+        "invalid_grant" in body
+        or "admin_policy_enforced" in body
+        or "invalid_client" in body
+        or "interaction_required" in body
+    )
+
+
+def is_action_required_failure(failure_type: SyncFailureType) -> bool:
+    """Return True for expected failures that require user reconnect/scope action."""
+    return failure_type in {
+        SyncFailureType.AUTH_FAILED,
+        SyncFailureType.PERMISSION_REQUIRED,
+    }
 
 
 def apply_sync_success(integration: KnowledgeIntegration) -> None:

@@ -65,7 +65,6 @@ def has_meaningful_event_changes(
         (existing.description, fields.get("description")),
         (existing.location, fields.get("location")),
         (existing.status, fields.get("status")),
-        (existing.conference_link, fields.get("conference_link")),
         (existing.organiser_email, fields.get("organiser_email")),
     ]
 
@@ -79,6 +78,7 @@ def has_meaningful_event_changes(
     # Sparse provider payloads (e.g., a Graph delta that drops `timeZone`) must
     # not force a rewrite — that would re-introduce the N+1 we're guarding here.
     optional_checks: list[tuple[Any, Any]] = [
+        (existing.conference_link, fields.get("conference_link")),
         (existing.organiser_name, fields.get("organiser_name")),
         (existing.online_meeting_provider, fields.get("online_meeting_provider")),
         (existing.online_meeting_id, fields.get("online_meeting_id")),
