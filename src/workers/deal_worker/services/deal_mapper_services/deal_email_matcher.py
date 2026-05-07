@@ -53,6 +53,7 @@ from src.service.crm.timeline.timeline_event_source_resolver import resolve_emai
 from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_for_users,
+    get_active_integration_emails_grouped_by_user,
 )
 
 logger = get_logger(__name__)
@@ -494,6 +495,30 @@ class DealEmailMatcher:
             },
         )
 
+        participant_user_ids = set()
+        for deal in deals:
+            participant_user_ids.update(self._collect_participant_user_ids(deal))
+
+        integration_emails_by_user = await get_active_integration_emails_grouped_by_user(
+            session=session,
+            organisation_id=self.organisation_id,
+            created_by_user_ids=participant_user_ids,
+            integration_types=EMAIL_MATCHER_INTEGRATION_TYPES,
+        )
+        logger.info(
+            "Preloaded deal email matcher integration emails for %d participant users",
+            len(participant_user_ids),
+            extra={
+                "event": "deal_email_integration_emails_preloaded",
+                "organisation_id": str(self.organisation_id),
+                "participant_user_count": len(participant_user_ids),
+                "integration_email_user_count": len(integration_emails_by_user),
+                "integration_email_count": sum(
+                    len(emails) for emails in integration_emails_by_user.values()
+                ),
+            },
+        )
+
         for deal in deals:
             info = DealStakeholderInfo(
                 deal_id=deal.deal_id,
@@ -501,7 +526,12 @@ class DealEmailMatcher:
             )
 
             # Collect team emails (owner + technical owner from participants)
-            await self._collect_team_emails(session, deal, info)
+            await self._collect_team_emails(
+                session,
+                deal,
+                info,
+                integration_emails_by_user=integration_emails_by_user,
+            )
 
             # Collect contact emails from DealStakeholder table
             await self._collect_stakeholder_emails(session, deal.deal_id, info)
@@ -537,11 +567,31 @@ class DealEmailMatcher:
             },
         )
 
+    def _collect_participant_user_ids(self, deal: CRMDeal) -> set[UUID]:
+        """Collect internal user ids that can own connected email integrations."""
+        participant_user_ids: set[UUID] = set()
+
+        owner_id = deal.owner_id
+        if owner_id:
+            participant_user_ids.add(owner_id)
+
+        participants = cast(list[CRMDealParticipant] | None, getattr(deal, "participants", None))
+        if participants:
+            for participant in participants:
+                if participant.participant_type != CRMParticipantType.USER:
+                    continue
+                if participant.related_local_id:
+                    participant_user_ids.add(participant.related_local_id)
+
+        return participant_user_ids
+
     async def _collect_team_emails(
         self,
         session: AsyncSession,
         deal: CRMDeal,
         info: DealStakeholderInfo,
+        *,
+        integration_emails_by_user: dict[UUID, set[str]] | None = None,
     ) -> None:
         """
         Collect team member emails from deal owner and USER participants.
@@ -551,12 +601,9 @@ class DealEmailMatcher:
         2. CRMDealParticipant.related_local_id for USER participants
            - Includes: owner, collaborator, split_owner, technical_owner roles
         """
-        participant_user_ids: set[UUID] = set()
+        participant_user_ids = self._collect_participant_user_ids(deal)
 
         # Keep CRM emails as team aliases while also expanding connected accounts by user ID.
-        owner_id = deal.owner_id
-        if owner_id:
-            participant_user_ids.add(owner_id)
         if deal.owner_email:
             normalized_owner_email = self._normalize_email(deal.owner_email)
             if normalized_owner_email:
@@ -567,20 +614,25 @@ class DealEmailMatcher:
             for participant in participants:
                 if participant.participant_type != CRMParticipantType.USER:
                     continue
-                if participant.related_local_id:
-                    participant_user_ids.add(participant.related_local_id)
 
                 email = self._normalize_email(participant.related_email)
                 if email:
                     info.team_emails.add(email)
 
         if participant_user_ids:
-            integration_emails = await get_active_integration_emails_for_users(
-                session=session,
-                organisation_id=self.organisation_id,
-                created_by_user_ids=participant_user_ids,
-                integration_types=EMAIL_MATCHER_INTEGRATION_TYPES,
-            )
+            if integration_emails_by_user is None:
+                integration_emails = await get_active_integration_emails_for_users(
+                    session=session,
+                    organisation_id=self.organisation_id,
+                    created_by_user_ids=participant_user_ids,
+                    integration_types=EMAIL_MATCHER_INTEGRATION_TYPES,
+                )
+            else:
+                integration_emails = {
+                    email
+                    for user_id in participant_user_ids
+                    for email in integration_emails_by_user.get(user_id, set())
+                }
             info.team_emails.update(integration_emails)
 
         logger.info(
