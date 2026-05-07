@@ -63,6 +63,7 @@ from src.api.routers.crm import (
     stakeholders_router,
     tasks_router,
 )
+from src.api.routers.dashboard import sales_dashboard_router
 from src.api.routers.healthcheck import healthcheck_router, public_health_router
 from src.api.routers.integrations import integrations_router
 from src.api.routers.knowledge_base.access_handler import (
@@ -267,6 +268,9 @@ def create_fastapi_app():
 
     # Integration routers
     fastapp.include_router(integrations_router, prefix="/users/integrations", tags=["integrations"])
+
+    # Dashboard routers
+    fastapp.include_router(sales_dashboard_router, prefix="/users/dashboard", tags=["dashboard"])
 
     # CRM routers
     fastapp.include_router(crm_users_router, prefix="/users/crm", tags=["crm-users"])

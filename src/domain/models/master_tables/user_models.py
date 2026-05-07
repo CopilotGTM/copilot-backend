@@ -1,3 +1,5 @@
+"""SQLModel table models for platform users and user action history."""
+
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -13,7 +15,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
@@ -56,6 +60,8 @@ class UserEventType(str, Enum):
 
 
 class User(TimestampMixin, table=True):
+    """Tenant user profile with role, auth, and preference state."""
+
     __tablename__ = "users"
     __table_args__ = {"schema": "public"}
 
@@ -99,6 +105,11 @@ class User(TimestampMixin, table=True):
         default=None,
         max_length=64,
         description="Preferred IANA timezone for local scheduling and date interpretation.",
+    )
+    preferences: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="User-specific product preferences and UI defaults.",
     )
     status: SupabaseUserStatus = Field(
         default=SupabaseUserStatus.PENDING_SETUP,
@@ -150,6 +161,8 @@ class User(TimestampMixin, table=True):
 
 
 class UserActionHistory(CreatedAtMixin, table=True):
+    """Append-only audit log for user lifecycle and profile updates."""
+
     __tablename__ = "user_action_history"
     __table_args__ = (
         Index("ix_uah_user_created_at", "user_id", "created_at"),
