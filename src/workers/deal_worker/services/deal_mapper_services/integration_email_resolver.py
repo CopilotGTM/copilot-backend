@@ -54,12 +54,33 @@ async def get_active_integration_emails_for_users(
     Returns:
         Set of normalized integration emails for the matching users.
     """
+    emails_by_user = await get_active_integration_emails_grouped_by_user(
+        session=session,
+        organisation_id=organisation_id,
+        created_by_user_ids=created_by_user_ids,
+        integration_types=integration_types,
+    )
+
+    return {email for emails in emails_by_user.values() for email in emails}
+
+
+async def get_active_integration_emails_grouped_by_user(
+    session: AsyncSession,
+    *,
+    organisation_id: UUID,
+    created_by_user_ids: Iterable[UUID],
+    integration_types: tuple[IntegrationType, ...],
+) -> dict[UUID, set[str]]:
+    """Resolve active integration emails grouped by owning internal user id."""
     user_ids = list(created_by_user_ids)
     if not user_ids:
-        return set()
+        return {}
 
     stmt = (
-        select(col(KnowledgeIntegration.integration_email))
+        select(
+            col(KnowledgeIntegration.created_by_user_id),
+            col(KnowledgeIntegration.integration_email),
+        )
         .where(
             col(KnowledgeIntegration.organisation_id) == organisation_id,
             col(KnowledgeIntegration.created_by_user_id).in_(user_ids),
@@ -72,10 +93,10 @@ async def get_active_integration_emails_for_users(
     )
     result = await session.execute(stmt)
 
-    integration_emails = set()
-    for integration_email in result.scalars().all():
+    integration_emails_by_user: dict[UUID, set[str]] = {}
+    for created_by_user_id, integration_email in result.all():
         normalized = _normalize_email(integration_email)
-        if normalized:
-            integration_emails.add(normalized)
+        if normalized and created_by_user_id:
+            integration_emails_by_user.setdefault(created_by_user_id, set()).add(normalized)
 
-    return integration_emails
+    return integration_emails_by_user

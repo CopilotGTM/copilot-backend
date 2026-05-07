@@ -15,23 +15,26 @@ from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher im
 
 
 class _FakeScalarResult:
-    def __init__(self, rows: list[str | None]):
+    def __init__(self, rows: list[object]):
         self._rows = rows
 
-    def all(self) -> list[str | None]:
+    def all(self) -> list[object]:
         return self._rows
 
 
 class _FakeExecuteResult:
-    def __init__(self, rows: list[str | None]):
+    def __init__(self, rows: list[object]):
         self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
 
     def scalars(self) -> _FakeScalarResult:
         return _FakeScalarResult(self._rows)
 
 
 class _FakeSession:
-    def __init__(self, rows_by_execute: list[list[str | None]]):
+    def __init__(self, rows_by_execute: list[list[object]]):
         self._rows_by_execute = rows_by_execute
         self.statements: list[str] = []
         self.execute_calls = 0
@@ -61,7 +64,7 @@ async def test_email_matcher_owner_id_collects_integration_email_for_matching() 
     info = DealStakeholderInfo(deal_id=deal_id)
     session = _FakeSession(
         [
-            ["owner@Gmail.com", " ", "null"],
+            [(owner_id, "owner@Gmail.com"), (owner_id, " "), (owner_id, "null")],
             ["customer@acme.com"],
         ]
     )
@@ -114,7 +117,7 @@ async def test_email_matcher_user_participant_local_id_collects_integration_emai
     info = DealStakeholderInfo(deal_id=deal_id)
     session = _FakeSession(
         [
-            ["calendar@gmail.com"],
+            [(participant_id, "calendar@gmail.com")],
             ["customer@acme.com"],
         ]
     )
@@ -195,4 +198,114 @@ async def test_email_matcher_resolves_integrations_for_all_internal_participant_
         "participant@acme.com",
         "collaborator@acme.com",
         "connected@google.com",
+    }
+
+
+@pytest.mark.asyncio
+async def test_email_matcher_build_maps_batches_integration_email_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    matcher = DealEmailMatcher(org_id)
+    owner_one_id = uuid4()
+    participant_one_id = uuid4()
+    owner_two_id = uuid4()
+    participant_two_id = uuid4()
+    deal_one_id = uuid4()
+    deal_two_id = uuid4()
+    grouped_calls: list[set[object]] = []
+    legacy_calls: list[set[object]] = []
+
+    async def fake_get_active_integration_emails_grouped_by_user(
+        session,
+        *,
+        organisation_id,
+        created_by_user_ids,
+        integration_types,
+    ):
+        grouped_calls.append(set(created_by_user_ids))
+        return {
+            owner_one_id: {"owner-one@gmail.com"},
+            participant_one_id: {"participant-one@gmail.com"},
+            owner_two_id: {"owner-two@outlook.com"},
+            participant_two_id: {"participant-two@outlook.com"},
+        }
+
+    async def fake_get_active_integration_emails_for_users(
+        session,
+        *,
+        organisation_id,
+        created_by_user_ids,
+        integration_types,
+    ):
+        legacy_calls.append(set(created_by_user_ids))
+        emails_by_user = {
+            owner_one_id: {"owner-one@gmail.com"},
+            participant_one_id: {"participant-one@gmail.com"},
+            owner_two_id: {"owner-two@outlook.com"},
+            participant_two_id: {"participant-two@outlook.com"},
+        }
+        return {
+            email for user_id in created_by_user_ids for email in emails_by_user.get(user_id, set())
+        }
+
+    monkeypatch.setattr(
+        "src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher."
+        "get_active_integration_emails_grouped_by_user",
+        fake_get_active_integration_emails_grouped_by_user,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher."
+        "get_active_integration_emails_for_users",
+        fake_get_active_integration_emails_for_users,
+    )
+
+    deal_one = SimpleNamespace(
+        deal_id=deal_one_id,
+        integration_id=None,
+        owner_id=owner_one_id,
+        owner_email="owner-one@crm.com",
+        primary_contact_email=None,
+        company_domain=None,
+        participants=[
+            SimpleNamespace(
+                participant_type=CRMParticipantType.USER,
+                related_local_id=participant_one_id,
+                related_email="participant-one@crm.com",
+            )
+        ],
+    )
+    deal_two = SimpleNamespace(
+        deal_id=deal_two_id,
+        integration_id=None,
+        owner_id=owner_two_id,
+        owner_email="owner-two@crm.com",
+        primary_contact_email=None,
+        company_domain=None,
+        participants=[
+            SimpleNamespace(
+                participant_type=CRMParticipantType.USER,
+                related_local_id=participant_two_id,
+                related_email="participant-two@crm.com",
+            )
+        ],
+    )
+    session = _FakeSession([[deal_one, deal_two], [], []])
+
+    await matcher._build_stakeholder_maps(session)  # noqa: SLF001
+
+    assert grouped_calls == [{owner_one_id, participant_one_id, owner_two_id, participant_two_id}]
+    assert legacy_calls == []
+    assert matcher._deal_info[deal_one_id].team_emails == {  # noqa: SLF001
+        "owner-one@crm.com",
+        "participant-one@crm.com",
+        "owner-one@gmail.com",
+        "participant-one@gmail.com",
+    }
+    assert matcher._deal_info[deal_two_id].team_emails == {  # noqa: SLF001
+        "owner-two@crm.com",
+        "participant-two@crm.com",
+        "owner-two@outlook.com",
+        "participant-two@outlook.com",
     }
