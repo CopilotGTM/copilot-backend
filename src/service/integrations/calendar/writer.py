@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -53,6 +53,16 @@ logger = get_logger(__name__)
 # batches can include hundreds of events; logging all of them on a write
 # failure would be noisy in Sentry and slow to render.
 SAMPLE_LOG_LIMIT = 5
+SPARSE_OPTIONAL_EVENT_COLUMNS = frozenset(
+    {
+        "calendar_external_id",
+        "conference_link",
+        "online_meeting_id",
+        "online_meeting_provider",
+        "organiser_name",
+        "timezone",
+    }
+)
 
 
 class CalendarSyncWriter:
@@ -123,18 +133,33 @@ class CalendarSyncWriter:
         # created_at. event_id is the PK, the (external_id, occurrence_anchor)
         # pair is the conflict target, organisation_id never changes per row,
         # and we want created_at preserved so audit reports stay accurate.
-        return {
-            key: getattr(stmt.excluded, key)
-            for key in values
-            if key
-            not in (
+        update_values: dict[str, Any] = {}
+        for key in values:
+            if key in (
                 "event_id",
                 "organisation_id",
                 "external_id",
                 "occurrence_anchor",
                 "created_at",
-            )
-        }
+            ):
+                continue
+
+            excluded_value = getattr(stmt.excluded, key)
+            if key in SPARSE_OPTIONAL_EVENT_COLUMNS:
+                update_values[key] = func.coalesce(excluded_value, getattr(CalendarEvent, key))
+            else:
+                update_values[key] = excluded_value
+
+        return update_values
+
+    @staticmethod
+    def _normalize_event_batch_values(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give SQLAlchemy a consistent column set for every bulk INSERT row."""
+        if not values:
+            return []
+
+        all_keys = sorted(set().union(*(row.keys() for row in values)))
+        return [{key: row.get(key) for key in all_keys} for row in values]
 
     async def batch_upsert_events(
         self,
@@ -169,9 +194,10 @@ class CalendarSyncWriter:
         if not latest_by_identity:
             return {}
 
-        values = [
+        raw_values = [
             self._build_event_upsert_values(item.event) for item in latest_by_identity.values()
         ]
+        values = self._normalize_event_batch_values(raw_values)
         stmt: Any = insert(CalendarEvent).values(values)
         stmt = stmt.on_conflict_do_update(
             index_elements=["external_id", "occurrence_anchor"],

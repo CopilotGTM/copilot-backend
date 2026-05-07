@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
@@ -219,6 +220,49 @@ async def test_refresh_single_token_deactivates_after_max_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_single_token_marks_invalid_grant_as_reauth_required() -> None:
+    organisation_id = uuid4()
+    integration = _make_integration(connection_metadata={"token_refresh_failures": 2})
+    session = _make_session(FakeResult(scalar=integration))
+    response = httpx.Response(
+        400,
+        json={
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked.",
+        },
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+    error = httpx.HTTPStatusError("400 Bad Request", request=response.request, response=response)
+    provider = AsyncMock()
+    provider.provider_key = "google"
+    provider.refresh_token.side_effect = error
+
+    service = CustomTokenRefreshService(organisation_id=organisation_id)
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([session]),
+        ),
+        patch(
+            "src.service.integrations.custom_token_refresh_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await service.refresh_single_token_async(integration.integration_id)
+
+    assert result["success"] is False
+    assert result["handled"] is True
+    assert result["action_required"] == "reauth_expired"
+    assert result["failure_type"] == "auth_failed"
+    assert integration.requires_reauth is True
+    assert integration.is_active is False
+    assert integration.last_sync_status == "auth_failed"
+    assert "token_refresh_failures" not in integration.connection_metadata
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_refresh_org_tokens_summarises_results() -> None:
     organisation_id = uuid4()
     integration_id_1 = uuid4()
@@ -259,8 +303,49 @@ async def test_refresh_org_tokens_summarises_results() -> None:
         "successful": 1,
         "failed": 1,
         "deactivated": 1,
+        "action_required": 0,
     }
     assert refresh_single.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_org_tokens_counts_reauth_as_handled_action_required() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    query_session = _make_session(FakeResult(rows=[(integration_id,)]))
+
+    service = CustomTokenRefreshService(organisation_id=organisation_id)
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([query_session]),
+        ),
+        patch.object(
+            service,
+            "_refresh_single_integration",
+            AsyncMock(
+                return_value={
+                    "success": False,
+                    "handled": True,
+                    "action_required": "reauth_expired",
+                    "failure_type": "auth_failed",
+                    "integration_id": str(integration_id),
+                    "deactivated": True,
+                }
+            ),
+        ),
+    ):
+        result = await service.refresh_org_tokens_async(buffer_hours=2)
+
+    assert result["status"] == "completed"
+    assert result["summary"] == {
+        "total_integrations": 1,
+        "successful": 0,
+        "failed": 0,
+        "deactivated": 1,
+        "action_required": 1,
+    }
 
 
 @pytest.mark.asyncio

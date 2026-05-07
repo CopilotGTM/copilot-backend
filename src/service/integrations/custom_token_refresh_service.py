@@ -23,6 +23,11 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
 from src.service.integrations.scope_validation import parse_granted_scopes_from_token_payload
+from src.service.integrations.sync_health import (
+    SyncFailureType,
+    classify_sync_error,
+    is_action_required_failure,
+)
 
 logger = get_logger(__name__)
 
@@ -89,6 +94,7 @@ class CustomTokenRefreshService:
                     "successful": 0,
                     "failed": 0,
                     "deactivated": 0,
+                    "action_required": 0,
                 },
                 "integration_results": [],
             }
@@ -103,6 +109,7 @@ class CustomTokenRefreshService:
         successful = 0
         failed = 0
         deactivated = 0
+        action_required = 0
 
         for integration_id in integration_ids:
             refresh_result = await self._refresh_single_integration(integration_id)
@@ -110,6 +117,10 @@ class CustomTokenRefreshService:
 
             if refresh_result.get("success"):
                 successful += 1
+            elif refresh_result.get("handled"):
+                action_required += 1
+                if refresh_result.get("deactivated"):
+                    deactivated += 1
             else:
                 failed += 1
                 if refresh_result.get("deactivated"):
@@ -123,11 +134,13 @@ class CustomTokenRefreshService:
             status = "partial"
 
         logger.info(
-            "Token refresh complete for org %s: successful=%d failed=%d deactivated=%d",
+            "Token refresh complete for org %s: successful=%d failed=%d "
+            "deactivated=%d action_required=%d",
             self.organisation_id,
             successful,
             failed,
             deactivated,
+            action_required,
         )
 
         return {
@@ -137,6 +150,7 @@ class CustomTokenRefreshService:
                 "successful": successful,
                 "failed": failed,
                 "deactivated": deactivated,
+                "action_required": action_required,
             },
             "integration_results": integration_results,
         }
@@ -240,6 +254,16 @@ class CustomTokenRefreshService:
                 }
 
             except Exception as e:
+                failure_type = classify_sync_error(e)
+                if is_action_required_failure(failure_type):
+                    return await self._handle_action_required_refresh_failure(
+                        session=session,
+                        integration=integration,
+                        integration_id=integration_id,
+                        error=e,
+                        failure_type=failure_type,
+                    )
+
                 logger.error(
                     "Token refresh failed: org=%s integration=%s error=%s",
                     self.organisation_id,
@@ -271,6 +295,7 @@ class CustomTokenRefreshService:
                     "integration_id": str(integration_id),
                     "error": str(e)[:200],
                     "failure_count": failure_count,
+                    "failure_type": failure_type.value,
                     "deactivated": was_deactivated,
                 }
 
@@ -317,6 +342,50 @@ class CustomTokenRefreshService:
         integration.scopes = parse_granted_scopes_from_token_payload(
             merged_credentials, integration.scopes
         )
+
+    async def _handle_action_required_refresh_failure(
+        self,
+        *,
+        session: Any,
+        integration: KnowledgeIntegration,
+        integration_id: UUID,
+        error: Exception,
+        failure_type: SyncFailureType,
+    ) -> dict[str, Any]:
+        error_msg = str(error)[:500]
+
+        integration.last_sync_status = failure_type.value
+        integration.last_sync_error = error_msg
+        integration.consecutive_sync_failures = (integration.consecutive_sync_failures or 0) + 1
+        if failure_type == SyncFailureType.AUTH_FAILED:
+            integration.requires_reauth = True
+            integration.is_active = False
+            self._reset_failure_count(integration)
+        integration.updated_at = datetime.utcnow()
+
+        session.add(integration)
+        await session.commit()
+
+        logger.warning(
+            "Token refresh requires user action: org=%s integration=%s failure_type=%s",
+            self.organisation_id,
+            integration_id,
+            failure_type.value,
+        )
+
+        return {
+            "success": False,
+            "handled": True,
+            "integration_id": str(integration_id),
+            "error": error_msg[:200],
+            "failure_type": failure_type.value,
+            "action_required": (
+                "reauth_expired"
+                if failure_type == SyncFailureType.AUTH_FAILED
+                else "additional_permissions"
+            ),
+            "deactivated": failure_type == SyncFailureType.AUTH_FAILED,
+        }
 
     def _increment_failure_count(self, integration: KnowledgeIntegration) -> int:
         """Increment the failure count and return the new value."""

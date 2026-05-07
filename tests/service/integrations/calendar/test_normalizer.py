@@ -121,3 +121,125 @@ def test_change_detector_uses_normalized_fields_for_state_only_skip() -> None:
     )
 
     assert has_meaningful_event_changes(existing, normalized) is False
+
+
+def test_change_detector_ignores_missing_google_conference_data_on_sparse_payload() -> None:
+    """Missing conferenceData means "not sent this cycle", not "clear the link"."""
+    existing = SimpleNamespace(
+        title="Team Sync",
+        description=None,
+        location=None,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        organiser_email="host@example.com",
+        organiser_name="Host",
+        online_meeting_provider=None,
+        online_meeting_id=None,
+        calendar_external_id=None,
+        timezone="UTC",
+        start_at=datetime(2024, 1, 15, 10, 0, 0),
+        end_at=datetime(2024, 1, 15, 10, 30, 0),
+        attendee_count=1,
+        is_all_day=False,
+        source_modified_at=datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC),
+    )
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-user-event",
+            "iCalUID": "shared-ical",
+            "summary": "Team Sync",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z", "timeZone": "UTC"},
+            "organizer": {"email": "host@example.com", "displayName": "Host"},
+            "attendees": [{"email": "buyer@example.com"}],
+        },
+        "google",
+    )
+
+    assert "conference_link" not in normalized.fields
+    assert has_meaningful_event_changes(existing, normalized) is False
+
+
+def test_change_detector_detects_new_google_conference_link() -> None:
+    """A provider-sent conference link should update rows missing that link."""
+    existing = SimpleNamespace(
+        title="Team Sync",
+        description=None,
+        location=None,
+        status="confirmed",
+        conference_link=None,
+        organiser_email="host@example.com",
+        organiser_name="Host",
+        online_meeting_provider=None,
+        online_meeting_id=None,
+        calendar_external_id=None,
+        timezone="UTC",
+        start_at=datetime(2024, 1, 15, 10, 0, 0),
+        end_at=datetime(2024, 1, 15, 10, 30, 0),
+        attendee_count=1,
+        is_all_day=False,
+        source_modified_at=datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC),
+    )
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-user-event",
+            "iCalUID": "shared-ical",
+            "summary": "Team Sync",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z", "timeZone": "UTC"},
+            "organizer": {"email": "host@example.com", "displayName": "Host"},
+            "attendees": [{"email": "buyer@example.com"}],
+            "conferenceData": {
+                "entryPoints": [
+                    {"entryPointType": "video", "uri": "https://meet.google.com/new-link"}
+                ]
+            },
+        },
+        "google",
+    )
+
+    assert has_meaningful_event_changes(existing, normalized) is True
+
+
+def test_change_detector_detects_changed_google_conference_link() -> None:
+    """A provider-sent replacement conference link is a meaningful change."""
+    existing = SimpleNamespace(
+        title="Team Sync",
+        description=None,
+        location=None,
+        status="confirmed",
+        conference_link="https://meet.google.com/old-link",
+        organiser_email="host@example.com",
+        organiser_name="Host",
+        online_meeting_provider=None,
+        online_meeting_id=None,
+        calendar_external_id=None,
+        timezone="UTC",
+        start_at=datetime(2024, 1, 15, 10, 0, 0),
+        end_at=datetime(2024, 1, 15, 10, 30, 0),
+        attendee_count=1,
+        is_all_day=False,
+        source_modified_at=datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC),
+    )
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-user-event",
+            "iCalUID": "shared-ical",
+            "summary": "Team Sync",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z", "timeZone": "UTC"},
+            "organizer": {"email": "host@example.com", "displayName": "Host"},
+            "attendees": [{"email": "buyer@example.com"}],
+            "conferenceData": {
+                "entryPoints": [
+                    {"entryPointType": "video", "uri": "https://meet.google.com/new-link"}
+                ]
+            },
+        },
+        "google",
+    )
+
+    assert has_meaningful_event_changes(existing, normalized) is True

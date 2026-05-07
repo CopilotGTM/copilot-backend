@@ -12,6 +12,7 @@ from src.service.integrations.sync_health import (
     AuthTokenRevokedError,
     SyncFailureType,
     classify_sync_error,
+    is_action_required_failure,
     record_sync_failure,
     record_sync_success,
 )
@@ -89,6 +90,17 @@ class TestClassifySyncError:
     def test_generic_exception(self):
         exc = ValueError("some internal bug")
         assert classify_sync_error(exc) == SyncFailureType.INTERNAL_ERROR
+
+
+class TestActionRequiredFailure:
+    def test_auth_and_permission_failures_are_user_action_required(self):
+        assert is_action_required_failure(SyncFailureType.AUTH_FAILED) is True
+        assert is_action_required_failure(SyncFailureType.PERMISSION_REQUIRED) is True
+
+    def test_transient_and_internal_failures_are_not_user_action_required(self):
+        assert is_action_required_failure(SyncFailureType.RATE_LIMITED) is False
+        assert is_action_required_failure(SyncFailureType.PROVIDER_ERROR) is False
+        assert is_action_required_failure(SyncFailureType.INTERNAL_ERROR) is False
 
 
 # ---------------------------------------------------------------------------

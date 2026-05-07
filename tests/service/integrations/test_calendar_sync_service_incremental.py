@@ -167,6 +167,52 @@ class TestCalendarIncrementalBatchWrites:
         assert "RETURNING" in sql
 
     @pytest.mark.asyncio
+    async def test_batch_upsert_events_accepts_mixed_provider_optional_columns(self) -> None:
+        """Sparse provider payloads must not break the one-statement upsert.
+
+        Google deltas can include conference data for one event and omit it for
+        another. SQLAlchemy requires every row in a multi-value INSERT to have
+        the same rendered column set, so the writer normalizes SQL values
+        before compiling the bulk statement.
+        """
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        rows = [_event_row("ical-with-link"), _event_row("ical-without-link")]
+        session = AsyncMock()
+
+        async def compile_then_return(statement):
+            statement.compile(dialect=postgresql.dialect())
+            return _FakeExecuteResult(rows)
+
+        session.execute = AsyncMock(side_effect=compile_then_return)
+        service = CalendarSyncService(session, organisation_id)
+
+        event_with_link = _google_event(provider_id="evt-1", external_id="ical-with-link")
+        event_with_link["conferenceData"] = {
+            "entryPoints": [
+                {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
+            ]
+        }
+
+        result = await service._batch_upsert_events(
+            integration,
+            [
+                CalendarEventUpsertBatchItem(event=_normalize_event(event_with_link)),
+                CalendarEventUpsertBatchItem(
+                    event=_normalize_event(
+                        _google_event(provider_id="evt-2", external_id="ical-without-link")
+                    ),
+                ),
+            ],
+        )
+
+        assert session.execute.await_count == 1
+        assert result == {
+            ("ical-with-link", ""): rows[0],
+            ("ical-without-link", ""): rows[1],
+        }
+
+    @pytest.mark.asyncio
     async def test_batch_sync_attendees_deletes_once_and_inserts_fresh_snapshot(self) -> None:
         """Attendee snapshot refresh is one bulk delete + one bulk insert.
 

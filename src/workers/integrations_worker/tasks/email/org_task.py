@@ -51,6 +51,7 @@ from src.service.integrations.email_delta_sync_service import (
 from src.service.integrations.sync_health import (
     CIRCUIT_BREAKER_THRESHOLD,
     classify_sync_error,
+    is_action_required_failure,
     record_sync_failure,
     record_sync_success,
 )
@@ -175,6 +176,7 @@ def sync_email_org_task(
                     "total_integrations": 0,
                     "successful": 0,
                     "failed": 0,
+                    "action_required": 0,
                     "total_folders_synced": 0,
                     "total_messages_synced": 0,
                 },
@@ -196,6 +198,7 @@ def sync_email_org_task(
         integration_results = []
         successful = 0
         failed = 0
+        action_required = 0
         total_folders = 0
         total_messages = 0
 
@@ -225,21 +228,29 @@ def sync_email_org_task(
                     successful += 1
                     total_folders += sync_result.get("folders_synced", 0)
                     total_messages += sync_result.get("messages_synced", 0)
+                    result_status = "success"
                 else:
                     # Service returned failure in result dict (didn't raise)
                     error_str = sync_result.get("error", "Unknown error")
+                    failure_type = classify_sync_error(Exception(error_str))
                     await record_sync_failure(
                         organisation_id=org_id,
                         integration_id=info.integration_id,
                         error=Exception(error_str),
+                        failure_type=failure_type,
                     )
-                    failed += 1
+                    if is_action_required_failure(failure_type):
+                        action_required += 1
+                        result_status = "action_required"
+                    else:
+                        failed += 1
+                        result_status = sync_result.get("status", "unknown")
 
                 integration_results.append(
                     {
                         "integration_id": str(info.integration_id),
                         "integration_type": info.integration_type,
-                        "status": sync_result.get("status", "unknown"),
+                        "status": result_status,
                         "folders_synced": sync_result.get("folders_synced", 0),
                         "messages_synced": sync_result.get("messages_synced", 0),
                         "error": sync_result.get("error"),
@@ -249,16 +260,23 @@ def sync_email_org_task(
 
             except Exception as e:
                 failure_type = classify_sync_error(e)
-                logger.error(
-                    "Failed to sync email integration",
-                    exc_info=True,
-                    extra={
-                        "organisation_id": organisation_id,
-                        "integration_id": str(info.integration_id),
-                        "error": str(e),
-                        "failure_type": failure_type.value,
-                    },
-                )
+                log_extra = {
+                    "organisation_id": organisation_id,
+                    "integration_id": str(info.integration_id),
+                    "error": str(e),
+                    "failure_type": failure_type.value,
+                }
+                if is_action_required_failure(failure_type):
+                    logger.warning(
+                        "Email integration requires user action",
+                        extra=log_extra,
+                    )
+                else:
+                    logger.error(
+                        "Failed to sync email integration",
+                        exc_info=True,
+                        extra=log_extra,
+                    )
 
                 await record_sync_failure(
                     organisation_id=org_id,
@@ -267,12 +285,19 @@ def sync_email_org_task(
                     failure_type=failure_type,
                 )
 
-                failed += 1
+                if is_action_required_failure(failure_type):
+                    action_required += 1
+                else:
+                    failed += 1
                 integration_results.append(
                     {
                         "integration_id": str(info.integration_id),
                         "integration_type": info.integration_type,
-                        "status": "failed",
+                        "status": (
+                            "action_required"
+                            if is_action_required_failure(failure_type)
+                            else "failed"
+                        ),
                         "error": str(e),
                         "failure_type": failure_type.value,
                     }
@@ -294,6 +319,7 @@ def sync_email_org_task(
                 "organisation_id": organisation_id,
                 "successful": successful,
                 "failed": failed,
+                "action_required": action_required,
                 "total_folders_synced": total_folders,
                 "total_messages_synced": total_messages,
             },
@@ -320,6 +346,7 @@ def sync_email_org_task(
                 "total_integrations": len(integration_list),
                 "successful": successful,
                 "failed": failed,
+                "action_required": action_required,
                 "total_folders_synced": total_folders,
                 "total_messages_synced": total_messages,
             },

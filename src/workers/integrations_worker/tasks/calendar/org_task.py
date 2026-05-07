@@ -37,6 +37,7 @@ from src.service.integrations.sync_health import (
     CIRCUIT_BREAKER_THRESHOLD,
     apply_sync_success,
     classify_sync_error,
+    is_action_required_failure,
     record_sync_failure,
 )
 from src.workers.integrations_worker.celery_app import app
@@ -192,6 +193,16 @@ def sync_calendar_org_task(
                 calendar_delta_link = None
                 if integration_row.last_synced_at is not None:
                     calendar_delta_link = get_calendar_delta_link(connection_metadata, int_type)
+                    if calendar_delta_link is None:
+                        logger.warning(
+                            "Calendar incremental sync missing stored cursor",
+                            extra={
+                                "organisation_id": organisation_id,
+                                "integration_id": str(integration_row.integration_id),
+                                "integration_type": int_type.value,
+                                "last_synced_at_present": True,
+                            },
+                        )
 
                 integration_fetch_list.append(
                     IntegrationFetchData(
@@ -227,6 +238,7 @@ def sync_calendar_org_task(
         integration_results: list[dict[str, Any]] = []
         successful = 0
         failed = 0
+        action_required = 0
         total_events = 0
 
         for fetch_data in integration_fetch_list:
@@ -281,7 +293,13 @@ def sync_calendar_org_task(
                     "Calendar events fetched",
                     extra={
                         "integration_id": str(fetch_data.integration_id),
+                        "provider": fetch_data.provider,
                         "events_fetched": len(events),
+                        "cursor_present": fetch_data.calendar_delta_link is not None,
+                        "cursor_used": (
+                            not fetch_data.is_initial and fetch_data.calendar_delta_link is not None
+                        ),
+                        "cursor_returned": new_calendar_delta_link is not None,
                     },
                 )
 
@@ -317,6 +335,7 @@ def sync_calendar_org_task(
                         events=events,
                     )
                     records_synced = sync_result.get("records_processed", 0)
+                    cursor_saved = new_calendar_delta_link is not None
 
                     # Save cursor only after successful persist — if we crash
                     # before commit, the next sync re-fetches from the old cursor.
@@ -335,6 +354,25 @@ def sync_calendar_org_task(
                             },
                         )
                     integration_db.connection_metadata = updated_metadata
+
+                    logger.info(
+                        "Calendar sync persistence diagnostics",
+                        extra={
+                            "organisation_id": organisation_id,
+                            "integration_id": str(fetch_data.integration_id),
+                            "provider": fetch_data.provider,
+                            "events_fetched": len(events),
+                            "upsert_candidate_count": sync_result.get("created", 0)
+                            + sync_result.get("updated", 0),
+                            "unchanged_count": sync_result.get("skipped", 0),
+                            "cursor_present": fetch_data.calendar_delta_link is not None,
+                            "cursor_used": (
+                                not fetch_data.is_initial
+                                and fetch_data.calendar_delta_link is not None
+                            ),
+                            "cursor_saved": cursor_saved,
+                        },
+                    )
 
                     # Strip tzinfo — column is `timestamp without time zone`; asyncpg
                     # rejects tz-aware datetimes for tz-naive columns.
@@ -359,16 +397,23 @@ def sync_calendar_org_task(
                     )
             except Exception as e:
                 failure_type = classify_sync_error(e)
-                logger.error(
-                    "Failed to sync calendar integration",
-                    exc_info=True,
-                    extra={
-                        "organisation_id": organisation_id,
-                        "integration_id": str(fetch_data.integration_id),
-                        "error": str(e),
-                        "failure_type": failure_type.value,
-                    },
-                )
+                log_extra = {
+                    "organisation_id": organisation_id,
+                    "integration_id": str(fetch_data.integration_id),
+                    "error": str(e),
+                    "failure_type": failure_type.value,
+                }
+                if is_action_required_failure(failure_type):
+                    logger.warning(
+                        "Calendar integration requires user action",
+                        extra=log_extra,
+                    )
+                else:
+                    logger.error(
+                        "Failed to sync calendar integration",
+                        exc_info=True,
+                        extra=log_extra,
+                    )
 
                 await record_sync_failure(
                     organisation_id=org_id,
@@ -377,12 +422,19 @@ def sync_calendar_org_task(
                     failure_type=failure_type,
                 )
 
-                failed += 1
+                if is_action_required_failure(failure_type):
+                    action_required += 1
+                else:
+                    failed += 1
                 integration_results.append(
                     {
                         "integration_id": str(fetch_data.integration_id),
                         "integration_type": fetch_data.integration_type_value,
-                        "status": "failed",
+                        "status": (
+                            "action_required"
+                            if is_action_required_failure(failure_type)
+                            else "failed"
+                        ),
                         "error": str(e),
                         "failure_type": failure_type.value,
                     }
@@ -403,6 +455,7 @@ def sync_calendar_org_task(
                 "organisation_id": organisation_id,
                 "successful": successful,
                 "failed": failed,
+                "action_required": action_required,
                 "total_events_synced": total_events,
             },
         )
@@ -429,6 +482,7 @@ def sync_calendar_org_task(
                 "total_integrations": len(integration_fetch_list),
                 "successful": successful,
                 "failed": failed,
+                "action_required": action_required,
                 "total_events_synced": total_events,
             },
             "integration_results": integration_results,
