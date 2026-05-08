@@ -77,6 +77,14 @@ def _is_duplicate_event(event: HubSpotWebhookEvent, raw_body: bytes) -> bool:
         return False
 
 
+def _release_dedupe_claim(event: HubSpotWebhookEvent, raw_body: bytes) -> None:
+    try:
+        redis = get_redis_client()
+        redis.delete(_dedupe_key(event, raw_body))
+    except Exception:
+        logger.debug("HubSpot webhook dedupe release failed", exc_info=True)
+
+
 @router.post("/webhook")
 async def handle_hubspot_webhook(request: Request) -> Response:
     content_length = request.headers.get("content-length")
@@ -150,12 +158,16 @@ async def handle_hubspot_webhook(request: Request) -> Response:
             )
             continue
 
-        task_id = await send_integrations_task_async(
-            task_name=HUBSPOT_WEBHOOK_EVENT_TASK,
-            kwargs=event.to_task_kwargs(),
-            queue="integrations_priority",
-            routing_key="integrations_priority",
-        )
+        try:
+            task_id = await send_integrations_task_async(
+                task_name=HUBSPOT_WEBHOOK_EVENT_TASK,
+                kwargs=event.to_task_kwargs(),
+                queue="integrations_priority",
+                routing_key="integrations_priority",
+            )
+        except Exception:
+            _release_dedupe_claim(event, raw_body)
+            raise
         logger.info(
             "Queued HubSpot webhook event",
             extra={
