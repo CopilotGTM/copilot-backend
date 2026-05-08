@@ -39,8 +39,8 @@ This document provides step-by-step instructions to deploy the Copilot GTM infra
 
 | Phase | What | Where | Why |
 |-------|------|-------|-----|
-| **Phase 1: Bootstrap** | VNet, Agent, Service Principal, Service Connection | Local machine | Agent must exist before pipeline can run |
-| **Phase 2: Full Deploy** | AKS, ACR, Databases, Key Vaults, Storage | Azure DevOps Pipeline | Self-hosted agent needed for Private Link access |
+| **Phase 1: Bootstrap** | Resource group, VNet, service principal, service connection, Azure DevOps pipeline objects | Local machine | The first infra pass cannot depend on a runner that does not exist yet |
+| **Phase 2: Runner + Full Deploy** | Managed DevOps Pools first, then AKS, ACR, Databases, Key Vaults, Storage | Local machine initially, then Azure DevOps Pipeline after runner validation | Private Link resources require a VNet-connected runner before pipeline-owned applies |
 
 ### Authentication Model (OIDC - No Secrets!)
 
@@ -89,7 +89,9 @@ Create a Personal Access Token with these scopes:
 
 ```powershell
 git clone <your-repo-url>
-cd copilot-backend/infra/terraform/azure/dev
+$repoRoot = "D:\CopilotGTM\copilot-backend"
+$tfEnvPath = Join-Path $repoRoot "infra\terraform\azure\dev"
+Set-Location $tfEnvPath
 ```
 
 ### Step 2: Azure Login
@@ -147,22 +149,28 @@ terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
 | RBAC Roles | Contributor + User Access Administrator |
 | Graph API Consent | Auto-granted Application.ReadWrite permissions |
 
-### Step 6: Create Bootstrap Resources + OIDC Credential
+### Step 6: Target-Deploy Bootstrap + Managed DevOps Pools
 
-This step creates the infrastructure AND the OIDC federated credential (using values from the service connection).
+This is the local runner bootstrap step. Set the PAT environment variable locally, target-deploy the small set of bootstrap and runner resources, then run the pipeline for the rest of infra.
+
+The legacy static agent VM and static Azure DevOps queue are intentionally not part of this target list. This command does not create the VM, OS disk, cloud-init tool installers, or registered static runner.
 
 ```powershell
 terraform apply \
   -target="module.resource_group" \
   -target="module.vnet" \
-  -target="module.devops_agent" \
   -target="module.infra_pipeline" \
   -target="azuredevops_variable_group.infra_secrets" \
   -target="module.service_connection" \
   -target="azuread_application_federated_identity_credential.devops_oidc" \
-  -target="azuredevops_agent_pool.pool" \
-  -target="azuredevops_agent_queue.queue" \
-  -target="azuredevops_pipeline_authorization.queue_auth" \
+  -target="azapi_resource.managed_devops_dev_center" \
+  -target="azapi_resource.managed_devops_project" \
+  -target="azurerm_role_assignment.managed_devops_vnet_reader" \
+  -target="azurerm_role_assignment.managed_devops_vnet_network_contributor" \
+  -target="module.managed_devops_dev_fast_pool" \
+  -target="module.managed_devops_dev_deploy_pool" \
+  -target="azuredevops_pipeline_authorization.managed_devops_dev_fast_queue_auth" \
+  -target="azuredevops_pipeline_authorization.managed_devops_dev_deploy_queue_auth" \
   -var-file="terraform.tfvars"
 ```
 
@@ -171,13 +179,14 @@ terraform apply \
 | Resource | Purpose |
 |----------|---------|
 | Resource Group | Container for all Azure resources |
-| VNet + Subnets | Network with public, private, and private endpoints subnets |
-| DevOps Agent VM | Self-hosted agent for pipeline execution |
-| Agent Pool + Queue | Azure DevOps agent pool configuration |
+| VNet + Managed DevOps Pool subnets | Network with delegated subnets for elastic pipeline agents |
 | Service Connection | OIDC-based connection to Azure (no secrets!) |
 | **Federated Credential** | Links service principal to service connection (enables OIDC) |
 | Variable Group | Empty group for secrets (PAT added manually in Step 7) |
 | Infra Pipeline | Pipeline definition for full deployment |
+| Dev Center + Project | Azure prerequisite for Managed DevOps Pools |
+| Managed DevOps Pools | `copilot-devops-dev-fast` and `copilot-devops-dev-deploy` |
+| Queue authorization | Allows YAML pipelines to use the new queues without manual approval |
 
 > **Why this order?** The federated credential needs the `issuer` and `subject` values from the service connection. Azure DevOps generates these unique values, so we must create the service connection first.
 
@@ -200,13 +209,15 @@ The variable group is created by Terraform but the PAT must be added manually (n
 
 ### Step 8: Verify Bootstrap
 
-#### 8.1 Check Agent is Online
+#### 8.1 Confirm No Static Agent VM Was Created
 
-1. Go to: **Azure DevOps** → **Project Settings** → **Agent Pools**
-2. Click on `StaticAgentPool`
-3. Verify agent status is **Online** (green)
+The static DevOps agent module is commented out during local bootstrap, so there should be no `gtm-devops-agent-01-dev` VM from this path.
 
-> **Note**: Agent may take 5-10 minutes to come online after VM creation.
+```powershell
+az vm list -g "copilot-gtm-app-dev" --query "[?contains(name, 'gtm-devops-agent')].name" -o tsv
+```
+
+Expected: no output, unless a legacy VM already existed before this change.
 
 #### 8.2 Check Service Connection (OIDC)
 
@@ -229,7 +240,7 @@ The variable group is created by Terraform but the PAT must be added manually (n
 
 ## Phase 2: Full Deployment (Azure DevOps Pipeline)
 
-Once bootstrap is complete, the pipeline handles remaining infrastructure.
+Once the targeted local bootstrap has created and authorized the Managed DevOps Pools, run the pipeline directly. The pipeline handles remaining infrastructure from the new VNet-connected runner.
 
 ### Option A: Run Pipeline Manually
 
@@ -250,13 +261,14 @@ git push origin main
 
 | Resource | Purpose | Status |
 |----------|---------|--------|
-| AKS Cluster | Kubernetes for containers | Commented (enable when ready) |
-| ACR | Container registry | Commented (enable when ready) |
-| PostgreSQL | Application database | Commented (enable when ready) |
-| Redis | Caching layer | Commented (enable when ready) |
-| Key Vaults | Secrets storage | Commented (enable when ready) |
-| Storage Accounts | Blob storage | Commented (enable when ready) |
-| WAF | Application Gateway | Commented (enable when ready) |
+| Managed DevOps Pools | Elastic VNet-connected pipeline runners | Target-deployed locally before running the pipeline |
+| AKS Cluster | Kubernetes for containers | Enable when runner can reach private resources |
+| ACR | Container registry | Enable when runner can build/push images |
+| PostgreSQL | Application database | Enable when database settings are finalized |
+| Redis | Caching layer | Enable when app deployment is ready |
+| Key Vaults | Secrets storage | Enable before private secret flows |
+| Storage Accounts | Blob storage | Enable before file/media flows |
+| WAF | Application Gateway | Enable before public ingress |
 
 > **Note**: Most Phase 2 resources are commented out in `main.tf`. Uncomment as needed.
 
@@ -287,7 +299,9 @@ git push origin main
 
 ## Troubleshooting
 
-### Agent Not Coming Online
+### Legacy Static Agent Not Coming Online
+
+This only applies if you intentionally uncomment the legacy `module.devops_agent` block.
 
 **Check VM status:**
 
@@ -304,7 +318,7 @@ sudo cat /var/log/cloud-init-output.log | tail -50
 **Common fixes:**
 
 - VM SKU not available in region → Change `vm_size` in `modules/devops_agent/main.tf`
-- PAT token invalid → Regenerate and re-run Step 6
+- PAT token invalid → Regenerate and re-run the local bootstrap command after uncommenting `module.devops_agent`
 
 ### Agent Capacity Issues ("SkuNotAvailable")
 
@@ -362,11 +376,13 @@ terraform state rm 'module.service_connection.azuredevops_serviceendpoint_azurer
 ### Full Bootstrap (Copy-Paste)
 
 ```powershell
-cd infra/terraform/azure/dev
+$repoRoot = "D:\CopilotGTM\copilot-backend"
+$tfEnvPath = Join-Path $repoRoot "infra\terraform\azure\dev"
+Set-Location $tfEnvPath
 $env:TF_VAR_azuredevops_pat = "<YOUR_PAT_TOKEN>"
 terraform init
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
-terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_connection" -target="azuread_application_federated_identity_credential.devops_oidc" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_connection" -target="azuread_application_federated_identity_credential.devops_oidc" -target="azapi_resource.managed_devops_dev_center" -target="azapi_resource.managed_devops_project" -target="azurerm_role_assignment.managed_devops_vnet_reader" -target="azurerm_role_assignment.managed_devops_vnet_network_contributor" -target="module.managed_devops_dev_fast_pool" -target="module.managed_devops_dev_deploy_pool" -target="azuredevops_pipeline_authorization.managed_devops_dev_fast_queue_auth" -target="azuredevops_pipeline_authorization.managed_devops_dev_deploy_queue_auth" -var-file="terraform.tfvars"
 ```
 
 **After Terraform completes:** Add `TF_VAR_azuredevops_pat` to the variable group manually:
@@ -383,8 +399,11 @@ az group show -n "copilot-gtm-app-dev" --query "properties.provisioningState" -o
 # VNet
 az network vnet show -g "copilot-gtm-app-dev" -n "copilot-gtm-vnet-dev" --query "provisioningState" -o tsv
 
-# Agent VM
-az vm show -g "copilot-gtm-app-dev" -n "gtm-devops-agent-01-dev" --query "provisioningState" -o tsv
+# Static agent VM should not exist from the local bootstrap path
+az vm list -g "copilot-gtm-app-dev" --query "[?contains(name, 'gtm-devops-agent')].{name:name,state:provisioningState}" -o table
+
+# Managed DevOps Pools should exist and be authorized for pipelines
+az pipelines queue list --organization "https://dev.azure.com/copilotgtm" --project "app-copilotgtm" --query "[?name=='copilot-devops-dev-fast' || name=='copilot-devops-dev-deploy'].{name:name,id:id}" -o table
 ```
 
 ### Destroy Everything (Use Carefully!)

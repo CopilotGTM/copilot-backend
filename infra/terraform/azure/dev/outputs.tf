@@ -219,9 +219,11 @@ output "master_key_vault_uri" {
   value       = module.master_key_vault.key_vault_uri
 }
 
+/*
 # -----------------------------------------------------------------
-# DevOps Agent VM Outputs
+# Legacy DevOps Agent VM Outputs
 # -----------------------------------------------------------------
+# Static runner outputs stay commented while module.devops_agent is commented.
 output "devops_agent_vm_name" {
   description = "Name of the self-hosted DevOps agent VM."
   value       = module.devops_agent.vm_name
@@ -240,6 +242,30 @@ output "devops_agent_pool" {
 output "devops_agent_name" {
   description = "Name of the registered Azure DevOps agent."
   value       = module.devops_agent.agent_name
+}
+*/
+
+# -----------------------------------------------------------------
+# Managed DevOps Pool Outputs
+# -----------------------------------------------------------------
+output "managed_devops_dev_fast_pool_name" {
+  description = "Name of the Managed DevOps Pool used for fast dev validation jobs."
+  value       = try(module.managed_devops_dev_fast_pool[0].name, null)
+}
+
+output "managed_devops_dev_fast_pool_id" {
+  description = "Resource ID of the Managed DevOps Pool used for fast dev validation jobs."
+  value       = try(module.managed_devops_dev_fast_pool[0].id, null)
+}
+
+output "managed_devops_dev_deploy_pool_name" {
+  description = "Name of the Managed DevOps Pool used for dev build/deploy jobs."
+  value       = try(module.managed_devops_dev_deploy_pool[0].name, null)
+}
+
+output "managed_devops_dev_deploy_pool_id" {
+  description = "Resource ID of the Managed DevOps Pool used for dev build/deploy jobs."
+  value       = try(module.managed_devops_dev_deploy_pool[0].id, null)
 }
 
 # -----------------------------------------------------------------

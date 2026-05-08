@@ -21,6 +21,7 @@ module "vnet" {
   public_subnets                  = var.vnet_public_subnets
   private_subnets                 = var.vnet_private_subnets
   private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
+  managed_devops_pools_subnets    = var.managed_devops_pools_subnets
   waf_subnet_prefix               = var.vnet_waf_subnet
   env                             = var.env
   depends_on = [
@@ -652,11 +653,14 @@ resource "azuredevops_variable_group" "secrets" {
     is_secret    = true
   }
 
+  /*
+  # Legacy static agent secret. Keep commented while module.devops_agent is commented.
   variable {
     name         = "AGENT_PASSWORD"
     secret_value = random_password.agent_admin.result
     is_secret    = true
   }
+  */
 
   variable {
     name  = "DATABASE_SSL_MODE"
@@ -937,6 +941,14 @@ resource "random_string" "test_resource" {
 output "test_resource_value" {
   value = random_string.test_resource.result
 }
+/*
+# -----------------------------------------------------------------
+# Legacy Self-Hosted DevOps Agent VM
+# -----------------------------------------------------------------
+# Static runner bootstrap is intentionally commented out while infrastructure is
+# applied from a local machine. Keep this block as the fallback for future use,
+# but do not create the VM, OS disk, cloud-init tool installers, or registered
+# StaticAgentPool runner during the local bootstrap flow.
 resource "random_password" "agent_admin" {
   length           = 32
   override_special = "!@#$%&*()-_=+[]"
@@ -946,10 +958,6 @@ resource "random_password" "agent_admin" {
   numeric          = true
 }
 
-# -----------------------------------------------------------------
-# Self-Hosted DevOps Agent VM
-# Placed in private subnet to access Key Vault/Storage via Private Link
-# -----------------------------------------------------------------
 module "devops_agent" {
   source              = "../modules/devops_agent"
   resource_group_name = module.resource_group.resource_group_name
@@ -975,8 +983,8 @@ module "devops_agent" {
   install_kubectl   = true
   install_azure_cli = true
 
-  # No public IP needed - agent communicates outbound only
-  enable_public_ip = true
+  # Agent communicates outbound to Azure DevOps and should not expose SSH publicly.
+  enable_public_ip = false
 
   tags = {
     environment = var.env
@@ -988,6 +996,173 @@ module "devops_agent" {
     module.vnet,
     module.resource_group,
     azuredevops_agent_pool.pool
+  ]
+}
+*/
+
+removed {
+  from = random_password.agent_admin
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = module.devops_agent
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+# -----------------------------------------------------------------
+# Managed DevOps Pools (target elastic agent model)
+# -----------------------------------------------------------------
+resource "azapi_resource" "managed_devops_dev_center" {
+  count = var.enable_managed_devops_pools && var.managed_devops_dev_center_project_resource_id == "" ? 1 : 0
+
+  type      = "Microsoft.DevCenter/devcenters@2025-02-01"
+  name      = var.managed_devops_dev_center_name
+  location  = var.location
+  parent_id = module.resource_group.resource_group_id
+
+  body = {
+    properties = {}
+  }
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "managed-devops-pools"
+  }
+}
+
+resource "azapi_resource" "managed_devops_project" {
+  count = var.enable_managed_devops_pools && var.managed_devops_dev_center_project_resource_id == "" ? 1 : 0
+
+  type      = "Microsoft.DevCenter/projects@2025-02-01"
+  name      = var.managed_devops_project_name
+  location  = var.location
+  parent_id = module.resource_group.resource_group_id
+
+  body = {
+    properties = {
+      devCenterId = azapi_resource.managed_devops_dev_center[0].id
+    }
+  }
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "managed-devops-pools"
+  }
+}
+
+locals {
+  managed_devops_project_resource_id = var.managed_devops_dev_center_project_resource_id != "" ? var.managed_devops_dev_center_project_resource_id : try(azapi_resource.managed_devops_project[0].id, "")
+}
+
+data "azuread_service_principal" "devops_infrastructure" {
+  count     = var.enable_managed_devops_pools ? 1 : 0
+  client_id = "31687f79-5e43-4c1e-8c63-d9f4bff5cf8b"
+}
+
+resource "azurerm_role_assignment" "managed_devops_vnet_reader" {
+  count = var.enable_managed_devops_pools ? 1 : 0
+
+  scope                = module.vnet.vnet_id
+  role_definition_name = "Reader"
+  principal_id         = data.azuread_service_principal.devops_infrastructure[0].object_id
+}
+
+resource "azurerm_role_assignment" "managed_devops_vnet_network_contributor" {
+  count = var.enable_managed_devops_pools ? 1 : 0
+
+  scope                = module.vnet.vnet_id
+  role_definition_name = "Network Contributor"
+  principal_id         = data.azuread_service_principal.devops_infrastructure[0].object_id
+}
+
+import {
+  to = azurerm_role_assignment.managed_devops_vnet_reader[0]
+  id = "/subscriptions/675df0ed-8e06-441b-a1e4-110d19521816/resourceGroups/copilot-gtm-app-dev/providers/Microsoft.Network/virtualNetworks/copilot-gtm-vnet-dev/providers/Microsoft.Authorization/roleAssignments/18a6357f-33a4-4c67-a142-daf10ef8db3f"
+}
+
+import {
+  to = azurerm_role_assignment.managed_devops_vnet_network_contributor[0]
+  id = "/subscriptions/675df0ed-8e06-441b-a1e4-110d19521816/resourceGroups/copilot-gtm-app-dev/providers/Microsoft.Network/virtualNetworks/copilot-gtm-vnet-dev/providers/Microsoft.Authorization/roleAssignments/25de24ef-888d-4520-8f1f-2a1216abb534"
+}
+
+module "managed_devops_dev_fast_pool" {
+  count  = var.enable_managed_devops_pools ? 1 : 0
+  source = "../modules/managed_devops_pool"
+
+  pool_name                      = var.managed_devops_dev_fast_pool_name
+  location                       = var.location
+  resource_group_id              = module.resource_group.resource_group_id
+  dev_center_project_resource_id = local.managed_devops_project_resource_id
+  ado_org_url                    = var.org_service_url
+  ado_project_names              = [var.devops_project_name]
+  parallelism                    = 1
+  maximum_concurrency            = 1
+  subnet_id                      = module.vnet.managed_devops_pools_subnet_ids["mdp-dev-fast"]
+  sku_name                       = var.managed_devops_pool_sku_name
+  image_name                     = var.managed_devops_image_name
+  image_alias                    = var.managed_devops_image_name
+  agent_state                    = "Stateful"
+  stateful_grace_period          = "00:45:00"
+  stateful_max_lifetime          = "1.00:00:00"
+  data_disk_size_gib             = 128
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "managed-devops-pool"
+    pool_role   = "dev-fast"
+  }
+
+  depends_on = [
+    module.vnet,
+    azapi_resource.managed_devops_project,
+    azurerm_role_assignment.managed_devops_vnet_reader,
+    azurerm_role_assignment.managed_devops_vnet_network_contributor,
+  ]
+}
+
+module "managed_devops_dev_deploy_pool" {
+  count  = var.enable_managed_devops_pools ? 1 : 0
+  source = "../modules/managed_devops_pool"
+
+  pool_name                      = var.managed_devops_dev_deploy_pool_name
+  location                       = var.location
+  resource_group_id              = module.resource_group.resource_group_id
+  dev_center_project_resource_id = local.managed_devops_project_resource_id
+  ado_org_url                    = var.org_service_url
+  ado_project_names              = [var.devops_project_name]
+  parallelism                    = 1
+  maximum_concurrency            = 1
+  subnet_id                      = module.vnet.managed_devops_pools_subnet_ids["mdp-dev-deploy"]
+  sku_name                       = var.managed_devops_pool_sku_name
+  image_name                     = var.managed_devops_image_name
+  image_alias                    = var.managed_devops_image_name
+  agent_state                    = "Stateful"
+  stateful_grace_period          = "00:30:00"
+  stateful_max_lifetime          = "1.00:00:00"
+  data_disk_size_gib             = 128
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "managed-devops-pool"
+    pool_role   = "dev-deploy"
+  }
+
+  depends_on = [
+    module.vnet,
+    azapi_resource.managed_devops_project,
+    azurerm_role_assignment.managed_devops_vnet_reader,
+    azurerm_role_assignment.managed_devops_vnet_network_contributor,
   ]
 }
 

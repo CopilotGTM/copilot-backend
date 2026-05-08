@@ -39,6 +39,13 @@ pgbouncer_pool_mode         = "transaction" # Release connection after transacti
 # vnet_private_subnets          = ["10.0.2.0/24", "10.0.3.0/24"]  # Default
 # vnet_private_endpoints_subnet = "10.0.4.0/24"           # Default
 # vnet_waf_subnet               = "10.0.5.0/24"           # Default
+# Managed DevOps Pools need one dedicated delegated subnet per pool.
+enable_managed_devops_pools = true
+# managed_devops_dev_center_project_resource_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.DevCenter/projects/<project>"
+managed_devops_pools_subnets = [
+  { name = "mdp-prod-deploy", address_prefix = "10.0.6.0/27" },
+]
+managed_devops_pool_sku_name = "Standard_D2ads_v5"
 
 # Private Link (disabled for initial deployment - enable later with proper VNet DNS setup)
 enable_key_vault_private_endpoints = false
@@ -118,6 +125,8 @@ devops_environment_name = "production"
 # sp_name                     = "copilot-gtm-devops-sp"  # Default
 # azuredevops_sp_display_name = "TerraformSP"            # Default
 agent_pool = "StaticAgentPool-prod" # Override: unique pool name to avoid collision with dev in shared Azure DevOps org
+# Target Managed DevOps Pool name after validation:
+managed_devops_prod_deploy_pool_name = "copilot-devops-prod-deploy"
 # agent_name                  = "gtm-devops-agent-01"    # Default
 # admin_username              = "azureuser"              # Default
 

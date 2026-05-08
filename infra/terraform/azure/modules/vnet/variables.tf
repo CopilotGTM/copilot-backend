@@ -44,3 +44,12 @@ variable "private_endpoints_subnet_prefix" {
   type        = string
   default     = ""
 }
+
+variable "managed_devops_pools_subnets" {
+  description = "Optional dedicated subnets delegated to Microsoft.DevOpsInfrastructure/pools. Use one subnet per Managed DevOps Pool."
+  type = list(object({
+    name           = string
+    address_prefix = string
+  }))
+  default = []
+}

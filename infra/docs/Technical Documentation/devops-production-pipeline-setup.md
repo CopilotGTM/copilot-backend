@@ -17,12 +17,13 @@ This document defines:
 
 - Microsoft-hosted agents (e.g. `ubuntu-latest`) **cannot reach** Private Endpoint-only resources in your VNet.
 - Therefore, **Terraform plan/apply must run on a self-hosted agent in the VNet**.
+- For the backend app pipeline, avoid always-on static VMs. The target runner model is Managed DevOps Pools with VNet injection; use Azure VM Scale Set agents only as the fallback if Managed DevOps Pools cannot meet a compliance, region, or networking constraint.
 
 ### Diagram: network and execution location
 
 ```mermaid
 flowchart LR
-  DevOps[Azure DevOps Pipeline] --> AgentPool[Self-hosted Agent Pool<br/>inside VNet]
+  DevOps[Azure DevOps Pipeline] --> AgentPool[Elastic self-hosted pool<br/>Managed DevOps Pool or VMSS<br/>injected into VNet]
 
   subgraph VNet[Azure VNet]
     AgentPool --> DNS[Private DNS zones linked to VNet]
@@ -42,6 +43,70 @@ flowchart LR
   - `privatelink.vaultcore.azure.net`
   - `privatelink.blob.core.windows.net`
 - A self-hosted Azure DevOps agent VM (or scale set) inside that VNet
+
+## Target agent-pool design for speed and cost
+
+The current static agent VM pattern is acceptable only as a bootstrap fallback. The production target is:
+
+| Workload | Pool | Agent state | Scale settings | Reason |
+|----------|------|-------------|----------------|--------|
+| PR / feature validation | `copilot-devops-dev-fast` | Stateful | max 1-2 agents, 30-60 minute grace period during active development | Reuses dependency and Docker caches so normal validation is fast without keeping a VM online all month. |
+| Dev deploy from `main`, `hotfix/*`, or manual run | `copilot-devops-dev-deploy` | Stateful or stateless | max 1 agent, optional 1 standby only during release windows | Keeps dev deploys fast while preventing feature branches from consuming build/deploy capacity. |
+| Prod deploy | `copilot-devops-prod-deploy` | Stateless | max 1 agent, no default standby, approval-gated | Fresh prod runner reduces supply-chain persistence risk. Prod speed comes from the prebuilt image, not from reusing a mutable machine. |
+| Terraform private-resource changes | Environment-specific deploy pool | Stateless for prod, stateful allowed for dev | max 1 agent | Terraform must stay on a VNet-connected self-hosted pool when Private Link is enabled. |
+
+### Preferred option: Managed DevOps Pools
+
+Use Managed DevOps Pools when available in the subscription/region because it removes most custom agent lifecycle code while still supporting:
+
+- VNet injection through a delegated subnet, so agents can reach private Azure resources.
+- Custom images and attached data disks, so Docker, `uv`, Python, Azure CLI, Helm, kubectl, Terraform, Trivy, and Hadolint do not install during every run.
+- Stateful pools with a short grace period for dev speed, and stateless pools for prod security.
+- Scheduled standby capacity during known work windows instead of 24/7 VM uptime.
+
+Required guardrails:
+
+- Use a dedicated subnet delegated to `Microsoft.DevOpsInfrastructure/pools`.
+- Use separate dev and prod pools.
+- Keep prod stateless and approval-gated.
+- Use a managed identity and scoped access instead of embedding registration PATs into VM bootstrap material.
+- Use a custom runner image built and patched on a fixed cadence.
+
+### Terraform implementation in this repo
+
+The repo includes a disabled-by-default Terraform path for this target model:
+
+- `infra/terraform/azure/modules/managed_devops_pool/` creates `Microsoft.DevOpsInfrastructure/pools@2025-09-20` through `azapi_resource`.
+- `infra/terraform/azure/modules/vnet/` can create dedicated subnets delegated to `Microsoft.DevOpsInfrastructure/pools`.
+- `infra/terraform/azure/dev/main.tf` defines `copilot-devops-dev-fast` and `copilot-devops-dev-deploy` when `enable_managed_devops_pools = true`.
+- `infra/terraform/azure/prod/main.tf` defines `copilot-devops-prod-deploy` when `enable_managed_devops_pools = true`.
+- Current backend and infra YAML point to the Managed DevOps Pool names. Do not run those pipelines until the pools exist and have passed private-resource validation.
+
+Before enabling `enable_managed_devops_pools`, provide:
+
+- `managed_devops_dev_center_project_resource_id`
+- one `managed_devops_pools_subnets` entry per pool
+- DevOpsInfrastructure principal access to the VNet/subnets
+- a dry-run validation plan for private DNS, Key Vault, Storage, ACR, AKS, and Helm access
+
+### Fallback option: Azure VM Scale Set agents
+
+Use VMSS agents only if Managed DevOps Pools is unavailable or blocked by compliance. Configure the scale set with:
+
+- no public IP or load balancer unless there is an explicit firewall requirement,
+- overprovisioning disabled,
+- autoscaling disabled so Azure Pipelines controls scale,
+- manual upgrade policy,
+- max 1 agent initially,
+- standby 0 for lowest cost or scheduled standby 1 only during deploy windows,
+- tear down after every job for prod,
+- a custom image rather than cloud-init remote installers.
+
+This fallback is cheaper than static VMs, but cold starts can be slow. It is not the fastest option unless standby is enabled during expected deployment windows.
+
+### Why not multiple agents on one VM
+
+Do not install multiple agents on the current `Standard_D2as_v4` VM for this repo. Docker builds, Trivy scans, and Helm/Terraform jobs are CPU, disk, and network heavy. Multiple agents on one machine can make deploys slower and less deterministic. If concurrency is needed, increase the elastic pool `max agents` and buy the needed self-hosted parallel jobs instead.
 
 ## Pipeline flow (promotion model)
 
@@ -75,17 +140,26 @@ flowchart TD
 
 ## Azure DevOps configuration checklist
 
-### 1) Agent pool
+### 1) Agent pools
 
-Create a self-hosted agent pool (example name used by default):
+Target pools:
+
+- `copilot-devops-dev-fast` for PR and feature validation
+- `copilot-devops-dev-deploy` for dev deploys
+- `copilot-devops-prod-deploy` for prod deploys and prod Terraform
+
+Temporary legacy pools retained only for rollback/manual fallback:
 
 - `StaticAgentPool`
+- `StaticAgentPool-prod`
 
-The agent must:
+Every target pool must:
 
 - run inside the target VNet (or have routed access)
 - use VNet DNS (or otherwise resolve private DNS records)
 - be allowed by NSGs/UDRs to reach Private Endpoint IPs
+
+If a new pool is not available yet, temporarily point YAML back to the legacy pool names. Otherwise, keep YAML on the Managed DevOps Pool names.
 
 ### 2) Variable groups
 

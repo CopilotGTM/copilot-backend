@@ -511,6 +511,67 @@ variable "admin_username" {
 }
 
 # -----------------------------------------------------------------
+# Managed DevOps Pools (target elastic agent model)
+# -----------------------------------------------------------------
+
+variable "enable_managed_devops_pools" {
+  description = "Create Managed DevOps Pools for elastic Azure DevOps agents. Keep false until prerequisites and subnets are ready."
+  type        = bool
+  default     = false
+}
+
+variable "managed_devops_dev_center_project_resource_id" {
+  description = "Existing Azure Dev Center project resource ID required by Managed DevOps Pools. Leave empty to create one in this stack."
+  type        = string
+  default     = ""
+}
+
+variable "managed_devops_dev_center_name" {
+  description = "Azure Dev Center name to create when managed_devops_dev_center_project_resource_id is empty."
+  type        = string
+  default     = "cgtm-devops-devcenter-dev"
+}
+
+variable "managed_devops_project_name" {
+  description = "Azure Dev Center project name to create when managed_devops_dev_center_project_resource_id is empty."
+  type        = string
+  default     = "copilot-devops-project-dev"
+}
+
+variable "managed_devops_pools_subnets" {
+  description = "Dedicated subnets for Managed DevOps Pools. Each pool needs its own delegated subnet."
+  type = list(object({
+    name           = string
+    address_prefix = string
+  }))
+  default = []
+}
+
+variable "managed_devops_dev_fast_pool_name" {
+  description = "Managed DevOps Pool for fast dev/PR validation."
+  type        = string
+  default     = "copilot-devops-dev-fast"
+}
+
+variable "managed_devops_dev_deploy_pool_name" {
+  description = "Managed DevOps Pool for dev deployments."
+  type        = string
+  default     = "copilot-devops-dev-deploy"
+}
+
+variable "managed_devops_pool_sku_name" {
+  description = "VM SKU used by Managed DevOps Pool agents."
+  type        = string
+  default     = "Standard_D2s_v5"
+}
+
+variable "managed_devops_image_name" {
+  description = "Managed DevOps Pool well-known image alias."
+  type        = string
+  default     = "ubuntu-24.04-g2"
+}
+
+# -----------------------------------------------------------------
 # DNS
 # -----------------------------------------------------------------
 
