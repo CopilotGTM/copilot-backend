@@ -131,43 +131,18 @@ stages:
                 echo "=== Terraform Format Check ==="
                 terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
 
-                # ============================================================
-                # Two-Step Deployment Strategy (Always)
-                # ============================================================
-                # Step 1: Plan & Apply AKS + dependencies only
-                # Step 2: Plan & Apply everything else (databases, OpenAI, Helm, K8s)
-                #
-                # This ensures AKS exists before Helm/K8s providers are used.
-                # ============================================================
-
-                # Step 1 targets (minimal AKS dependencies):
-                # - resource_group, vnet, waf (App Gateway for AGIC), acr, aks
-                # - AGIC role assignments (App Gateway, RG, VNet)
-                # - ACR pull role for AKS kubelet
-                # - cert-manager identity (for Helm release in Step 2)
-                echo "=== Step 1: Plan AKS & Dependencies ==="
-                terraform plan -var-file="terraform.tfvars" -out=tfplan-core -input=false \
-                  -target="module.resource_group" \
-                  -target="module.vnet" \
-                  -target="module.waf" \
-                  -target="module.acr" \
-                  -target="module.aks" \
-                  -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
-                  -target="azurerm_role_assignment.agic_appgw_contributor" \
-                  -target="azurerm_role_assignment.agic_rg_reader" \
-                  -target="azurerm_role_assignment.agic_vnet_network_contributor" \
-                  -target="azurerm_user_assigned_identity.cert_manager_dns" \
-                  -target="azurerm_role_assignment.cert_manager_dns_contributor" \
-                  -target="azurerm_federated_identity_credential.cert_manager" || {
+                # Normal infra runs must publish the exact full plan that will
+                # be applied after approval. Fresh-environment bootstrap remains
+                # a local targeted Terraform operation documented outside this
+                # reusable pipeline template.
+                echo "=== Terraform Plan ==="
+                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false || {
                     exitCode=$?
                     if [ $exitCode -eq 1 ]; then
                       echo "##vso[task.logissue type=error]Terraform plan failed!"
                       exit 1
                     fi
                   }
-
-                # Rename to tfplan for artifact publishing
-                mv tfplan-core tfplan
             env:
               # Secret variables must be explicitly mapped to be available in scripts
               TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
@@ -241,32 +216,9 @@ stages:
                       echo "=== Terraform Init ==="
                       terraform init -input=false
 
-                      # ============================================================
-                      # Two-Step Deployment Strategy (Always)
-                      # ============================================================
-                      # Step 1: Apply AKS & dependencies (VNet, WAF, ACR, role assignments)
-                      # Step 2: Plan & Apply everything else (databases, Helm, K8s manifests)
-                      #
-                      # This ensures AKS exists before Helm/K8s providers are used.
-                      # ============================================================
-
-                      echo "============================================================"
-                      echo "=== TWO-STEP DEPLOYMENT ==="
-                      echo "============================================================"
-
-                      echo ""
-                      echo "=== Step 1/3: Apply AKS & Dependencies (from plan artifact) ==="
+                      echo "=== Terraform Apply (from approved plan artifact) ==="
                       cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
                       terraform apply -input=false -auto-approve tfplan
-
-                      echo ""
-                      echo "=== Step 2/3: Plan Remaining Infrastructure ==="
-                      echo "AKS ready. Now planning databases, OpenAI, Helm charts, K8s resources..."
-                      terraform plan -var-file="terraform.tfvars" -out=tfplan-full -input=false
-
-                      echo ""
-                      echo "=== Step 3/3: Apply Remaining Infrastructure ==="
-                      terraform apply -input=false -auto-approve tfplan-full
 
                       echo ""
                       echo "=== Deployment Complete ==="
