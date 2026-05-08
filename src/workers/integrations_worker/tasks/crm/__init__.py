@@ -33,6 +33,9 @@ from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_task_record_sync_
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_user_record_sync_task import (
     sync_hubspot_users_task,
 )
+from src.workers.integrations_worker.tasks.crm.hubspot.webhooks.event_task import (
+    process_hubspot_webhook_event_task,
+)
 from src.workers.integrations_worker.tasks.crm.salesforce.salesforce_company_record_sync_task import (
     sync_salesforce_companies_task,
 )
@@ -74,6 +77,7 @@ __all__ = [
     "sync_hubspot_users_task",
     "sync_hubspot_companies_task",
     "sync_hubspot_contacts_task",
+    "process_hubspot_webhook_event_task",
     "sync_hubspot_deals_task",
     "sync_hubspot_tasks_task",
     "sync_hubspot_notes_task",

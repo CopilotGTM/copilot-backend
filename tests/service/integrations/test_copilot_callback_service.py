@@ -36,16 +36,13 @@ def test_validate_required_scopes_rejects_missing_google_meet_scope() -> None:
         )
 
 
-def test_validate_required_scopes_rejects_missing_hubspot_notes_permission() -> None:
-    with pytest.raises(ValueError, match="HubSpot activity permissions were not granted"):
+def test_validate_required_scopes_rejects_missing_hubspot_deal_schema_permission() -> None:
+    with pytest.raises(ValueError, match="HubSpot permissions were not granted"):
         CopilotCallbackService()._validate_required_scopes(
             IntegrationType.HUBSPOT,
             {
-                "scope": "oauth automation conversations.read sales-email-read "
-                "crm.objects.companies.read crm.objects.contacts.read crm.objects.deals.read "
-                "crm.objects.leads.read crm.objects.line_items.read crm.objects.products.read "
-                "crm.objects.owners.read crm.objects.users.read crm.schemas.companies.read "
-                "crm.schemas.contacts.read crm.schemas.deals.read crm.objects.tasks.read"
+                "scope": "oauth crm.objects.companies.read crm.objects.contacts.read "
+                "crm.objects.deals.read crm.objects.owners.read"
             },
         )
 

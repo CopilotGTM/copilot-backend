@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.configs import hubspot_integration_config
+from src.infra.config.integrations_metadata import get_integration_metadata
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 
@@ -56,31 +57,8 @@ class HubSpotProvider(BaseIntegrationProvider):
         return "hubspot"
 
     def _get_scopes(self) -> list[str]:
-        return [
-            "oauth",
-            "automation",
-            "conversations.read",
-            "sales-email-read",
-            "crm.objects.companies.read",
-            "crm.objects.companies.write",
-            "crm.objects.contacts.read",
-            "crm.objects.contacts.write",
-            "crm.objects.deals.read",
-            "crm.objects.deals.write",
-            "crm.objects.leads.read",
-            "crm.objects.leads.write",
-            "crm.objects.line_items.read",
-            "crm.objects.line_items.write",
-            "crm.objects.products.read",
-            "crm.objects.products.write",
-            "crm.objects.owners.read",
-            "crm.objects.users.read",
-            "crm.objects.tasks.read",
-            "crm.objects.notes.read",
-            "crm.schemas.companies.read",
-            "crm.schemas.contacts.read",
-            "crm.schemas.deals.read",
-        ]
+        metadata = get_integration_metadata(self.integration_type)
+        return list(metadata.oauth_scopes or []) if metadata else []
 
     async def _request_with_retry(
         self,
@@ -208,4 +186,5 @@ class HubSpotProvider(BaseIntegrationProvider):
             "hubspot_user_id": json_response.get("user_id"),
             "hubspot_portal_id": json_response.get("hub_id") or json_response.get("hub_domain"),
             "hubspot_portal_name": json_response.get("hub_domain"),
+            "scopes": json_response.get("scopes"),
         }

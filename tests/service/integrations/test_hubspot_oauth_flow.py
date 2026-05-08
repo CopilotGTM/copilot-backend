@@ -17,12 +17,8 @@ from src.service.integrations.custom_token_refresh_service import CustomTokenRef
 from src.service.integrations.integration_service import IntegrationService
 
 _HUBSPOT_GRANTED_SCOPE = (
-    "oauth automation conversations.read sales-email-read "
-    "crm.objects.companies.read crm.objects.contacts.read crm.objects.deals.read "
-    "crm.objects.leads.read crm.objects.line_items.read crm.objects.products.read "
-    "crm.objects.owners.read crm.objects.users.read crm.objects.tasks.read "
-    "crm.objects.notes.read crm.schemas.companies.read crm.schemas.contacts.read "
-    "crm.schemas.deals.read"
+    "oauth crm.objects.companies.read crm.objects.contacts.read "
+    "crm.objects.deals.read crm.objects.owners.read crm.schemas.deals.read"
 )
 
 
@@ -106,7 +102,12 @@ async def test_callback_creates_hubspot_integration_with_placeholder_metadata() 
         "expires_in": 3600,
         "scope": _HUBSPOT_GRANTED_SCOPE,
     }
-    provider.get_user_info.return_value = {"email": "sales@acme.com"}
+    provider.get_user_info.return_value = {
+        "email": "sales@acme.com",
+        "hubspot_portal_id": "123",
+        "hubspot_portal_name": "Acme HubSpot",
+        "hubspot_user_id": "987",
+    }
 
     with (
         patch(
@@ -141,6 +142,64 @@ async def test_callback_creates_hubspot_integration_with_placeholder_metadata() 
     assert created.integration_scope == IntegrationScope.ORGANIZATION
     assert created.connection_metadata["provider_key"] == "hubspot"
     assert created.connection_metadata["initial_sync_status"] == "queued"
+    assert created.connection_metadata["hubspot_portal_id"] == "123"
+    assert created.connection_metadata["hubspot_portal_name"] == "Acme HubSpot"
+    assert created.connection_metadata["hubspot_user_id"] == "987"
+
+
+@pytest.mark.asyncio
+async def test_callback_validates_hubspot_scopes_from_access_token_metadata() -> None:
+    service = CopilotCallbackService()
+    user_id = uuid4()
+    organisation_id = uuid4()
+    duplicate_session = _make_session(FakeResult(scalar=None))
+    reactivate_session = _make_session(FakeResult(scalar=None))
+    create_session = _make_session()
+
+    provider = AsyncMock()
+    provider.provider_key = "hubspot"
+    provider.exchange_code.return_value = {
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_in": 3600,
+    }
+    provider.get_user_info.return_value = {
+        "email": "sales@acme.com",
+        "hubspot_portal_id": "123",
+        "scopes": _HUBSPOT_GRANTED_SCOPE.split(),
+    }
+
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.copilot_oauth_service.decode_oauth_state",
+            return_value={
+                "sub": str(user_id),
+                "org": str(organisation_id),
+                "type": IntegrationType.HUBSPOT.value,
+                "jti": str(uuid4()),
+            },
+        ),
+        patch.object(
+            CopilotCallbackService,
+            "_fetch_user_from_master",
+            AsyncMock(return_value=_make_user(user_id=user_id, organisation_id=organisation_id)),
+        ),
+        patch(
+            "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_org_async_session",
+            side_effect=_session_generator([duplicate_session, reactivate_session, create_session]),
+        ),
+        patch.object(service, "_save_connection_mapping", AsyncMock()),
+        patch.object(service, "_trigger_initial_sync"),
+    ):
+        result = await service.handle_oauth_callback(code="abc", state="signed-state")
+
+    assert result["integration_type"] == "hubspot"
+    created = create_session.add.call_args[0][0]
+    assert created.scopes == _HUBSPOT_GRANTED_SCOPE.split()
 
 
 @pytest.mark.asyncio
@@ -166,7 +225,11 @@ async def test_callback_reactivates_existing_hubspot_integration() -> None:
         "expires_in": 3600,
         "scope": _HUBSPOT_GRANTED_SCOPE,
     }
-    provider.get_user_info.return_value = {"email": "sales@acme.com"}
+    provider.get_user_info.return_value = {
+        "email": "sales@acme.com",
+        "hubspot_portal_id": "123",
+        "hubspot_user_id": "987",
+    }
 
     with (
         patch(
@@ -199,6 +262,8 @@ async def test_callback_reactivates_existing_hubspot_integration() -> None:
     assert result["reactivated"] is True
     assert existing.is_active is True
     assert existing.connection_metadata["initial_sync_status"] == "queued"
+    assert existing.connection_metadata["hubspot_portal_id"] == "123"
+    assert existing.connection_metadata["hubspot_user_id"] == "987"
 
 
 @pytest.mark.asyncio

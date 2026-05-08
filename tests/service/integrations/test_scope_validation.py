@@ -4,6 +4,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.scope_validation import (
     get_missing_required_scopes,
     parse_granted_scopes,
+    parse_granted_scopes_from_token_payload,
 )
 
 
@@ -23,6 +24,12 @@ def test_parse_granted_scopes_supports_comma_delimited_strings() -> None:
         "groups:read",
         "users:read.email",
     ]
+
+
+def test_parse_granted_scopes_from_token_payload_supports_hubspot_scopes_array() -> None:
+    assert parse_granted_scopes_from_token_payload(
+        {"scopes": ["oauth", "crm.objects.deals.read"]},
+    ) == ["oauth", "crm.objects.deals.read"]
 
 
 def test_get_missing_required_scopes_detects_missing_google_meet_scope() -> None:
@@ -87,26 +94,15 @@ def test_get_missing_required_scopes_detects_missing_slack_scopes() -> None:
     }
 
 
-def test_get_missing_required_scopes_detects_missing_hubspot_task_scope() -> None:
-    assert "crm.objects.tasks.read" in get_missing_required_scopes(
+def test_get_missing_required_scopes_detects_missing_hubspot_deal_schema_scope() -> None:
+    assert "crm.schemas.deals.read" in get_missing_required_scopes(
         IntegrationType.HUBSPOT,
         [
             "oauth",
-            "automation",
-            "conversations.read",
-            "sales-email-read",
             "crm.objects.companies.read",
             "crm.objects.contacts.read",
             "crm.objects.deals.read",
-            "crm.objects.leads.read",
-            "crm.objects.line_items.read",
-            "crm.objects.products.read",
             "crm.objects.owners.read",
-            "crm.objects.users.read",
-            "crm.schemas.companies.read",
-            "crm.schemas.contacts.read",
-            "crm.schemas.deals.read",
-            "crm.objects.notes.read",
         ],
     )
 

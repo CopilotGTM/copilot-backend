@@ -1086,6 +1086,7 @@ class HubSpotIntegrationConfig:
     # Non-secret config — always from env
     REDIRECT_URI: str = os.getenv("HUBSPOT_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
     HUBSPOT_HTTP_TIMEOUT_SEC: float = float(os.getenv("HUBSPOT_HTTP_TIMEOUT_SEC", "10"))
+    WEBHOOK_PUBLIC_URL: str = os.getenv("HUBSPOT_WEBHOOK_PUBLIC_URL", "").strip()
 
     # Cached credentials (populated from env or Key Vault)
     _client_id: str | None = os.getenv("HUBSPOT_CLIENT_ID")

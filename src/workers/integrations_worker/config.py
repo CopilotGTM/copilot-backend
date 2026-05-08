@@ -207,6 +207,12 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.process_hubspot_webhook_event": {
+        "soft": 300,
+        "hard": 360,
+        "retries": 3,
+        "retry_delay": 60,
+    },
     # ── HubSpot record sync (phase 6: deals fact table) ──
     # Larger window than the dimensions: deal volumes per portal are typically
     # the highest of any object, and we request `propertiesWithHistory` which
@@ -420,6 +426,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             # CRM record sync tasks (HubSpot, phase 5: contacts)
             "integrations.sync_hubspot_contacts": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.process_hubspot_webhook_event": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },
