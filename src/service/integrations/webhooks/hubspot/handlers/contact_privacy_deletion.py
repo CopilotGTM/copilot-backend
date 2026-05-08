@@ -10,6 +10,9 @@ from src.domain.models.organisation_tables.sync.crm import (
     ApprovalStatus,
     CRMActivity,
     CRMContact,
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
     DealStakeholder,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
@@ -30,6 +33,8 @@ class HubSpotContactPrivacyDeletionHandler:
         contact: CRMContact,
         stakeholders: list[DealStakeholder],
         activities: list[CRMActivity],
+        deal_participants: list[CRMDealParticipant] | None = None,
+        deals: list[CRMDeal] | None = None,
     ) -> None:
         contact.is_deleted = True
         contact.first_name = None
@@ -89,6 +94,20 @@ class HubSpotContactPrivacyDeletionHandler:
             activity.properties = dict(_PRIVACY_DELETED_PAYLOAD)
             activity.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
             activity.data_payload = dict(_PRIVACY_DELETED_PAYLOAD)
+
+        for participant in deal_participants or []:
+            participant.is_deleted = True
+            participant.related_local_id = None
+            participant.related_external_id = None
+            participant.related_name = None
+            participant.related_email = None
+            participant.data_payload = dict(_PRIVACY_DELETED_PAYLOAD)
+
+        for deal in deals or []:
+            deal.primary_contact_id = None
+            deal.primary_contact_external_id = None
+            deal.primary_contact_name = None
+            deal.primary_contact_email = None
 
     @classmethod
     async def handle(cls, event: HubSpotWebhookEvent) -> None:
@@ -162,6 +181,20 @@ class HubSpotContactPrivacyDeletionHandler:
                     contact_ids=contact_ids,
                     object_id=object_id,
                 )
+                deal_participants = await cls._deal_participants_for_contacts(
+                    org_session=org_session,
+                    organisation_id=organisation_id,
+                    integration_id=integration.integration_id,
+                    contact_ids=contact_ids,
+                    object_id=object_id,
+                )
+                deals = await cls._deals_for_contacts(
+                    org_session=org_session,
+                    organisation_id=organisation_id,
+                    integration_id=integration.integration_id,
+                    contact_ids=contact_ids,
+                    object_id=object_id,
+                )
 
                 for contact in contacts:
                     cls.scrub_records_for_contact_privacy_deletion(
@@ -177,6 +210,18 @@ class HubSpotContactPrivacyDeletionHandler:
                             if activity.contact_id == contact.contact_id
                             or activity.contact_external_id == object_id
                         ],
+                        deal_participants=[
+                            participant
+                            for participant in deal_participants
+                            if participant.related_local_id == contact.contact_id
+                            or participant.related_external_id == object_id
+                        ],
+                        deals=[
+                            deal
+                            for deal in deals
+                            if deal.primary_contact_id == contact.contact_id
+                            or deal.primary_contact_external_id == object_id
+                        ],
                     )
                     org_session.add(contact)
                     touched_contacts += 1
@@ -185,6 +230,10 @@ class HubSpotContactPrivacyDeletionHandler:
                     org_session.add(stakeholder)
                 for activity in activities:
                     org_session.add(activity)
+                for participant in deal_participants:
+                    org_session.add(participant)
+                for deal in deals:
+                    org_session.add(deal)
 
             if touched_contacts:
                 await org_session.commit()
@@ -259,6 +308,47 @@ class HubSpotContactPrivacyDeletionHandler:
             (
                 col(CRMActivity.contact_id).in_(contact_ids)
                 | (col(CRMActivity.contact_external_id) == object_id)
+            ),
+        )
+        result = await org_session.execute(statement)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _deal_participants_for_contacts(
+        *,
+        org_session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        contact_ids: list[UUID],
+        object_id: str,
+    ) -> list[CRMDealParticipant]:
+        statement = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == organisation_id,
+            col(CRMDealParticipant.integration_id) == integration_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            (
+                col(CRMDealParticipant.related_local_id).in_(contact_ids)
+                | (col(CRMDealParticipant.related_external_id) == object_id)
+            ),
+        )
+        result = await org_session.execute(statement)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _deals_for_contacts(
+        *,
+        org_session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        contact_ids: list[UUID],
+        object_id: str,
+    ) -> list[CRMDeal]:
+        statement = select(CRMDeal).where(
+            col(CRMDeal.organisation_id) == organisation_id,
+            col(CRMDeal.integration_id) == integration_id,
+            (
+                col(CRMDeal.primary_contact_id).in_(contact_ids)
+                | (col(CRMDeal.primary_contact_external_id) == object_id)
             ),
         )
         result = await org_session.execute(statement)

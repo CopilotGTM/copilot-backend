@@ -6,6 +6,9 @@ from src.domain.models.organisation_tables.sync.crm import (
     ApprovalStatus,
     CRMActivity,
     CRMContact,
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
     DealStakeholder,
 )
 from src.service.integrations.webhooks.hubspot.handlers.contact_privacy_deletion import (
@@ -63,11 +66,33 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         metrics={"count": 1},
         data_payload={"properties": {"hs_body_preview": "Ask Ada"}},
     )
+    participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        deal_id=uuid4(),
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact.contact_id,
+        related_external_id="456",
+        related_name="Ada Lovelace",
+        related_email="ada@example.com",
+        data_payload={"id": "456", "email": "ada@example.com"},
+    )
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="deal-1",
+        primary_contact_id=contact.contact_id,
+        primary_contact_external_id="456",
+        primary_contact_name="Ada Lovelace",
+        primary_contact_email="ada@example.com",
+    )
 
     HubSpotContactPrivacyDeletionHandler.scrub_records_for_contact_privacy_deletion(
         contact=contact,
         stakeholders=[stakeholder],
         activities=[activity],
+        deal_participants=[participant],
+        deals=[deal],
     )
 
     assert contact.is_deleted is True
@@ -94,3 +119,15 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert activity.properties == {"privacy_deleted": True}
     assert activity.metrics == {"privacy_deleted": True}
     assert activity.data_payload == {"privacy_deleted": True}
+
+    assert participant.is_deleted is True
+    assert participant.related_local_id is None
+    assert participant.related_external_id is None
+    assert participant.related_name is None
+    assert participant.related_email is None
+    assert participant.data_payload == {"privacy_deleted": True}
+
+    assert deal.primary_contact_id is None
+    assert deal.primary_contact_external_id is None
+    assert deal.primary_contact_name is None
+    assert deal.primary_contact_email is None
