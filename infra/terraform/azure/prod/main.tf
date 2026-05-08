@@ -39,7 +39,7 @@ module "waf" {
   location            = var.location
   subnet_id           = module.vnet.waf_subnet_id
   appgw_sku           = var.appgw_sku
-  min_capacity        = 1
+  min_capacity        = 0
   max_capacity        = 2
   enable_diagnostics  = true
   log_retention_days  = 30
