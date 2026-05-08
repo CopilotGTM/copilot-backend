@@ -11,12 +11,6 @@ trigger:
   branches:
     include:
       - release/infra/*
-  paths:
-    include:
-      - infra/terraform/azure/prod/**
-      - infra/terraform/azure/modules/**
-      - .azure-pipelines/azure-infra-pipeline-prod.yml
-      - .azure-pipelines/templates/terraform-env-stage.yml
 
 pr:
   branches:
