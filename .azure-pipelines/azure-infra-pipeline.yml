@@ -28,9 +28,9 @@ variables:
   # Environment-specific agent pools (each env has its own VNet + agent)
   # These must match the pool names created by Terraform in each environment
   - name: DEV_AGENT_POOL
-    value: 'StaticAgentPool'
+    value: 'copilot-devops-dev-deploy'
   - name: PROD_AGENT_POOL
-    value: 'StaticAgentPool-prod'
+    value: 'copilot-devops-prod-deploy'
 
 stages:
   # -------------------------------------------------------------------------
