@@ -20,7 +20,7 @@ features:
 oauth_config:
   redirect_urls:
     - https://devapi.copilotgtm.com/users/bots/slack/oauth/callback
-    - https://devapp.copilotgtm.com/users/integrations/copilot-oauth/callback
+    - https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback
   scopes:
     bot:
       # Messaging

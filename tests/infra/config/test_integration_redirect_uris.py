@@ -30,6 +30,18 @@ def test_helm_env_overrides_declare_slack_redirect_uri() -> None:
     ) in prod_values
 
 
+def test_slack_app_manifests_declare_integration_redirect_uri() -> None:
+    dev_manifest = (
+        REPO_ROOT / "infra" / "manifests" / "slack-app" / "dev" / "manifest.yaml"
+    ).read_text(encoding="utf-8")
+    prod_manifest = (
+        REPO_ROOT / "infra" / "manifests" / "slack-app" / "prod" / "manifest.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback" in dev_manifest
+    assert "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback" in prod_manifest
+
+
 def test_helm_env_overrides_declare_hubspot_and_salesforce_redirect_uris() -> None:
     dev_values = (REPO_ROOT / "charts" / "application" / "values-dev.yaml").read_text(
         encoding="utf-8"
