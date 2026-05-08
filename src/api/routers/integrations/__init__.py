@@ -11,6 +11,7 @@ from fastapi import APIRouter
 
 from .copilot_oauth_routes import router as copilot_oauth_router
 from .deal_integration_routes import router as deal_integration_router
+from .hubspot_webhook_routes import router as hubspot_webhook_router
 from .integration_routes import router as integration_router
 
 # Main router that combines all integration routes
@@ -20,5 +21,11 @@ integrations_router = APIRouter(tags=["integrations"])
 integrations_router.include_router(copilot_oauth_router)
 integrations_router.include_router(integration_router)
 integrations_router.include_router(deal_integration_router)
+integrations_router.include_router(hubspot_webhook_router)
 
-__all__ = ["integrations_router", "copilot_oauth_router", "integration_router"]
+__all__ = [
+    "integrations_router",
+    "copilot_oauth_router",
+    "integration_router",
+    "hubspot_webhook_router",
+]

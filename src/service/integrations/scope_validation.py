@@ -68,21 +68,10 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.HUBSPOT: frozenset(
         {
             "oauth",
-            "automation",
-            "conversations.read",
-            "sales-email-read",
             "crm.objects.companies.read",
             "crm.objects.contacts.read",
             "crm.objects.deals.read",
-            "crm.objects.leads.read",
-            "crm.objects.line_items.read",
-            "crm.objects.products.read",
             "crm.objects.owners.read",
-            "crm.objects.users.read",
-            "crm.objects.tasks.read",
-            "crm.objects.notes.read",
-            "crm.schemas.companies.read",
-            "crm.schemas.contacts.read",
             "crm.schemas.deals.read",
         }
     ),
@@ -132,11 +121,6 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "users:read.email": "Slack user email access",
     "team:read": "Slack workspace access",
     "oauth": "HubSpot app access",
-    "automation": "HubSpot automation access",
-    "conversations.read": "HubSpot conversations access",
-    "sales-email-read": "HubSpot sales email access",
-    "crm.objects.tasks.read": "HubSpot task access",
-    "crm.objects.notes.read": "HubSpot note access",
     "api": "Salesforce API access",
     "refresh_token": "Salesforce offline access",
     "Mail.Read": "Outlook mail access",
@@ -178,7 +162,7 @@ def parse_granted_scopes_from_token_payload(
     token_payload: dict[str, object],
     fallback: list[str] | None = None,
 ) -> list[str] | None:
-    scope_value = token_payload.get("scope")
+    scope_value = token_payload.get("scope", token_payload.get("scopes"))
     if isinstance(scope_value, (str, list)) or scope_value is None:
         return parse_granted_scopes(scope_value, fallback)
     return fallback

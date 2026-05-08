@@ -37,6 +37,9 @@ class CopilotCallbackService:
     _PROVIDER_KEY_METADATA_KEY = "provider_key"
     _PROVIDER_CONFIG_KEY_METADATA_KEY = "provider_config_key"
     _TOKEN_TYPE_METADATA_KEY = "token_type"
+    _HUBSPOT_PORTAL_ID_METADATA_KEY = "hubspot_portal_id"
+    _HUBSPOT_PORTAL_NAME_METADATA_KEY = "hubspot_portal_name"
+    _HUBSPOT_USER_ID_METADATA_KEY = "hubspot_user_id"
 
     @staticmethod
     def _enum_value(value: Any) -> Any:
@@ -87,11 +90,6 @@ class CopilotCallbackService:
             return "Slack permissions were not granted. Please reconnect and allow Slack access."
 
         if integration_type == IntegrationType.HUBSPOT:
-            if {"crm.objects.tasks.read", "crm.objects.notes.read"} & missing_scopes:
-                return (
-                    "HubSpot activity permissions were not granted. "
-                    "Please reconnect and allow HubSpot task and note access."
-                )
             return (
                 "HubSpot permissions were not granted. Please reconnect and allow HubSpot access."
             )
@@ -129,6 +127,7 @@ class CopilotCallbackService:
         integration_type: IntegrationType,
         provider_key: str,
         token_payload: dict[str, Any],
+        provider_user_info: dict[str, Any] | None = None,
     ) -> None:
         """Merge provider tokens into the integration record and set expiry/metadata.
 
@@ -137,6 +136,13 @@ class CopilotCallbackService:
         """
         credentials = dict(integration.credentials or {})
         credentials.update(token_payload)
+        if (
+            integration_type == IntegrationType.HUBSPOT
+            and provider_user_info
+            and "scope" not in credentials
+            and "scopes" not in credentials
+        ):
+            credentials["scopes"] = provider_user_info.get("scopes")
 
         integration.credentials = credentials
         integration.access_token_expires_at = self._parse_token_expiry(
@@ -157,7 +163,26 @@ class CopilotCallbackService:
         token_type = credentials.get("token_type")
         if isinstance(token_type, str) and token_type:
             metadata[self._TOKEN_TYPE_METADATA_KEY] = token_type
+        if integration_type == IntegrationType.HUBSPOT and provider_user_info:
+            self._apply_hubspot_user_info_metadata(metadata, provider_user_info)
         integration.connection_metadata = metadata
+
+    def _apply_hubspot_user_info_metadata(
+        self,
+        metadata: dict[str, Any],
+        provider_user_info: dict[str, Any],
+    ) -> None:
+        portal_id = provider_user_info.get("hubspot_portal_id")
+        if portal_id is not None:
+            metadata[self._HUBSPOT_PORTAL_ID_METADATA_KEY] = str(portal_id)
+
+        portal_name = provider_user_info.get("hubspot_portal_name")
+        if portal_name is not None:
+            metadata[self._HUBSPOT_PORTAL_NAME_METADATA_KEY] = str(portal_name)
+
+        hubspot_user_id = provider_user_info.get("hubspot_user_id")
+        if hubspot_user_id is not None:
+            metadata[self._HUBSPOT_USER_ID_METADATA_KEY] = str(hubspot_user_id)
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, Any]:
         """Process the provider's OAuth callback and persist the integration.
@@ -215,9 +240,17 @@ class CopilotCallbackService:
             access_token = tokens.get("access_token")
             if not access_token:
                 raise ValueError("Missing access_token from provider")
-            self._validate_required_scopes(integration_type, tokens)
 
             user_info = await provider.get_user_info(str(access_token))
+            validation_payload = dict(tokens)
+            if (
+                integration_type == IntegrationType.HUBSPOT
+                and "scope" not in validation_payload
+                and "scopes" not in validation_payload
+            ):
+                validation_payload["scopes"] = user_info.get("scopes")
+            self._validate_required_scopes(integration_type, validation_payload)
+
             integration_email = str(user_info.get("email") or "").strip().lower()
             if not integration_email:
                 raise ValueError("Provider did not return an email for the connected account")
@@ -272,6 +305,7 @@ class CopilotCallbackService:
                     provider_key=provider.provider_key,
                     tokens=tokens,
                     integration_email=integration_email,
+                    provider_user_info=user_info,
                 )
 
         # Scope comes from integration metadata, not the user's role — personal
@@ -286,6 +320,7 @@ class CopilotCallbackService:
             provider_key=provider.provider_key,
             tokens=tokens,
             integration_email=integration_email,
+            provider_user_info=user_info,
         )
 
     async def _reactivate_integration(
@@ -298,6 +333,7 @@ class CopilotCallbackService:
         provider_key: str,
         tokens: dict[str, Any],
         integration_email: str,
+        provider_user_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Reactivate a previously disconnected integration with fresh tokens.
 
@@ -318,6 +354,7 @@ class CopilotCallbackService:
             integration_type=integration_type,
             provider_key=provider_key,
             token_payload=tokens,
+            provider_user_info=provider_user_info,
         )
         InitialSyncService().apply_post_connect_state(integration)
 
@@ -350,6 +387,7 @@ class CopilotCallbackService:
         provider_key: str,
         tokens: dict[str, Any],
         integration_email: str,
+        provider_user_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         metadata = INTEGRATION_METADATA[integration_type]
         async for org_session in acquire_org_async_session(organisation_id):
@@ -370,6 +408,7 @@ class CopilotCallbackService:
                 integration_type=integration_type,
                 provider_key=provider_key,
                 token_payload=tokens,
+                provider_user_info=provider_user_info,
             )
             InitialSyncService().apply_post_connect_state(integration)
 

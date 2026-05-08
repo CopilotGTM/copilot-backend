@@ -2,6 +2,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.service.integrations.providers.hubspot_provider import HubSpotProvider
 
 
@@ -23,20 +24,7 @@ async def test_hubspot_provider_builds_authorization_url() -> None:
     assert params["client_id"] == ["hubspot-client-id"]
     assert params["state"] == ["signed-state"]
     assert params["redirect_uri"] == [provider.redirect_uri]
-    assert params["scope"] == [
-        (
-            "oauth automation conversations.read sales-email-read "
-            "crm.objects.companies.read crm.objects.companies.write "
-            "crm.objects.contacts.read crm.objects.contacts.write "
-            "crm.objects.deals.read crm.objects.deals.write "
-            "crm.objects.leads.read crm.objects.leads.write "
-            "crm.objects.line_items.read crm.objects.line_items.write "
-            "crm.objects.products.read crm.objects.products.write "
-            "crm.objects.owners.read crm.objects.users.read "
-            "crm.objects.tasks.read crm.objects.notes.read "
-            "crm.schemas.companies.read crm.schemas.contacts.read crm.schemas.deals.read"
-        )
-    ]
+    assert params["scope"] == [" ".join(INTEGRATION_METADATA[IntegrationType.HUBSPOT].oauth_scopes)]
 
 
 @pytest.mark.asyncio
@@ -53,6 +41,7 @@ async def test_hubspot_provider_normalizes_user_info(monkeypatch: pytest.MonkeyP
                 "user_id": 42,
                 "hub_id": 777,
                 "hub_domain": "acme",
+                "scopes": ["oauth", "crm.objects.deals.read"],
             }
 
     async def fake_request(*args, **kwargs) -> FakeResponse:
@@ -66,6 +55,7 @@ async def test_hubspot_provider_normalizes_user_info(monkeypatch: pytest.MonkeyP
     assert payload["hubspot_user_id"] == 42
     assert payload["hubspot_portal_id"] == 777
     assert payload["hubspot_portal_name"] == "acme"
+    assert payload["scopes"] == ["oauth", "crm.objects.deals.read"]
 
 
 @pytest.mark.asyncio
