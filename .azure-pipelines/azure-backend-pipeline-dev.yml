@@ -2,7 +2,8 @@
 # Azure DevOps Pipeline - Backend DEV Environment
 # ============================================================================
 # This pipeline handles DEV deployments only.
-# Triggers on: main, feature/*, hotfix/* branches
+# Triggers validation on: main, feature/*, hotfix/* branches.
+# Builds and deploys only on main, hotfix/*, or manual runs.
 # Deploys to: Dev AKS cluster via Helm
 # ============================================================================
 
@@ -33,8 +34,10 @@ variables:
   - group: app-secrets-dev
   - name: ENVIRONMENT
     value: 'dev'
-  - name: AGENT_POOL
-    value: 'StaticAgentPool'
+  - name: DEV_FAST_AGENT_POOL
+    value: 'copilot-devops-dev-fast'
+  - name: DEV_DEPLOY_AGENT_POOL
+    value: 'copilot-devops-dev-deploy'
 
   # Helm/Chart configuration
   - name: CHART_PATH
@@ -76,7 +79,7 @@ stages:
       - job: DetectChanges
         displayName: Detect if only docs changed
         pool:
-          name: $(AGENT_POOL)
+          name: $(DEV_FAST_AGENT_POOL)
         steps:
           - checkout: self
             fetchDepth: '0'  # Need full history to compare commits
@@ -130,7 +133,7 @@ stages:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
         pool:
-          name: $(AGENT_POOL)
+          name: $(DEV_FAST_AGENT_POOL)
         steps:
           - checkout: self
 
@@ -213,12 +216,12 @@ stages:
     dependsOn:
       - CheckChanges
       - QualityCheck
-    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'), ne(variables['Build.Reason'], 'PullRequest'), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/'), eq(variables['Build.Reason'], 'Manual')))
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
         pool:
-          name: $(AGENT_POOL)
+          name: $(DEV_DEPLOY_AGENT_POOL)
         steps:
           - checkout: self
 
@@ -425,6 +428,7 @@ stages:
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -435,13 +439,13 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -452,13 +456,13 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -469,7 +473,6 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Knowledge Worker image for vulnerabilities..."
@@ -477,6 +480,7 @@ stages:
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -487,7 +491,6 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]📊 Generating vulnerability report (JSON)..."
@@ -597,7 +600,7 @@ stages:
     dependsOn:
       - CheckChanges
       - BuildAndPush
-    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/'), eq(variables['Build.Reason'], 'Manual')))
     variables:
       - name: KUBECONFIG_FILE
         value: '$(Pipeline.Workspace)/kubeconfig-dev.yaml'
@@ -606,7 +609,7 @@ stages:
         displayName: Deploy to Dev AKS
         environment: 'dev'
         pool:
-          name: $(AGENT_POOL)
+          name: $(DEV_DEPLOY_AGENT_POOL)
         strategy:
           runOnce:
             deploy:

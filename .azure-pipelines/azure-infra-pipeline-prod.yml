@@ -33,7 +33,7 @@ variables:
   - name: TF_VERSION
     value: '1.9.0'
   - name: PROD_AGENT_POOL
-    value: 'StaticAgentPool-prod'
+    value: 'copilot-devops-prod-deploy'
 
 stages:
   # -------------------------------------------------------------------------

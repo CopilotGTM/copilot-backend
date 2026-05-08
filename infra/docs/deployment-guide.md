@@ -202,14 +202,16 @@ Each environment has its own:
 
 ### 1. Agent Pool
 
-- **Name:** `StaticAgentPool`
-- **Type:** Self-hosted (VM inside VNet)
+- **Current bootstrap:** local Terraform first; static VM runner is commented out
+- **Legacy fallback name:** `StaticAgentPool`
+- **Target name:** Managed DevOps Pools such as `copilot-devops-dev-fast`, `copilot-devops-dev-deploy`, and `copilot-devops-prod-deploy`
+- **Type:** Elastic self-hosted Managed DevOps Pool inside VNet, with static VM as fallback only
 - **Why:** Key Vault and Storage use Private Endpoints; agents must be inside VNet to access them
-- **Provisioning:** The agent VM is created automatically by Terraform via the `devops_agent` module
+- **Provisioning:** Managed DevOps Pools are disabled by default until prerequisites are ready; the legacy `devops_agent` VM block is preserved but commented out
 
-### 2. Self-Hosted Agent VM (Created by Terraform)
+### 2. Legacy Self-Hosted Agent VM (Commented Fallback)
 
-The `devops_agent` module in `infra/terraform/azure/modules/devops_agent/` creates:
+The `devops_agent` module in `infra/terraform/azure/modules/devops_agent/` is kept for fallback use, but environment-level calls to it are currently commented out. If re-enabled, it creates:
 
 - A Linux VM (Ubuntu 22.04) in the private subnet
 - Pre-installed tools: Docker, Terraform, kubectl, Azure CLI, Helm, Node.js
@@ -258,7 +260,7 @@ Non-sensitive values stay in `terraform.tfvars` (committed in repo).
 |---------------|-------------|
 | `TF_VAR_db_password` | PostgreSQL database password |
 | `TF_VAR_azuredevops_pat` | Azure DevOps Personal Access Token |
-| `TF_VAR_admin_password` | DevOps agent VM admin password |
+| `TF_VAR_admin_password` | Legacy DevOps agent VM admin password, only if the static VM block is uncommented |
 | `TF_VAR_azure_openai_key` | Azure OpenAI API key |
 | `TF_VAR_supabase_anon_key` | Supabase anonymous key |
 | `TF_VAR_supabase_service_role_key` | Supabase service role key |
@@ -342,7 +344,7 @@ terraform apply
 ### Pipeline fails with "Key Vault access denied"
 
 - **Cause:** Agent is not inside VNet, cannot reach private endpoint
-- **Fix:** Ensure pipeline uses `StaticAgentPool` (self-hosted agent in VNet)
+- **Fix:** Ensure pipeline uses a validated VNet-connected pool. During migration this may be the legacy `StaticAgentPool`; target state is a Managed DevOps Pool.
 
 ### Pipeline fails with "Variable not found"
 
@@ -399,7 +401,7 @@ In Azure DevOps → Pipelines → Library:
 |------|-------|---------|
 | `TF_VAR_db_password` | (prod password) | 🔒 Yes |
 | `TF_VAR_azuredevops_pat` | (PAT token) | 🔒 Yes |
-| `TF_VAR_admin_password` | (VM password) | 🔒 Yes |
+| `TF_VAR_admin_password` | (legacy VM password, only if static agent is enabled) | 🔒 Yes |
 | `TF_VAR_azure_openai_key` | (API key) | 🔒 Yes |
 | `TF_VAR_supabase_anon_key` | (key) | 🔒 Yes |
 | `TF_VAR_supabase_service_role_key` | (key) | 🔒 Yes |
@@ -450,7 +452,9 @@ git push origin release/1.0.0
 
 ---
 
-## DevOps Agent Module Reference
+## Legacy DevOps Agent Module Reference
+
+This module documents the current static VM fallback. The target pipeline-agent model is Managed DevOps Pools with VNet injection, custom images, and environment-specific pools. Keep this module only until the elastic pools are validated and the YAML pool names are migrated.
 
 ### Module Location
 

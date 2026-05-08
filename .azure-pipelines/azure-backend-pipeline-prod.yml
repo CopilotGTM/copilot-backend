@@ -23,8 +23,8 @@ variables:
   - group: app-secrets-prod
   - name: ENVIRONMENT
     value: 'prod'
-  - name: AGENT_POOL
-    value: 'StaticAgentPool-prod'
+  - name: PROD_DEPLOY_AGENT_POOL
+    value: 'copilot-devops-prod-deploy'
 
   # Helm/Chart configuration
   - name: CHART_PATH
@@ -66,7 +66,7 @@ stages:
       - job: DetectChanges
         displayName: Detect if only docs changed
         pool:
-          name: $(AGENT_POOL)
+          name: $(PROD_DEPLOY_AGENT_POOL)
         steps:
           - checkout: self
             fetchDepth: '0'  # Need full history to compare commits
@@ -120,7 +120,7 @@ stages:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
         pool:
-          name: $(AGENT_POOL)
+          name: $(PROD_DEPLOY_AGENT_POOL)
         steps:
           - checkout: self
 
@@ -208,7 +208,7 @@ stages:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
         pool:
-          name: $(AGENT_POOL)
+          name: $(PROD_DEPLOY_AGENT_POOL)
         steps:
           - checkout: self
 
@@ -415,6 +415,7 @@ stages:
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -425,13 +426,13 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -442,13 +443,13 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -459,7 +460,6 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]🔍 Scanning Knowledge Worker image for vulnerabilities..."
@@ -467,6 +467,7 @@ stages:
               trivy image \
                 --severity CRITICAL,HIGH \
                 --ignore-unfixed \
+                --exit-code 1 \
                 --no-progress \
                 --format table \
                 $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
@@ -477,7 +478,6 @@ stages:
             env:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
-            continueOnError: true
 
           - script: |
               echo "##[section]📊 Generating vulnerability report (JSON)..."
@@ -596,7 +596,7 @@ stages:
         displayName: Deploy to Prod AKS
         environment: 'terraform-prod'  # Uses approval gate configured in Azure DevOps
         pool:
-          name: $(AGENT_POOL)
+          name: $(PROD_DEPLOY_AGENT_POOL)
         strategy:
           runOnce:
             deploy:

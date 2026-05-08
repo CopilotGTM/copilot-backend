@@ -3,8 +3,11 @@
 # =================================================================
 
 # -----------------------------------------------------------------
-# Azure DevOps Agent Pool & Queue
+# Legacy Azure DevOps Static Agent Pool & Queue
 # -----------------------------------------------------------------
+# Static pool/queue resources are preserved here only as rollback reference.
+# Prod pipelines now use the Managed DevOps Pool queue created by Azure.
+/*
 resource "azuredevops_agent_pool" "pool" {
   name           = var.agent_pool
   auto_provision = false
@@ -19,6 +22,49 @@ resource "azuredevops_agent_queue" "queue" {
 resource "azuredevops_pipeline_authorization" "queue_auth" {
   project_id  = data.azuredevops_project.project.id
   resource_id = azuredevops_agent_queue.queue.id
+  type        = "queue"
+}
+*/
+
+removed {
+  from = azuredevops_agent_pool.pool
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = azuredevops_agent_queue.queue
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = azuredevops_pipeline_authorization.queue_auth
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+# Managed DevOps Pools are created by Azure Resource Manager, but Azure
+# DevOps still requires project queue authorization before YAML pipelines can
+# use them.
+data "azuredevops_agent_queue" "managed_devops_prod_deploy" {
+  count      = var.enable_managed_devops_pools ? 1 : 0
+  project_id = data.azuredevops_project.project.id
+  name       = var.managed_devops_prod_deploy_pool_name
+
+  depends_on = [module.managed_devops_prod_deploy_pool]
+}
+
+resource "azuredevops_pipeline_authorization" "managed_devops_prod_deploy_queue_auth" {
+  count       = var.enable_managed_devops_pools ? 1 : 0
+  project_id  = data.azuredevops_project.project.id
+  resource_id = data.azuredevops_agent_queue.managed_devops_prod_deploy[0].id
   type        = "queue"
 }
 

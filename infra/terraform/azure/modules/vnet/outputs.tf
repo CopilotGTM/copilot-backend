@@ -57,3 +57,13 @@ output "private_endpoints_subnet_name" {
   description = "Name of the dedicated private endpoints subnet (if created)."
   value       = try(azurerm_subnet.private_endpoints[0].name, null)
 }
+
+output "managed_devops_pools_subnet_ids" {
+  description = "Map of Managed DevOps Pool subnet short names to subnet IDs."
+  value       = { for name, subnet in azurerm_subnet.managed_devops_pools : name => subnet.id }
+}
+
+output "managed_devops_pools_subnet_names" {
+  description = "Map of Managed DevOps Pool subnet short names to subnet names."
+  value       = { for name, subnet in azurerm_subnet.managed_devops_pools : name => subnet.name }
+}

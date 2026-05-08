@@ -38,6 +38,25 @@ resource "azurerm_subnet" "private_endpoints" {
   private_endpoint_network_policies = "Disabled"
 }
 
+resource "azurerm_subnet" "managed_devops_pools" {
+  for_each             = { for subnet in var.managed_devops_pools_subnets : subnet.name => subnet }
+  name                 = "${var.vnet_name}-${each.value.name}"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [each.value.address_prefix]
+
+  delegation {
+    name = "managed-devops-pools"
+
+    service_delegation {
+      name = "Microsoft.DevOpsInfrastructure/pools"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+      ]
+    }
+  }
+}
+
 # Add NAT Gateway and Public IP for Internet egress from private subnet
 resource "azurerm_public_ip" "nat_gw" {
   name                = "${var.vnet_name}-nat-gw-pip"
@@ -62,6 +81,12 @@ resource "azurerm_nat_gateway_public_ip_association" "this" {
 # Associate NAT Gateway with all private subnets for internet egress
 resource "azurerm_subnet_nat_gateway_association" "private" {
   for_each       = azurerm_subnet.private
+  subnet_id      = each.value.id
+  nat_gateway_id = azurerm_nat_gateway.this.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "managed_devops_pools" {
+  for_each       = azurerm_subnet.managed_devops_pools
   subnet_id      = each.value.id
   nat_gateway_id = azurerm_nat_gateway.this.id
 }
