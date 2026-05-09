@@ -30,13 +30,12 @@ class SalesforcePipelinesFetcher:
         self.instance_url = instance_url.rstrip("/")
 
     async def fetch_opportunity_record_types(self) -> list[dict[str, Any]]:
-        soql = (
-            "SELECT Id, Name, DeveloperName, Description, IsActive, IsMaster "
-            "FROM RecordType "
-            "WHERE SobjectType = 'Opportunity' AND IsActive = true "
-            "ORDER BY Name"
+        describe_record_types = await self._fetch_opportunity_record_type_infos()
+        active_custom_record_types = await self._fetch_active_custom_opportunity_record_types()
+        records = _merge_record_type_metadata(
+            describe_record_types=describe_record_types,
+            active_custom_record_types=active_custom_record_types,
         )
-        records = await self._query_records(soql)
         logger.info(
             "Fetched Salesforce Opportunity record types",
             extra={
@@ -45,6 +44,23 @@ class SalesforcePipelinesFetcher:
             },
         )
         return records
+
+    async def _fetch_active_custom_opportunity_record_types(self) -> list[dict[str, Any]]:
+        soql = (
+            "SELECT Id, Name, DeveloperName, Description, IsActive "
+            "FROM RecordType "
+            "WHERE SobjectType = 'Opportunity' AND IsActive = true "
+            "ORDER BY Name"
+        )
+        return await self._query_records(soql)
+
+    async def _fetch_opportunity_record_type_infos(self) -> list[dict[str, Any]]:
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/sobjects/Opportunity/describe"
+        payload = await self._get_json(url)
+        record_type_infos = payload.get("recordTypeInfos")
+        if not isinstance(record_type_infos, list):
+            raise ValueError("Salesforce Opportunity describe returned non-list recordTypeInfos")
+        return [row for row in record_type_infos if isinstance(row, dict)]
 
     async def fetch_stage_values_for_record_type(self, record_type_id: str) -> list[dict[str, Any]]:
         url = (
@@ -121,7 +137,7 @@ class SalesforcePipelinesFetcher:
                     headers={"Authorization": f"Bearer {access_token}"},
                     params=params,
                 )
-                response.raise_for_status()
+                _raise_for_status_with_salesforce_body(response)
                 return response
 
         response = await call_with_token_retry(self.token_info, _request)
@@ -153,6 +169,71 @@ def _extract_stage_value_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
             found.append({"value": value, "label": label})
 
     return found
+
+
+def _merge_record_type_metadata(
+    *,
+    describe_record_types: list[dict[str, Any]],
+    active_custom_record_types: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    described_by_id = {
+        record_type_id: _record_type_from_describe_info(row)
+        for row in describe_record_types
+        for record_type_id in [_coerce_text(row.get("recordTypeId"))]
+        if record_type_id
+    }
+
+    merged: list[dict[str, Any]] = []
+    master_records = [row for row in described_by_id.values() if bool(row.get("IsMaster"))]
+    merged.extend(master_records)
+
+    for custom_record in active_custom_record_types:
+        record_type_id = _coerce_text(custom_record.get("Id"))
+        if not record_type_id:
+            continue
+        described = described_by_id.get(record_type_id, {})
+        if bool(described.get("IsMaster")):
+            continue
+        merged.append({**described, **custom_record, "IsMaster": False})
+
+    return merged
+
+
+def _raise_for_status_with_salesforce_body(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = response.text.strip()
+        if body:
+            message = f"{exc}\nSalesforce response body: {body[:500]}"
+            raise httpx.HTTPStatusError(
+                message,
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+        raise
+
+
+def _record_type_from_describe_info(row: dict[str, Any]) -> dict[str, Any]:
+    record_type_id = _coerce_text(row.get("recordTypeId")) or ""
+    label = _coerce_text(row.get("name")) or record_type_id
+    developer_name = _coerce_text(row.get("developerName")) or label
+    return {
+        "Id": record_type_id,
+        "Name": label,
+        "DeveloperName": developer_name,
+        "Description": None,
+        "IsActive": True,
+        "IsMaster": bool(row.get("master")),
+        "IsDefault": bool(row.get("defaultRecordTypeMapping")),
+        "IsAvailable": bool(row.get("available")),
+    }
+
+
+def _coerce_text(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _walk_stage_value_collections(node: Any) -> Iterable[list[dict[str, Any]]]:

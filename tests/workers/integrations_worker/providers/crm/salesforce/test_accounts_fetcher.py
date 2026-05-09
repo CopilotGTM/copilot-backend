@@ -22,8 +22,20 @@ def _token_info() -> IntegrationTokenInfo:
     )
 
 
+async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+    return await request_fn("access-token")
+
+
+def _mock_client_with_responses(responses: list[httpx.Response]) -> AsyncMock:
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=responses)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+    return client
+
+
 @pytest.mark.asyncio
-async def test_fetcher_describes_queryable_account_fields_and_paginates() -> None:
+async def test_fetcher_describes_selectable_account_fields_and_paginates() -> None:
     responses = [
         httpx.Response(
             200,
@@ -33,11 +45,12 @@ async def test_fetcher_describes_queryable_account_fields_and_paginates() -> Non
             ),
             json={
                 "fields": [
-                    {"name": "Id", "queryable": True, "type": "id"},
-                    {"name": "Name", "queryable": True, "type": "string"},
-                    {"name": "Website", "queryable": True, "type": "url"},
-                    {"name": "BillingStreet", "queryable": True, "type": "string"},
-                    {"name": "BillingAddress", "queryable": True, "type": "address"},
+                    {"name": "Id", "type": "id"},
+                    {"name": "Name", "type": "string"},
+                    {"name": "Website", "type": "url"},
+                    {"name": "BillingStreet", "type": "string"},
+                    {"name": "BillingAddress", "type": "address"},
+                    {"name": "Deleted_Field__c", "type": "string", "deprecatedAndHidden": True},
                     {"name": "Secret__c", "queryable": False, "type": "string"},
                 ]
             },
@@ -62,13 +75,7 @@ async def test_fetcher_describes_queryable_account_fields_and_paginates() -> Non
         ),
     ]
 
-    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
-        return await request_fn("access-token")
-
-    client = AsyncMock()
-    client.get = AsyncMock(side_effect=responses)
-    client.__aenter__.return_value = client
-    client.__aexit__.return_value = None
+    client = _mock_client_with_responses(responses)
 
     with (
         patch(
@@ -91,6 +98,7 @@ async def test_fetcher_describes_queryable_account_fields_and_paginates() -> Non
     assert "Website" in query_soql
     assert "BillingStreet" in query_soql
     assert "BillingAddress" not in query_soql
+    assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
 
 
@@ -114,13 +122,7 @@ async def test_fetcher_raises_when_salesforce_account_query_returns_non_list_rec
         ),
     ]
 
-    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
-        return await request_fn("access-token")
-
-    client = AsyncMock()
-    client.get = AsyncMock(side_effect=responses)
-    client.__aenter__.return_value = client
-    client.__aexit__.return_value = None
+    client = _mock_client_with_responses(responses)
 
     with (
         patch(
@@ -138,3 +140,32 @@ async def test_fetcher_raises_when_salesforce_account_query_returns_non_list_rec
         )
         with pytest.raises(ValueError, match="non-list records"):
             await fetcher.fetch_all()
+
+
+@pytest.mark.asyncio
+async def test_get_json_includes_salesforce_error_body_in_http_status_error() -> None:
+    response = httpx.Response(
+        400,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        text='[{"errorCode":"INVALID_FIELD","message":"No such column Website"}]',
+    )
+    client = _mock_client_with_responses([response])
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+        pytest.raises(httpx.HTTPStatusError) as exc_info,
+    ):
+        await SalesforceAccountsFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        )._get_json("https://acme.my.salesforce.com/services/data/v61.0/query")
+
+    assert "INVALID_FIELD" in str(exc_info.value)
+    assert "No such column Website" in str(exc_info.value)
