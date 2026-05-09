@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
-  "version": "1.2.0",
+  "version": "1.2.5",
   "id": "a726a205-7f3c-4116-8dcb-2e69ab2ffa8a",
   "developer": {
     "name": "CopilotGTM",
@@ -10,12 +10,12 @@
     "termsOfUseUrl": "https://www.copilotgtm.com/terms"
   },
   "name": {
-    "short": "CopilotGTM - DEV",
-    "full": "CopilotGTM - AI Sales Assistant (Dev)"
+    "short": "Kai - DEV",
+    "full": "Kai by CopilotGTM - AI Sales Assistant (Development)"
   },
   "description": {
-    "short": "AI-powered sales assistant for deal insights",
-    "full": "CopilotGTM helps sales teams get instant answers from their documentation, deal data, and meeting notes. Chat directly with the bot or @mention it in channels and group chats."
+    "short": "AI sales assistant for deals, meetings, and team knowledge",
+    "full": "Kai is the AI sales assistant from CopilotGTM. It brings deal context, meeting notes, CRM insights, and team knowledge into Microsoft Teams so sales teams can prepare for meetings, follow up faster, and keep deal conversations connected to the work happening across Teams."
   },
   "icons": {
     "color": "color.png",
@@ -34,23 +34,11 @@
           "commands": [
             {
               "title": "help",
-              "description": "Get help using CopilotGTM"
+              "description": "Get help using Kai"
             },
             {
               "title": "login",
               "description": "Link your CopilotGTM account"
-            },
-            {
-              "title": "test1",
-              "description": "Test command 1"
-            },
-            {
-              "title": "test2",
-              "description": "Test command 2"
-            },
-            {
-              "title": "test3",
-              "description": "Test command 3"
             }
           ]
         },
@@ -59,7 +47,7 @@
           "commands": [
             {
               "title": "help",
-              "description": "Get help using CopilotGTM"
+              "description": "Get help using Kai"
             }
           ]
         }
@@ -67,6 +55,8 @@
     }
   ],
   "permissions": ["identity", "messageTeamMembers"],
+  "publisherDocsUrl": "https://www.copilotgtm.com",
+  "defaultInstallScope": "personal",
   "validDomains": [
     "www.copilotgtm.com",
     "*.copilotgtm.com",
