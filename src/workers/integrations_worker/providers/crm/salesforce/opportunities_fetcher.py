@@ -17,8 +17,9 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 500
+_MAX_ERROR_BODY_CHARS = 500
 _EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
-_REQUIRED_FIELDS = {
+_CANONICAL_FIELDS = {
     "Id",
     "Name",
     "Amount",
@@ -43,6 +44,7 @@ _REQUIRED_FIELDS = {
     "IsClosed",
     "IsWon",
 }
+_REQUIRED_FIELDS = {"Id"}
 
 
 class SalesforceOpportunitiesFetcher:
@@ -59,7 +61,7 @@ class SalesforceOpportunitiesFetcher:
         field_names = await self._fetch_field_names()
         soql = (
             f"SELECT {', '.join(field_names)} FROM Opportunity "  # noqa: S608  # nosec B608
-            "ORDER BY CloseDate DESC, Name"
+            f"ORDER BY {_build_order_by(field_names)}"
         )
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
         records: list[dict[str, Any]] = []
@@ -119,8 +121,17 @@ class SalesforceOpportunitiesFetcher:
             if name is not None
         }
         field_names.update(_REQUIRED_FIELDS)
-        if "Id" not in field_names:
-            raise ValueError("Salesforce Opportunity describe API did not yield a usable Id field")
+
+        missing_canonical_fields = sorted(_CANONICAL_FIELDS - field_names)
+        if missing_canonical_fields:
+            logger.warning(
+                "Salesforce Opportunity describe omitted canonical fields",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "missing_fields": missing_canonical_fields,
+                },
+            )
+
         return sorted(field_names)
 
     async def _get_json(
@@ -136,7 +147,7 @@ class SalesforceOpportunitiesFetcher:
                     headers={"Authorization": f"Bearer {access_token}"},
                     params=params,
                 )
-                response.raise_for_status()
+                _raise_for_status_with_salesforce_body(response)
                 return response
 
         response = await call_with_token_retry(self.token_info, _request)
@@ -150,9 +161,34 @@ def _extract_field_name(field: dict[str, Any]) -> str | None:
     name = field.get("name")
     if not isinstance(name, str) or not name:
         return None
-    if field.get("queryable") is not True:
+    if field.get("queryable") is False:
+        return None
+    if field.get("deprecatedAndHidden") is True:
         return None
     field_type = field.get("type")
     if isinstance(field_type, str) and field_type.lower() in _EXCLUDED_FIELD_TYPES:
         return None
     return name
+
+
+def _build_order_by(field_names: list[str]) -> str:
+    available_fields = set(field_names)
+    order_fields: list[str] = []
+    if "CloseDate" in available_fields:
+        order_fields.append("CloseDate DESC")
+    if "Name" in available_fields:
+        order_fields.append("Name")
+    order_fields.append("Id")
+    return ", ".join(order_fields)
+
+
+def _raise_for_status_with_salesforce_body(response: httpx.Response) -> None:
+    if not response.is_error:
+        return
+
+    body = response.text[:_MAX_ERROR_BODY_CHARS]
+    message = (
+        f"{response.status_code} {response.reason_phrase} for url '{response.url}'. "
+        f"Salesforce response body: {body}"
+    )
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)

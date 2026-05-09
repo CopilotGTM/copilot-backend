@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 500
+_MAX_ERROR_BODY_CHARS = 500
 
 
 class SalesforceOpportunityHistoryFetcher:
@@ -91,7 +92,7 @@ class SalesforceOpportunityHistoryFetcher:
                     headers={"Authorization": f"Bearer {access_token}"},
                     params=params,
                 )
-                response.raise_for_status()
+                _raise_for_status_with_salesforce_body(response)
                 return response
 
         response = await call_with_token_retry(self.token_info, _request)
@@ -99,3 +100,15 @@ class SalesforceOpportunityHistoryFetcher:
         if not isinstance(payload, dict):
             raise ValueError("Salesforce OpportunityHistory API returned non-dict payload")
         return payload
+
+
+def _raise_for_status_with_salesforce_body(response: httpx.Response) -> None:
+    if not response.is_error:
+        return
+
+    body = response.text[:_MAX_ERROR_BODY_CHARS]
+    message = (
+        f"{response.status_code} {response.reason_phrase} for url '{response.url}'. "
+        f"Salesforce response body: {body}"
+    )
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)
