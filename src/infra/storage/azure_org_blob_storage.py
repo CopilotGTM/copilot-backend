@@ -1,6 +1,12 @@
+"""Org-scoped Azure Blob Storage helpers.
+
+The app uses one shared storage account with a dedicated container per
+organisation. This module owns container bootstrap, blob path conventions, SAS
+generation, and cleanup so callers stay insulated from Azure SDK details.
+"""
+
 from __future__ import annotations
 
-"""Azure per-organization blob storage helper for chat attachments."""
 import asyncio
 import hashlib
 import os
@@ -82,7 +88,12 @@ class AzureOrganisationBlobStorage:
             self._credential = await _get_credential_async()
 
     async def _get_blob_service_client(self) -> BlobServiceClient:
-        """Lazily initializes and returns the async BlobServiceClient."""
+        """Create the async BlobServiceClient once and reuse it for repeated I/O.
+
+        Blob client construction can trigger credential lookups and network-bound
+        setup, so caching avoids repeated auth overhead while staying bound to one
+        organisation and one container.
+        """
         if self._blob_service is None:
             await self._init_credential()
             account_url = f"https://{self.account_name}.blob.core.windows.net"
@@ -100,7 +111,11 @@ class AzureOrganisationBlobStorage:
         return base or "file"
 
     async def _ensure_container(self):
-        """Create the organisation container if it doesn't already exist (idempotent)."""
+        """Create the org container if missing, while tolerating races between workers.
+
+        Concurrent starts can both attempt creation, so `ContainerAlreadyExists` is
+        treated as a no-op for idempotency.
+        """
         bs = await self._get_blob_service_client()
         container_client = bs.get_container_client(self.container)
         try:
@@ -114,11 +129,11 @@ class AzureOrganisationBlobStorage:
     async def generate_read_sas(
         self, blob_path: str, minutes: int = 120, download_filename: str | None = None
     ) -> str:
-        """
-        Generates a read-access SAS URL.
+        """Generate a short-lived read SAS URL for one blob.
 
-        If `download_filename` is provided, it sets the Content-Disposition header
-        to ensure the user's browser downloads the file with the original, friendly name.
+        Read URLs expire on purpose so download links are never long-lived shared
+        secrets. Optional `download_filename` sets a safe `Content-Disposition`
+        name for browser behavior.
         """
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
@@ -131,7 +146,7 @@ class AzureOrganisationBlobStorage:
         if download_filename:
             # Ensure the filename is properly formatted for the header.
             # Basic sanitization to prevent header injection.
-            safe_download_name = download_filename.replace('"', "'")
+            safe_download_name = self._sanitize_filename(download_filename)
             content_disposition = f'attachment; filename="{safe_download_name}"'
 
         sas = generate_blob_sas(
@@ -146,7 +161,7 @@ class AzureOrganisationBlobStorage:
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 
     async def generate_write_sas(self, blob_path: str, minutes: int = 15) -> str:
-        """Generate a short‑lived SAS URL for client direct upload."""
+        """Generate a short-lived write SAS URL for direct uploads."""
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
@@ -164,13 +179,10 @@ class AzureOrganisationBlobStorage:
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 
     def plan_blob_path(self, *, user_id: UUID, attachment_id: UUID, original_filename: str) -> str:
-        """
-        Plans a structured, secure, and organized blob path based on database IDs.
+        """Build a deterministic chat upload path using DB-scoped IDs.
 
-        The structure `user_id/attachment_id/sanitized_filename.ext` is chosen for:
-        - **Direct DB Correlation**: The path can be reconstructed directly from the DB record.
-        - **Uniqueness**: The attachment_id guarantees a unique path.
-        - **Auditing**: The user_id provides clear ownership context.
+        Paths are stable for the given IDs so support can map storage bytes back
+        to source rows during incident investigation.
         """
         safe_name = self._sanitize_filename(original_filename)
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
@@ -194,7 +206,7 @@ class AzureOrganisationBlobStorage:
             return f"thumbnails/{variant}.jpg"
         if "_thumb_" in original_blob_path and original_blob_path.endswith(".jpg"):
             return original_blob_path  # already a legacy thumbnail style
-        # Split directory and filename
+        # Keep thumbnails next to source files for easy cleanup and retention control.
         if "/" in original_blob_path:
             dir_part, _filename = original_blob_path.rsplit("/", 1)
         else:
@@ -214,7 +226,7 @@ class AzureOrganisationBlobStorage:
         return f"knowledgebase/{user_id}/{source_id}/thumbnails/{variant}.jpg"
 
     async def get_blob_properties(self, blob_path: str):
-        """Return blob properties (exists check, size, content type) or None if missing."""
+        """Return blob metadata if present, otherwise `None`."""
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
@@ -235,7 +247,11 @@ class AzureOrganisationBlobStorage:
             return None
 
     async def get_blob_content(self, blob_path: str) -> bytes:
-        """Download blob content as bytes."""
+        """Download full blob content.
+
+        This is intentionally eager because callers need raw bytes for hashing and
+        downstream checks, not streaming pipelines.
+        """
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
@@ -255,9 +271,10 @@ class AzureOrganisationBlobStorage:
         data: bytes,
         content_type: str = "application/octet-stream",
     ) -> None:
-        """Upload bytes to the given blob path with content-type.
+        """Upload bytes to a blob path using the resolved org container.
 
-        Centralizes Azure SDK calls for uploads so higher layers don't touch SDK directly.
+        Centralizing storage writes here keeps service code from depending on
+        Azure object-shape details or retry strategy.
         """
 
         await self._ensure_container()

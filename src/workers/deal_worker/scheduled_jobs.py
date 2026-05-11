@@ -1,3 +1,5 @@
+"""Scheduled deal-worker jobs consumed by Kubernetes CronJobs.\n\nEntries are immutable contracts used by deployment checks and dispatch tests.\n"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,7 +8,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ScheduledJob:
-    """Configuration for a fixed-schedule deal trigger."""
+    """Fixed-schedule job definition for deal-worker execution."""
 
     name: str
     task_name: str
@@ -48,6 +50,12 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="10 */3 * * *",
         max_lag_seconds=4 * 60 * 60,
     ),
+    "email-attachment-extraction": ScheduledJob(
+        name="email-attachment-extraction",
+        task_name="deal_asset.extract_email_attachments_all_orgs",
+        schedule="20,50 * * * *",
+        max_lag_seconds=45 * 60,
+    ),
     "stakeholder-research-retry": ScheduledJob(
         name="stakeholder-research-retry",
         task_name="stakeholder_research.trigger_retry_all_orgs",
@@ -64,6 +72,6 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
 
 
 def get_scheduled_job(job_name: str) -> ScheduledJob:
-    """Return the configured schedule definition for a named deal job."""
+    """Resolve a named scheduled job definition.\n\n    Raises:\n        KeyError: if the job name does not exist.\n"""
 
     return SCHEDULED_JOBS[job_name]

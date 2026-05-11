@@ -474,6 +474,8 @@ dealCronJobs:
       schedule: "45 * * * *"
     - name: deal-memory-backfill
       schedule: "10 */3 * * *"
+    - name: email-attachment-extraction
+      schedule: "20,50 * * * *"
     - name: stakeholder-research-retry
       schedule: "20 * * * *"
     - name: meeting-bot-fallback
