@@ -239,6 +239,57 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
     assert connected["missing_scope_labels"] == ["Outlook mail access"]
 
 
+def test_list_available_hides_other_users_personal_integrations_even_if_legacy_org_scoped(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Personal providers should not leak action-required rows connected by another user."""
+    from src.domain.models.organisation_tables.sync import IntegrationScope
+
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    current_user = integrations_dependency_overrides["user_ids"]
+    other_user_id = uuid4()
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=other_user_id,
+            integration_type="teams",
+            name="Other User Teams",
+            integration_email="teammate@example.com",
+            integration_scope=IntegrationScope.ORGANIZATION,
+            is_active=True,
+            scopes=["offline_access", "User.Read"],
+        )
+    )
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
+            integration_type="teams",
+            name="My Teams",
+            integration_email="me@example.com",
+            integration_scope=IntegrationScope.ORGANIZATION,
+            is_active=True,
+            scopes=["offline_access", "User.Read"],
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    teams = next((i for i in data["integrations"] if i["integration_type"] == "teams"), None)
+    assert teams is not None
+    emails = [
+        instance["integration_email"]
+        for instance in teams["connected_integrations"] + teams["action_required_integrations"]
+    ]
+    assert emails == ["me@example.com"]
+
+
 def test_list_available_excludes_manually_disconnected_integrations_from_action_required(
     client: TestClient, integrations_dependency_overrides
 ) -> None:
