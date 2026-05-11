@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.configs import microsoft_integration_config
+from src.infra.config.microsoft_integration_scopes import get_microsoft_integration_scopes
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 
@@ -58,47 +59,7 @@ class MicrosoftProvider(BaseIntegrationProvider):
 
     def _get_scopes(self) -> list[str]:
         """Determine required scopes based on IntegrationType."""
-        base_scopes = ["offline_access"]
-
-        if self.integration_type == IntegrationType.OUTLOOK_EMAIL:
-            base_scopes.extend(
-                [
-                    "Mail.Read",
-                    "Calendars.Read",
-                    "Chat.Read",
-                    "ChannelMessage.Read.All",
-                    "Team.ReadBasic.All",
-                    "User.Read.All",
-                ]
-            )
-        elif self.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-            base_scopes.extend(
-                [
-                    "Mail.Read",
-                    "Calendars.Read",
-                    "Chat.Read",
-                    "User.Read.All",
-                    "OnlineMeetingTranscript.Read.All",
-                    "OnlineMeetings.Read",
-                ]
-            )
-        elif self.integration_type == IntegrationType.TEAMS:
-            base_scopes.extend(
-                [
-                    "Team.ReadBasic.All",
-                    "Chat.Read",
-                    "ChannelMessage.Read.All",
-                    "Channel.ReadBasic.All",
-                    "ChannelSettings.Read.All",
-                    "ChannelSettings.ReadWrite.All",
-                    "Group.Read.All",
-                    "Directory.Read.All",
-                    "Directory.ReadWrite.All",
-                    "Group.ReadWrite.All",
-                ]
-            )
-
-        return base_scopes
+        return list(get_microsoft_integration_scopes(self.integration_type))
 
     async def _request_with_retry(
         self,

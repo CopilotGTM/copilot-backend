@@ -12,6 +12,7 @@ from ...domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
 )
+from .microsoft_integration_scopes import MICROSOFT_INTEGRATION_SCOPES
 
 
 # Category display names
@@ -184,12 +185,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
-        oauth_scopes=[
-            "Channel.ReadBasic.All",
-            "ChannelMessage.Read.All",
-            "Files.Read.All",
-            "User.Read.All",
-        ],
+        oauth_scopes=list(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.TEAMS]),
         documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/teams-api-overview",
         default_sync_frequency="hourly",
         # Each user connects their own Teams account
@@ -222,10 +218,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
-        oauth_scopes=[
-            "Mail.Read",
-            "MailboxSettings.Read",
-        ],
+        oauth_scopes=list(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_EMAIL]),
         documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/mail-api-overview",
         default_sync_frequency="hourly",
         # Access Control - User level for personal email
@@ -272,9 +265,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
-        oauth_scopes=[
-            "Calendars.Read",
-        ],
+        oauth_scopes=list(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_CALENDAR]),
         documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/calendar?view=graph-rest-1.0",
         default_sync_frequency="hourly",
         # Access Control - User level for personal calendars

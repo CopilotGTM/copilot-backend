@@ -382,8 +382,8 @@ module "teams_bot" {
 
 # -----------------------------------------------------------------
 # Microsoft OAuth App Registration (per-environment isolation)
-# Creates Entra ID app with Graph API permissions for Outlook/Teams.
-# Admin consent must be granted manually after terraform apply.
+# Creates Entra ID app with the least-privilege Graph permissions for integrations.
+# Current default scopes do not require admin consent.
 # -----------------------------------------------------------------
 module "microsoft_app_registration" {
   source = "../modules/microsoft_oauth_app"

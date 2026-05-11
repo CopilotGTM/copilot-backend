@@ -118,3 +118,58 @@ def test_get_missing_required_scopes_accepts_salesforce_offline_access_alias() -
         )
         == set()
     )
+
+
+def test_microsoft_outlook_email_missing_scope_detection_matches_mail_only_flow() -> None:
+    assert get_missing_required_scopes(
+        IntegrationType.OUTLOOK_EMAIL,
+        [
+            "offline_access",
+            "User.Read",
+        ],
+    ) == {"Mail.Read"}
+
+
+def test_microsoft_outlook_calendar_does_not_require_transcript_scopes_for_connect() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.OUTLOOK_CALENDAR,
+            [
+                "offline_access",
+                "User.Read",
+                "Calendars.Read",
+                "OnlineMeetings.Read",
+            ],
+        )
+        == set()
+    )
+
+
+def test_microsoft_user_read_all_satisfies_user_read_profile_requirement() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.OUTLOOK_EMAIL,
+            [
+                "offline_access",
+                "User.Read.All",
+                "Mail.Read",
+            ],
+        )
+        == set()
+    )
+
+
+def test_microsoft_teams_no_longer_requires_directory_group_or_channel_settings_scopes() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.TEAMS,
+            [
+                "offline_access",
+                "User.Read",
+                "Team.ReadBasic.All",
+                "Channel.ReadBasic.All",
+                "Chat.Read",
+            ],
+        )
+        == set()
+    )

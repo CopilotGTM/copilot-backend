@@ -5,6 +5,11 @@ from __future__ import annotations
 import re
 
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.config.microsoft_integration_scopes import (
+    MICROSOFT_INTEGRATION_SCOPES,
+    MICROSOFT_SCOPE_USER_READ,
+    MICROSOFT_SCOPE_USER_READ_ALL,
+)
 
 _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.GMAIL: frozenset(
@@ -19,39 +24,12 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
         }
     ),
     IntegrationType.OUTLOOK_EMAIL: frozenset(
-        {
-            "Mail.Read",
-            "Calendars.Read",
-            "Chat.Read",
-            "ChannelMessage.Read.All",
-            "Team.ReadBasic.All",
-            "User.Read.All",
-        }
+        MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_EMAIL]
     ),
     IntegrationType.OUTLOOK_CALENDAR: frozenset(
-        {
-            "Mail.Read",
-            "Calendars.Read",
-            "Chat.Read",
-            "User.Read.All",
-            "OnlineMeetingTranscript.Read.All",
-            "OnlineMeetings.Read",
-        }
+        MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_CALENDAR]
     ),
-    IntegrationType.TEAMS: frozenset(
-        {
-            "Team.ReadBasic.All",
-            "Chat.Read",
-            "ChannelMessage.Read.All",
-            "Channel.ReadBasic.All",
-            "ChannelSettings.Read.All",
-            "ChannelSettings.ReadWrite.All",
-            "Group.Read.All",
-            "Directory.Read.All",
-            "Directory.ReadWrite.All",
-            "Group.ReadWrite.All",
-        }
-    ),
+    IntegrationType.TEAMS: frozenset(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.TEAMS]),
     IntegrationType.SLACK: frozenset(
         {
             "channels:read",
@@ -105,6 +83,12 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             "offline_access",
         }
     ),
+    MICROSOFT_SCOPE_USER_READ: frozenset(
+        {
+            MICROSOFT_SCOPE_USER_READ,
+            MICROSOFT_SCOPE_USER_READ_ALL,
+        }
+    ),
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
@@ -131,6 +115,7 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "ChannelSettings.Read.All": "Microsoft Teams channel settings access",
     "ChannelSettings.ReadWrite.All": "Microsoft Teams channel settings access",
     "Team.ReadBasic.All": "Microsoft Teams team access",
+    "User.Read": "Microsoft profile access",
     "User.Read.All": "Microsoft user directory access",
     "Group.Read.All": "Microsoft group access",
     "Directory.Read.All": "Microsoft directory access",
