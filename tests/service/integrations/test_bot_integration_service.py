@@ -32,6 +32,7 @@ class _FakeSession:
     def __init__(self, rows_by_provider):
         self.rows_by_provider = rows_by_provider
         self.statements = []
+        self._mapping_execute_count = 0
 
     async def execute(self, stmt):
         self.statements.append(stmt)
@@ -39,6 +40,11 @@ class _FakeSession:
         if "bot_platform_installations" in text:
             return _ExecuteResult(self.rows_by_provider.get("installations", []))
         if "external_identity_mappings" in text:
+            mappings_sequence = self.rows_by_provider.get("mappings_sequence")
+            if mappings_sequence is not None:
+                rows = mappings_sequence[self._mapping_execute_count]
+                self._mapping_execute_count += 1
+                return _ExecuteResult(rows)
             return _ExecuteResult(self.rows_by_provider.get("mappings", []))
         return _ExecuteResult([])
 
@@ -54,7 +60,10 @@ def _user_ids() -> UserIDs:
 
 @pytest.mark.asyncio
 async def test_list_available_bots_returns_slack_install_and_identity_status():
+    from src.service.integrations import bot_integration_service
     from src.service.integrations.bot_integration_service import BotIntegrationService
+
+    bot_integration_service.whatsapp_config.WHATSAPP_BOT_PHONE_NUMBER = "+1 (555) 630-0848"
 
     user_ids = _user_ids()
     installation_id = uuid4()
@@ -73,11 +82,14 @@ async def test_list_available_bots_returns_slack_install_and_identity_status():
                     last_used_at=None,
                 )
             ],
-            "mappings": [
-                SimpleNamespace(
-                    mapping_id=mapping_id,
-                    provider=ExternalIdentityProvider.SLACK,
-                )
+            "mappings_sequence": [
+                [
+                    SimpleNamespace(
+                        mapping_id=mapping_id,
+                        provider=ExternalIdentityProvider.SLACK,
+                    )
+                ],
+                [],
             ],
         }
     )
@@ -86,11 +98,11 @@ async def test_list_available_bots_returns_slack_install_and_identity_status():
 
     response = await service.list_available_bots()
 
-    assert response.total_available == 1
-    assert response.total_installed == 1
+    assert response.total_available == 2
+    assert response.total_installed == 2
     assert response.total_linked == 1
-    assert len(response.bots) == 1
-    slack = response.bots[0]
+    assert len(response.bots) == 2
+    slack = next(bot for bot in response.bots if bot.provider == "slack")
     assert slack.provider == "slack"
     assert slack.display_name == "CopilotGTM Slack Bot"
     assert slack.connection_mode == "oauth_install"
@@ -101,6 +113,13 @@ async def test_list_available_bots_returns_slack_install_and_identity_status():
     assert slack.installation.workspace_id == "T123"
     assert slack.installation.workspace_name == "Acme Slack"
     assert slack.identity_mapping_id == mapping_id
+
+    whatsapp = next(bot for bot in response.bots if bot.provider == "whatsapp")
+    assert whatsapp.display_name == "CopilotGTM WhatsApp Bot"
+    assert whatsapp.connection_mode == "qr_deep_link"
+    assert whatsapp.installed is True
+    assert whatsapp.identity_linked is False
+    assert whatsapp.action_required == "identity_link_required"
 
 
 @pytest.mark.asyncio
@@ -138,3 +157,24 @@ async def test_get_slack_connect_url_uses_bot_callback_and_bot_scopes(monkeypatc
     assert "scope=" in response.connect_url
     assert "chat%3Awrite" in response.connect_url
     assert "app_mentions%3Aread" in response.connect_url
+
+
+@pytest.mark.asyncio
+async def test_get_whatsapp_connect_url_uses_configured_bot_number(monkeypatch):
+    from src.service.integrations import bot_integration_service
+    from src.service.integrations.bot_integration_service import BotIntegrationService
+
+    monkeypatch.setattr(
+        bot_integration_service.whatsapp_config,
+        "WHATSAPP_BOT_PHONE_NUMBER",
+        "+1 (555) 630-0848",
+        raising=False,
+    )
+
+    service = BotIntegrationService(session=_FakeSession({}), user_ids=_user_ids())
+
+    response = await service.get_whatsapp_connect_url()
+
+    assert response.provider == "whatsapp"
+    assert response.expires_at is None
+    assert response.connect_url == "https://wa.me/15556300848?text=hi"

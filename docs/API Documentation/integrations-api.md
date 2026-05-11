@@ -145,8 +145,8 @@ GET /users/integrations/bots/available
 ```
 
 Returns bot providers that can be connected from the Integrations > Bots section. The
-current implementation returns the Slack bot card with workspace install status and the
-current user's Slack identity-link status.
+current implementation returns Slack and WhatsApp bot cards with workspace/install
+status and the current user's identity-link status.
 
 ### Success Response
 
@@ -172,10 +172,27 @@ current user's Slack identity-link status.
         "identity_linked": false,
         "identity_mapping_id": null,
         "action_required": "install_required"
+      },
+      {
+        "provider": "whatsapp",
+        "name": "WhatsApp Bot",
+        "display_name": "CopilotGTM WhatsApp Bot",
+        "description": "Chat with CopilotGTM from WhatsApp after linking your mobile number.",
+        "logo_url": "https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
+        "category": "bots",
+        "category_name": "Bots",
+        "availability_status": "available",
+        "connection_mode": "qr_deep_link",
+        "connect_url": null,
+        "installed": true,
+        "installation": null,
+        "identity_linked": false,
+        "identity_mapping_id": null,
+        "action_required": "identity_link_required"
       }
     ],
-    "total_available": 1,
-    "total_installed": 0,
+    "total_available": 2,
+    "total_installed": 1,
     "total_linked": 0
   }
 }
@@ -185,9 +202,9 @@ current user's Slack identity-link status.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `provider` | string | Bot provider. Currently `slack`. |
+| `provider` | string | Bot provider. Currently `slack` or `whatsapp`. |
 | `display_name` | string | User-facing bot name. |
-| `connection_mode` | string | How the provider connects. Currently `oauth_install`. |
+| `connection_mode` | string | How the provider connects. `oauth_install` for Slack, `qr_deep_link` for WhatsApp. |
 | `installed` | boolean | Whether this organization has an active workspace installation. |
 | `installation` | object\|null | Workspace details if installed. |
 | `identity_linked` | boolean | Whether the current CopilotGTM user has linked their Slack identity. |
@@ -226,6 +243,48 @@ should redirect the browser to `data.connect_url`.
 {
   "status": "error",
   "message": "Failed to start Slack bot connection",
+  "data": null
+}
+```
+
+---
+
+## 4. Get WhatsApp Bot Connect URL
+
+### Endpoint
+
+```http
+GET /users/integrations/bots/whatsapp/connect
+```
+
+Generates a WhatsApp click-to-chat URL for the configured CopilotGTM WhatsApp bot
+number. The frontend should render this URL as a QR code on desktop and as an
+"Open WhatsApp" button on mobile.
+
+### Success Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "WhatsApp bot connect URL generated successfully",
+  "data": {
+    "provider": "whatsapp",
+    "connect_url": "https://wa.me/15556300848?text=hi",
+    "expires_at": null
+  }
+}
+```
+
+The user must send the prefilled `hi` message. The existing WhatsApp webhook then
+replies with the secure CopilotGTM login/link URL if the WhatsApp number is not
+already linked.
+
+### Error Response (500)
+
+```json
+{
+  "status": "error",
+  "message": "Failed to start WhatsApp bot connection",
   "data": null
 }
 ```

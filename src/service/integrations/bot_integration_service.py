@@ -13,6 +13,7 @@ from src.api.schemas.integrations.bot_integration_schemas import (
     AvailableBotIntegrationsResponse,
     BotInstallationResponse,
     SlackBotConnectResponse,
+    WhatsAppBotConnectResponse,
 )
 from src.domain.models.master_tables.bot_platform_installation_models import (
     BotPlatformInstallation,
@@ -22,9 +23,10 @@ from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProvider,
 )
-from src.infra.config.configs import slack_config
+from src.infra.config.configs import slack_config, whatsapp_config
 from src.service.integrations.bot_integration_metadata import (
     SLACK_BOT_METADATA,
+    WHATSAPP_BOT_METADATA,
     get_bot_integration_metadata,
 )
 
@@ -49,7 +51,7 @@ class BotIntegrationService:
 
     async def list_available_bots(self) -> AvailableBotIntegrationsResponse:
         """Return bot provider cards visible to the current user."""
-        bots = [await self._build_slack_card()]
+        bots = [await self._build_slack_card(), await self._build_whatsapp_card()]
         return AvailableBotIntegrationsResponse(
             bots=bots,
             total_available=len(get_bot_integration_metadata()),
@@ -73,6 +75,17 @@ class BotIntegrationService:
 
         return SlackBotConnectResponse(
             connect_url=f"https://slack.com/oauth/v2/authorize?{urlencode(params)}",
+            expires_at=None,
+        )
+
+    async def get_whatsapp_connect_url(self) -> WhatsAppBotConnectResponse:
+        """Build the WhatsApp click-to-chat URL used by the QR connect modal."""
+        phone_number = self._get_whatsapp_bot_phone_number_digits()
+        if not phone_number:
+            raise RuntimeError("WhatsApp bot phone number is not configured")
+
+        return WhatsAppBotConnectResponse(
+            connect_url=f"https://wa.me/{phone_number}?{urlencode({'text': 'hi'})}",
             expires_at=None,
         )
 
@@ -109,6 +122,26 @@ class BotIntegrationService:
             action_required=action_required,
         )
 
+    async def _build_whatsapp_card(self) -> AvailableBotIntegration:
+        identity_mapping = await self._get_whatsapp_identity_mapping()
+        identity_linked = identity_mapping is not None
+        installed = bool(self._get_whatsapp_bot_phone_number_digits())
+
+        return AvailableBotIntegration(
+            provider=WHATSAPP_BOT_METADATA.provider,
+            name=WHATSAPP_BOT_METADATA.name,
+            display_name=WHATSAPP_BOT_METADATA.display_name,
+            description=WHATSAPP_BOT_METADATA.description,
+            logo_url=WHATSAPP_BOT_METADATA.logo_url,
+            availability_status=WHATSAPP_BOT_METADATA.availability_status,  # type: ignore[arg-type]
+            connection_mode="qr_deep_link",
+            connect_url=None,
+            installed=installed,
+            identity_linked=identity_linked,
+            identity_mapping_id=identity_mapping.mapping_id if identity_mapping else None,
+            action_required=self._get_action_required(installed, identity_linked),
+        )
+
     async def _get_slack_installation(self) -> Any | None:
         stmt = (
             select(BotPlatformInstallation)
@@ -136,6 +169,20 @@ class BotIntegrationService:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def _get_whatsapp_identity_mapping(self) -> Any | None:
+        stmt = (
+            select(ExternalIdentityMapping)
+            .where(
+                col(ExternalIdentityMapping.provider) == ExternalIdentityProvider.WHATSAPP.value,
+                col(ExternalIdentityMapping.organisation_id) == self.user_ids.organisation_id,
+                col(ExternalIdentityMapping.user_id) == self.user_ids.user_id,
+                col(ExternalIdentityMapping.is_active).is_(True),
+            )
+            .order_by(col(ExternalIdentityMapping.linked_at).desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     @staticmethod
     def _get_action_required(installed: bool, identity_linked: bool) -> str:
         if not installed:
@@ -151,3 +198,8 @@ class BotIntegrationService:
             or getattr(slack_config, "REDIRECT_URI", "")
             or ""
         )
+
+    @staticmethod
+    def _get_whatsapp_bot_phone_number_digits() -> str:
+        configured_number = str(getattr(whatsapp_config, "WHATSAPP_BOT_PHONE_NUMBER", "") or "")
+        return "".join(char for char in configured_number if char.isdigit())

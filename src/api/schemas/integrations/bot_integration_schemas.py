@@ -6,8 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-BotProvider = Literal["slack"]
-BotConnectionMode = Literal["oauth_install"]
+BotProvider = Literal["slack", "whatsapp"]
+BotConnectionMode = Literal["oauth_install", "qr_deep_link"]
 BotAvailabilityStatus = Literal["available", "coming_soon", "beta", "deprecated"]
 BotActionRequired = Literal[
     "none",
@@ -60,5 +60,13 @@ class SlackBotConnectResponse(BaseModel):
     """Slack OAuth install URL for the CopilotGTM Slack bot."""
 
     provider: Literal["slack"] = "slack"
+    connect_url: str
+    expires_at: str | None = None
+
+
+class WhatsAppBotConnectResponse(BaseModel):
+    """WhatsApp click-to-chat URL for the CopilotGTM WhatsApp bot."""
+
+    provider: Literal["whatsapp"] = "whatsapp"
     connect_url: str
     expires_at: str | None = None
