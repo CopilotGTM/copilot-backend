@@ -7,6 +7,7 @@ from .bot_integration_schemas import (
     AvailableBotIntegrationsResponse,
     BotInstallationResponse,
     SlackBotConnectResponse,
+    WhatsAppBotConnectResponse,
 )
 from .integration_schemas import (
     # Available integrations
@@ -65,6 +66,7 @@ __all__ = [
     "AvailableBotIntegrationsResponse",
     "BotInstallationResponse",
     "SlackBotConnectResponse",
+    "WhatsAppBotConnectResponse",
     # Errors
     "IntegrationError",
 ]

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-BotProvider = Literal["slack"]
+BotProvider = Literal["slack", "whatsapp"]
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,15 @@ SLACK_BOT_METADATA = BotIntegrationMetadata(
     logo_url="/integrations/slack.png",
 )
 
+WHATSAPP_BOT_METADATA = BotIntegrationMetadata(
+    provider="whatsapp",
+    name="WhatsApp Bot",
+    display_name="CopilotGTM WhatsApp Bot",
+    description="Chat with CopilotGTM from WhatsApp after linking your mobile number.",
+    logo_url="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
+)
+
 
 def get_bot_integration_metadata() -> tuple[BotIntegrationMetadata, ...]:
     """Return bot providers currently supported by the management API."""
-    return (SLACK_BOT_METADATA,)
+    return (SLACK_BOT_METADATA, WHATSAPP_BOT_METADATA)

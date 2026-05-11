@@ -8,6 +8,7 @@ from src.api.schemas.integrations.bot_integration_schemas import (
     AvailableBotIntegration,
     AvailableBotIntegrationsResponse,
     SlackBotConnectResponse,
+    WhatsAppBotConnectResponse,
 )
 
 
@@ -25,10 +26,22 @@ class _FakeBotIntegrationService:
                     installed=False,
                     identity_linked=False,
                     action_required="install_required",
-                )
+                ),
+                AvailableBotIntegration(
+                    provider="whatsapp",
+                    name="WhatsApp Bot",
+                    display_name="CopilotGTM WhatsApp Bot",
+                    description="Chat with CopilotGTM from WhatsApp.",
+                    logo_url="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
+                    availability_status="available",
+                    connection_mode="qr_deep_link",
+                    installed=True,
+                    identity_linked=False,
+                    action_required="identity_link_required",
+                ),
             ],
-            total_available=1,
-            total_installed=0,
+            total_available=2,
+            total_installed=1,
             total_linked=0,
         )
 
@@ -36,6 +49,13 @@ class _FakeBotIntegrationService:
         return SlackBotConnectResponse(
             provider="slack",
             connect_url="https://slack.com/oauth/v2/authorize?client_id=test",
+            expires_at=None,
+        )
+
+    async def get_whatsapp_connect_url(self) -> WhatsAppBotConnectResponse:
+        return WhatsAppBotConnectResponse(
+            provider="whatsapp",
+            connect_url="https://wa.me/15556300848?text=hi",
             expires_at=None,
         )
 
@@ -59,9 +79,11 @@ def test_available_bots_route_returns_slack_card():
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
-    assert body["data"]["total_available"] == 1
+    assert body["data"]["total_available"] == 2
     assert body["data"]["bots"][0]["provider"] == "slack"
     assert body["data"]["bots"][0]["display_name"] == "CopilotGTM Slack Bot"
+    assert body["data"]["bots"][1]["provider"] == "whatsapp"
+    assert body["data"]["bots"][1]["display_name"] == "CopilotGTM WhatsApp Bot"
 
 
 def test_slack_connect_route_returns_install_url():
@@ -74,3 +96,15 @@ def test_slack_connect_route_returns_install_url():
     assert body["status"] == "SUCCESS"
     assert body["data"]["provider"] == "slack"
     assert body["data"]["connect_url"].startswith("https://slack.com/oauth/v2/authorize?")
+
+
+def test_whatsapp_connect_route_returns_click_to_chat_url():
+    client = _client()
+
+    resp = client.get("/users/integrations/bots/whatsapp/connect")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["provider"] == "whatsapp"
+    assert body["data"]["connect_url"] == "https://wa.me/15556300848?text=hi"

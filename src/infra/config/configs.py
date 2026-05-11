@@ -1698,6 +1698,7 @@ class WhatsAppConfig:
 
     GRAPH_API_VERSION: str = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v25.0")
     WEBHOOK_DEDUPE_TTL_SECONDS: int = int(os.getenv("WHATSAPP_WEBHOOK_DEDUPE_TTL_SECONDS", "300"))
+    WHATSAPP_BOT_PHONE_NUMBER: str = os.getenv("WHATSAPP_BOT_PHONE_NUMBER", "")
     WHATSAPP_AUTH_LOGIN_URL: str = os.getenv(
         "WHATSAPP_AUTH_LOGIN_URL",
         f"{os.getenv('APP_URL', '').rstrip('/')}/bots/auth" if os.getenv("APP_URL") else "",

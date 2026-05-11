@@ -36,6 +36,18 @@ def test_helm_env_overrides_declare_slack_redirect_uri() -> None:
     ) in prod_values
 
 
+def test_helm_env_overrides_declare_whatsapp_bot_phone_numbers() -> None:
+    dev_values = (REPO_ROOT / "charts" / "application" / "values-dev.yaml").read_text(
+        encoding="utf-8"
+    )
+    prod_values = (REPO_ROOT / "charts" / "application" / "values-prod.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'WHATSAPP_BOT_PHONE_NUMBER: "+15556300848"' in dev_values
+    assert 'WHATSAPP_BOT_PHONE_NUMBER: "+918168144213"' in prod_values
+
+
 def test_slack_app_manifests_declare_integration_redirect_uri() -> None:
     dev_manifest = (
         REPO_ROOT / "infra" / "manifests" / "slack-app" / "dev" / "manifest.yaml"

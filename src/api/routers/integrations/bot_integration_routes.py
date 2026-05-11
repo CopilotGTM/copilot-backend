@@ -9,6 +9,7 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations.bot_integration_schemas import (
     AvailableBotIntegrationsResponse,
     SlackBotConnectResponse,
+    WhatsAppBotConnectResponse,
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
@@ -67,5 +68,28 @@ async def get_slack_bot_connect_url(
         logger.exception("Failed to generate Slack bot connect URL")
         return Response.internal_server_error_response(
             message="Failed to start Slack bot connection",
+            response=response,
+        )
+
+
+@router.get(
+    "/whatsapp/connect",
+    response_model=GenericResponse[WhatsAppBotConnectResponse],
+    summary="Get WhatsApp bot QR connect URL",
+)
+async def get_whatsapp_bot_connect_url(
+    response: FastAPIResponse,
+    service: BotIntegrationService = Depends(get_bot_integration_service),
+) -> GenericResponse[WhatsAppBotConnectResponse]:
+    try:
+        data = await service.get_whatsapp_connect_url()
+        return Response.success_response(
+            message="WhatsApp bot connect URL generated successfully",
+            data=data,
+        )
+    except Exception:
+        logger.exception("Failed to generate WhatsApp bot connect URL")
+        return Response.internal_server_error_response(
+            message="Failed to start WhatsApp bot connection",
             response=response,
         )
