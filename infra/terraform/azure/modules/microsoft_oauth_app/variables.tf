@@ -9,6 +9,12 @@ variable "display_name" {
   default     = "CopilotGTM"
 }
 
+variable "display_name_override" {
+  description = "Optional exact display name for environments that need a specific consent-screen app name"
+  type        = string
+  default     = null
+}
+
 variable "redirect_uris" {
   description = "OAuth callback redirect URIs for this environment"
   type        = list(string)

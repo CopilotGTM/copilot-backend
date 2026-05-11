@@ -22,11 +22,12 @@ data "azuread_client_config" "current" {}
 
 # Microsoft Graph API well-known app ID
 locals {
-  ms_graph_app_id = "00000003-0000-0000-c000-000000000000"
+  ms_graph_app_id  = "00000003-0000-0000-c000-000000000000"
+  app_display_name = coalesce(var.display_name_override, "${var.display_name} MS-Integration - ${title(var.env)}")
 }
 
 resource "azuread_application" "copilotgtm" {
-  display_name     = "${var.display_name} MS-Integration - ${title(var.env)}"
+  display_name     = local.app_display_name
   sign_in_audience = "AzureADMultipleOrgs"
 
   owners = [data.azuread_client_config.current.object_id]
