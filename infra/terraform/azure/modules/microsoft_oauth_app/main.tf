@@ -2,9 +2,10 @@
 # CopilotGTM Microsoft OAuth App Registration
 #
 # Purpose-built for CopilotGTM's Outlook/Teams OAuth integrations.
-# NOT a generic reusable module — the 24 Microsoft Graph permissions are
+# NOT a generic reusable module — the Microsoft Graph permissions are
 # specific to CopilotGTM's sync features (email, calendar, Teams channels,
-# chats, meetings, transcripts).
+# chats, meetings, transcripts). Keep this in sync with backend Microsoft
+# integration scopes.
 #
 # Creates a per-environment Azure AD app registration so each environment
 # (local, dev, prod) has its own client ID + secret. This isolates:
@@ -12,9 +13,9 @@
 # - Consent screens (users see "CopilotGTM-Dev" vs "CopilotGTM-Prod")
 # - Tokens (no cross-environment token conflicts)
 #
-# After terraform apply, admin consent must be granted manually:
-#   Azure Portal → App Registrations → CopilotGTM-{Env} → API Permissions
-#   → "Grant admin consent for {tenant}"
+# Current default scopes are delegated user-consent scopes. If future changes add
+# admin-required Microsoft Graph permissions, document that feature separately and
+# grant admin consent only for that expanded scope set.
 # -----------------------------------------------------------------------------
 
 data "azuread_client_config" "current" {}
@@ -35,7 +36,7 @@ resource "azuread_application" "copilotgtm" {
   }
 
   # ---------------------------------------------------------------------------
-  # Microsoft Graph API Permissions (24 total — matches production app)
+  # Microsoft Graph API Permissions
   # ---------------------------------------------------------------------------
   required_resource_access {
     resource_app_id = local.ms_graph_app_id
@@ -54,51 +55,9 @@ resource "azuread_application" "copilotgtm" {
       type = "Scope"
     }
 
-    # ChannelMessage.Read.All — Read user channel messages
-    resource_access {
-      id   = "767156cb-16ae-4d10-8f8b-41b657c8c8c8"
-      type = "Scope"
-    }
-
-    # ChannelSettings.Read.All — Read channel settings
-    resource_access {
-      id   = "233e0cf1-dd62-48bc-b65b-b38fe87fcf8e"
-      type = "Scope"
-    }
-
-    # ChannelSettings.ReadWrite.All — Read and write channel settings
-    resource_access {
-      id   = "d649fb7c-72b4-4eec-b2b4-b15acf79e378"
-      type = "Scope"
-    }
-
     # Chat.Read — Read user chat messages
     resource_access {
       id   = "f501c180-9344-439a-bca0-6cbf209fd270"
-      type = "Scope"
-    }
-
-    # Directory.Read.All — Read directory data (delegated)
-    resource_access {
-      id   = "06da0dbc-49e2-44d2-8312-53f166ab848a"
-      type = "Scope"
-    }
-
-    # Directory.ReadWrite.All — Read and write directory data
-    resource_access {
-      id   = "c5366453-9fb0-48a5-a156-24f0c49a4b84"
-      type = "Scope"
-    }
-
-    # Group.Read.All — Read all groups (delegated)
-    resource_access {
-      id   = "5f8c59db-677d-491f-a6b8-5f174b11ec1d"
-      type = "Scope"
-    }
-
-    # Group.ReadWrite.All — Read and write all groups
-    resource_access {
-      id   = "4e46008b-f24c-477d-8fff-7bb4ec7aafe0"
       type = "Scope"
     }
 
@@ -120,12 +79,6 @@ resource "azuread_application" "copilotgtm" {
       type = "Scope"
     }
 
-    # OnlineMeetingTranscript.Read.All — Read all transcripts of online meetings
-    resource_access {
-      id   = "30b87d18-ebb1-45db-97f8-82ccb1f0190c"
-      type = "Scope"
-    }
-
     # Team.ReadBasic.All — Read team names and descriptions
     resource_access {
       id   = "485be79e-c497-4b35-9400-0e3fa7f2a5d4"
@@ -138,55 +91,6 @@ resource "azuread_application" "copilotgtm" {
       type = "Scope"
     }
 
-    # User.Read.All — Read all users' full profiles (delegated)
-    resource_access {
-      id   = "a154be20-db9c-4678-8ab7-66f6cc099a59"
-      type = "Scope"
-    }
-
-    # ── Application permissions (type = "Role") ──
-
-    # Calls.AccessMedia.All — Access media streams in a call as an app
-    resource_access {
-      id   = "a7a681dc-756e-4909-b988-f160edc6655f"
-      type = "Role"
-    }
-
-    # Calls.JoinGroupCall.All — Join group calls and meetings as an app
-    resource_access {
-      id   = "f6b49018-60ab-4f81-83bd-22caeabfed2d"
-      type = "Role"
-    }
-
-    # Calls.JoinGroupCallAsGuest.All — Join group calls and meetings as a guest
-    resource_access {
-      id   = "fd7ccf6b-3d28-418b-9701-cd10f5cd2fd4"
-      type = "Role"
-    }
-
-    # Directory.Read.All — Read directory data (application)
-    resource_access {
-      id   = "7ab1d382-f21e-4acd-a863-ba3e13f7da61"
-      type = "Role"
-    }
-
-    # Group.Read.All — Read all groups (application)
-    resource_access {
-      id   = "5b567255-7703-4780-807c-7be8301ae99b"
-      type = "Role"
-    }
-
-    # OnlineMeetings.Read.All — Read online meeting details (application)
-    resource_access {
-      id   = "c1684f21-1984-47fa-9d61-2dc8c296bb70"
-      type = "Role"
-    }
-
-    # User.Read.All — Read all users' full profiles (application)
-    resource_access {
-      id   = "df021288-bdef-4463-88db-98f22de89214"
-      type = "Role"
-    }
   }
 
   tags = ["CopilotGTM", "OAuth", var.env]

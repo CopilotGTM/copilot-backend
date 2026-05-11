@@ -204,6 +204,41 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
     assert connected["missing_scope_labels"] == ["Google Meet access"]
 
 
+def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Microsoft integrations report exact missing scopes after scope changes."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            integration_type="outlook_email",
+            name="Outlook Email",
+            is_active=True,
+            scopes=["offline_access", "User.Read"],
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    outlook_email = next(
+        (i for i in data["integrations"] if i["integration_type"] == "outlook_email"),
+        None,
+    )
+    assert outlook_email is not None
+    assert outlook_email["is_connected"] is True
+    assert outlook_email["has_action_required"] is True
+    connected = outlook_email["connected_integrations"][0]
+    assert connected["action_required"] == "additional_permissions"
+    assert connected["missing_scopes"] == ["Mail.Read"]
+    assert connected["missing_scope_labels"] == ["Outlook mail access"]
+
+
 def test_list_available_excludes_manually_disconnected_integrations_from_action_required(
     client: TestClient, integrations_dependency_overrides
 ) -> None:

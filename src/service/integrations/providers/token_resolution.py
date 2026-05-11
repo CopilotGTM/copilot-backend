@@ -45,6 +45,7 @@ class IntegrationTokenInfo:
     integration_type: IntegrationType | None = None
     organisation_id: UUID | None = None
     integration_id: UUID | None = None
+    scopes: list[str] | None = None
 
     @classmethod
     def from_integration(cls, integration: Any, organisation_id: UUID) -> IntegrationTokenInfo:
@@ -63,6 +64,7 @@ class IntegrationTokenInfo:
             integration_type=int_type,
             organisation_id=organisation_id,
             integration_id=integration.integration_id,
+            scopes=list(integration.scopes or []),
         )
 
 

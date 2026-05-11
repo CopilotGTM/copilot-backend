@@ -28,6 +28,10 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingSession,
     MeetingTranscriptStatus,
 )
+from src.infra.config.microsoft_integration_scopes import (
+    MICROSOFT_SCOPE_ONLINE_MEETING_TRANSCRIPT_READ_ALL,
+    MICROSOFT_SCOPE_ONLINE_MEETINGS_READ,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.meeting_recording.providers import (
@@ -40,6 +44,17 @@ from .google_meet_provider import GoogleMeetTranscriptProvider, TranscriptAuthEr
 from .teams_provider import TeamsTranscriptProvider
 
 logger = get_logger(__name__)
+
+_TEAMS_TRANSCRIPT_SCOPES = frozenset(
+    {
+        MICROSOFT_SCOPE_ONLINE_MEETINGS_READ,
+        MICROSOFT_SCOPE_ONLINE_MEETING_TRANSCRIPT_READ_ALL,
+    }
+)
+
+
+def _has_teams_transcript_scopes(integration: KnowledgeIntegration) -> bool:
+    return _TEAMS_TRANSCRIPT_SCOPES.issubset(set(integration.scopes or []))
 
 
 @dataclass
@@ -485,6 +500,24 @@ class TranscriptService:
         """Fetch Teams transcript - acquires session only for DB operations."""
         # Step 1: Create/update meeting record (quick DB operation)
         meeting = await self._create_or_get_meeting(event.event_id, existing)
+
+        if not _has_teams_transcript_scopes(integration):
+            logger.info(
+                "Skipping Teams Graph transcript fetch because integration lacks transcript scopes",
+                extra={
+                    "calendar_event_id": str(event.event_id),
+                    "integration_id": str(integration.integration_id),
+                    "missing_scopes": sorted(
+                        _TEAMS_TRANSCRIPT_SCOPES.difference(set(integration.scopes or []))
+                    ),
+                },
+            )
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error="Teams transcript permission not granted",
+                should_retry=False,
+            )
 
         try:
             # Step 2: External API calls (NO session held here)

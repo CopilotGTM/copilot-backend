@@ -50,6 +50,9 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingDealLink,
     MessagingMessage,
 )
+from src.infra.config.microsoft_integration_scopes import (
+    MICROSOFT_SCOPE_CHANNEL_MESSAGE_READ_ALL,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -69,6 +72,10 @@ from src.workers.integrations_worker.providers.messaging.teams import (
 )
 
 logger = get_logger(__name__)
+
+
+def _token_has_scope(token_info: IntegrationTokenInfo, scope: str) -> bool:
+    return scope in set(token_info.scopes or [])
 
 
 @dataclass
@@ -996,6 +1003,17 @@ class DealChannelMessagesService:
             return FetchMessagesResult(messages=[], delta_link=None)
 
         if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
+            if not _token_has_scope(token_info, MICROSOFT_SCOPE_CHANNEL_MESSAGE_READ_ALL):
+                logger.info(
+                    "Skipping Teams channel message sync because integration lacks scope",
+                    extra={
+                        "channel_id": str(channel_info.channel_id),
+                        "integration_id": str(channel_info.integration_id),
+                        "required_scope": MICROSOFT_SCOPE_CHANNEL_MESSAGE_READ_ALL,
+                    },
+                )
+                return FetchMessagesResult(messages=[], delta_link=None)
+
             # Team channel - needs team_id from metadata
             is_initial = delta_link is None
             team_id = channel_info.channel_metadata.get("team_id")

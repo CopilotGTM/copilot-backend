@@ -44,6 +44,7 @@ class FakeIntegration:
         }
     )
     access_token_expires_at: datetime | None = None
+    scopes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -79,6 +80,18 @@ def _make_service(org_id: UUID | None = None) -> TranscriptService:
     svc._google_meet = MagicMock()
     svc._enable_recall_transcripts = False
     return svc
+
+
+def _fake_integration_with_teams_transcript_scopes() -> FakeIntegration:
+    return FakeIntegration(
+        scopes=[
+            "offline_access",
+            "User.Read",
+            "Calendars.Read",
+            "OnlineMeetings.Read",
+            "OnlineMeetingTranscript.Read.All",
+        ]
+    )
 
 
 def _fake_session_gen(results):
@@ -454,11 +467,34 @@ class TestFetchTeams:
     """Tests for TranscriptService._fetch_teams."""
 
     @pytest.mark.asyncio
+    async def test_skips_graph_transcript_fetch_without_transcript_scope(self) -> None:
+        """Teams Graph transcript fetch is optional and must not block calendar connect."""
+        svc = _make_service()
+        event = FakeCalendarEvent()
+        integration = FakeIntegration(
+            scopes=["offline_access", "User.Read", "Calendars.Read", "OnlineMeetings.Read"]
+        )
+        meeting = FakeMeeting()
+
+        svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
+        svc._teams.resolve_meeting_id = AsyncMock()
+        svc._teams.fetch_transcript = AsyncMock()
+
+        result = await svc._fetch_teams(event, integration, None)  # type: ignore[arg-type]
+
+        assert result.success is False
+        assert result.should_retry is False
+        assert result.error == "Teams transcript permission not granted"
+        assert result.meeting == meeting
+        svc._teams.resolve_meeting_id.assert_not_awaited()
+        svc._teams.fetch_transcript.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_happy_path(self) -> None:
         """resolve -> fetch -> parse -> save -> returns success with meeting."""
         svc = _make_service()
         event = FakeCalendarEvent()
-        integration = FakeIntegration()
+        integration = _fake_integration_with_teams_transcript_scopes()
         meeting = FakeMeeting()
         refreshed_meeting = FakeMeeting(status="ready")
 
@@ -490,7 +526,7 @@ class TestFetchTeams:
         """resolve_meeting_id returns None gives retryable failure."""
         svc = _make_service()
         event = FakeCalendarEvent()
-        integration = FakeIntegration()
+        integration = _fake_integration_with_teams_transcript_scopes()
         meeting = FakeMeeting()
 
         svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
@@ -509,7 +545,7 @@ class TestFetchTeams:
         """fetch_transcript returns None gives retryable failure."""
         svc = _make_service()
         event = FakeCalendarEvent()
-        integration = FakeIntegration()
+        integration = _fake_integration_with_teams_transcript_scopes()
         meeting = FakeMeeting()
 
         svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
@@ -527,7 +563,7 @@ class TestFetchTeams:
         """TranscriptAuthError is caught and returns retryable failure."""
         svc = _make_service()
         event = FakeCalendarEvent()
-        integration = FakeIntegration()
+        integration = _fake_integration_with_teams_transcript_scopes()
         meeting = FakeMeeting()
 
         svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
@@ -544,7 +580,7 @@ class TestFetchTeams:
         """Generic Exception is caught and returns non-retryable failure."""
         svc = _make_service()
         event = FakeCalendarEvent()
-        integration = FakeIntegration()
+        integration = _fake_integration_with_teams_transcript_scopes()
         meeting = FakeMeeting()
 
         svc._create_or_get_meeting = AsyncMock(return_value=meeting)  # type: ignore[method-assign]
