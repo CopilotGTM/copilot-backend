@@ -24,39 +24,78 @@ oauth_config:
   scopes:
     bot:
       # Messaging
+      # Reason: Kai needs this to send replies, status messages, sign-in prompts,
+      # and Block Kit responses in Slack channels, threads, and direct messages.
       - chat:write                # Send messages as Kai
-      - chat:write.customize      # Send messages with a custom username/avatar
 
       # Channel mentions
+      # Reason: Kai needs this to receive events when users mention the app in
+      # Slack channels so it can respond to deal, account, and CRM-related questions.
       - app_mentions:read         # Detect when users @mention Kai
 
       # Reading conversations (to understand channel context)
+      # Reason: Kai needs this to read recent messages in public channels where
+      # the app has been added, so it can understand channel context when users
+      # mention Kai.
       - channels:history          # Read messages in public channels Kai is in
+      # Reason: Kai needs this to view basic public channel information for
+      # channels where the app is present, so channel context can be handled correctly.
       - channels:read             # View basic info about public channels
+      # Reason: Kai needs this to read recent messages in private channels where
+      # the app has been added, so it can answer when users mention Kai with
+      # private channel context.
       - groups:history            # Read messages in private channels Kai is invited to
+      # Reason: Kai needs this to view basic private channel information for
+      # private channels where the app is present.
       - groups:read               # View basic info about private channels
 
       # Direct messages
+      # Reason: Kai needs this to receive and process direct messages sent to
+      # the app so users can ask private one-on-one questions.
       - im:history                # Read DM conversations with Kai
-      - im:read                   # View basic info about DMs
+      # Reason: Kai needs this to open a direct message with users, including
+      # onboarding, sign-in, and form submission responses.
       - im:write                  # Start DMs with users
 
       # Files (download attachments shared by users)
+      # Reason: Kai needs this to download files shared by users with the app so
+      # attachments, images, documents, and Slack voice notes can be processed as
+      # part of the user's request.
       - files:read                # Access file content shared in channels/DMs
 
       # Users
+      # Reason: Kai needs this to look up basic Slack user profile information,
+      # such as display name and timezone, so responses and identity linking work correctly.
       - users:read                # View user profile info (names, avatars)
 
     user:
       # Integration scopes (per-user, used by Nango for channel data)
+      # Reason: CopilotGTM needs this to list public Slack channels available to
+      # the connected user so relevant sales conversations can be selected and synced.
       - channels:read             # List channels the user can see
+      # Reason: CopilotGTM needs this to read messages from selected public
+      # channels so deal-related Slack conversations can be used as context.
       - channels:history          # Read messages from channels (for deal attachments)
+      # Reason: CopilotGTM needs this to list private channels available to the
+      # connected user so authorized private sales conversations can be selected and synced.
       - groups:read               # List private channels the user can see
+      # Reason: CopilotGTM needs this to read messages from selected private
+      # channels that the connected user can access for deal and stakeholder context.
       - groups:history            # Read messages from private channels
+      # Reason: CopilotGTM needs this to list group direct messages available to
+      # the connected user when those conversations are relevant to sales execution.
       - mpim:read                 # List group DMs the user can see
+      # Reason: CopilotGTM needs this to read messages from selected group direct
+      # messages so deal-related discussion context can be synced.
       - mpim:history              # Read messages from group DMs
+      # Reason: CopilotGTM needs this to resolve Slack user IDs to names and
+      # basic profiles for participants in synced conversations.
       - users:read                # Resolve Slack user IDs to display names
+      # Reason: CopilotGTM needs this to match Slack users to CopilotGTM users
+      # by email for identity mapping and participant attribution.
       - users:read.email          # Resolve Slack user emails for identity matching
+      # Reason: CopilotGTM needs this to read Slack workspace metadata such as
+      # workspace ID and name so synced channels are grouped under the correct workspace.
       - team:read                 # Read workspace metadata for Slack channel grouping
 
 settings:
