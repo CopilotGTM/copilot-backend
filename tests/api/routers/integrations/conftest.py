@@ -20,6 +20,15 @@ from src.api.routers.integrations.integration_routes import (
 )
 from src.domain.models.organisation_tables.sync import IntegrationScope, IntegrationType
 from src.infra.auth.user_auth import user_auth
+from src.infra.config.integrations_metadata import get_all_integration_metadata
+
+
+def _user_owned_integration_types() -> set[str]:
+    return {
+        integration_type.value
+        for integration_type, metadata in get_all_integration_metadata().items()
+        if metadata.default_scope == IntegrationScope.USER
+    }
 
 
 class FakeKnowledgeIntegration:
@@ -107,13 +116,37 @@ class FakeIntegrationService:
         self, user_id: UUID | None = None
     ) -> list[FakeKnowledgeIntegration]:
         """List all active integrations."""
-        return [i for i in self.integrations.values() if i.is_active]
+        integrations = [i for i in self.integrations.values() if i.is_active]
+        if user_id is None:
+            return integrations
+        user_owned_types = _user_owned_integration_types()
+        return [
+            integration
+            for integration in integrations
+            if (
+                integration.integration_type not in user_owned_types
+                and integration.integration_scope == IntegrationScope.ORGANIZATION
+            )
+            or integration.created_by_user_id == user_id
+        ]
 
     async def list_available_integrations_for_user(
         self, user_id: UUID | None = None
     ) -> list[FakeKnowledgeIntegration]:
         """List active integrations plus inactive ones that explicitly require re-auth."""
-        return [i for i in self.integrations.values() if i.is_active or i.requires_reauth]
+        integrations = [i for i in self.integrations.values() if i.is_active or i.requires_reauth]
+        if user_id is None:
+            return integrations
+        user_owned_types = _user_owned_integration_types()
+        return [
+            integration
+            for integration in integrations
+            if (
+                integration.integration_type not in user_owned_types
+                and integration.integration_scope == IntegrationScope.ORGANIZATION
+            )
+            or integration.created_by_user_id == user_id
+        ]
 
     async def delete_integration_from_nango(
         self, connection_id: str, integration_type: str

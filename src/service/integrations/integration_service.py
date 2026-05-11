@@ -23,6 +23,7 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingChannelMember,
 )
 from src.infra.auth.user_context import UserIDs
+from src.infra.config.integrations_metadata import get_all_integration_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,14 @@ CHANNEL_TYPE_LABELS = {
     "thread": "Thread",
     "meeting": "Meeting Chat",
 }
+
+
+def _user_owned_integration_types() -> set[str]:
+    return {
+        integration_type.value
+        for integration_type, metadata in get_all_integration_metadata().items()
+        if metadata.default_scope == IntegrationScope.USER
+    }
 
 
 def get_channel_type_label(channel_type: str) -> str:
@@ -116,11 +125,19 @@ class IntegrationService:
         )
 
         if user_id:
+            user_owned_types = _user_owned_integration_types()
             statement = statement.where(
                 or_(
-                    col(KnowledgeIntegration.integration_scope) == IntegrationScope.ORGANIZATION,
                     and_(
-                        col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        col(KnowledgeIntegration.integration_type).not_in(user_owned_types),
+                        col(KnowledgeIntegration.integration_scope)
+                        == IntegrationScope.ORGANIZATION,
+                    ),
+                    and_(
+                        or_(
+                            col(KnowledgeIntegration.integration_type).in_(user_owned_types),
+                            col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        ),
                         col(KnowledgeIntegration.created_by_user_id) == user_id,
                     ),
                 )
@@ -153,11 +170,19 @@ class IntegrationService:
         )
 
         if user_id:
+            user_owned_types = _user_owned_integration_types()
             statement = statement.where(
                 or_(
-                    col(KnowledgeIntegration.integration_scope) == IntegrationScope.ORGANIZATION,
                     and_(
-                        col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        col(KnowledgeIntegration.integration_type).not_in(user_owned_types),
+                        col(KnowledgeIntegration.integration_scope)
+                        == IntegrationScope.ORGANIZATION,
+                    ),
+                    and_(
+                        or_(
+                            col(KnowledgeIntegration.integration_type).in_(user_owned_types),
+                            col(KnowledgeIntegration.integration_scope) == IntegrationScope.USER,
+                        ),
                         col(KnowledgeIntegration.created_by_user_id) == user_id,
                     ),
                 )
