@@ -286,17 +286,26 @@ async def slack_oauth_callback(
             detail="Slack integration is not properly configured.",
         )
 
+    token_request_data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+    }
+    redirect_uri = (
+        getattr(slack_config, "SLACK_BOT_REDIRECT_URI", None)
+        or getattr(slack_config, "REDIRECT_URI", "")
+        or ""
+    )
+    if redirect_uri:
+        token_request_data["redirect_uri"] = redirect_uri
+
     # Exchange authorization code for bot token
     token_url = "https://slack.com/api/oauth.v2.access"
     async with (
         aiohttp.ClientSession() as http_session,
         http_session.post(
             token_url,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-            },
+            data=token_request_data,
         ) as resp,
     ):
         token_data = await resp.json()

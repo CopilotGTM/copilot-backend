@@ -2,6 +2,12 @@
 Integration schemas package.
 """
 
+from .bot_integration_schemas import (
+    AvailableBotIntegration,
+    AvailableBotIntegrationsResponse,
+    BotInstallationResponse,
+    SlackBotConnectResponse,
+)
 from .integration_schemas import (
     # Available integrations
     AvailableIntegration,
@@ -55,6 +61,10 @@ __all__ = [
     # Available integrations
     "AvailableIntegration",
     "AvailableIntegrationsResponse",
+    "AvailableBotIntegration",
+    "AvailableBotIntegrationsResponse",
+    "BotInstallationResponse",
+    "SlackBotConnectResponse",
     # Errors
     "IntegrationError",
 ]

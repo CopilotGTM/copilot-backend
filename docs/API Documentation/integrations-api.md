@@ -136,6 +136,102 @@ curl -X GET "https://api.example.com/users/integrations/available" \
 
 ---
 
+## 2. List Available Bot Integrations
+
+### Endpoint
+
+```http
+GET /users/integrations/bots/available
+```
+
+Returns bot providers that can be connected from the Integrations > Bots section. The
+current implementation returns the Slack bot card with workspace install status and the
+current user's Slack identity-link status.
+
+### Success Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Available bots retrieved successfully",
+  "data": {
+    "bots": [
+      {
+        "provider": "slack",
+        "name": "Slack Bot",
+        "display_name": "CopilotGTM Slack Bot",
+        "description": "Chat with CopilotGTM from Slack DMs, mentions, and supported workflows.",
+        "logo_url": "/integrations/slack.png",
+        "category": "bots",
+        "category_name": "Bots",
+        "availability_status": "available",
+        "connection_mode": "oauth_install",
+        "connect_url": null,
+        "installed": false,
+        "installation": null,
+        "identity_linked": false,
+        "identity_mapping_id": null,
+        "action_required": "install_required"
+      }
+    ],
+    "total_available": 1,
+    "total_installed": 0,
+    "total_linked": 0
+  }
+}
+```
+
+### Bot Card Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `provider` | string | Bot provider. Currently `slack`. |
+| `display_name` | string | User-facing bot name. |
+| `connection_mode` | string | How the provider connects. Currently `oauth_install`. |
+| `installed` | boolean | Whether this organization has an active workspace installation. |
+| `installation` | object\|null | Workspace details if installed. |
+| `identity_linked` | boolean | Whether the current CopilotGTM user has linked their Slack identity. |
+| `action_required` | string | One of `install_required`, `identity_link_required`, `setup_required`, or `none`. |
+
+---
+
+## 3. Get Slack Bot Connect URL
+
+### Endpoint
+
+```http
+GET /users/integrations/bots/slack/connect
+```
+
+Generates the Slack OAuth v2 install URL for the CopilotGTM Slack bot. The frontend
+should redirect the browser to `data.connect_url`.
+
+### Success Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Slack bot connect URL generated successfully",
+  "data": {
+    "provider": "slack",
+    "connect_url": "https://slack.com/oauth/v2/authorize?...",
+    "expires_at": null
+  }
+}
+```
+
+### Error Response (500)
+
+```json
+{
+  "status": "error",
+  "message": "Failed to start Slack bot connection",
+  "data": null
+}
+```
+
+---
+
 ## Understanding Access Control Fields
 
 ### New Fields Explained

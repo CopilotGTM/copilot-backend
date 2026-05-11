@@ -28,6 +28,7 @@ api:
     GOOGLE_CHAT_AUTH_AUDIENCE: "https://devapi.copilotgtm.com/users/bots/google-chat/events"
     MICROSOFT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     SLACK_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
+    SLACK_BOT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/bots/slack/oauth/callback"
     HUBSPOT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     HUBSPOT_WEBHOOK_PUBLIC_URL: "https://devapi.copilotgtm.com/users/integrations/hubspot/webhook"
     SALESFORCE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
