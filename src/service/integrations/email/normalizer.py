@@ -291,9 +291,7 @@ class EmailPayloadNormalizer:
         label_ids = message_data.get("labelIds", [])
         label_set = set(label_ids)
 
-        has_attachments = any(
-            part.get("filename") for part in payload.get("parts", []) if part.get("filename")
-        )
+        has_attachments = cls.gmail_payload_has_attachment(payload)
 
         return {
             "thread_id": message_data.get("threadId"),
@@ -323,6 +321,19 @@ class EmailPayloadNormalizer:
                 "label_ids": label_ids,
             },
         }
+
+    @classmethod
+    def gmail_payload_has_attachment(cls, part: dict[str, Any]) -> bool:
+        """Return true when any Gmail MIME part references a downloadable attachment."""
+        body = part.get("body", {})
+        if part.get("filename") and body.get("attachmentId"):
+            return True
+
+        return any(
+            cls.gmail_payload_has_attachment(child)
+            for child in part.get("parts", [])
+            if isinstance(child, dict)
+        )
 
     @staticmethod
     def extract_generic_message_fields(message_data: dict[str, Any]) -> dict[str, Any]:

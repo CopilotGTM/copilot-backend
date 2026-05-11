@@ -1,3 +1,10 @@
+"""Smoke tests for Helm-rendered worker CronJob manifests.
+
+These assertions lock the production CronJob contracts (schedule, history limits,
+deadlines, and hardening settings) so chart edits don't quietly change runtime
+behavior.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -65,6 +72,7 @@ def _render_all_manifests() -> list[dict]:
 
 
 def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
+    """Assert integrations CronJob keeps strict production restart and deadline settings."""
     cronjobs = _render_worker_cronjobs()
     calendar = next(
         doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-sync-calendar-events"
@@ -83,6 +91,7 @@ def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
 
 
 def test_deal_cronjobs_render_with_production_job_hardening() -> None:
+    """Assert deal-mapping and attachment CronJobs still render hardened settings."""
     cronjobs = _render_worker_cronjobs()
     deal_mapping = next(
         doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-deal-mapping"
@@ -99,8 +108,16 @@ def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     assert job_spec["activeDeadlineSeconds"] == 300
     assert job_spec["ttlSecondsAfterFinished"] == 900
 
+    email_attachments = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-email-attachment-extraction"
+    )
+    assert email_attachments["spec"]["schedule"] == "20,50 * * * *"
+
 
 def test_knowledge_cronjobs_render_with_production_job_hardening() -> None:
+    """Assert knowledge cleanup CronJobs keep strict history and TTL settings."""
     cronjobs = _render_worker_cronjobs()
     cleanup = next(
         doc
@@ -129,6 +146,7 @@ def test_knowledge_cronjobs_render_with_production_job_hardening() -> None:
 
 
 def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:
+    """Protect against reintroducing deprecated deal/knowledge beat Deployments."""
     manifests = _render_all_manifests()
     deployment_names = {
         doc["metadata"]["name"] for doc in manifests if doc.get("kind") == "Deployment"
@@ -139,6 +157,7 @@ def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:
 
 
 def test_api_secret_renders_sentry_settings_for_dev() -> None:
+    """Assert dev Sentry secret values render with expected non-empty defaults."""
     manifests = _render_all_manifests()
     secret = next(
         doc

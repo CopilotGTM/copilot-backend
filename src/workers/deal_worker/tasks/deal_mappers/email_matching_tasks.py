@@ -202,6 +202,41 @@ def match_email_to_deals_org_task(
             },
         )
 
+        attachments_dispatched = 0
+        for deal_uuid in deals_matched_ids:
+            try:
+                from src.workers.deal_worker.tasks.deal_asset_email_attachment_tasks import (
+                    extract_email_attachments_deal_task,
+                )
+
+                extract_email_attachments_deal_task.apply_async(
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "deal_id": str(deal_uuid),
+                    },
+                    headers=correlation_headers(),
+                )
+                attachments_dispatched += 1
+            except Exception as e:
+                logger.warning(
+                    "Failed to dispatch email attachment extraction for deal",
+                    extra={
+                        "event": "email_matching_attachment_dispatch_failed",
+                        "organisation_id": organisation_id,
+                        "deal_id": str(deal_uuid),
+                        "failure_reason": str(e),
+                    },
+                )
+
+        logger.info(
+            "Task 3 (org): Dispatched email attachment extraction tasks",
+            extra={
+                "event": "email_matching_attachment_dispatch_completed",
+                "organisation_id": organisation_id,
+                "attachments_dispatched": attachments_dispatched,
+            },
+        )
+
         return {
             "status": "success",
             "organisation_id": organisation_id,
@@ -214,6 +249,7 @@ def match_email_to_deals_org_task(
             "pipelines_triggered": pipelines_triggered,
             "jobs_created": jobs_created,
             "jobs_skipped": jobs_skipped,
+            "attachments_dispatched": attachments_dispatched,
         }
 
     try:

@@ -1,3 +1,10 @@
+"""Celery queue and routing configuration for the deal worker.
+
+Deal-worker jobs are split into two queues to separate small orchestration work
+from longer LLM/processing jobs. Cron-based schedules are intentionally defined
+outside beat, in Kubernetes CronJobs.
+"""
+
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -81,6 +88,10 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_memory.trigger_backfill_all_orgs",
             # Deal asset post-upload processing
             "deal_asset.post_upload",
+            # Email attachment extraction into deal assets
+            "deal_asset.extract_email_attachments_org",
+            "deal_asset.extract_email_attachments_deal",
+            "deal_asset.extract_email_attachments_all_orgs",
             # Stakeholder research retry (periodic scan for un-researched)
             "stakeholder_research.retry_pending_org",
             "stakeholder_research.trigger_retry_all_orgs",

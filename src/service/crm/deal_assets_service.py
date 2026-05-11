@@ -46,6 +46,7 @@ class DealAssetsService:
 
     @property
     def session(self) -> AsyncSession:
+        """Expose the underlying org session for legacy callers that expect it."""
         return self.org_session
 
     # ------------------------------------------------------------------
@@ -114,7 +115,11 @@ class DealAssetsService:
         return assets, total
 
     async def get_asset(self, deal_id: UUID, asset_id: UUID) -> DealAsset:
-        """Fetch a single asset, verifying org and deal ownership."""
+        """Fetch a single asset after org + deal ownership filtering.
+
+        The external asset id is scoped to both identifiers so one org cannot read
+        another org's records even if IDs are guessed.
+        """
         c = cast(Any, DealAsset).__table__.c
 
         stmt = select(DealAsset).where(
@@ -146,6 +151,8 @@ class DealAssetsService:
         Returns:
             (asset, upload_url, expires_in_seconds)
         """
+        # Persist the pending DealAsset before generating upload credentials so a
+        # partially completed upload still has an auditable record.
         asset_id = uuid4()
         storage_path = f"deal_assets/{user_id}/{asset_id}/{filename}"
 
@@ -191,6 +198,8 @@ class DealAssetsService:
 
         The Celery post-upload task (checksum + thumbnails) transitions to active.
         """
+        # This transition is a strict state machine gate: only PENDING can move
+        # to PROCESSING, so callers cannot accidentally process stale rows twice.
         asset = await self.get_asset(deal_id, asset_id)
 
         if asset.status != DealAssetStatus.PENDING_UPLOAD.value:
@@ -219,7 +228,7 @@ class DealAssetsService:
         category: str | None = None,
         direction: str = "internal",
     ) -> DealAsset:
-        """Create an active link asset (no file upload needed)."""
+        """Create an active link asset without upload orchestration."""
         from src.domain.models.organisation_tables.deal_asset_models import DealAssetLinkStatus
 
         asset = DealAsset(
@@ -251,7 +260,7 @@ class DealAssetsService:
     async def update_asset(
         self, deal_id: UUID, asset_id: UUID, updates: dict[str, Any]
     ) -> DealAsset:
-        """Apply partial updates to an asset."""
+        """Apply partial updates on a validated, org-scoped asset."""
         asset = await self.get_asset(deal_id, asset_id)
 
         for key, value in updates.items():
@@ -275,12 +284,20 @@ class DealAssetsService:
         return asset
 
     async def generate_download_url(self, asset: DealAsset) -> str | None:
-        """Generate a time-limited read SAS URL for the asset's file."""
+        """Generate a time-limited read URL for the asset file.
+
+        File links are only produced for blob-backed assets; link-type assets skip
+        this path and return `None`.
+        """
         if not asset.storage_path:
             return None
 
         blob_storage = AzureOrganisationBlobStorage(self.organisation_id)
-        return await blob_storage.generate_read_sas(asset.storage_path, minutes=_READ_SAS_MINUTES)
+        return await blob_storage.generate_read_sas(
+            asset.storage_path,
+            minutes=_READ_SAS_MINUTES,
+            download_filename=asset.filename or asset.name,
+        )
 
     async def generate_thumbnail_urls(self, asset: DealAsset) -> tuple[str | None, str | None]:
         """Generate read SAS URLs for the asset's small and medium thumbnails."""

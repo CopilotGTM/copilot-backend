@@ -16,7 +16,10 @@ from src.service.integrations.email_sync_service import (
 
 
 class TestExtractGmailFolderFields:
+    """Normalize Gmail folder label fields to repository folder contracts."""
+
     def test_inbox_label(self):
+        """INBOX is treated as a monitored folder type."""
         label = {
             "id": "INBOX",
             "name": "INBOX",
@@ -33,6 +36,7 @@ class TestExtractGmailFolderFields:
         assert fields["unread_count"] == 10
 
     def test_sent_label(self):
+        """Sent label maps to inbox-equivalent monitored type."""
         label = {"id": "SENT", "name": "SENT", "type": "system", "messagesTotal": 80}
         fields = EmailSyncService._extract_gmail_folder_fields(label)
 
@@ -40,6 +44,7 @@ class TestExtractGmailFolderFields:
         assert fields["is_monitored"] == "true"
 
     def test_user_label(self):
+        """User labels must remain un-monitored and preserve custom names."""
         label = {
             "id": "Label_123",
             "name": "Deals/Acme",
@@ -54,6 +59,7 @@ class TestExtractGmailFolderFields:
         assert fields["is_monitored"] == "false"
 
     def test_category_label(self):
+        """Category labels are marked as category type for reporting only."""
         label = {
             "id": "CATEGORY_PROMOTIONS",
             "name": "CATEGORY_PROMOTIONS",
@@ -65,16 +71,19 @@ class TestExtractGmailFolderFields:
         assert fields["is_monitored"] == "false"
 
     def test_trash_label(self):
+        """TRASH label keeps trash semantics for sync routing."""
         label = {"id": "TRASH", "name": "TRASH", "type": "system"}
         fields = EmailSyncService._extract_gmail_folder_fields(label)
         assert fields["folder_type"] == "trash"
 
     def test_spam_label(self):
+        """Spam/Junk mapping should normalize into a junk folder type."""
         label = {"id": "SPAM", "name": "SPAM", "type": "system"}
         fields = EmailSyncService._extract_gmail_folder_fields(label)
         assert fields["folder_type"] == "junk"
 
     def test_draft_label(self):
+        """Draft label remains drafts type for consistent client behavior."""
         label = {"id": "DRAFT", "name": "DRAFT", "type": "system"}
         fields = EmailSyncService._extract_gmail_folder_fields(label)
         assert fields["folder_type"] == "drafts"
@@ -122,7 +131,10 @@ def _make_gmail_message(
 
 
 class TestExtractGmailMessageFields:
+    """Verify Gmail message extraction handles labels, time precedence, and MIME body."""
+
     def test_basic_fields(self):
+        """Core fields should remain stable from payload helpers."""
         msg = _make_gmail_message()
         fields = EmailSyncService._extract_gmail_message_fields(msg)
 
@@ -136,6 +148,7 @@ class TestExtractGmailMessageFields:
         assert fields["snippet"] == "Hello"
 
     def test_read_status(self):
+        """UNREAD label must invert the persisted read flag."""
         # Unread message (UNREAD label present)
         msg_unread = _make_gmail_message(label_ids=["INBOX", "UNREAD"])
         fields = EmailSyncService._extract_gmail_message_fields(msg_unread)
@@ -147,6 +160,7 @@ class TestExtractGmailMessageFields:
         assert fields["is_read"] == "true"
 
     def test_starred_and_important(self):
+        """Starred/important label bits must be persisted as independent flags."""
         msg = _make_gmail_message(label_ids=["INBOX", "STARRED", "IMPORTANT"])
         fields = EmailSyncService._extract_gmail_message_fields(msg)
 
@@ -154,11 +168,13 @@ class TestExtractGmailMessageFields:
         assert fields["is_important"] == "true"
 
     def test_draft_label(self):
+        """DRAFT label should map to draft state in normalized fields."""
         msg = _make_gmail_message(label_ids=["DRAFT"])
         fields = EmailSyncService._extract_gmail_message_fields(msg)
         assert fields["is_draft"] == "true"
 
     def test_received_at_from_internal_date(self):
+        """Use Gmail internalDate as primary timestamp when available."""
         # 1700000000000 ms = 2023-11-14T22:13:20 UTC
         msg = _make_gmail_message(internal_date="1700000000000")
         fields = EmailSyncService._extract_gmail_message_fields(msg)
@@ -167,6 +183,7 @@ class TestExtractGmailMessageFields:
         assert fields["received_at"].month == 11
 
     def test_metadata_includes_gmail_id(self):
+        """Persist Gmail IDs into metadata for de-dup and troubleshooting."""
         msg = _make_gmail_message(msg_id="xyz789")
         fields = EmailSyncService._extract_gmail_message_fields(msg)
 
@@ -219,9 +236,59 @@ class TestExtractGmailMessageFields:
 
         assert fields["body_text"] == "Original plain text"
 
+    def test_detects_nested_gmail_attachment(self):
+        """Walk nested MIME parts so file attachments on child nodes are discovered."""
+        msg = _make_gmail_message()
+        msg["payload"] = {
+            "mimeType": "multipart/mixed",
+            "headers": msg["payload"]["headers"],
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": base64.urlsafe_b64encode(b"Hello").decode()},
+                        }
+                    ],
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "proposal.pdf",
+                    "body": {"attachmentId": "att-1", "size": 2048},
+                },
+            ],
+        }
+
+        fields = EmailSyncService._extract_gmail_message_fields(msg)
+
+        assert fields["has_attachments"] == "true"
+
+    def test_ignores_inline_body_data_without_attachment_id(self):
+        """Inline parts with `body.data` but no attachmentId must not be treated as files."""
+        msg = _make_gmail_message()
+        msg["payload"] = {
+            "mimeType": "multipart/mixed",
+            "headers": msg["payload"]["headers"],
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "filename": "",
+                    "body": {"data": base64.urlsafe_b64encode(b"Hello").decode()},
+                }
+            ],
+        }
+
+        fields = EmailSyncService._extract_gmail_message_fields(msg)
+
+        assert fields["has_attachments"] == "false"
+
 
 class TestExtractOutlookMessageFields:
+    """Verify Outlook message datetime fallback and folder metadata normalization."""
+
     def test_received_at_uses_received_datetime_when_present(self):
+        """Prefer receivedDateTime over sentDateTime for received_at."""
         msg = {
             "id": "msg-1",
             "conversationId": "thread-1",
@@ -243,6 +310,7 @@ class TestExtractOutlookMessageFields:
         assert fields["sent_at"].isoformat() == "2026-04-08T16:29:00+00:00"
 
     def test_received_at_falls_back_to_sent_datetime(self):
+        """If receivedDateTime is missing, fall back to sentDateTime."""
         msg = {
             "id": "msg-2",
             "conversationId": "thread-2",
@@ -264,6 +332,7 @@ class TestExtractOutlookMessageFields:
         assert fields["sent_at"].isoformat() == "2026-04-08T16:29:00+00:00"
 
     def test_received_at_falls_back_to_created_datetime(self):
+        """If received+sent are missing, use createdDateTime."""
         msg = {
             "id": "msg-3",
             "conversationId": "thread-3",
@@ -292,34 +361,45 @@ class TestExtractOutlookMessageFields:
 
 
 class TestParseEmailAddress:
+    """Parse email header forms into consistent (email, display-name) tuple."""
+
     def test_name_and_email(self):
+        """Extract both email and display name from standard `Name <email>` form."""
         email, name = _parse_email_address("Alice Smith <alice@example.com>")
         assert email == "alice@example.com"
         assert name == "Alice Smith"
 
     def test_bare_email(self):
+        """Bare email address should produce no display name."""
         email, name = _parse_email_address("alice@example.com")
         assert email == "alice@example.com"
         assert name is None
 
     def test_quoted_name(self):
+        """Quoted display names should be unwrapped and preserved."""
         email, name = _parse_email_address('"Bob Jones" <bob@example.com>')
         assert email == "bob@example.com"
         assert name == "Bob Jones"
 
 
 class TestParseEmailList:
+    """Split comma-separated address header strings into clean address arrays."""
+
     def test_multiple_addresses(self):
+        """Comma-separated addresses should be split and trimmed."""
         result = _parse_email_list("alice@a.com, bob@b.com, carol@c.com")
         assert result == ["alice@a.com", "bob@b.com", "carol@c.com"]
 
     def test_empty_header(self):
+        """Nil or empty headers produce an empty recipient list."""
         assert _parse_email_list(None) == []
         assert _parse_email_list("") == []
 
     def test_single_address(self):
+        """Single address inputs should return one normalized item."""
         assert _parse_email_list("alice@example.com") == ["alice@example.com"]
 
     def test_addresses_with_names(self):
+        """Mixed display-name formats should be normalized down to raw addresses."""
         result = _parse_email_list("Alice <alice@a.com>, Bob <bob@b.com>")
         assert result == ["alice@a.com", "bob@b.com"]

@@ -1,7 +1,10 @@
-"""
-Tasks for the deal worker.
-"""
+"""Public task exports for the deal worker.\n\nThis module is the import surface Celery loads for autodiscovery, and maps\nall deal-worker tasks to stable names for queue dispatch.\n"""
 
+from .deal_asset_email_attachment_tasks import (
+    extract_email_attachments_all_orgs_task,
+    extract_email_attachments_deal_task,
+    extract_email_attachments_org_task,
+)
 from .deal_asset_post_upload_task import deal_asset_post_upload
 from .deal_insight_tasks import (
     analyze_deal_stakeholders_task,
@@ -79,4 +82,7 @@ __all__ = [
     "cleanup_stale_deal_jobs_org_task",
     # Deal asset tasks
     "deal_asset_post_upload",
+    "extract_email_attachments_all_orgs_task",
+    "extract_email_attachments_org_task",
+    "extract_email_attachments_deal_task",
 ]
