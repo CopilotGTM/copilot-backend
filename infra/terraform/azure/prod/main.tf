@@ -1158,10 +1158,11 @@ module "teams_bot" {
 module "microsoft_app_registration" {
   source = "../modules/microsoft_oauth_app"
 
-  env           = var.env
-  display_name  = "CopilotGTM"
-  redirect_uris = var.oauth_redirect_uris
-  key_vault_id  = module.master_key_vault.key_vault_id
+  env                   = var.env
+  display_name          = "CopilotGTM"
+  display_name_override = "CopilotGTM"
+  redirect_uris         = var.oauth_redirect_uris
+  key_vault_id          = module.master_key_vault.key_vault_id
 
   tags = {
     environment = var.env
