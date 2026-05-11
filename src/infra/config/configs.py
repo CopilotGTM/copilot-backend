@@ -1661,6 +1661,9 @@ class SlackConfig:
     # provider redirects for backend callback endpoints.
     REDIRECT_URI: str = os.getenv("SLACK_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
 
+    # OAuth callback URL for the workspace-level Slack bot install flow.
+    SLACK_BOT_REDIRECT_URI: str = os.getenv("SLACK_BOT_REDIRECT_URI", REDIRECT_URI)
+
     # Auth URLs for the login flow
     SLACK_AUTH_LOGIN_URL: str = os.getenv(
         "SLACK_AUTH_LOGIN_URL",

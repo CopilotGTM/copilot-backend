@@ -28,6 +28,12 @@ def test_helm_env_overrides_declare_slack_redirect_uri() -> None:
     assert (
         'SLACK_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"'
     ) in prod_values
+    assert (
+        'SLACK_BOT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/bots/slack/oauth/callback"'
+    ) in dev_values
+    assert (
+        'SLACK_BOT_REDIRECT_URI: "https://api.copilotgtm.com/users/bots/slack/oauth/callback"'
+    ) in prod_values
 
 
 def test_slack_app_manifests_declare_integration_redirect_uri() -> None:

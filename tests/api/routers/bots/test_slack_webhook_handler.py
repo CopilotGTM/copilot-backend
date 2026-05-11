@@ -98,6 +98,8 @@ def test_events_endpoint_still_processes_standard_json_events(client, monkeypatc
 async def test_slack_oauth_callback_allows_org_install_without_state(monkeypatch) -> None:
     from src.api.routers.bots import slack_webhook_handler
 
+    posted_data = {}
+
     class _FakeSlackResponse:
         async def __aenter__(self):
             return self
@@ -125,6 +127,7 @@ async def test_slack_oauth_callback_allows_org_install_without_state(monkeypatch
             return None
 
         def post(self, *args, **kwargs):
+            posted_data.update(kwargs.get("data", {}))
             return _FakeSlackResponse()
 
     monkeypatch.setattr(slack_webhook_handler.aiohttp, "ClientSession", _FakeSlackClientSession)
@@ -134,6 +137,12 @@ async def test_slack_oauth_callback_allows_org_install_without_state(monkeypatch
         AsyncMock(return_value=("signing", "app", "client", "secret")),
     )
     monkeypatch.setattr(slack_webhook_handler.slack_config, "SLACK_AUTH_LOGIN_URL", "")
+    monkeypatch.setattr(
+        slack_webhook_handler.slack_config,
+        "SLACK_BOT_REDIRECT_URI",
+        "https://api.example.com/users/bots/slack/oauth/callback",
+        raising=False,
+    )
     monkeypatch.setattr(
         slack_webhook_handler.BotInstallationService,
         "upsert_installation",
@@ -158,3 +167,6 @@ async def test_slack_oauth_callback_allows_org_install_without_state(monkeypatch
     )
 
     assert response.status_code == 200
+    assert posted_data["redirect_uri"] == (
+        "https://api.example.com/users/bots/slack/oauth/callback"
+    )
