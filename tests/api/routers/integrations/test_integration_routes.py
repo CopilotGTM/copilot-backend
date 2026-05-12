@@ -174,10 +174,12 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="google_calendar",
             name="Google Calendar",
             is_active=True,
@@ -200,9 +202,13 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
     connected = calendar["connected_integrations"][0]
     assert connected["action_required"] == "additional_permissions"
     assert connected["missing_scopes"] == [
-        "https://www.googleapis.com/auth/meetings.space.readonly"
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/meetings.space.readonly",
     ]
-    assert connected["missing_scope_labels"] == ["Google Meet access"]
+    assert connected["missing_scope_labels"] == [
+        "Google Calendar invite access",
+        "Google Meet access",
+    ]
 
 
 def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions(

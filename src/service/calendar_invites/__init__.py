@@ -1,4 +1,4 @@
-"""Calendar invite creation service package for user-owned Outlook writes.
+"""Calendar invite creation service package for user-owned calendar writes.
 
 Callers should use this package when handling user-initiated invite actions.
 The public exports are intentionally narrow so API/tool code can construct and

@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.calendar_invites.google_calendar_client import GoogleCalendarInviteClient
 from src.service.calendar_invites.microsoft_graph_client import MicrosoftCalendarInviteClient
 from src.service.calendar_invites.models import (
     CalendarInviteCreateRequest,
@@ -29,16 +30,21 @@ from src.service.integrations.calendar.writer import CalendarSyncWriter
 logger = get_logger(__name__)
 
 
-def derive_idempotency_key(request: CalendarInviteCreateRequest) -> str:
+def derive_idempotency_key(
+    request: CalendarInviteCreateRequest,
+    *,
+    integration_id: UUID | None = None,
+) -> str:
     """Derive a stable Graph transactionId from the user intent."""
-    # Build a deterministic key from org/user identity, title, window, and attendees.
-    # This avoids duplicate Graph writes when the user retries the same action.
+    # Include the resolved integration when available so sender changes do not
+    # replay an invite created from a different calendar account.
     attendee_part = ",".join(sorted(attendee.email for attendee in request.attendees))
     sender_part = (request.sender_email or "").strip().lower()
     raw = "|".join(
         [
             str(request.organisation_id),
             str(request.requested_by_user_id),
+            str(integration_id or ""),
             sender_part,
             request.title,
             request.start_at.isoformat(),
@@ -65,6 +71,7 @@ class CalendarInviteService:
         requested_by_user_id: UUID,
         integration_resolver: OutlookCalendarIntegrationResolver | None = None,
         graph_client: MicrosoftCalendarInviteClient | None = None,
+        google_client: GoogleCalendarInviteClient | None = None,
         normalizer: CalendarEventNormalizer | None = None,
         writer_factory: Any = CalendarSyncWriter,
     ) -> None:
@@ -73,6 +80,7 @@ class CalendarInviteService:
         self.requested_by_user_id = requested_by_user_id
         self.integration_resolver = integration_resolver or OutlookCalendarIntegrationResolver()
         self.graph_client = graph_client or MicrosoftCalendarInviteClient()
+        self.google_client = google_client or GoogleCalendarInviteClient()
         self.normalizer = normalizer or CalendarEventNormalizer()
         self.writer_factory = writer_factory
 
@@ -99,9 +107,18 @@ class CalendarInviteService:
                 status_code=403,
             )
 
-        idempotency_key = request.idempotency_key or derive_idempotency_key(request)
-        # Reuse prior successful attempts by idempotency key so chat retry does
-        # not send duplicate invites in rapid retry loops.
+        resolved = await self.integration_resolver.resolve(
+            self.session,
+            self.organisation_id,
+            self.requested_by_user_id,
+            sender_email=request.sender_email,
+        )
+        idempotency_key = request.idempotency_key or derive_idempotency_key(
+            request,
+            integration_id=resolved.integration.integration_id,
+        )
+        # Reuse prior successful attempts by sender-scoped idempotency key so
+        # chat retry does not send duplicate invites in rapid retry loops.
         existing = await self._find_existing_request(idempotency_key)
         if existing and existing.status == CalendarInviteRequestStatus.SENT:
             return CalendarInviteCreateResult(
@@ -112,14 +129,12 @@ class CalendarInviteService:
                 conference_link=existing.conference_link,
             )
 
-        resolved = await self.integration_resolver.resolve(
-            self.session,
-            self.organisation_id,
-            self.requested_by_user_id,
-            sender_email=request.sender_email,
-        )
         await self._ensure_deal_access(request.deal_id)
-        provider_timezone = to_outlook_timezone(request.timezone)
+        provider_timezone = (
+            to_outlook_timezone(request.timezone)
+            if resolved.provider == "microsoft"
+            else request.timezone
+        )
         # Persist audit row before write to preserve operator-visible failure state
         # even when Graph create_event fails mid-flight.
         audit_row = self._build_audit_row(request, resolved.integration.integration_id)
@@ -138,7 +153,8 @@ class CalendarInviteService:
             await self.session.flush()
             await self.session.commit()
 
-            provider_response = await self.graph_client.create_event(
+            provider_response = await self._create_provider_event(
+                resolved.provider,
                 resolved.token_info,
                 request.model_copy(update={"idempotency_key": idempotency_key}),
             )
@@ -146,15 +162,15 @@ class CalendarInviteService:
             if not isinstance(provider_event_id, str) or not provider_event_id:
                 raise CalendarInviteError(
                     "calendar_provider_missing_event_id",
-                    "Outlook created no usable calendar event ID.",
+                    "The calendar provider created no usable calendar event ID.",
                     status_code=502,
                 )
 
-            normalized = self.normalizer.normalize(provider_response, "microsoft")
+            normalized = self.normalizer.normalize(provider_response, resolved.provider)
             if not normalized.identity.external_id:
                 raise CalendarInviteError(
                     "calendar_provider_missing_ical_uid",
-                    "Outlook created the invite but returned no iCalUId for local sync.",
+                    "The calendar provider created the invite but returned no shared calendar UID.",
                     status_code=502,
                 )
 
@@ -174,7 +190,10 @@ class CalendarInviteService:
             audit_row.provider_event_id = provider_event_id
             audit_row.provider_response = provider_response
             audit_row.event_id = event.event_id
-            audit_row.conference_link = provider_response.get("onlineMeeting", {}).get("joinUrl")
+            audit_row.conference_link = self._extract_conference_link(
+                provider_response,
+                resolved.provider,
+            )
             audit_row.updated_at = datetime.now(UTC)
             await self.session.commit()
 
@@ -184,7 +203,7 @@ class CalendarInviteService:
                 provider_event_id=provider_event_id,
                 subject=provider_response.get("subject") or request.title,
                 conference_link=audit_row.conference_link,
-                web_link=provider_response.get("webLink"),
+                web_link=provider_response.get("webLink") or provider_response.get("htmlLink"),
             )
         except CalendarInviteError as exc:
             await self._mark_failed(audit_row, exc)
@@ -228,6 +247,39 @@ class CalendarInviteService:
             idempotency_key=request.idempotency_key or "",
             status=CalendarInviteRequestStatus.PENDING,
         )
+
+    async def _create_provider_event(
+        self,
+        provider: str,
+        token_info: Any,
+        request: CalendarInviteCreateRequest,
+    ) -> dict[str, Any]:
+        if provider == "google":
+            return await self.google_client.create_event(token_info, request)
+        return await self.graph_client.create_event(token_info, request)
+
+    @staticmethod
+    def _extract_conference_link(
+        provider_response: dict[str, Any],
+        provider: str,
+    ) -> str | None:
+        if provider == "google":
+            conference_data = provider_response.get("conferenceData")
+            if isinstance(conference_data, dict):
+                for entry in conference_data.get("entryPoints", []):
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("entryPointType") == "video"
+                        and isinstance(entry.get("uri"), str)
+                    ):
+                        return str(entry["uri"])
+            return None
+
+        online_meeting = provider_response.get("onlineMeeting")
+        if isinstance(online_meeting, dict):
+            join_url = online_meeting.get("joinUrl")
+            return join_url if isinstance(join_url, str) else None
+        return None
 
     async def _find_existing_request(self, idempotency_key: str) -> CalendarInviteRequest | None:
         # Query by org/user/idempotency so replay from one user cannot observe

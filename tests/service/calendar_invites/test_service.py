@@ -57,6 +57,36 @@ class _FakeSession:
         return _Result()
 
 
+class _ExistingSentSession(_FakeSession):
+    """Session double that returns an existing SENT row for idempotency lookup."""
+
+    def __init__(self, existing_row, *, existing_key: str) -> None:
+        super().__init__()
+        self.existing_row = existing_row
+        self.existing_key = existing_key
+
+    async def execute(self, statement):
+        """Return the configured existing row for first-result lookups."""
+        params = statement.compile().params
+        row = self.existing_row if self.existing_key in params.values() else None
+
+        class _Scalars:
+            def __init__(self, row) -> None:
+                self.row = row
+
+            def first(self):
+                return self.row
+
+        class _Result:
+            def __init__(self, row) -> None:
+                self.row = row
+
+            def scalars(self):
+                return _Scalars(self.row)
+
+        return _Result(row)
+
+
 class _FakeResolver:
     """Resolver stub returning a deterministic usable sender integration."""
 
@@ -68,6 +98,7 @@ class _FakeResolver:
                 integration_type="outlook_calendar",
             ),
             token_info=SimpleNamespace(access_token="token"),
+            provider="microsoft",
         )
 
 
@@ -222,3 +253,138 @@ def test_derive_idempotency_key_includes_selected_sender_email() -> None:
     other_sender_request = base_request.model_copy(update={"sender_email": "ae@contoso.com"})
 
     assert derive_idempotency_key(base_request) != derive_idempotency_key(other_sender_request)
+
+
+def test_derive_idempotency_key_includes_resolved_integration_id() -> None:
+    """Same invite details from different resolved integrations should not collide."""
+    request = CalendarInviteCreateRequest(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        title="Discovery call",
+        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
+        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
+        timezone="Asia/Kolkata",
+        attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
+    )
+
+    assert derive_idempotency_key(
+        request,
+        integration_id=UUID("33333333-3333-3333-3333-333333333333"),
+    ) != derive_idempotency_key(
+        request,
+        integration_id=UUID("44444444-4444-4444-4444-444444444444"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_invite_does_not_reuse_existing_sent_row_before_sender_resolution() -> None:
+    """Idempotency replay must be scoped to the resolved sender integration."""
+    existing_row = SimpleNamespace(
+        status=CalendarInviteRequestStatus.SENT,
+        request_id=UUID("55555555-5555-5555-5555-555555555555"),
+        event_id=UUID("66666666-6666-6666-6666-666666666666"),
+        provider_event_id="old-provider-event",
+        title="Discovery call",
+        conference_link="https://old.example.com",
+    )
+    request = CalendarInviteCreateRequest(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        title="Discovery call",
+        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
+        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
+        timezone="Asia/Kolkata",
+        attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
+    )
+    old_unscoped_key = derive_idempotency_key(request)
+    session = _ExistingSentSession(existing_row, existing_key=old_unscoped_key)
+    graph_client = _FakeGraphClient()
+
+    service = CalendarInviteService(
+        session,
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        integration_resolver=_FakeResolver(),
+        graph_client=graph_client,
+        writer_factory=_FakeWriter,
+    )
+
+    result = await service.create_invite(request)
+
+    assert result.provider_event_id == "provider-event-1"
+    assert graph_client.requests
+
+
+@pytest.mark.asyncio
+async def test_create_invite_syncs_google_calendar_event_response() -> None:
+    """Google invite responses should sync through the shared calendar writer."""
+    session = _FakeSession()
+
+    class FakeGoogleResolver:
+        async def resolve(
+            self, session, organisation_id, requested_by_user_id, *, sender_email=None
+        ):
+            return SimpleNamespace(
+                integration=SimpleNamespace(
+                    integration_id=UUID("33333333-3333-3333-3333-333333333333"),
+                    integration_type="google_calendar",
+                ),
+                token_info=SimpleNamespace(access_token="token"),
+                provider="google",
+            )
+
+    class FakeGoogleClient:
+        async def create_event(self, token_info, request: CalendarInviteCreateRequest):
+            return {
+                "id": "google-event-1",
+                "iCalUID": "google-icaluid-1",
+                "summary": request.title,
+                "htmlLink": "https://calendar.google.com/calendar/event?eid=abc",
+                "start": {"dateTime": "2026-05-12T20:00:00+05:30", "timeZone": "Asia/Kolkata"},
+                "end": {"dateTime": "2026-05-12T20:30:00+05:30", "timeZone": "Asia/Kolkata"},
+                "attendees": [{"email": "buyer@example.com", "responseStatus": "needsAction"}],
+                "conferenceData": {
+                    "entryPoints": [
+                        {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
+                    ],
+                    "conferenceSolution": {"key": {"type": "hangoutsMeet"}},
+                },
+            }
+
+    writers: list[_FakeWriter] = []
+
+    def writer_factory(session_arg, organisation_id):
+        writer = _FakeWriter(session_arg, organisation_id)
+        writers.append(writer)
+        return writer
+
+    service = CalendarInviteService(
+        session,
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        integration_resolver=FakeGoogleResolver(),
+        google_client=FakeGoogleClient(),
+        writer_factory=writer_factory,
+    )
+
+    result = await service.create_invite(
+        CalendarInviteCreateRequest(
+            organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+            title="Discovery call",
+            start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
+            end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
+            timezone="Asia/Kolkata",
+            attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
+            sender_email="seller@gmail.com",
+        )
+    )
+
+    audit_row = session.added[0]
+    assert audit_row.status == CalendarInviteRequestStatus.SENT.value
+    assert audit_row.provider_event_id == "google-event-1"
+    assert audit_row.conference_link == "https://meet.google.com/abc-defg-hij"
+    assert result.provider_event_id == "google-event-1"
+    assert result.conference_link == "https://meet.google.com/abc-defg-hij"
+    assert result.web_link == "https://calendar.google.com/calendar/event?eid=abc"
+    assert writers[0].calls == ["upsert_event", "upsert_user_state", "sync_attendees"]

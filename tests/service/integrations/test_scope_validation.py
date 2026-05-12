@@ -48,7 +48,21 @@ def test_get_missing_required_scopes_detects_missing_google_meet_scope() -> None
             "https://www.googleapis.com/auth/userinfo.email",
             "https://www.googleapis.com/auth/calendar.readonly",
         ],
-    ) == {"https://www.googleapis.com/auth/meetings.space.readonly"}
+    ) == {
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/meetings.space.readonly",
+    }
+
+
+def test_google_calendar_requires_event_write_scope_for_invites() -> None:
+    """Google Calendar invite sending requires event-write permission."""
+    assert get_missing_required_scopes(
+        IntegrationType.GOOGLE_CALENDAR,
+        [
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/meetings.space.readonly",
+        ],
+    ) == {"https://www.googleapis.com/auth/calendar.events"}
 
 
 def test_get_missing_required_scopes_accepts_broader_gmail_scopes() -> None:
@@ -77,7 +91,7 @@ def test_get_missing_required_scopes_rejects_gmail_modify_for_readonly_integrati
 
 
 def test_get_missing_required_scopes_accepts_broader_google_calendar_scope() -> None:
-    """Google full calendar scope should satisfy readonly scope requirement."""
+    """Google full calendar scope should satisfy read and event-write requirements."""
     assert (
         get_missing_required_scopes(
             IntegrationType.GOOGLE_CALENDAR,
