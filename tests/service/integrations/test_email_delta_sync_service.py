@@ -77,6 +77,7 @@ async def test_folder_cursor_is_not_recorded_when_message_write_fails() -> None:
         connection_metadata={},
         credentials={"access_token": "token"},
         access_token_expires_at=None,
+        scopes=["Mail.Read"],
     )
     folder_data = FolderSyncData(
         folder_id=folder_id,
