@@ -8,6 +8,102 @@
 
 ---
 
+## Deprecated / Future Use: Calendar Invite Creation API
+
+This API is intentionally not registered right now. Calendar invite creation is currently owned by
+the LLM/agent tool path, which calls the backend calendar invite service directly.
+
+Keep this contract as a restoration note. If product later needs a first-class HTTP API for manual
+calendar invite creation, restore the router/schema/test around this shape and wire it back into
+`src/api/routers/integrations/__init__.py`.
+
+The underlying implementation still creates an Outlook calendar event from the current user's
+connected Outlook Calendar integration. The event is created with `isOnlineMeeting=true` and
+`onlineMeetingProvider=teamsForBusiness`, so Microsoft sends normal calendar invites and includes a
+Teams join link.
+
+If the current user has multiple writable Outlook Calendar integrations, the active agent/tool path
+must ask which sender email to use before creating the invite. The selected `sender_email` must
+match a connected Outlook Calendar account owned by the current user, and that selected account must
+pass scope, reauth, and token checks before any Microsoft Graph write is attempted.
+
+### Endpoint
+
+```http
+POST /users/integrations/calendar-invites
+```
+
+Status: deprecated/not registered.
+
+### Required Permission
+
+The current user must have an active `outlook_calendar` integration connected with delegated
+`Calendars.ReadWrite`. This is a user-delegated Microsoft OAuth scope, not a Teams bot permission
+and not an application/admin permission.
+
+### Request Body
+
+```json
+{
+  "title": "Discovery call",
+  "start_at": "2026-05-12T14:30:00Z",
+  "end_at": "2026-05-12T15:00:00Z",
+  "timezone": "Asia/Kolkata",
+  "attendees": [
+    { "email": "buyer@example.com", "name": "Buyer" }
+  ],
+  "sender_email": "seller@contoso.com",
+  "body": "Discuss rollout plan",
+  "location": "Teams",
+  "deal_id": "123e4567-e89b-12d3-a456-426614174000",
+  "idempotency_key": "client-generated-key"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | Calendar event subject |
+| `start_at` | datetime | Yes | Meeting start time; timezone-aware ISO 8601 |
+| `end_at` | datetime | Yes | Meeting end time; must be after `start_at` |
+| `timezone` | string | No | IANA timezone. Defaults to the authenticated user's timezone, then UTC |
+| `attendees` | array | Yes | Invitees; at least one email is required |
+| `sender_email` | string | No | Required when the user has more than one writable Outlook Calendar account |
+| `body` | string | No | Event description |
+| `location` | string | No | Display location |
+| `deal_id` | UUID | No | Optional deal association; validated inside the current organisation |
+| `idempotency_key` | string | No | Stable client key; Graph receives it as `transactionId` |
+
+### Success Response (201)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Calendar invite created successfully",
+  "data": {
+    "request_id": "33333333-3333-3333-3333-333333333333",
+    "event_id": "44444444-4444-4444-4444-444444444444",
+    "provider_event_id": "AAMkAG...",
+    "subject": "Discovery call",
+    "conference_link": "https://teams.microsoft.com/l/meetup-join/...",
+    "web_link": "https://outlook.office.com/calendar/item/..."
+  }
+}
+```
+
+### Common Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `calendar_integration_required` | User has not connected Outlook Calendar |
+| `calendar_sender_selection_required` | Multiple writable Outlook Calendar accounts exist; ask which sender email to use |
+| `calendar_sender_not_found` | Selected sender email is not one of the current user's Outlook Calendar connections |
+| `calendar_write_scope_required` | Existing Outlook Calendar connection lacks `Calendars.ReadWrite` |
+| `calendar_reauth_required` | OAuth token is missing, expired, or revoked |
+| `unsupported_online_meeting_provider` | Mailbox cannot create Teams calendar meetings |
+| `deal_not_found` | Provided `deal_id` is not visible in the current organisation |
+
+---
+
 ## 1. List Available Integrations (General)
 
 ### Endpoint

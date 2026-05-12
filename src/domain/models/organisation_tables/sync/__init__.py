@@ -1,4 +1,9 @@
-"""Synced data domain models (calendar, CRM, messaging, meeting recording, etc.)."""
+"""Synced data domain models for org-scoped persistence.
+
+This module is the shared entrypoint for all tables fed by sync pipelines.
+The caller must still enforce org-level filters before reading these models;
+the schema itself is shared across multiple integrations and providers.
+"""
 
 from .base import SyncCategory, SyncedRecordMixin
 from .calendar import (
@@ -9,6 +14,7 @@ from .calendar import (
     CalendarEventUserState,
     GenerationStatus,
 )
+from .calendar_invite import CalendarInviteRequest, CalendarInviteRequestStatus
 
 # DEPRECATED: Use meeting_intelligence models instead for new development
 # Kept for backward compatibility and potential future Gong/Chorus sync
@@ -134,6 +140,8 @@ __all__ = [
     "CalendarAttendee",
     "CalendarEventDealAssociation",
     "CalendarEventUserState",
+    "CalendarInviteRequest",
+    "CalendarInviteRequestStatus",
     "AssociationStatus",
     "GenerationStatus",
     "IntegrationType",

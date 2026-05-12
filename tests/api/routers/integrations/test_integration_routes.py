@@ -6,9 +6,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-# =============================================================================
-# GET /available Tests
-# =============================================================================
+# These endpoint tests focus on /users/integrations/available because listing logic
+# drives both connected/inactive state and action-required scope guidance.
 
 
 def test_list_available_no_connections(client: TestClient, integrations_dependency_overrides):
@@ -30,6 +29,7 @@ def test_list_available_no_connections(client: TestClient, integrations_dependen
 
 def test_list_available_with_connections(client: TestClient, integrations_dependency_overrides):
     """Test listing available integrations with some connected."""
+    # Contract: connected integrations appear as connected=true with instance details.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
@@ -64,6 +64,7 @@ def test_list_available_with_connections(client: TestClient, integrations_depend
 
 def test_list_available_multiple_same_type(client: TestClient, integrations_dependency_overrides):
     """Test listing with multiple connections of same type."""
+    # Contract: multiple integrations of same type collapse into one type row with count.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
@@ -208,13 +209,16 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
     client: TestClient, integrations_dependency_overrides
 ) -> None:
     """Microsoft integrations report exact missing scopes after scope changes."""
+    # Contract: outlook_email scope drift surfaces reconnect guidance and exact labels.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="outlook_email",
             name="Outlook Email",
             is_active=True,
@@ -237,6 +241,43 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
     assert connected["action_required"] == "additional_permissions"
     assert connected["missing_scopes"] == ["Mail.Read"]
     assert connected["missing_scope_labels"] == ["Outlook mail access"]
+
+
+def test_list_available_marks_outlook_calendar_write_scope_as_additional_permission(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Read-only Outlook Calendar connections must reconnect before sending invites."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=uuid4(),
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
+            integration_type="outlook_calendar",
+            name="Outlook Calendar",
+            is_active=True,
+            scopes=["offline_access", "User.Read", "Calendars.Read", "OnlineMeetings.Read"],
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    outlook_calendar = next(
+        (i for i in data["integrations"] if i["integration_type"] == "outlook_calendar"),
+        None,
+    )
+    assert outlook_calendar is not None
+    assert outlook_calendar["is_connected"] is True
+    assert outlook_calendar["has_action_required"] is True
+    connected = outlook_calendar["connected_integrations"][0]
+    assert connected["action_required"] == "additional_permissions"
+    assert connected["missing_scopes"] == ["Calendars.ReadWrite"]
+    assert connected["missing_scope_labels"] == ["Outlook calendar write access"]
 
 
 def test_list_available_hides_other_users_personal_integrations_even_if_legacy_org_scoped(
@@ -326,6 +367,7 @@ def test_refresh_channels_accepts_slack(
     monkeypatch,
 ) -> None:
     """Slack integrations can trigger the manual channel refresh task."""
+    # Contract: only allowed integration types route into queue-based refresh flow.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
@@ -369,6 +411,7 @@ def test_refresh_channels_rejects_non_messaging_integration(
     integrations_dependency_overrides,
 ) -> None:
     """Only Slack and Teams integrations support channel refresh."""
+    # Contract: Gmail and other non-messaging providers return actionable 400.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
