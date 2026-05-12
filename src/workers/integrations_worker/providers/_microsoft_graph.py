@@ -32,6 +32,7 @@ __all__ = [
     "call_with_token_retry",
     "get_access_token",
     "graph_api_request",
+    "graph_api_post_json",
     "graph_api_request_url",
 ]
 
@@ -46,6 +47,8 @@ _MAX_BACKOFF_SEC = 30.0
 
 def _get_retry_after_seconds(response: httpx.Response) -> float | None:
     """Extract Retry-After header value in seconds, if present and valid."""
+    # Honor server-provided Retry-After where possible, instead of guessing
+    # backoff for every throttling response.
     value = response.headers.get("Retry-After")
     if value is not None:
         try:
@@ -64,7 +67,8 @@ async def _request_with_rate_limit_retry(
 
     Microsoft Graph returns 429 when per-app or per-mailbox quota is exceeded.
     Retries with exponential backoff + jitter, respecting Retry-After header
-    when provided. Safe to wrap any idempotent GET request.
+    when provided. Write callers must use Graph-side idempotency, such as an
+    event transactionId, before wrapping requests here.
     """
     last_exc: httpx.HTTPStatusError | None = None
 
@@ -106,10 +110,50 @@ async def graph_api_request(
 
     Raises httpx.HTTPStatusError on non-2xx/non-429 responses.
     """
+    # Keep request URL assembly close to this helper so every caller gets consistent
+    # base URL handling and retry behavior.
     url = f"{GRAPH_BASE_URL}{endpoint}"
 
     async def _do() -> dict[str, Any]:
         response = await client.get(url, params=params)
+        if response.status_code == 403:
+            response_text = response.text.lower()
+            if (
+                "insufficient privileges" in response_text
+                or "required application permissions" in response_text
+                or "insufficient permissions" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    "Required Microsoft permissions were not granted. Please reconnect this integration.",
+                    status_code=403,
+                    provider="microsoft",
+                    endpoint=endpoint,
+                    response_summary=response.text,
+                )
+        response.raise_for_status()
+        return response.json()  # type: ignore[no-any-return]
+
+    return await _request_with_rate_limit_retry(_do)
+
+
+async def graph_api_post_json(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    json_body: dict[str, Any],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """POST JSON to Microsoft Graph with the shared 429 retry/error handling.
+
+    Kept separate from graph_api_request() so existing Microsoft sync callers
+    remain GET-only and do not inherit new write semantics.
+    """
+    # POST helper is isolated to avoid accidental spread of write-path semantics
+    # into older read-only sync code.
+    url = f"{GRAPH_BASE_URL}{endpoint}"
+
+    async def _do() -> dict[str, Any]:
+        response = await client.post(url, params=params, json=json_body)
         if response.status_code == 403:
             response_text = response.text.lower()
             if (
@@ -139,7 +183,8 @@ async def graph_api_request_url(
     These URLs must be used as-is — Microsoft Graph encodes pagination state
     into them and any URL decode/re-encode corrupts the tokens.
 
-    Includes 429 rate-limit retry.
+    Includes 429 rate-limit retry. The URL is used as an opaque token container.
+    This function must not mutate query values.
     """
 
     async def _do() -> dict[str, Any]:

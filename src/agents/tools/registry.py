@@ -135,6 +135,7 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     GET_UPCOMING_MEETINGS = "get_upcoming_meetings"
     GET_CALENDAR_EVENTS = "get_calendar_events"
+    SEND_CALENDAR_INVITE = "send_calendar_invite"
 
     # -------------------------------------------------------------------------
     # BRIEFING/FOLLOW-UP TOOLS - For meeting prep and action items
@@ -166,6 +167,7 @@ REMINDER_MANAGEMENT_TOOLS = {
     ToolName.CREATE_REMINDER,
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
+    ToolName.SEND_CALENDAR_INVITE,
 }
 
 VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
@@ -197,6 +199,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.CREATE_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.LIST_REMINDERS: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.SEND_CALENDAR_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
 }
 
 
@@ -268,6 +271,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.CREATE_REMINDER,
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
+    # Calendar write tools (channel-only)
+    ToolName.SEND_CALENDAR_INVITE,
 }
 
 AGENT_TOOLS: dict[str, set[ToolName]] = {
@@ -533,6 +538,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Calendar
     ToolName.GET_UPCOMING_MEETINGS: ToolCategory.CALENDAR,
     ToolName.GET_CALENDAR_EVENTS: ToolCategory.CALENDAR,
+    ToolName.SEND_CALENDAR_INVITE: ToolCategory.CALENDAR,
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
@@ -584,11 +590,14 @@ class ToolRegistry:
         self.context = context
         self.capabilities_getter = capabilities_getter
         self._tool_factories: dict[ToolName, Callable[[], Callable]] = {}
+        # Build the factory registry once so later lookups are deterministic and
+        # avoid repeated import side effects during tool resolution.
         self._register_tool_factories()
 
     def _register_tool_factories(self) -> None:
         """Register all available tool factories."""
-        # Import here to avoid circular imports
+        # Import here to avoid circular imports across tool modules and registry.
+        from src.agents.tools.calendar import create_send_calendar_invite
         from src.agents.tools.communication import (
             create_create_visualization_card,
             create_fetch_teams_chat_messages,
@@ -756,6 +765,9 @@ class ToolRegistry:
         self._tool_factories[ToolName.LIST_MEETINGS_BY_DATE] = lambda: create_list_meetings_by_date(
             self.context, self.capabilities_getter
         )
+        self._tool_factories[ToolName.SEND_CALENDAR_INVITE] = lambda: create_send_calendar_invite(
+            self.context, self.capabilities_getter
+        )
         self._tool_factories[ToolName.GET_MEETING_DETAILS] = lambda: create_get_meeting_details(
             self.context, self.capabilities_getter
         )
@@ -884,6 +896,8 @@ class ToolRegistry:
         tools: list[Callable] = []
 
         for tool_name in allowed_tools:
+            # Apply source-context exclusions before channel gating; scheduled
+            # alerts must never receive reminder tools even on allowed channels.
             if tool_name in excluded_tools:
                 logger.debug(f"Skipping tool {tool_name} for {agent_name} due to context")
                 continue

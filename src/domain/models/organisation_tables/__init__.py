@@ -17,6 +17,9 @@ The sync exports also include meeting-recording session state used by the Recall
 meeting bot flow.
 """
 
+# Keep every org-scoped model export in one place so callers can import a stable
+# package-level surface for both legacy SQLModel usage and type-checking.
+
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_models import ChatSession
@@ -48,6 +51,8 @@ from .sync import (
     CalendarEvent,
     CalendarEventDealAssociation,
     CalendarEventUserState,
+    CalendarInviteRequest,
+    CalendarInviteRequestStatus,
     CRMAssociationCategory,
     CRMCompany,
     CRMContact,
@@ -118,6 +123,8 @@ __all__ = [
     "CalendarAttendee",
     "CalendarEventDealAssociation",
     "CalendarEventUserState",
+    "CalendarInviteRequest",
+    "CalendarInviteRequestStatus",
     "MeetingRecordingProvider",
     "MeetingRecordingStatus",
     "MeetingTranscriptStatus",

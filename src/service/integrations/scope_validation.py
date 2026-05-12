@@ -1,4 +1,10 @@
-"""Shared helpers for parsing granted scopes and validating required permissions."""
+"""Scope validation helpers for provider integrations.
+
+This module owns two contracts: canonical required scopes per provider feature and
+permissive matching for broader-but-equivalent grants. Callers share this so
+permission checks and UI diagnostics stay consistent across setup, validation,
+and routes.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,7 @@ from src.infra.config.google_integration_scopes import (
 )
 from src.infra.config.microsoft_integration_scopes import (
     MICROSOFT_INTEGRATION_SCOPES,
+    MICROSOFT_SCOPE_CALENDARS_READ_WRITE,
     MICROSOFT_SCOPE_OFFLINE_ACCESS,
     MICROSOFT_SCOPE_USER_READ,
     MICROSOFT_SCOPE_USER_READ_ALL,
@@ -31,6 +38,9 @@ _GOOGLE_INTEGRATION_TYPES = frozenset(
     }
 )
 
+# Base required permissions by integration type.
+# Keep this map as the single source of truth for what a feature expects to
+# have before attempting provider calls.
 _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.GMAIL: frozenset(get_google_required_granted_scopes(IntegrationType.GMAIL)),
     IntegrationType.GOOGLE_CALENDAR: frozenset(
@@ -78,10 +88,9 @@ _REQUIRED_TOKEN_FIELDS: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.TEAMS: frozenset({"refresh_token"}),
 }
 
+# A required scope may be satisfied by a broader grant.
+# This map lets us keep required checks strict while recognizing common aliasing.
 _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
-    # Google can return a previously granted broader scope when
-    # include_granted_scopes=true. Treat those broader grants as satisfying the
-    # narrower readonly requirement we enforce at connect time.
     "https://www.googleapis.com/auth/gmail.readonly": frozenset(
         {
             "https://www.googleapis.com/auth/gmail.readonly",
@@ -106,6 +115,11 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             MICROSOFT_SCOPE_USER_READ_ALL,
         }
     ),
+    MICROSOFT_SCOPE_CALENDARS_READ_WRITE: frozenset(
+        {
+            MICROSOFT_SCOPE_CALENDARS_READ_WRITE,
+        }
+    ),
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
@@ -126,6 +140,7 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "refresh_token": "Salesforce offline access",
     "Mail.Read": "Outlook mail access",
     "Calendars.Read": "Outlook calendar access",
+    "Calendars.ReadWrite": "Outlook calendar write access",
     "Chat.Read": "Microsoft Teams chat access",
     "ChannelMessage.Read.All": "Microsoft Teams channel message access",
     "Channel.ReadBasic.All": "Microsoft Teams channel access",
@@ -144,6 +159,9 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
 
 
 def get_required_scopes(integration_type: IntegrationType) -> frozenset[str]:
+    """Return the required scopes for an integration type."""
+    # Unknown integration types intentionally map to empty scope set.
+    # Callers can keep behavior explicit instead of crashing at lookup time.
     return _REQUIRED_SCOPES.get(integration_type, frozenset())
 
 
@@ -155,6 +173,9 @@ def parse_granted_scopes(
     scope_value: str | list[str] | None,
     fallback: list[str] | None = None,
 ) -> list[str] | None:
+    """Parse a provider-provided scope field into a normalized scope list."""
+    # Normalizing mixed delimiters lets downstream checks treat provider payloads
+    # uniformly regardless of response format.
     if isinstance(scope_value, str):
         parsed = [scope for scope in re.split(r"[\s,]+", scope_value) if scope]
         return parsed or fallback
@@ -168,6 +189,8 @@ def parse_granted_scopes_from_token_payload(
     token_payload: dict[str, object],
     fallback: list[str] | None = None,
 ) -> list[str] | None:
+    """Parse `scope` or `scopes` from token payloads."""
+    # Provider token formats vary; normalize both keys here for a single contract.
     scope_value = token_payload.get("scope", token_payload.get("scopes"))
     if isinstance(scope_value, (str, list)) or scope_value is None:
         return parse_granted_scopes(scope_value, fallback)
@@ -178,6 +201,9 @@ def get_missing_required_scopes(
     integration_type: IntegrationType,
     granted_scopes: list[str] | None,
 ) -> set[str]:
+    """Return required scopes that were not satisfied by granted scopes."""
+    # A required scope can be met by a broader scope set; this check keeps that
+    # allowance centralized and deterministic.
     required_scopes = get_required_scopes(integration_type)
     if not required_scopes:
         return set()
@@ -214,8 +240,10 @@ def is_google_integration(integration_type: IntegrationType) -> bool:
 
 
 def get_scope_display_label(scope: str) -> str:
+    """Return a UI-friendly scope label with a graceful fallback."""
     return _SCOPE_DISPLAY_LABELS.get(scope, scope)
 
 
 def get_missing_scope_labels(missing_scopes: set[str]) -> list[str]:
+    """Map missing scopes to UI labels in deterministic order."""
     return [get_scope_display_label(scope) for scope in sorted(missing_scopes)]

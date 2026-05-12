@@ -44,9 +44,9 @@ resource "azuread_application" "copilotgtm" {
 
     # ── Delegated permissions (type = "Scope") ──
 
-    # Calendars.Read — Read user calendars
+    # Calendars.ReadWrite - Read and write user calendars (delegated user scope)
     resource_access {
-      id   = "465a38f9-76ea-45b9-9f34-9e8b0d4b0b42"
+      id   = "1ec239c2-d7c9-4623-a91a-a9775856bb36"
       type = "Scope"
     }
 
