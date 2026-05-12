@@ -12,7 +12,9 @@ from ...domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
 )
+from .google_integration_scopes import GOOGLE_INTEGRATION_SCOPES
 from .microsoft_integration_scopes import MICROSOFT_INTEGRATION_SCOPES
+from .slack_integration_scopes import SLACK_USER_SCOPES
 
 
 # Category display names
@@ -160,17 +162,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
-        oauth_scopes=[
-            "channels:read",
-            "groups:read",
-            "mpim:read",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-            "users:read",
-            "users:read.email",
-            "team:read",
-        ],
+        oauth_scopes=list(SLACK_USER_SCOPES),
         documentation_url="https://api.slack.com/docs",
         default_sync_frequency="hourly",
         # Each user connects their own Slack account
@@ -200,10 +192,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
-        oauth_scopes=[
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.labels",
-        ],
+        oauth_scopes=list(GOOGLE_INTEGRATION_SCOPES[IntegrationType.GMAIL]),
         documentation_url="https://developers.google.com/gmail/api/guides",
         default_sync_frequency="hourly",
         # Access Control - User level for personal email
@@ -247,10 +236,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.BETA,
-        oauth_scopes=[
-            "https://www.googleapis.com/auth/calendar.readonly",
-            "https://www.googleapis.com/auth/meetings.space.readonly",
-        ],
+        oauth_scopes=list(GOOGLE_INTEGRATION_SCOPES[IntegrationType.GOOGLE_CALENDAR]),
         documentation_url="https://developers.google.com/calendar/api",
         default_sync_frequency="hourly",
         # Access Control - User level for personal calendars

@@ -5,44 +5,53 @@ from __future__ import annotations
 import re
 
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.config.google_integration_scopes import (
+    get_google_required_granted_scopes,
+)
 from src.infra.config.microsoft_integration_scopes import (
     MICROSOFT_INTEGRATION_SCOPES,
+    MICROSOFT_SCOPE_OFFLINE_ACCESS,
     MICROSOFT_SCOPE_USER_READ,
     MICROSOFT_SCOPE_USER_READ_ALL,
 )
+from src.infra.config.slack_integration_scopes import SLACK_USER_SCOPES
+
+_MICROSOFT_INTEGRATION_TYPES = frozenset(
+    {
+        IntegrationType.OUTLOOK_EMAIL,
+        IntegrationType.OUTLOOK_CALENDAR,
+        IntegrationType.TEAMS,
+    }
+)
+
+_GOOGLE_INTEGRATION_TYPES = frozenset(
+    {
+        IntegrationType.GMAIL,
+        IntegrationType.GOOGLE_CALENDAR,
+    }
+)
 
 _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
-    IntegrationType.GMAIL: frozenset(
-        {
-            "https://www.googleapis.com/auth/gmail.readonly",
-        }
-    ),
+    IntegrationType.GMAIL: frozenset(get_google_required_granted_scopes(IntegrationType.GMAIL)),
     IntegrationType.GOOGLE_CALENDAR: frozenset(
-        {
-            "https://www.googleapis.com/auth/calendar.readonly",
-            "https://www.googleapis.com/auth/meetings.space.readonly",
-        }
+        get_google_required_granted_scopes(IntegrationType.GOOGLE_CALENDAR)
     ),
     IntegrationType.OUTLOOK_EMAIL: frozenset(
-        MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_EMAIL]
+        scope
+        for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_EMAIL]
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
     ),
     IntegrationType.OUTLOOK_CALENDAR: frozenset(
-        MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_CALENDAR]
+        scope
+        for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_CALENDAR]
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
     ),
-    IntegrationType.TEAMS: frozenset(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.TEAMS]),
-    IntegrationType.SLACK: frozenset(
-        {
-            "channels:read",
-            "groups:read",
-            "mpim:read",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-            "users:read",
-            "users:read.email",
-            "team:read",
-        }
+    IntegrationType.TEAMS: frozenset(
+        scope
+        for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.TEAMS]
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
     ),
+    IntegrationType.SLACK: frozenset(SLACK_USER_SCOPES),
     IntegrationType.HUBSPOT: frozenset(
         {
             "oauth",
@@ -59,6 +68,14 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
             "api",
         }
     ),
+}
+
+_REQUIRED_TOKEN_FIELDS: dict[IntegrationType, frozenset[str]] = {
+    IntegrationType.GMAIL: frozenset({"refresh_token"}),
+    IntegrationType.GOOGLE_CALENDAR: frozenset({"refresh_token"}),
+    IntegrationType.OUTLOOK_EMAIL: frozenset({"refresh_token"}),
+    IntegrationType.OUTLOOK_CALENDAR: frozenset({"refresh_token"}),
+    IntegrationType.TEAMS: frozenset({"refresh_token"}),
 }
 
 _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
@@ -130,6 +147,10 @@ def get_required_scopes(integration_type: IntegrationType) -> frozenset[str]:
     return _REQUIRED_SCOPES.get(integration_type, frozenset())
 
 
+def get_required_token_fields(integration_type: IntegrationType) -> frozenset[str]:
+    return _REQUIRED_TOKEN_FIELDS.get(integration_type, frozenset())
+
+
 def parse_granted_scopes(
     scope_value: str | list[str] | None,
     fallback: list[str] | None = None,
@@ -170,6 +191,26 @@ def get_missing_required_scopes(
             missing_scopes.add(required_scope)
 
     return missing_scopes
+
+
+def get_missing_required_token_fields(
+    integration_type: IntegrationType,
+    token_payload: dict[str, object],
+) -> set[str]:
+    missing_fields: set[str] = set()
+    for field_name in get_required_token_fields(integration_type):
+        field_value = token_payload.get(field_name)
+        if not isinstance(field_value, str) or not field_value:
+            missing_fields.add(field_name)
+    return missing_fields
+
+
+def is_microsoft_integration(integration_type: IntegrationType) -> bool:
+    return integration_type in _MICROSOFT_INTEGRATION_TYPES
+
+
+def is_google_integration(integration_type: IntegrationType) -> bool:
+    return integration_type in _GOOGLE_INTEGRATION_TYPES
 
 
 def get_scope_display_label(scope: str) -> str:

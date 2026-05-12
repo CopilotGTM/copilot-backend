@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.configs import slack_config
+from src.infra.config.slack_integration_scopes import get_slack_user_scopes
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 
@@ -55,17 +56,7 @@ class SlackProvider(BaseIntegrationProvider):
 
     def _get_scopes(self) -> list[str]:
         """Determine required Slack user scopes."""
-        return [
-            "channels:read",
-            "groups:read",
-            "mpim:read",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-            "users:read",
-            "users:read.email",
-            "team:read",
-        ]
+        return list(get_slack_user_scopes())
 
     async def _request_with_retry(
         self,

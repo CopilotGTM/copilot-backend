@@ -3,6 +3,7 @@
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.scope_validation import (
     get_missing_required_scopes,
+    get_missing_required_token_fields,
     parse_granted_scopes,
     parse_granted_scopes_from_token_payload,
 )
@@ -124,7 +125,6 @@ def test_microsoft_outlook_email_missing_scope_detection_matches_mail_only_flow(
     assert get_missing_required_scopes(
         IntegrationType.OUTLOOK_EMAIL,
         [
-            "offline_access",
             "User.Read",
         ],
     ) == {"Mail.Read"}
@@ -135,7 +135,6 @@ def test_microsoft_outlook_calendar_does_not_require_transcript_scopes_for_conne
         get_missing_required_scopes(
             IntegrationType.OUTLOOK_CALENDAR,
             [
-                "offline_access",
                 "User.Read",
                 "Calendars.Read",
                 "OnlineMeetings.Read",
@@ -150,7 +149,6 @@ def test_microsoft_user_read_all_satisfies_user_read_profile_requirement() -> No
         get_missing_required_scopes(
             IntegrationType.OUTLOOK_EMAIL,
             [
-                "offline_access",
                 "User.Read.All",
                 "Mail.Read",
             ],
@@ -164,7 +162,6 @@ def test_microsoft_teams_no_longer_requires_directory_group_or_channel_settings_
         get_missing_required_scopes(
             IntegrationType.TEAMS,
             [
-                "offline_access",
                 "User.Read",
                 "Team.ReadBasic.All",
                 "Channel.ReadBasic.All",
@@ -173,3 +170,43 @@ def test_microsoft_teams_no_longer_requires_directory_group_or_channel_settings_
         )
         == set()
     )
+
+
+def test_microsoft_offline_access_is_validated_by_refresh_token_not_scope_echo() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.OUTLOOK_EMAIL,
+            [
+                "User.Read",
+                "Mail.Read",
+            ],
+        )
+        == set()
+    )
+    assert get_missing_required_token_fields(
+        IntegrationType.OUTLOOK_EMAIL,
+        {"access_token": "access-token"},
+    ) == {"refresh_token"}
+    assert (
+        get_missing_required_token_fields(
+            IntegrationType.OUTLOOK_EMAIL,
+            {"access_token": "access-token", "refresh_token": "refresh-token"},
+        )
+        == set()
+    )
+
+
+def test_google_offline_access_is_validated_by_refresh_token_not_scope_echo() -> None:
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.GMAIL,
+            [
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ],
+        )
+        == set()
+    )
+    assert get_missing_required_token_fields(
+        IntegrationType.GMAIL,
+        {"access_token": "access-token"},
+    ) == {"refresh_token"}
