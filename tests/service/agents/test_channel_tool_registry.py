@@ -12,15 +12,35 @@ from src.agents.tools.registry import (
 from src.service.voice_realtime.tool_manifest import build_voice_allowed_tools
 
 
-def test_slack_supported_crm_tools_are_available_on_slack_and_teams() -> None:
-    slack_supported_crm_tools = (
+def test_direct_crm_write_tools_are_available_on_supported_chat_and_voice_channels() -> None:
+    direct_crm_write_tools = (
         ToolName.ADD_DEAL_NOTE,
         ToolName.ADD_STAKEHOLDER,
-        ToolName.UPDATE_DEAL_STAGE,
     )
 
-    for tool_name in slack_supported_crm_tools:
-        assert CHANNEL_ONLY_TOOLS[tool_name] == {"teams", "slack"}
+    for tool_name in direct_crm_write_tools:
+        assert CHANNEL_ONLY_TOOLS[tool_name] == {
+            "teams",
+            "slack",
+            "whatsapp",
+            "web",
+            "voice",
+        }
+        assert tool_name not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+
+    for channel in ("web", "voice", "whatsapp", "slack", "teams"):
+        context = AgentContext(organisation_id=uuid4(), channel=channel)
+        registry = ToolRegistry(context, lambda: None)
+
+        tools = registry.get_tools_for_agent("GeneralAgent", channel=channel)
+        tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+        assert "add_deal_note_tool" in tool_names
+        assert "add_stakeholder_tool" in tool_names
+
+
+def test_interactive_stage_update_stays_available_on_slack_and_teams() -> None:
+    assert CHANNEL_ONLY_TOOLS[ToolName.UPDATE_DEAL_STAGE] == {"teams", "slack"}
 
 
 def test_create_deal_is_available_on_web_voice_whatsapp_slack_and_teams() -> None:
@@ -41,6 +61,29 @@ def test_create_deal_is_available_on_web_voice_whatsapp_slack_and_teams() -> Non
         tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
 
         assert "create_deal_tool" in tool_names
+
+
+def test_create_contact_and_account_are_available_on_supported_channels() -> None:
+    for tool_name in (ToolName.CREATE_CONTACT, ToolName.CREATE_ACCOUNT):
+        assert CHANNEL_ONLY_TOOLS[tool_name] == {
+            "teams",
+            "slack",
+            "whatsapp",
+            "web",
+            "voice",
+        }
+        assert tool_name not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+
+    for channel in ("web", "voice", "whatsapp", "slack", "teams"):
+        context = AgentContext(organisation_id=uuid4(), channel=channel)
+        registry = ToolRegistry(context, lambda: None)
+
+        tools = registry.get_tools_for_agent("GeneralAgent", channel=channel)
+        tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+        assert "create_contact_tool" in tool_names
+        assert "create_account_tool" in tool_names
+        assert "search_accounts_tool" in tool_names
 
 
 def test_reminder_tools_are_available_on_supported_chat_and_voice_channels() -> None:
@@ -79,9 +122,11 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
     }
 
 
-def test_voice_realtime_agent_excludes_backend_write_tools_except_create_deal() -> None:
+def test_voice_realtime_agent_excludes_unsupported_backend_write_tools() -> None:
     assert AGENT_TOOLS["VoiceRealtimeAgent"].isdisjoint(VOICE_REALTIME_WRITE_EXCLUDED_TOOLS)
     assert ToolName.CREATE_DEAL in AGENT_TOOLS["VoiceRealtimeAgent"]
+    assert ToolName.ADD_DEAL_NOTE in AGENT_TOOLS["VoiceRealtimeAgent"]
+    assert ToolName.ADD_STAKEHOLDER in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert ToolName.SEARCH_INTERNAL_KNOWLEDGE in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert set(build_voice_allowed_tools()).issubset(
         {tool_name.value for tool_name in AGENT_TOOLS["VoiceRealtimeAgent"]}

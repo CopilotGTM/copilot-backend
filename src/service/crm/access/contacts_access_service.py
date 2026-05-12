@@ -384,6 +384,40 @@ class ContactsAccessService:
         await self.org_session.refresh(contact)
         return contact
 
+    async def find_contact_by_email(self, email: str) -> CRMContact | None:
+        """Return a non-deleted contact by exact case-insensitive email."""
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return None
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            func.lower(col(CRMContact.email)) == normalized_email,
+        )
+        res = await self.org_session.execute(stmt)
+        return res.scalars().first()
+
+    async def find_accounts_by_domain(self, domain: str) -> list[CRMCompany]:
+        """Return active accounts with an exact normalized domain match."""
+        from src.service.crm.access.accounts_access_service import AccountsAccessService
+
+        service = AccountsAccessService(self.org_session, self.organisation_id)
+        return await service.find_accounts_by_domain(domain)
+
+    async def find_accounts_by_name(self, name: str) -> list[CRMCompany]:
+        """Return active accounts with an exact case-insensitive name match."""
+        from src.service.crm.access.accounts_access_service import AccountsAccessService
+
+        service = AccountsAccessService(self.org_session, self.organisation_id)
+        return await service.find_accounts_by_name(name)
+
+    async def create_account(self, name: str, **kwargs: Any) -> CRMCompany:
+        """Create an internal CRM account in the same org session as contact creation."""
+        from src.service.crm.access.accounts_access_service import AccountsAccessService
+
+        service = AccountsAccessService(self.org_session, self.organisation_id)
+        return await service.create_account(name=name, **kwargs)
+
     async def update_contact(self, contact_id: UUID, updates: dict) -> CRMContact:
         """Update allowed fields on a contact. linkedin_url is stored via properties dict."""
         stmt = select(CRMContact).where(

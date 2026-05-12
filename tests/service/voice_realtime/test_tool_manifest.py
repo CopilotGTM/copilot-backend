@@ -16,6 +16,8 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
     # Direct voice-safe write paths are allowed; remaining write tools stay excluded.
     excluded_tools = VOICE_REALTIME_WRITE_EXCLUDED_TOOLS - {
         ToolName.CREATE_DEAL,
+        ToolName.ADD_DEAL_NOTE,
+        ToolName.ADD_STAKEHOLDER,
         ToolName.CREATE_TASK,
         ToolName.CREATE_REMINDER,
         ToolName.LIST_REMINDERS,
@@ -23,11 +25,15 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
     }
     assert allowed_tool_names.isdisjoint({tool.value for tool in excluded_tools})
     assert ToolName.CREATE_DEAL.value in allowed_tool_names
+    assert ToolName.ADD_DEAL_NOTE.value in allowed_tool_names
+    assert ToolName.ADD_STAKEHOLDER.value in allowed_tool_names
     assert ToolName.CREATE_TASK.value in allowed_tool_names
     assert ToolName.CREATE_REMINDER.value in allowed_tool_names
     assert ToolName.LIST_REMINDERS.value in allowed_tool_names
     assert ToolName.CANCEL_REMINDER.value in allowed_tool_names
     assert ToolName.CREATE_TASK not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.ADD_DEAL_NOTE not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.ADD_STAKEHOLDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
     assert ToolName.CREATE_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
 
 
@@ -61,6 +67,25 @@ def test_create_task_voice_schema_is_available_for_direct_write() -> None:
     assert schema["parameters"]["required"] == ["title"]
     assert "due_date" in schema["parameters"]["properties"]
     assert "reminder" in schema["parameters"]["properties"]
+
+
+def test_add_deal_note_voice_schema_is_available_for_direct_write() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.ADD_DEAL_NOTE.value]
+    assert schema["description"].startswith("Create a note directly")
+    assert schema["parameters"]["required"] == ["deal_id", "deal_name", "note_content"]
+    assert "subject" in schema["parameters"]["properties"]
+
+
+def test_add_stakeholder_voice_schema_is_available_for_direct_write() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.ADD_STAKEHOLDER.value]
+    assert schema["description"].startswith("Create an external stakeholder")
+    assert schema["parameters"]["required"] == ["deal_id", "deal_name", "email"]
+    assert "job_title" in schema["parameters"]["properties"]
+    assert "UNKNOWN" in schema["parameters"]["properties"]["stance"]["enum"]
 
 
 def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:

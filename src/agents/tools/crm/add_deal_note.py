@@ -284,12 +284,17 @@ async def add_deal_note_direct(
 
             insight_job_id = None
             if create_result.created_new:
-                insight_job_id = await service.trigger_deal_insight_pipeline(
-                    deal_id=deal_uuid,
-                    user_id=user_id,
-                    trigger_source="note_creation",
-                    trigger_source_id=create_result.note.activity_id,
-                )
+                try:
+                    insight_job_id = await service.trigger_deal_insight_pipeline(
+                        deal_id=deal_uuid,
+                        user_id=user_id,
+                        trigger_source="note_creation",
+                        trigger_source_id=create_result.note.activity_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "add_deal_note_direct: note created but insight dispatch failed"
+                    )
 
             return _note_result(
                 context=context,

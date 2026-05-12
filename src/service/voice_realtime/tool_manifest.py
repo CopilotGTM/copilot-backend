@@ -84,6 +84,12 @@ def _build_search_contacts_factory(context: AgentContext) -> Callable[[], Callab
     return partial(create_search_contacts, context, _build_empty_capabilities)
 
 
+def _build_search_accounts_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.tools.crm.search_accounts import create_search_accounts
+
+    return partial(create_search_accounts, context, _build_empty_capabilities)
+
+
 def _build_list_deal_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.intelligence.list_meetings import create_list_deal_meetings
 
@@ -130,6 +136,40 @@ def _build_get_email_details_factory(context: AgentContext) -> Callable[[], Call
     return partial(create_get_email_details, context, _build_empty_capabilities)
 
 
+def _build_add_deal_note_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.crm.add_deal_note import create_add_deal_note
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_add_deal_note, voice_context, _build_empty_capabilities)
+
+
+def _build_add_stakeholder_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.crm.add_stakeholder import create_add_stakeholder
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_add_stakeholder, voice_context, _build_empty_capabilities)
+
+
 def _build_create_deal_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.context import AgentContext
     from src.agents.tools.crm.create_deal import create_create_deal
@@ -145,6 +185,40 @@ def _build_create_deal_factory(context: AgentContext) -> Callable[[], Callable[.
         metadata=context.metadata.copy(),
     )
     return partial(create_create_deal, voice_context, _build_empty_capabilities)
+
+
+def _build_create_contact_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.crm.create_contact import create_create_contact
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_contact, voice_context, _build_empty_capabilities)
+
+
+def _build_create_account_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.crm.create_account import create_create_account
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_create_account, voice_context, _build_empty_capabilities)
 
 
 def _build_create_task_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
@@ -289,6 +363,48 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_create_deal_factory,
     ),
     VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_ACCOUNT,
+        description="Create or reuse a CRM account once the user provides the account name.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "domain": {"type": "string"},
+                "website": {"type": "string"},
+                "industry": {"type": "string"},
+                "linkedin_url": {"type": "string"},
+                "phone": {"type": "string"},
+                "country": {"type": "string"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_account_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.CREATE_CONTACT,
+        description="Create or reuse a CRM contact once the user provides name and email.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "email": {"type": "string"},
+                "name": {"type": "string"},
+                "job_title": {"type": "string"},
+                "phone": {"type": "string"},
+                "linkedin_url": {"type": "string"},
+                "account_id": {"type": "string"},
+                "account_name": {"type": "string"},
+                "account_domain": {"type": "string"},
+                "deal_id": {"type": "string"},
+                "deal_name": {"type": "string"},
+                "relationship_role": {"type": "string"},
+            },
+            "required": ["email", "name"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_create_contact_factory,
+    ),
+    VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_TASK,
         description=(
             "Create a CRM task directly once the user clearly provides a meaningful task title."
@@ -312,6 +428,73 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "additionalProperties": False,
         },
         factory_builder=_build_create_task_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.ADD_DEAL_NOTE,
+        description=(
+            "Create a note directly on an existing deal once the deal and note content are clear."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "deal_id": {"type": "string"},
+                "deal_name": {"type": "string"},
+                "note_content": {"type": "string"},
+                "subject": {"type": "string"},
+            },
+            "required": ["deal_id", "deal_name", "note_content"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_add_deal_note_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.ADD_STAKEHOLDER,
+        description=(
+            "Create an external stakeholder directly on an existing deal once the email is known."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "deal_id": {"type": "string"},
+                "deal_name": {"type": "string"},
+                "email": {"type": "string"},
+                "name": {"type": "string"},
+                "job_title": {"type": "string"},
+                "phone_number": {"type": "string"},
+                "department": {"type": "string"},
+                "stance": {
+                    "type": "string",
+                    "enum": [
+                        "UNKNOWN",
+                        "CHAMPION",
+                        "SUPPORTER",
+                        "NEUTRAL",
+                        "DETRACTOR",
+                        "BLOCKER",
+                    ],
+                },
+                "decision_power": {
+                    "type": "string",
+                    "enum": [
+                        "UNKNOWN",
+                        "DECISION_MAKER",
+                        "INFLUENCER",
+                        "EVALUATOR",
+                        "GATEKEEPER",
+                        "END_USER",
+                    ],
+                },
+                "champion_potential": {"type": "number"},
+                "motivation": {"type": "string"},
+                "pain_points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["deal_id", "deal_name", "email"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_add_stakeholder_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_REMINDER,
@@ -433,6 +616,20 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "additionalProperties": False,
         },
         factory_builder=_build_search_contacts_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.SEARCH_ACCOUNTS,
+        description="Search CRM accounts by name or domain.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_search_accounts_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.LIST_DEAL_MEETINGS,

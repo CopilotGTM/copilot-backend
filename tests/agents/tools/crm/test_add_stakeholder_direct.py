@@ -93,6 +93,30 @@ async def test_add_stakeholder_direct_rejects_invalid_enum_values() -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_stakeholder_direct_rejects_internal_email_service_error() -> None:
+    with patch("src.agents.tools.crm.add_stakeholder.StakeholdersService") as service_cls:
+        service = MagicMock()
+        service.create_stakeholder = AsyncMock(
+            side_effect=StakeholdersServiceError(
+                "This email belongs to an internal team member and cannot be added "
+                "as a stakeholder. Stakeholders must be external contacts only.",
+                status_code=403,
+            )
+        )
+        service_cls.return_value = service
+
+        result = await add_stakeholder_direct(
+            context=_context(),
+            deal_id=str(uuid4()),
+            deal_name="Acme Expansion",
+            email="seller@copilotgtm.com",
+        )
+
+    assert result["status"] == "error"
+    assert "internal team member" in result["message"].lower()
+
+
+@pytest.mark.asyncio
 async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() -> None:
     context = _context()
     org_session = MagicMock()
@@ -165,7 +189,98 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
         "job_type": "stakeholder_research",
         "status": "pending",
     }
+    assert result["post_create_jobs"] == {
+        "processing": {"status": "queued"},
+        "research": {"status": "queued"},
+    }
     assert result["_bot_channel_payload"]["type"] == "message"
+
+
+@pytest.mark.asyncio
+async def test_add_stakeholder_direct_returns_success_when_processing_jobs_fail() -> None:
+    context = _context(channel="web")
+    deal_id = uuid4()
+    stakeholder = _stakeholder(deal_id=deal_id)
+    research_job_id = uuid4()
+
+    with (
+        patch("src.agents.tools.crm.add_stakeholder.StakeholdersService") as service_cls,
+        patch(
+            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
+        ) as job_service_cls,
+        patch(
+            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
+            AsyncMock(return_value=research_job_id),
+        ) as research_dispatch,
+    ):
+        service = MagicMock()
+        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(
+            side_effect=RuntimeError("queue down")
+        )
+        job_service_cls.return_value = job_service
+
+        result = await add_stakeholder_direct(
+            context=context,
+            deal_id=str(deal_id),
+            deal_name="Acme Expansion",
+            email="buyer@acme.com",
+        )
+
+    research_dispatch.assert_awaited_once()
+    assert result["status"] == "created"
+    assert result["processing_jobs"] == []
+    assert result["research_job"]["job_id"] == str(research_job_id)
+    assert result["post_create_jobs"]["processing"] == {
+        "status": "failed",
+        "error": "queue down",
+    }
+    assert result["post_create_jobs"]["research"] == {"status": "queued"}
+
+
+@pytest.mark.asyncio
+async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fails() -> None:
+    context = _context(channel="web")
+    deal_id = uuid4()
+    stakeholder = _stakeholder(deal_id=deal_id)
+    processing_jobs = [
+        SimpleNamespace(job_id=uuid4(), job_type="DEAL_EMAIL_REMATCH", status="PENDING"),
+    ]
+
+    with (
+        patch("src.agents.tools.crm.add_stakeholder.StakeholdersService") as service_cls,
+        patch(
+            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
+        ) as job_service_cls,
+        patch(
+            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
+            AsyncMock(side_effect=RuntimeError("broker down")),
+        ),
+    ):
+        service = MagicMock()
+        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=processing_jobs)
+        job_service_cls.return_value = job_service
+
+        result = await add_stakeholder_direct(
+            context=context,
+            deal_id=str(deal_id),
+            deal_name="Acme Expansion",
+            email="buyer@acme.com",
+        )
+
+    assert result["status"] == "created"
+    assert len(result["processing_jobs"]) == 1
+    assert result["research_job"] is None
+    assert result["post_create_jobs"]["processing"] == {"status": "queued"}
+    assert result["post_create_jobs"]["research"] == {
+        "status": "failed",
+        "error": "broker down",
+    }
 
 
 @pytest.mark.asyncio

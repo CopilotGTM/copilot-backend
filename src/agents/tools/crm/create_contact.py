@@ -1,0 +1,390 @@
+"""Create Contact agent tool for direct chat writes."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from src.agents.tools.base import execute_with_capabilities
+from src.service.crm.access.contacts_access_service import (
+    ContactsAccessService,
+    ContactsAccessServiceError,
+)
+from src.workers.deal_worker.client import send_deal_task_async
+from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
+
+if TYPE_CHECKING:
+    from src.agents.context import AgentContext
+    from src.agents.tools.transparent_tools import AgentCapabilities
+
+logger = logging.getLogger(__name__)
+
+_BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _parse_uuid(value: UUID | str | None) -> UUID | None:
+    if value is None or isinstance(value, UUID):
+        return value
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return UUID(cleaned)
+    except ValueError:
+        return None
+
+
+def _email_domain(email: str) -> str | None:
+    if "@" not in email:
+        return None
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    return domain or None
+
+
+async def _rollback_if_available(session: Any) -> None:
+    rollback = getattr(session, "rollback", None)
+    if rollback is not None:
+        await rollback()
+
+
+def _contact_name(contact: Any) -> str:
+    return str(
+        getattr(contact, "full_name", None)
+        or getattr(contact, "name", None)
+        or getattr(contact, "email", "")
+    )
+
+
+def _account_summary(account: Any) -> dict[str, Any]:
+    return {
+        "account_id": str(account.company_id),
+        "name": getattr(account, "name", None),
+        "domain": getattr(account, "domain", None),
+    }
+
+
+def _contact_result(contact: Any, *, status: str) -> dict[str, Any]:
+    name = _contact_name(contact)
+    result: dict[str, Any] = {
+        "status": status,
+        "contact_id": str(contact.contact_id),
+        "email": contact.email,
+        "name": name,
+        "message": (
+            f"Created contact **{name}**."
+            if status == "created"
+            else f"Contact **{name}** already exists."
+        ),
+    }
+    for key in ("job_title", "company_name"):
+        value = getattr(contact, key, None)
+        if value:
+            result[key] = value
+    if getattr(contact, "company_id", None):
+        result["company_id"] = str(contact.company_id)
+    return result
+
+
+def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+def _selection_result(accounts: list[Any]) -> dict[str, Any]:
+    return {
+        "status": "needs_account_selection",
+        "message": "Multiple matching accounts were found. Ask the user which account to use.",
+        "candidates": [_account_summary(account) for account in accounts],
+    }
+
+
+def _channel_payload(context: AgentContext, contact: Any, *, status: str) -> dict[str, Any] | None:
+    channel = (context.channel or "").lower()
+    title = "Contact created" if status == "created" else "Contact already exists"
+    facts = [{"title": "Name", "value": _contact_name(contact)}]
+    for label, attr in (("Email", "email"), ("Title", "job_title"), ("Account", "company_name")):
+        value = getattr(contact, attr, None)
+        if value:
+            facts.append({"title": label, "value": str(value)})
+    fallback = f"{title}: {_contact_name(contact)}."
+    if channel in {"web", "voice"}:
+        return {
+            "type": "ui_card",
+            "content": {
+                "card": {
+                    "kind": "contact_created_confirmation",
+                    "version": "1.0",
+                    "tone": "success",
+                    "title": title,
+                    "message": fallback,
+                    "entity": {
+                        "type": "contact",
+                        "id": str(contact.contact_id),
+                        "name": _contact_name(contact),
+                    },
+                    "facts": [{"label": fact["title"], "value": fact["value"]} for fact in facts],
+                    "actions": [],
+                }
+            },
+            "text_fallback": fallback,
+            "attachments": None,
+            "source_text": None,
+        }
+    if channel == "teams":
+        return {
+            "type": "message",
+            "content": {
+                "text": " ",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "content": {
+                            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                            "type": "AdaptiveCard",
+                            "version": "1.4",
+                            "body": [
+                                {
+                                    "type": "TextBlock",
+                                    "text": title,
+                                    "size": "Medium",
+                                    "weight": "Bolder",
+                                    "wrap": True,
+                                    "color": "Good",
+                                },
+                                {"type": "FactSet", "facts": facts},
+                            ],
+                        },
+                    }
+                ],
+            },
+            "text_fallback": fallback,
+            "attachments": None,
+            "source_text": None,
+        }
+    if channel == "slack":
+        return {
+            "type": "message",
+            "content": {
+                "text": fallback,
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": title}},
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "mrkdwn", "text": f"*{fact['title']}*\n{fact['value']}"}
+                            for fact in facts
+                        ],
+                    },
+                ],
+            },
+            "text_fallback": fallback,
+            "attachments": None,
+            "source_text": None,
+        }
+    if channel == "whatsapp":
+        return {
+            "type": "message",
+            "content": {
+                "text": "\n".join([title, *[f"{f['title']}: {f['value']}" for f in facts]])
+            },
+            "text_fallback": fallback,
+            "attachments": None,
+            "source_text": None,
+        }
+    return None
+
+
+async def _dispatch_stakeholder_sync(organisation_id: UUID, deal_id: UUID) -> None:
+    await send_deal_task_async(
+        "stakeholder.sync_deal_stakeholders",
+        kwargs={
+            "organisation_id": str(organisation_id),
+            "deal_id": str(deal_id),
+            "change_type": StakeholderChangeType.PARTICIPANT_ADDED.value,
+            "integration_id": None,
+            "integration_type": None,
+            "trigger_rematching": True,
+        },
+    )
+
+
+async def create_contact_direct(
+    *,
+    context: AgentContext,
+    email: str | None,
+    name: str | None,
+    job_title: str | None = None,
+    phone: str | None = None,
+    linkedin_url: str | None = None,
+    account_id: UUID | str | None = None,
+    account_name: str | None = None,
+    account_domain: str | None = None,
+    deal_id: UUID | str | None = None,
+    deal_name: str | None = None,
+    relationship_role: str | None = None,
+) -> dict[str, Any]:
+    """Create or reuse an internal CRM contact directly."""
+    organisation_id = context.organisation_id
+    if not organisation_id:
+        return {"status": "error", "message": "Cannot create contact without an organization."}
+
+    cleaned_email = _clean_optional(email)
+    cleaned_name = _clean_optional(name)
+    if not cleaned_email:
+        return {"status": "error", "message": "Contact email is required."}
+    if not cleaned_name:
+        return {"status": "error", "message": "Contact name is required."}
+
+    normalized_email = cleaned_email.lower()
+    parsed_account_id = _parse_uuid(account_id)
+    if account_id and parsed_account_id is None:
+        return {"status": "error", "message": "account_id must be a valid UUID."}
+    parsed_deal_id = _parse_uuid(deal_id)
+    if deal_id and parsed_deal_id is None:
+        return {"status": "error", "message": "deal_id must be a valid UUID."}
+
+    async with context.acquire_session() as org_session:
+        service = ContactsAccessService(org_session, organisation_id)
+        try:
+            contact = await service.find_contact_by_email(normalized_email)
+            status = "exists" if contact else "created"
+            created_account = None
+
+            kwargs: dict[str, Any] = {}
+            if not contact:
+                if parsed_account_id:
+                    kwargs["company_id"] = parsed_account_id
+                else:
+                    lookup_domain = _clean_optional(account_domain) or _email_domain(
+                        normalized_email
+                    )
+                    matches = (
+                        await service.find_accounts_by_domain(lookup_domain)
+                        if lookup_domain
+                        else []
+                    )
+                    if len(matches) > 1:
+                        return _selection_result(matches)
+                    if len(matches) == 1:
+                        kwargs["company_id"] = matches[0].company_id
+                        kwargs["company_name"] = matches[0].name
+                    elif _clean_optional(account_name):
+                        name_value = _clean_optional(account_name) or ""
+                        name_matches = await service.find_accounts_by_name(name_value)
+                        if len(name_matches) > 1:
+                            return _selection_result(name_matches)
+                        account = (
+                            name_matches[0]
+                            if name_matches
+                            else await service.create_account(name=name_value)
+                        )
+                        kwargs["company_id"] = account.company_id
+                        kwargs["company_name"] = account.name
+                        if not name_matches:
+                            created_account = _account_summary(account)
+
+                for key, value in (("job_title", job_title), ("phone", phone)):
+                    cleaned = _clean_optional(value)
+                    if cleaned:
+                        kwargs[key] = cleaned
+                linkedin = _clean_optional(linkedin_url)
+                if linkedin:
+                    kwargs["properties"] = {"linkedin_url": linkedin}
+                contact = await service.create_contact(
+                    email=normalized_email,
+                    name=cleaned_name,
+                    **kwargs,
+                )
+
+            result = _contact_result(contact, status=status)
+            if created_account:
+                result["created_account"] = created_account
+
+            if parsed_deal_id:
+                link = await service.add_contact_to_deal(
+                    contact_id=contact.contact_id,
+                    deal_id=parsed_deal_id,
+                    relationship_role=_clean_optional(relationship_role),
+                    actor_user_id=context.user_id,
+                )
+                await org_session.commit()
+                if link.get("created"):
+                    try:
+                        await _dispatch_stakeholder_sync(organisation_id, parsed_deal_id)
+                    except Exception:
+                        logger.exception("create_contact_direct: stakeholder sync dispatch failed")
+                    result["deal_link_status"] = "linked"
+                else:
+                    result["deal_link_status"] = "already_linked"
+                result["deal_id"] = str(parsed_deal_id)
+                if _clean_optional(deal_name):
+                    result["deal_name"] = _clean_optional(deal_name)
+        except ContactsAccessServiceError as exc:
+            await _rollback_if_available(org_session)
+            return {"status": "error", "message": f"Could not create contact: {exc.message}"}
+        except Exception:
+            await _rollback_if_available(org_session)
+            logger.exception("create_contact_direct: unexpected failure")
+            return {"status": "error", "message": "Could not create contact."}
+
+    payload = _channel_payload(context, contact, status=status)
+    if payload:
+        result[_BOT_CHANNEL_PAYLOAD_KEY] = payload
+    return result
+
+
+def create_create_contact(
+    context: AgentContext,
+    capabilities_getter: Callable[[], AgentCapabilities | None],
+) -> Callable[..., Any]:
+    """Factory to create the CreateContact tool bound to context."""
+
+    async def create_contact_tool(
+        email: str | None = None,
+        name: str | None = None,
+        job_title: str | None = None,
+        phone: str | None = None,
+        linkedin_url: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+        account_domain: str | None = None,
+        deal_id: str | None = None,
+        deal_name: str | None = None,
+        relationship_role: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an internal CRM contact directly once email and name are known."""
+        result = await execute_with_capabilities(
+            capabilities_getter(),
+            tool_name="CreateContact",
+            tool_func=create_contact_direct,
+            parameters={
+                "context": context,
+                "email": email,
+                "name": name,
+                "job_title": job_title,
+                "phone": phone,
+                "linkedin_url": linkedin_url,
+                "account_id": account_id,
+                "account_name": account_name,
+                "account_domain": account_domain,
+                "deal_id": deal_id,
+                "deal_name": deal_name,
+                "relationship_role": relationship_role,
+            },
+            description=f"Creating contact {name or email or ''}".strip(),
+            fallback_value={"status": "error", "message": "Could not create contact."},
+        )
+        return _public_tool_result(result)
+
+    return create_contact_tool
+
+
+__all__ = ["create_contact_direct", "create_create_contact"]

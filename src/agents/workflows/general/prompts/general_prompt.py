@@ -100,6 +100,11 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Deal creation requests -> call `CreateDeal` as soon as the deal name is known.
       `CreateDeal` creates the deal directly. Name is the only required field;
       account/amount/close date are optional values.
+    - Account creation requests -> call `CreateAccount` as soon as the account
+      name is known. Optional account fields are not blockers.
+    - Contact creation requests -> call `CreateContact` once email and name are
+      known. Ask only for missing email or name. If the user also asks to add
+      the contact to a deal, resolve/search the deal first and pass deal_id.
     - Stakeholder creation requests -> resolve/search the deal first, then call `AddStakeholder` directly once deal_id, deal_name, and email are known.
       Optional stakeholder details can be included when the user already provided them.
     - Deal note creation requests -> resolve/search the deal first, then call `AddDealNote` directly once deal_id, deal_name, and note_content are known.
@@ -116,6 +121,11 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Prefer the write tool over back-and-forth questions once required fields are present.
     - For `CreateDeal`, do NOT ask for company/account before calling the tool.
       Call it with the known deal name; optional details can be provided later.
+    - For `CreateAccount`, ask only if the account name is missing. The tool
+      safely reuses an existing account when the domain/name already exists.
+    - For `CreateContact`, ask only if email or name is missing. Do not ask for
+      title, phone, LinkedIn, account, or deal unless the user explicitly wants
+      those relationships or there are multiple possible account/deal matches.
     - For `AddStakeholder`, call `AddStakeholder` directly once deal_id, deal_name,
       and email are known. Ask only for missing required fields. Do not ask for
       optional stakeholder fields first.
