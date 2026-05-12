@@ -139,6 +139,18 @@ def _research_job_summary(job_id: UUID | None) -> dict[str, str | None] | None:
     }
 
 
+def _post_create_status(
+    *,
+    queued: bool,
+    error: str | None = None,
+) -> dict[str, str]:
+    status = "failed" if error else "queued" if queued else "not_created"
+    summary = {"status": status}
+    if error:
+        summary["error"] = error
+    return summary
+
+
 def _stakeholder_name(stakeholder: Any) -> str:
     return stakeholder.name or stakeholder.email
 
@@ -251,6 +263,8 @@ def _created_stakeholder_result(
     stakeholder: Any,
     processing_jobs: list[Any],
     research_job_id: UUID | None,
+    processing_error: str | None = None,
+    research_error: str | None = None,
 ) -> dict[str, Any]:
     processing_job_summaries = [_job_summary(job) for job in processing_jobs]
     result: dict[str, Any] = {
@@ -268,6 +282,16 @@ def _created_stakeholder_result(
         "approval_status": _enum_value(getattr(stakeholder, "approval_status", None)),
         "processing_jobs": processing_job_summaries,
         "research_job": _research_job_summary(research_job_id),
+        "post_create_jobs": {
+            "processing": _post_create_status(
+                queued=bool(processing_jobs),
+                error=processing_error,
+            ),
+            "research": _post_create_status(
+                queued=research_job_id is not None,
+                error=research_error,
+            ),
+        },
         "message": (
             f"Added **{_stakeholder_name(stakeholder)}** as a stakeholder to **{deal_name}**."
         ),
@@ -358,21 +382,40 @@ async def add_stakeholder_direct(
         service = StakeholdersService(session, organisation_id, user_id)
         try:
             stakeholder = await service.create_stakeholder(deal_uuid, request)
-            job_visibility_service = StakeholderJobVisibilityService(
-                session,
-                organisation_id,
-                user_id,
-            )
-            processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
-                deal_uuid,
-                stakeholder.stakeholder_id,
-            )
-            research_job_id = await dispatch_stakeholder_research_async(
-                organisation_id=organisation_id,
-                stakeholder_id=stakeholder.stakeholder_id,
-                deal_id=deal_uuid,
-                user_id=user_id,
-            )
+            processing_jobs: list[Any] = []
+            processing_error = None
+            research_job_id = None
+            research_error = None
+
+            try:
+                job_visibility_service = StakeholderJobVisibilityService(
+                    session,
+                    organisation_id,
+                    user_id,
+                )
+                processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
+                    deal_uuid,
+                    stakeholder.stakeholder_id,
+                )
+            except Exception as exc:
+                processing_error = str(exc)
+                logger.exception(
+                    "add_stakeholder_direct: stakeholder created but processing dispatch failed"
+                )
+
+            try:
+                research_job_id = await dispatch_stakeholder_research_async(
+                    organisation_id=organisation_id,
+                    stakeholder_id=stakeholder.stakeholder_id,
+                    deal_id=deal_uuid,
+                    user_id=user_id,
+                )
+            except Exception as exc:
+                research_error = str(exc)
+                logger.exception(
+                    "add_stakeholder_direct: stakeholder created but research dispatch failed"
+                )
+
             return _created_stakeholder_result(
                 context=context,
                 deal_id=deal_uuid,
@@ -380,6 +423,8 @@ async def add_stakeholder_direct(
                 stakeholder=stakeholder,
                 processing_jobs=processing_jobs,
                 research_job_id=research_job_id,
+                processing_error=processing_error,
+                research_error=research_error,
             )
         except StakeholdersServiceError as exc:
             logger.warning("add_stakeholder_direct: StakeholdersServiceError: %s", exc.message)

@@ -61,8 +61,8 @@ class ToolName(str, Enum):
     GET_DEAL_MEMORY = "get_deal_memory"  # Persistent deal memory document
     GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
     CREATE_DEAL = "create_deal"  # Create an internal CRM deal directly from chat
-    ADD_DEAL_NOTE = "add_deal_note"  # Send interactive note form for existing deal
-    ADD_STAKEHOLDER = "add_stakeholder"  # Send interactive stakeholder form for existing deal
+    ADD_DEAL_NOTE = "add_deal_note"  # Create a note directly on an existing deal
+    ADD_STAKEHOLDER = "add_stakeholder"  # Create a stakeholder directly on an existing deal
     UPDATE_DEAL_STAGE = "update_deal_stage"
     UPDATE_DEAL_FIELDS = "update_deal_fields"
     UPDATE_DEAL_LIFECYCLE = "update_deal_lifecycle"
@@ -99,6 +99,9 @@ class ToolName(str, Enum):
     # Used by: Chat Agent
     # -------------------------------------------------------------------------
     SEARCH_CONTACTS = "search_contacts"  # Search contacts by name/email/company
+    SEARCH_ACCOUNTS = "search_accounts"  # Search accounts by name/domain
+    CREATE_CONTACT = "create_contact"  # Create an internal CRM contact directly from chat
+    CREATE_ACCOUNT = "create_account"  # Create an internal CRM account directly from chat
 
     # -------------------------------------------------------------------------
     # COMMUNICATION TOOLS - For emails, messaging channels, and notes
@@ -171,8 +174,6 @@ REMINDER_MANAGEMENT_TOOLS = {
 }
 
 VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
-    ToolName.ADD_DEAL_NOTE,
-    ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
     ToolName.UPDATE_DEAL_FIELDS,
     ToolName.UPDATE_DEAL_LIFECYCLE,
@@ -192,8 +193,10 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
     ToolName.CREATE_VISUALIZATION_CARD: {"teams"},
     ToolName.CREATE_DEAL: {"teams", "slack", "whatsapp", "web", "voice"},
-    ToolName.ADD_DEAL_NOTE: {"teams", "slack"},
-    ToolName.ADD_STAKEHOLDER: {"teams", "slack"},
+    ToolName.CREATE_CONTACT: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.CREATE_ACCOUNT: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.ADD_DEAL_NOTE: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.ADD_STAKEHOLDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
     ToolName.CREATE_TASK: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
@@ -237,6 +240,9 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.GET_MEETING_DEAL_CONTEXT,
     # Contact tools
     ToolName.SEARCH_CONTACTS,
+    ToolName.SEARCH_ACCOUNTS,
+    ToolName.CREATE_CONTACT,
+    ToolName.CREATE_ACCOUNT,
     # Communication tools
     ToolName.LIST_DEAL_EMAILS,
     ToolName.GET_EMAIL_DETAILS,
@@ -532,6 +538,9 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_MEETING_SUMMARY: ToolCategory.INTELLIGENCE,
     # Contacts
     ToolName.SEARCH_CONTACTS: ToolCategory.CRM,
+    ToolName.SEARCH_ACCOUNTS: ToolCategory.CRM,
+    ToolName.CREATE_CONTACT: ToolCategory.CRM,
+    ToolName.CREATE_ACCOUNT: ToolCategory.CRM,
     ToolName.GET_BRIEFING: ToolCategory.INTELLIGENCE,
     ToolName.GET_FOLLOW_UPS: ToolCategory.INTELLIGENCE,
     ToolName.GET_ACTION_ITEMS: ToolCategory.INTELLIGENCE,
@@ -610,6 +619,8 @@ class ToolRegistry:
         from src.agents.tools.crm import (
             create_add_deal_note,
             create_add_stakeholder,
+            create_create_account,
+            create_create_contact,
             create_create_deal,
             create_create_stakeholder_if_missing,
             create_dismiss_risk_blocker,
@@ -625,6 +636,7 @@ class ToolRegistry:
             create_list_deal_stakeholders,
             create_list_deals,
             create_resolve_risk_blocker,
+            create_search_accounts,
             create_search_contacts,
             create_search_deals,
             create_update_deal_account,
@@ -755,6 +767,15 @@ class ToolRegistry:
 
         # Contact tools
         self._tool_factories[ToolName.SEARCH_CONTACTS] = lambda: create_search_contacts(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEARCH_ACCOUNTS] = lambda: create_search_accounts(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_CONTACT] = lambda: create_create_contact(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_ACCOUNT] = lambda: create_create_account(
             self.context, self.capabilities_getter
         )
 

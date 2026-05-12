@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DealStakeholder,
 )
 from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationScope,
     IntegrationType,
     KnowledgeIntegration,
 )
@@ -105,6 +106,34 @@ class AccountsAccessService:
             "domain": company.domain,
             "match_type": "domain_match",
         }
+
+    async def find_accounts_by_domain(self, domain: str) -> list[CRMCompany]:
+        """Return active accounts with the exact normalized domain in this org."""
+        normalized = self._normalize_domain(domain)
+        if not normalized:
+            return []
+        c = cast(Any, CRMCompany).__table__.c
+        stmt = select(CRMCompany).where(
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+            func.lower(c.domain) == normalized,
+        )
+        res = await self.org_session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def find_accounts_by_name(self, name: str) -> list[CRMCompany]:
+        """Return active accounts with an exact case-insensitive name match."""
+        cleaned = name.strip()
+        if not cleaned:
+            return []
+        c = cast(Any, CRMCompany).__table__.c
+        stmt = select(CRMCompany).where(
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+            func.lower(c.name) == cleaned.lower(),
+        )
+        res = await self.org_session.execute(stmt)
+        return list(res.scalars().all())
 
     async def list_accounts(
         self,
@@ -380,34 +409,23 @@ class AccountsAccessService:
         normalized = self._normalize_domain(raw_domain)
 
         if normalized:
-            # Duplicate check by normalized domain
-            c = cast(Any, CRMCompany).__table__.c
-            dup_stmt = select(CRMCompany).where(
-                c.organisation_id == self.organisation_id,
-                c.is_deleted.is_(False),
-                func.lower(c.domain) == normalized,
-            )
-            dup_res = await self.org_session.execute(dup_stmt)
-            existing = dup_res.scalars().first()
+            existing = next(iter(await self.find_accounts_by_domain(normalized)), None)
             if existing:
                 raise AccountsAccessServiceError(
                     f"An account with domain '{normalized}' already exists",
                     status_code=409,
                     data={"company_id": str(existing.company_id)},
                 )
+        else:
+            existing_by_name = next(iter(await self.find_accounts_by_name(name)), None)
+            if existing_by_name:
+                raise AccountsAccessServiceError(
+                    f"An account named '{name.strip()}' already exists",
+                    status_code=409,
+                    data={"company_id": str(existing_by_name.company_id)},
+                )
 
-        # Fetch internal CRM integration_id
-        ki = cast(Any, KnowledgeIntegration).__table__.c
-        int_stmt = select(KnowledgeIntegration).where(
-            ki.organisation_id == self.organisation_id,
-            ki.integration_type == IntegrationType.INTERNAL_CRM.value,
-        )
-        int_res = await self.org_session.execute(int_stmt)
-        integration = int_res.scalars().first()
-        if not integration:
-            raise AccountsAccessServiceError(
-                "Internal CRM integration not configured", status_code=409
-            )
+        integration = await self._get_or_create_internal_integration()
 
         company_id = uuid4()
         now = datetime.now(UTC)
@@ -452,6 +470,34 @@ class AccountsAccessService:
         await self.org_session.flush()
         await self.org_session.refresh(company)
         return company
+
+    async def _get_or_create_internal_integration(self) -> KnowledgeIntegration:
+        """Return the internal CRM integration, creating it if absent."""
+        ki = cast(Any, KnowledgeIntegration).__table__.c
+        stmt = select(KnowledgeIntegration).where(
+            ki.organisation_id == self.organisation_id,
+            ki.integration_type == IntegrationType.INTERNAL_CRM.value,
+        )
+        res = await self.org_session.execute(stmt)
+        integration = res.scalars().first()
+        if integration:
+            return integration
+
+        integration = KnowledgeIntegration(
+            organisation_id=self.organisation_id,
+            created_by_user_id=UUID("00000000-0000-0000-0000-000000000001"),
+            created_by_admin=False,
+            integration_type=IntegrationType.INTERNAL_CRM,
+            integration_scope=IntegrationScope.ORGANIZATION,
+            name="Copilot CRM",
+            credentials={},
+            connection_metadata={"source": "internal_crm", "internal": True},
+            is_active=True,
+        )
+        self.org_session.add(integration)
+        await self.org_session.flush()
+        await self.org_session.refresh(integration)
+        return integration
 
     async def update_account(self, company_id: UUID, updates: dict[str, Any]) -> CRMCompany:
         """Update allowed fields on an account. Normalizes domain if provided.

@@ -5,6 +5,8 @@ Tools for accessing deal, stakeholder, contact, and risk/blocker information.
 
 from src.agents.tools.crm.add_deal_note import create_add_deal_note
 from src.agents.tools.crm.add_stakeholder import create_add_stakeholder
+from src.agents.tools.crm.create_account import create_create_account
+from src.agents.tools.crm.create_contact import create_create_contact
 from src.agents.tools.crm.create_deal import create_create_deal
 from src.agents.tools.crm.create_stakeholder_if_missing import create_create_stakeholder_if_missing
 from src.agents.tools.crm.enrich_stakeholder import create_enrich_stakeholder
@@ -23,6 +25,7 @@ from src.agents.tools.crm.manage_risks_blockers import (
     create_resolve_risk_blocker,
     create_update_risk_blocker,
 )
+from src.agents.tools.crm.search_accounts import create_search_accounts
 from src.agents.tools.crm.search_contacts import create_search_contacts
 from src.agents.tools.crm.search_deals import create_search_deals
 from src.agents.tools.crm.update_deal_account import create_update_deal_account
@@ -54,7 +57,10 @@ __all__ = [
     "create_upsert_stakeholder",
     "create_enrich_stakeholder",
     # Contact tools
+    "create_create_contact",
+    "create_create_account",
     "create_search_contacts",
+    "create_search_accounts",
     # Risk/blocker tools
     "create_get_existing_risks_blockers",
     "create_update_risk_blocker",

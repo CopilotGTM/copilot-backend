@@ -160,6 +160,38 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
 
 
 @pytest.mark.asyncio
+async def test_add_deal_note_direct_returns_success_when_insight_dispatch_fails() -> None:
+    context = _context(channel="web")
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal_id = uuid4()
+    note = _note(deal_id=deal_id)
+    create_result = SimpleNamespace(note=note, created_new=True)
+
+    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
+        service = MagicMock()
+        service.create_user_note = AsyncMock(return_value=create_result)
+        service.trigger_deal_insight_pipeline = AsyncMock(side_effect=RuntimeError("broker down"))
+        service_cls.return_value = service
+
+        result = await add_deal_note_direct(
+            context=context,
+            deal_id=str(deal_id),
+            deal_name="Acme Expansion",
+            note_content=note.body,
+            subject=note.subject,
+        )
+
+    org_session.commit.assert_awaited_once()
+    org_session.rollback.assert_not_awaited()
+    assert result["status"] == "created"
+    assert result["note_id"] == str(note.activity_id)
+    assert "insight_job_id" not in result
+
+
+@pytest.mark.asyncio
 async def test_add_deal_note_direct_existing_note_skips_insight_pipeline() -> None:
     context = _context()
     org_session = MagicMock()
