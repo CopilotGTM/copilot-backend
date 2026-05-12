@@ -38,6 +38,19 @@ def test_validate_required_scopes_rejects_missing_google_meet_scope() -> None:
         )
 
 
+def test_validate_required_scopes_rejects_missing_google_calendar_events_scope() -> None:
+    with pytest.raises(ValueError, match="Google Calendar invite permission was not granted"):
+        CopilotCallbackService()._validate_required_scopes(
+            IntegrationType.GOOGLE_CALENDAR,
+            {
+                "scope": "https://www.googleapis.com/auth/userinfo.email "
+                "https://www.googleapis.com/auth/calendar.readonly "
+                "https://www.googleapis.com/auth/meetings.space.readonly",
+                "refresh_token": "refresh-token",
+            },
+        )
+
+
 def test_validate_required_scopes_rejects_missing_hubspot_deal_schema_permission() -> None:
     with pytest.raises(ValueError, match="HubSpot permissions were not granted"):
         CopilotCallbackService()._validate_required_scopes(

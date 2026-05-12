@@ -153,6 +153,7 @@ The validator also accepts a narrow set of Google satisfying scopes during recon
 
 - `https://mail.google.com/` satisfies `gmail.readonly`
 - `https://www.googleapis.com/auth/calendar` satisfies `calendar.readonly`
+- `https://www.googleapis.com/auth/calendar` satisfies `calendar.events`
 
 Reason:
 

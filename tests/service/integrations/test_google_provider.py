@@ -24,6 +24,7 @@ def test_google_provider_calendar_scopes_include_google_meet() -> None:
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/meetings.space.readonly",
     ]
 

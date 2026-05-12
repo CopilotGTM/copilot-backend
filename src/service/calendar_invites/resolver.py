@@ -1,8 +1,8 @@
-"""Resolve the current user's Outlook Calendar integration for invite sending.
+"""Resolve the current user's calendar integration for invite sending.
 
 The resolver is the security gate before any outbound invite write.
 It selects a user-owned integration, validates invite scope requirements, and
-ensures tokens are available before creating Graph-bound service clients.
+ensures tokens are available before creating provider-bound service clients.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.service.calendar_invites.models import CalendarInviteError
@@ -28,13 +28,16 @@ class ResolvedCalendarIntegration:
 
     integration: KnowledgeIntegration
     token_info: IntegrationTokenInfo
+    provider: str
 
 
 class OutlookCalendarIntegrationResolver:
-    """Find a user-owned Outlook Calendar connection with invite-write scope.
+    """Find a user-owned calendar connection with invite-write scope.
 
     Resolution is deterministic and constrained by organization and sender context.
     """
+
+    _SUPPORTED_TYPES = (IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR)
 
     async def resolve(
         self,
@@ -57,8 +60,11 @@ class OutlookCalendarIntegrationResolver:
             .where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.created_by_user_id) == requested_by_user_id,
-                col(KnowledgeIntegration.integration_type) == IntegrationType.OUTLOOK_CALENDAR,
-                col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                col(KnowledgeIntegration.integration_type).in_(self._SUPPORTED_TYPES),
+                or_(
+                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
+                ),
             )
             .order_by(col(KnowledgeIntegration.created_at).desc())
         )
@@ -67,7 +73,7 @@ class OutlookCalendarIntegrationResolver:
         if not integrations:
             raise CalendarInviteError(
                 "calendar_integration_required",
-                "Connect Outlook Calendar before I can send calendar invites.",
+                "Connect Outlook or Google Calendar before I can send calendar invites.",
                 status_code=409,
             )
 
@@ -88,7 +94,7 @@ class OutlookCalendarIntegrationResolver:
                 raise CalendarInviteError(
                     "calendar_sender_not_found",
                     (
-                        f"I could not find an Outlook Calendar connection for {sender_email}. "
+                        f"I could not find a Calendar connection for {sender_email}. "
                         f"Available sender accounts: {available_accounts}."
                     ),
                     status_code=409,
@@ -102,7 +108,7 @@ class OutlookCalendarIntegrationResolver:
             integration
             for integration in integrations
             if not get_missing_required_scopes(
-                IntegrationType.OUTLOOK_CALENDAR,
+                integration.integration_type,
                 list(integration.scopes or []),
             )
             and not integration.requires_reauth
@@ -121,7 +127,7 @@ class OutlookCalendarIntegrationResolver:
             raise CalendarInviteError(
                 "calendar_sender_selection_required",
                 (
-                    "You have multiple Outlook Calendar accounts that can send invites. "
+                    "You have multiple Calendar accounts that can send invites. "
                     f"Which sender should I use? Available sender accounts: {available_accounts}."
                 ),
                 status_code=409,
@@ -138,19 +144,21 @@ class OutlookCalendarIntegrationResolver:
         # Missing permissions here means we can return a precise "reconnect" error
         # instead of hiding failures during Graph writes.
         if integration.requires_reauth:
+            provider_name = self._provider_display_name(integration.integration_type)
             raise CalendarInviteError(
                 "calendar_reauth_required",
-                "Reconnect Outlook Calendar before I can send calendar invites.",
+                f"Reconnect {provider_name} before I can send calendar invites.",
                 status_code=409,
             )
 
         scopes = list(integration.scopes or [])
-        missing = get_missing_required_scopes(IntegrationType.OUTLOOK_CALENDAR, scopes)
+        missing = get_missing_required_scopes(integration.integration_type, scopes)
         if missing:
+            provider_name = self._provider_display_name(integration.integration_type)
             labels = ", ".join(get_missing_scope_labels(missing))
             raise CalendarInviteError(
                 "calendar_write_scope_required",
-                f"Reconnect Outlook Calendar with these permissions: {labels}.",
+                f"Reconnect {provider_name} with these permissions: {labels}.",
                 status_code=409,
             )
 
@@ -159,12 +167,17 @@ class OutlookCalendarIntegrationResolver:
             # remain active but no longer be usable for outbound calls.
             raise CalendarInviteError(
                 "calendar_reauth_required",
-                "Reconnect Outlook Calendar before I can send calendar invites.",
+                f"Reconnect {self._provider_display_name(integration.integration_type)} "
+                "before I can send calendar invites.",
                 status_code=409,
             )
 
         token_info = IntegrationTokenInfo.from_integration(integration, organisation_id)
-        return ResolvedCalendarIntegration(integration=integration, token_info=token_info)
+        return ResolvedCalendarIntegration(
+            integration=integration,
+            token_info=token_info,
+            provider=self._provider_key(integration.integration_type),
+        )
 
     @staticmethod
     def _has_usable_token(integration: KnowledgeIntegration) -> bool:
@@ -182,3 +195,15 @@ class OutlookCalendarIntegrationResolver:
             for integration in integrations
         ]
         return ", ".join(values)
+
+    @staticmethod
+    def _provider_key(integration_type: IntegrationType) -> str:
+        if integration_type == IntegrationType.GOOGLE_CALENDAR:
+            return "google"
+        return "microsoft"
+
+    @staticmethod
+    def _provider_display_name(integration_type: IntegrationType) -> str:
+        if integration_type == IntegrationType.GOOGLE_CALENDAR:
+            return "Google Calendar"
+        return "Outlook Calendar"

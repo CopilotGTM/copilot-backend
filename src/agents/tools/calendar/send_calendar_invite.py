@@ -1,4 +1,4 @@
-"""Agent tool for sending user-owned Outlook calendar invites."""
+"""Agent tool for sending user-owned calendar invites."""
 
 from __future__ import annotations
 
@@ -228,11 +228,11 @@ def create_send_calendar_invite(
         sender_email: str | None = None,
         confirmed: bool = False,
     ) -> dict[str, Any]:
-        """Send a calendar invite with a Teams meeting link.
+        """Send a calendar invite with a meeting link.
 
         Use when the user asks to schedule a meeting, create a calendar invite,
-        or send an invite. This creates a real Outlook calendar event from the
-        connected user account and sends attendee invites.
+        or send an invite. This creates a real calendar event from the connected
+        user account and sends attendee invites.
 
         Pass exact attendee emails when known. For names like "Saksham Bhutani"
         or group phrases like "all stakeholders", pass the user's raw attendee
@@ -241,10 +241,9 @@ def create_send_calendar_invite(
         is any identity doubt. If the user confirms a confirmation_payload, call
         again with those resolved attendee emails and confirmed=True.
 
-        If the user has multiple connected Outlook Calendar accounts, ask which
-        sender email to use and pass it as sender_email. Provide concrete start
-        and end times; ask a follow-up if either time or attendee email is
-        missing.
+        If the user has multiple connected Calendar accounts, ask which sender
+        email to use and pass it as sender_email. Provide concrete start and end
+        times; ask a follow-up if either time or attendee email is missing.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),

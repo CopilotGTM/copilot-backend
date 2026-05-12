@@ -12,6 +12,10 @@ import re
 
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.google_integration_scopes import (
+    GOOGLE_SCOPE_CALENDAR_EVENTS,
+    GOOGLE_SCOPE_CALENDAR_READONLY,
+    GOOGLE_SCOPE_GMAIL_READONLY,
+    GOOGLE_SCOPE_MEETINGS_SPACE_READONLY,
     get_google_required_granted_scopes,
 )
 from src.infra.config.microsoft_integration_scopes import (
@@ -91,15 +95,21 @@ _REQUIRED_TOKEN_FIELDS: dict[IntegrationType, frozenset[str]] = {
 # A required scope may be satisfied by a broader grant.
 # This map lets us keep required checks strict while recognizing common aliasing.
 _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
-    "https://www.googleapis.com/auth/gmail.readonly": frozenset(
+    GOOGLE_SCOPE_GMAIL_READONLY: frozenset(
         {
-            "https://www.googleapis.com/auth/gmail.readonly",
+            GOOGLE_SCOPE_GMAIL_READONLY,
             "https://mail.google.com/",
         }
     ),
-    "https://www.googleapis.com/auth/calendar.readonly": frozenset(
+    GOOGLE_SCOPE_CALENDAR_READONLY: frozenset(
         {
-            "https://www.googleapis.com/auth/calendar.readonly",
+            GOOGLE_SCOPE_CALENDAR_READONLY,
+            "https://www.googleapis.com/auth/calendar",
+        }
+    ),
+    GOOGLE_SCOPE_CALENDAR_EVENTS: frozenset(
+        {
+            GOOGLE_SCOPE_CALENDAR_EVENTS,
             "https://www.googleapis.com/auth/calendar",
         }
     ),
@@ -123,9 +133,10 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
-    "https://www.googleapis.com/auth/gmail.readonly": "Gmail access",
-    "https://www.googleapis.com/auth/calendar.readonly": "Google Calendar access",
-    "https://www.googleapis.com/auth/meetings.space.readonly": "Google Meet access",
+    GOOGLE_SCOPE_GMAIL_READONLY: "Gmail access",
+    GOOGLE_SCOPE_CALENDAR_READONLY: "Google Calendar access",
+    GOOGLE_SCOPE_CALENDAR_EVENTS: "Google Calendar invite access",
+    GOOGLE_SCOPE_MEETINGS_SPACE_READONLY: "Google Meet access",
     "channels:read": "Slack channel access",
     "groups:read": "Slack private channel access",
     "mpim:read": "Slack direct message access",

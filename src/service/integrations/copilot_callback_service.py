@@ -84,6 +84,11 @@ class CopilotCallbackService:
                     "Google Calendar permission was not granted. Please reconnect and allow "
                     "Google Calendar access."
                 )
+            if "https://www.googleapis.com/auth/calendar.events" in missing_scopes:
+                return (
+                    "Google Calendar invite permission was not granted. Please reconnect and "
+                    "allow Google Calendar invite access."
+                )
             return (
                 "Google Calendar permissions were not granted. Please reconnect and allow "
                 "Google Calendar and Google Meet access."
