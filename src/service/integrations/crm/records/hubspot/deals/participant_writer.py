@@ -1,9 +1,14 @@
 """Idempotent upsert of CRMDealParticipant rows from HubSpot deal associations.
 
-One participant row per (deal, participant_type, related_external_id, role).
+One participant row per (deal, participant_type, related_external_id).
 HubSpot doesn't ship a participant identifier, so we synthesise one:
 
     {deal_external_id}:{participant_type}:{related_external_id}:{role|''}
+
+The role remains in the synthetic id for backwards compatibility, but writes
+also match by the related entity identity. That lets a later sync merge older
+`*_unlabeled` rows into the preferred labeled row instead of creating a second
+participant for the same contact/company.
 
 Resolution at write time:
 
@@ -69,7 +74,7 @@ class HubSpotDealParticipantWriter:
             return result
 
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external, existing_by_identity = await self._load_existing_rows()
 
         for participant in participants:
             deal_id = deal_pk_map.get(participant.deal_external_id)
@@ -93,7 +98,14 @@ class HubSpotDealParticipantWriter:
                 related_name = related_hit.name
                 related_email = related_hit.email
 
-            existing = existing_by_external.get(external_id)
+            identity_key = (
+                deal_id,
+                participant.participant_type,
+                participant.related_external_id,
+            )
+            existing = existing_by_external.get(external_id) or existing_by_identity.get(
+                identity_key
+            )
             if existing is None:
                 self.session.add(
                     self._new_row(
@@ -111,6 +123,7 @@ class HubSpotDealParticipantWriter:
                 self._apply_updates(
                     existing,
                     participant=participant,
+                    external_id=external_id,
                     related_local_id=related_local_id,
                     related_name=related_name,
                     related_email=related_email,
@@ -147,14 +160,34 @@ class HubSpotDealParticipantWriter:
             return user_map.get(participant.related_external_id)
         return None
 
-    async def _load_existing_rows(self) -> dict[str, CRMDealParticipant]:
+    async def _load_existing_rows(
+        self,
+    ) -> tuple[
+        dict[str, CRMDealParticipant],
+        dict[tuple[UUID, str, str], CRMDealParticipant],
+    ]:
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.organisation_id) == self.organisation_id,
             col(CRMDealParticipant.integration_id) == self.integration_id,
             col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
         )
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {r.external_id: r for r in rows if r.external_id is not None}
+        by_external = {r.external_id: r for r in rows if r.external_id is not None}
+        by_identity: dict[tuple[UUID, str, str], CRMDealParticipant] = {}
+        for row in rows:
+            if row.related_external_id is None:
+                continue
+            key = (
+                row.deal_id,
+                _participant_type_value(row.participant_type),
+                row.related_external_id,
+            )
+            existing = by_identity.get(key)
+            if existing is None or _role_rank(row.relationship_role) > _role_rank(
+                existing.relationship_role
+            ):
+                by_identity[key] = row
+        return by_external, by_identity
 
     def _new_row(
         self,
@@ -188,11 +221,14 @@ class HubSpotDealParticipantWriter:
         row: CRMDealParticipant,
         *,
         participant: NormalizedDealParticipant,
+        external_id: str,
         related_local_id: UUID | None,
         related_name: str | None,
         related_email: str | None,
         now: datetime,
     ) -> None:
+        row.external_id = external_id
+        row.relationship_role = participant.relationship_role
         row.related_local_id = related_local_id
         row.related_name = related_name
         row.related_email = related_email
@@ -207,4 +243,23 @@ def _synthetic_external_id(participant: NormalizedDealParticipant) -> str:
     return (
         f"{participant.deal_external_id}:{participant.participant_type}:"
         f"{participant.related_external_id}:{role}"
+    )
+
+
+def _role_rank(role: str | None) -> int:
+    role_value = (role or "").lower()
+    if role_value.endswith("_primary"):
+        return 30
+    if "unlabeled" in role_value:
+        return 10
+    if role_value:
+        return 20
+    return 0
+
+
+def _participant_type_value(participant_type: CRMParticipantType | str) -> str:
+    return (
+        participant_type.value
+        if isinstance(participant_type, CRMParticipantType)
+        else str(participant_type)
     )
