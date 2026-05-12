@@ -74,6 +74,7 @@ class IntegrationSyncData:
     connection_metadata: dict[str, Any] | None
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
+    scopes: list[str] | None
 
 
 @dataclass
@@ -387,6 +388,7 @@ class EmailDeltaSyncService:
                 connection_metadata=dict(integration.connection_metadata or {}),
                 credentials=dict(integration.credentials or {}),
                 access_token_expires_at=integration.access_token_expires_at,
+                scopes=list(integration.scopes or []),
             )
         # Session is now released
 

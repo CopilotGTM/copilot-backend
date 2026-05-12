@@ -77,6 +77,7 @@ class IntegrationFetchData:
     calendar_delta_link: str | None  # Google syncToken
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
+    scopes: list[str] | None
 
 
 CALENDAR_INTEGRATION_TYPES = (
@@ -216,6 +217,7 @@ def sync_calendar_org_task(
                         calendar_delta_link=calendar_delta_link,
                         credentials=dict(integration_row.credentials or {}),
                         access_token_expires_at=integration_row.access_token_expires_at,
+                        scopes=list(integration_row.scopes or []),
                     )
                 )
         # Session released

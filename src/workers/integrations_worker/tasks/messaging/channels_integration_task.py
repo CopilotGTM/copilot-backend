@@ -81,6 +81,7 @@ class IntegrationFetchData:
     last_synced_at: datetime | None
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
+    scopes: list[str] | None
 
 
 # Messaging integration types
@@ -222,6 +223,7 @@ def sync_messaging_channels_integration_task(
                 last_synced_at=integration.last_synced_at,
                 credentials=dict(integration.credentials or {}),
                 access_token_expires_at=integration.access_token_expires_at,
+                scopes=list(integration.scopes or []),
             )
         # Session is now released
 
