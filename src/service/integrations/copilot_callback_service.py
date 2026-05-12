@@ -19,6 +19,9 @@ from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
 from src.service.integrations.scope_validation import (
     get_missing_required_scopes,
+    get_missing_required_token_fields,
+    is_google_integration,
+    is_microsoft_integration,
     parse_granted_scopes_from_token_payload,
 )
 
@@ -106,6 +109,28 @@ class CopilotCallbackService:
             f"Please reconnect and allow {integration_name} access."
         )
 
+    @staticmethod
+    def _get_missing_token_field_message(
+        integration_type: IntegrationType,
+        missing_fields: set[str],
+    ) -> str:
+        _ = missing_fields
+        if is_microsoft_integration(integration_type):
+            return (
+                "Microsoft offline access was not granted. "
+                "Please reconnect and allow offline access."
+            )
+        if is_google_integration(integration_type):
+            return (
+                "Google offline access was not granted. Please reconnect and allow offline access."
+            )
+
+        integration_name = INTEGRATION_METADATA[integration_type].name
+        return (
+            f"Required {integration_name} token access was not granted. "
+            f"Please reconnect and allow {integration_name} access."
+        )
+
     def _validate_required_scopes(
         self,
         integration_type: IntegrationType,
@@ -115,10 +140,17 @@ class CopilotCallbackService:
             integration_type,
             parse_granted_scopes_from_token_payload(token_payload, []),
         )
-        if not missing_scopes:
-            return
+        if missing_scopes:
+            raise ValueError(self._get_missing_scope_message(integration_type, missing_scopes))
 
-        raise ValueError(self._get_missing_scope_message(integration_type, missing_scopes))
+        missing_token_fields = get_missing_required_token_fields(
+            integration_type,
+            token_payload,
+        )
+        if missing_token_fields:
+            raise ValueError(
+                self._get_missing_token_field_message(integration_type, missing_token_fields)
+            )
 
     def _apply_custom_token_payload(
         self,

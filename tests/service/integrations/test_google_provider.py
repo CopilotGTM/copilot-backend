@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.service.integrations.providers.google_provider import GoogleProvider
 
 
@@ -25,6 +26,14 @@ def test_google_provider_calendar_scopes_include_google_meet() -> None:
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/meetings.space.readonly",
     ]
+
+
+def test_google_integration_metadata_matches_provider_requested_scopes() -> None:
+    for integration_type in (IntegrationType.GMAIL, IntegrationType.GOOGLE_CALENDAR):
+        assert (
+            INTEGRATION_METADATA[integration_type].oauth_scopes
+            == GoogleProvider(integration_type)._get_scopes()
+        )
 
 
 @pytest.mark.asyncio

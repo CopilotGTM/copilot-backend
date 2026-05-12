@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.configs import google_integration_config
+from src.infra.config.google_integration_scopes import get_google_integration_scopes
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 
@@ -70,21 +71,7 @@ class GoogleProvider(BaseIntegrationProvider):
 
     def _get_scopes(self) -> list[str]:
         """Determine required scopes based on IntegrationType"""
-        base_scopes = [
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile",
-        ]
-        if self.integration_type == IntegrationType.GMAIL:
-            base_scopes.append("https://www.googleapis.com/auth/gmail.readonly")
-        elif self.integration_type == IntegrationType.GOOGLE_CALENDAR:
-            base_scopes.extend(
-                [
-                    "https://www.googleapis.com/auth/calendar.readonly",
-                    "https://www.googleapis.com/auth/meetings.space.readonly",
-                ]
-            )
-
-        return base_scopes
+        return list(get_google_integration_scopes(self.integration_type))
 
     async def _request_with_retry(
         self,

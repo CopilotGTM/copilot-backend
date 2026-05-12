@@ -9,7 +9,9 @@ def test_validate_required_scopes_allows_granted_gmail_scope() -> None:
     CopilotCallbackService()._validate_required_scopes(
         IntegrationType.GMAIL,
         {
-            "scope": "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly"
+            "scope": "https://www.googleapis.com/auth/userinfo.email "
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "refresh_token": "refresh-token",
         },
     )
 
@@ -52,5 +54,36 @@ def test_validate_required_scopes_accepts_salesforce_offline_access_scope() -> N
         IntegrationType.SALESFORCE,
         {
             "scope": "api offline_access openid profile email",
+        },
+    )
+
+
+def test_validate_required_scopes_accepts_microsoft_without_offline_scope_echo() -> None:
+    CopilotCallbackService()._validate_required_scopes(
+        IntegrationType.OUTLOOK_EMAIL,
+        {
+            "scope": "User.Read Mail.Read",
+            "refresh_token": "refresh-token",
+        },
+    )
+
+
+def test_validate_required_scopes_rejects_microsoft_without_refresh_token() -> None:
+    with pytest.raises(ValueError, match="Microsoft offline access was not granted"):
+        CopilotCallbackService()._validate_required_scopes(
+            IntegrationType.OUTLOOK_EMAIL,
+            {
+                "scope": "User.Read Mail.Read",
+            },
+        )
+
+
+def test_validate_required_scopes_accepts_google_without_offline_scope_echo() -> None:
+    CopilotCallbackService()._validate_required_scopes(
+        IntegrationType.GMAIL,
+        {
+            "scope": "https://www.googleapis.com/auth/userinfo.email "
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "refresh_token": "refresh-token",
         },
     )
