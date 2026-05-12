@@ -497,6 +497,7 @@ async def list_deals(
                 ),
                 deal_team=[
                     DealTeamMember(
+                        participant_id=member.get("participant_id"),
                         user_id=member.get("user_id"),
                         name=member.get("name"),
                         email=member.get("email"),
@@ -705,6 +706,7 @@ async def get_deal(
         # Build deal_team list
         deal_team = [
             DealTeamMember(
+                participant_id=member.get("participant_id"),
                 user_id=member.get("user_id"),
                 name=member.get("name"),
                 email=member.get("email"),

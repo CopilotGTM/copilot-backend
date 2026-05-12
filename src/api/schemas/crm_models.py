@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 class DealTeamMember(BaseModel):
     """A team member associated with a deal (owner, collaborator, split_owner, etc.)."""
 
+    participant_id: UUID | None = Field(None, description="Deal participant row ID")
     user_id: UUID | None = Field(None, description="Internal user ID when linked")
     name: str | None = Field(None, description="Display name of the team member")
     email: str | None = Field(None, description="Email address of the team member")
