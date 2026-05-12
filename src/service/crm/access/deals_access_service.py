@@ -552,6 +552,7 @@ class DealsAccessService:
             c = cast(Any, CRMDealParticipant).__table__.c
             stmt = (
                 select(
+                    c.participant_id,
                     c.deal_id,
                     c.related_local_id,
                     c.related_name,
@@ -562,7 +563,8 @@ class DealsAccessService:
                     c.organisation_id == self.organisation_id,
                     c.deal_id.in_(deal_ids),
                     c.participant_type == CRMParticipantType.USER.value,
-                    c.relationship_role != "owner",  # Exclude owners (shown in owner_details)
+                    # NULL means a normal team member; SQL `!=` would otherwise drop it.
+                    func.coalesce(c.relationship_role, "") != "owner",
                     c.is_deleted.is_(False),
                 )
                 .order_by(
@@ -582,6 +584,7 @@ class DealsAccessService:
                 if deal_id in team_by_deal:
                     team_by_deal[deal_id].append(
                         {
+                            "participant_id": row.participant_id,
                             "user_id": row.related_local_id,
                             "name": row.related_name,
                             "email": row.related_email,
