@@ -9,6 +9,10 @@ from uuid import UUID
 
 import pytest
 from src.agents.tools.calendar.send_calendar_invite import send_calendar_invite
+from src.service.calendar_invites.attendee_resolver import (
+    AttendeeCandidate,
+    AttendeeResolutionResult,
+)
 from src.service.calendar_invites.models import CalendarInviteCreateResult
 
 
@@ -109,3 +113,125 @@ async def test_send_calendar_invite_requires_current_user() -> None:
 
     assert result["status"] == "error"
     assert "user" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_requires_confirmation_for_resolved_name(
+    monkeypatch,
+) -> None:
+    """Name-derived attendees must be confirmed before Graph is called."""
+    session = MagicMock()
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
+
+    class FakeResolver:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def resolve(self, attendees, *, deal_id=None):
+            return AttendeeResolutionResult(
+                resolved=[
+                    AttendeeCandidate(
+                        email="saksham@example.com",
+                        name="Saksham Bhutani",
+                        source="contact",
+                        source_id="contact-1",
+                        confidence="exact_name",
+                        input_value="Saksham Bhutani",
+                    )
+                ],
+                requires_confirmation=True,
+                confirmation_reasons=["attendee_resolved_from_name"],
+            )
+
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteAttendeeResolver",
+        FakeResolver,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        title="Discovery call",
+        start_time="2026-05-12T20:00:00+05:30",
+        end_time="2026-05-12T20:30:00+05:30",
+        attendees=["Saksham Bhutani"],
+        sender_email="seller@contoso.com",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["attendees"] == [
+        {
+            "email": "saksham@example.com",
+            "name": "Saksham Bhutani",
+            "optional": False,
+            "source": "contact",
+            "source_id": "contact-1",
+            "confidence": "exact_name",
+            "input_value": "Saksham Bhutani",
+        }
+    ]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_blocks_ambiguous_attendees(monkeypatch) -> None:
+    """Ambiguous people should ask for clarification and skip side effects."""
+    session = MagicMock()
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
+
+    class FakeResolver:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def resolve(self, attendees, *, deal_id=None):
+            return AttendeeResolutionResult(
+                ambiguous=[
+                    {
+                        "input": "Saksham",
+                        "options": [
+                            {"email": "saksham.one@example.com", "name": "Saksham One"},
+                            {"email": "saksham.two@example.com", "name": "Saksham Two"},
+                        ],
+                    }
+                ],
+                requires_confirmation=True,
+                confirmation_reasons=["attendee_ambiguous"],
+            )
+
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteAttendeeResolver",
+        FakeResolver,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        title="Discovery call",
+        start_time="2026-05-12T20:00:00+05:30",
+        end_time="2026-05-12T20:30:00+05:30",
+        attendees=["Saksham"],
+        sender_email="seller@contoso.com",
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["code"] == "calendar_attendees_need_clarification"
+    assert result["ambiguous_attendees"][0]["input"] == "Saksham"
+    service.assert_not_called()

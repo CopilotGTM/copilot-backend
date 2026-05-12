@@ -36,7 +36,9 @@ The Teams bot app and the Microsoft user-owned integration app must remain separ
 ## User Stories
 
 1. A seller asks Kai in Teams, Slack, WhatsApp, web chat, or voice: "Send a Teams invite to Priya and Sam tomorrow at 3pm for the Acme pricing review."
-2. The agent extracts title, attendee emails, start/end time, optional deal context, and optional body.
+2. The agent extracts title, attendee input, start/end time, optional deal context, and optional body.
+   Explicit emails can be sent directly. Names, "all stakeholders", and other inferred attendee
+   inputs must be resolved by the backend and confirmed before the invite is sent.
 3. Backend validates the current user owns an active Outlook calendar integration with `Calendars.ReadWrite`.
    If the user has multiple writable Outlook Calendar connections, the agent must ask which sender
    email to use and pass the selected `sender_email` before any invite is created.
@@ -60,6 +62,8 @@ The Teams bot app and the Microsoft user-owned integration app must remain separ
 flowchart TD
     User[User request in chat or voice] --> Agent[GeneralAgent / VoiceRealtimeAgent]
     Agent --> Tool[send_calendar_invite tool]
+    Tool --> AttendeeResolver[CalendarInviteAttendeeResolver]
+    AttendeeResolver --> Tool
     Tool --> Service[CalendarInviteService]
     Service --> Resolver[CalendarIntegrationResolver]
     Service --> Store[CalendarInviteRequestRepository]
@@ -110,6 +114,22 @@ Owns selection of a usable calendar integration:
 
 It must not fall back to a different user's integration.
 
+### `CalendarInviteAttendeeResolver`
+
+Owns attendee identity resolution before any provider write:
+
+- Accept explicit email addresses as direct attendees after syntax validation.
+- Treat deal stakeholders and CRM contacts as the same external-person universe.
+- Search internal users separately from contacts/stakeholders, always filtered by `organisation_id`.
+- Expand "all stakeholders" only when a valid `deal_id` is available, using approved, non-deleted
+  deal stakeholders.
+- Return `needs_clarification` when an attendee has no email, no match, or multiple possible
+  matches.
+- Return `confirmation_required` when a name or deal stakeholder group was resolved, even if there
+  is a single match. The confirmation payload must include sender email when known, meeting time,
+  timezone, and every resolved attendee with source/provenance.
+- Never call Microsoft Graph. It only returns validated candidates or blockers.
+
 ### `MicrosoftGraphCalendarInviteClient`
 
 Owns Microsoft Graph event creation only:
@@ -138,12 +158,17 @@ Add `send_calendar_invite` as a write tool in the GeneralAgent and VoiceRealtime
 Tool behavior:
 
 - Call immediately when the user clearly asks to send/schedule a meeting invite and supplies enough timing and attendee information.
-- Ask a clarifying question only when title, start time, or attendee emails are missing.
+- Ask a clarifying question when title, start time, or resolvable attendees are missing.
+- If the user provides names, stakeholder-group phrases, or any inferred identity, return a
+  confirmation payload and send only after the user confirms the resolved attendee list.
+- Support "all stakeholders" only when deal context is available; missing stakeholder emails block
+  sending until the user clarifies.
 - Ask a sender-selection question when the service returns multiple writable Outlook Calendar
   accounts. The answer must be an email address from the returned options.
 - Never call Microsoft Graph directly.
 - Never invent attendee emails.
-- Prefer direct send over preview cards in the same style as current `create_task`.
+- Direct send is allowed only for explicit, validated attendee emails and a non-ambiguous sender
+  path. Otherwise the tool must return `confirmation_required` or `needs_clarification`.
 
 ## Data Model
 

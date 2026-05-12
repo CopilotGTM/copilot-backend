@@ -8,8 +8,8 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
+from src.service.calendar_invites.attendee_resolver import CalendarInviteAttendeeResolver
 from src.service.calendar_invites.models import (
-    CalendarInviteAttendee,
     CalendarInviteCreateRequest,
     CalendarInviteError,
 )
@@ -55,26 +55,31 @@ def _parse_datetime(value: str, timezone_name: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _normalize_attendees(
-    attendees: list[str] | list[dict[str, Any]],
-) -> list[CalendarInviteAttendee]:
-    # Normalize mixed list shapes from agent callers into a strict model list.
-    # Some tool clients send plain email strings while others send display
-    # metadata; both forms represent the same attendee intent.
-    normalized: list[CalendarInviteAttendee] = []
-    for attendee in attendees:
-        if isinstance(attendee, str):
-            normalized.append(CalendarInviteAttendee(email=attendee))
-            continue
-        if isinstance(attendee, dict):
-            normalized.append(
-                CalendarInviteAttendee(
-                    email=str(attendee.get("email", "")),
-                    name=attendee.get("name"),
-                    optional=bool(attendee.get("optional", False)),
-                )
-            )
-    return normalized
+def _build_confirmation_payload(
+    *,
+    title: str,
+    start_time: str,
+    end_time: str,
+    timezone_name: str,
+    attendees: list[dict[str, Any]],
+    body: str | None,
+    location: str | None,
+    deal_id: str | None,
+    sender_email: str | None,
+    confirmation_reasons: list[str],
+) -> dict[str, Any]:
+    return {
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "timezone": timezone_name,
+        "attendees": attendees,
+        "body": body,
+        "location": location,
+        "deal_id": deal_id,
+        "sender_email": sender_email,
+        "confirmation_reasons": confirmation_reasons,
+    }
 
 
 async def send_calendar_invite(
@@ -90,6 +95,7 @@ async def send_calendar_invite(
     timezone: str | None = None,
     sender_email: str | None = None,
     idempotency_key: str | None = None,
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     """Build and validate a request, then delegate invite creation to service."""
 
@@ -113,28 +119,75 @@ async def send_calendar_invite(
     if end_at <= start_at:
         return {"status": "error", "message": "Meeting end time must be after start time."}
 
-    try:
-        # Build and validate the DTO before touching DB/session state.
-        # This catches malformed user input early and keeps bad tool calls from
-        # creating partial invite audit rows.
-        request = CalendarInviteCreateRequest(
-            organisation_id=context.organisation_id,
-            requested_by_user_id=user_id,
-            title=title,
-            body=body,
-            location=location,
-            start_at=start_at,
-            end_at=end_at,
-            timezone=timezone_name,
-            attendees=_normalize_attendees(attendees),
-            deal_id=deal_id,
-            sender_email=sender_email,
-            idempotency_key=idempotency_key,
-        )
-    except ValueError as exc:
-        return {"status": "error", "message": str(exc)}
-
     async with context.acquire_session() as session:
+        resolver = CalendarInviteAttendeeResolver(
+            session,
+            organisation_id=context.organisation_id,
+        )
+        resolution = await resolver.resolve(attendees, deal_id=deal_id)
+
+        if resolution.has_blockers:
+            return {
+                "status": "needs_clarification",
+                "code": "calendar_attendees_need_clarification",
+                "message": (
+                    "I need the exact attendee emails before I can send this calendar invite."
+                ),
+                "resolved_attendees": resolution.public_resolved(),
+                "ambiguous_attendees": resolution.ambiguous,
+                "missing_attendees": resolution.missing,
+                "confirmation_reasons": resolution.confirmation_reasons,
+            }
+
+        confirmation_reasons = list(resolution.confirmation_reasons)
+        if not sender_email:
+            confirmation_reasons.append("sender_not_explicit")
+
+        if confirmation_reasons and not confirmed:
+            resolved_attendees = resolution.public_resolved()
+            return {
+                "status": "confirmation_required",
+                "code": "calendar_invite_confirmation_required",
+                "message": (
+                    "Please confirm the sender, time, timezone, and resolved attendees before "
+                    "I send the calendar invite."
+                ),
+                "resolved_attendees": resolved_attendees,
+                "confirmation_payload": _build_confirmation_payload(
+                    title=title,
+                    start_time=start_time,
+                    end_time=end_time,
+                    timezone_name=timezone_name,
+                    attendees=resolved_attendees,
+                    body=body,
+                    location=location,
+                    deal_id=deal_id,
+                    sender_email=sender_email,
+                    confirmation_reasons=confirmation_reasons,
+                ),
+                "confirmation_reasons": confirmation_reasons,
+            }
+
+        try:
+            # Build and validate the DTO before side effects. This catches bad
+            # tool calls early and keeps bad payloads from creating audit rows.
+            request = CalendarInviteCreateRequest(
+                organisation_id=context.organisation_id,
+                requested_by_user_id=user_id,
+                title=title,
+                body=body,
+                location=location,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone_name,
+                attendees=resolution.service_attendees(),
+                deal_id=deal_id,
+                sender_email=sender_email,
+                idempotency_key=idempotency_key,
+            )
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+
         # Keep DB session scoped only around local writes/reads.
         # All external Graph work is performed inside CalendarInviteService, which
         # performs its own scoped writes and status updates.
@@ -173,15 +226,25 @@ def create_send_calendar_invite(
         deal_id: str | None = None,
         timezone: str | None = None,
         sender_email: str | None = None,
+        confirmed: bool = False,
     ) -> dict[str, Any]:
         """Send a calendar invite with a Teams meeting link.
 
         Use when the user asks to schedule a meeting, create a calendar invite,
         or send an invite. This creates a real Outlook calendar event from the
-        connected user account and sends attendee invites. If the user has
-        multiple connected Outlook Calendar accounts, ask which sender email to
-        use and pass it as sender_email. Provide concrete start and end times;
-        ask a follow-up if either time or attendee email is missing.
+        connected user account and sends attendee invites.
+
+        Pass exact attendee emails when known. For names like "Saksham Bhutani"
+        or group phrases like "all stakeholders", pass the user's raw attendee
+        text and deal_id when available; the tool will return
+        confirmation_required or needs_clarification instead of sending if there
+        is any identity doubt. If the user confirms a confirmation_payload, call
+        again with those resolved attendee emails and confirmed=True.
+
+        If the user has multiple connected Outlook Calendar accounts, ask which
+        sender email to use and pass it as sender_email. Provide concrete start
+        and end times; ask a follow-up if either time or attendee email is
+        missing.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -198,6 +261,7 @@ def create_send_calendar_invite(
                 "deal_id": deal_id,
                 "timezone": timezone,
                 "sender_email": sender_email,
+                "confirmed": confirmed,
             },
             description="Sending calendar invite",
             fallback_value={"status": "error", "message": "Failed to send calendar invite."},
