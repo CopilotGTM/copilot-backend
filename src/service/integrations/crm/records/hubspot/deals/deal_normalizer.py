@@ -671,21 +671,31 @@ def _participants_from_owner_property(
 def _dedup_participants(
     participants: list[NormalizedDealParticipant],
 ) -> list[NormalizedDealParticipant]:
-    """Same (type, related_external_id, role) emitted twice → keep first.
+    """Collapse duplicate HubSpot labels for the same related entity.
 
-    Avoids duplicate `crm_deal_participants` rows when, e.g., HubSpot returns
-    the primary contact twice in the same association block (rare, but
-    possible after data-migration imports).
+    HubSpot can emit both labeled and unlabeled/default association edges for
+    the same deal contact/company. The participant table is business-facing, so
+    the same entity should appear once; the raw association graph keeps the
+    full edge detail separately.
     """
-    seen: set[tuple[str, str, str | None]] = set()
-    out: list[NormalizedDealParticipant] = []
+    by_identity: dict[tuple[str, str], NormalizedDealParticipant] = {}
     for p in participants:
-        key = (p.participant_type, p.related_external_id, p.relationship_role)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
-    return out
+        key = (p.participant_type, p.related_external_id)
+        existing = by_identity.get(key)
+        if existing is None or _participant_rank(p) > _participant_rank(existing):
+            by_identity[key] = p
+    return list(by_identity.values())
+
+
+def _participant_rank(participant: NormalizedDealParticipant) -> int:
+    if participant.is_primary:
+        return 30
+    role = (participant.relationship_role or "").lower()
+    if "unlabeled" in role:
+        return 10
+    if role:
+        return 20
+    return 0
 
 
 def _edges_from_assoc_block(
