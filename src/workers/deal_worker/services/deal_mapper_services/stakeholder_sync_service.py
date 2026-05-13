@@ -44,6 +44,7 @@ from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.crm import CRMContact, CRMDeal
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
+    CRMDealStatus,
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
@@ -136,6 +137,7 @@ class StakeholderSyncService:
         organisation_id: UUID,
         *,
         suppress_research_dispatch: bool = False,
+        org_sync_batch_size: int = 100,
     ) -> None:
         """
         Initialize the stakeholder sync service.
@@ -147,6 +149,7 @@ class StakeholderSyncService:
         """
         self.organisation_id = organisation_id
         self._suppress_research_dispatch = suppress_research_dispatch
+        self._org_sync_batch_size = max(1, org_sync_batch_size)
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
         self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
 
@@ -173,11 +176,13 @@ class StakeholderSyncService:
         """
         result = OrgStakeholderSyncResult(organisation_id=self.organisation_id)
 
-        # Phase 1: Get all deal IDs (fresh session)
+        # Phase 1: Get all active deal IDs (fresh session)
         deal_ids: list[UUID] = []
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = select(col(CRMDeal.deal_id)).where(
-                col(CRMDeal.organisation_id) == self.organisation_id
+                col(CRMDeal.organisation_id) == self.organisation_id,
+                col(CRMDeal.is_deleted).is_(False),
+                col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
             )
             query_result = await session.execute(stmt)
             deal_ids = [row[0] for row in query_result.all()]
@@ -206,39 +211,43 @@ class StakeholderSyncService:
             },
         )
 
-        # Phase 2: Process each deal with fresh session per deal
-        for deal_id in deal_ids:
+        # Phase 2: Process deals in bounded transactions. Large onboarded orgs can
+        # have thousands of deals; one session per deal creates avoidable pool churn.
+        for batch in self._iter_batches(deal_ids):
             async for session in acquire_org_async_session(self.organisation_id):
-                try:
-                    deal_result = await self._sync_deal_internal(session, deal_id)
-                    result.successful_deals += 1
-                    result.stakeholders_created += deal_result.created
-                    result.stakeholders_updated += deal_result.updated
-                    result.stakeholders_deactivated += deal_result.deactivated
-                    result.stakeholders_rejected += deal_result.rejected
+                for deal_id in batch:
+                    pending_research_start = len(self._pending_research)
+                    try:
+                        async with self._deal_savepoint(session):
+                            deal_result = await self._sync_deal_internal(session, deal_id)
 
-                    if deal_result.errors:
-                        result.errors.extend(deal_result.errors[:3])  # Limit per deal
+                        result.successful_deals += 1
+                        result.stakeholders_created += deal_result.created
+                        result.stakeholders_updated += deal_result.updated
+                        result.stakeholders_deactivated += deal_result.deactivated
+                        result.stakeholders_rejected += deal_result.rejected
 
-                    await session.commit()
-                    await self._dispatch_pending_research()
+                        if deal_result.errors:
+                            result.errors.extend(deal_result.errors[:3])  # Limit per deal
 
-                except Exception as e:
-                    await session.rollback()
-                    self._pending_research.clear()
-                    result.failed_deals += 1
-                    result.errors.append(f"Deal {deal_id}: {str(e)}")
-                    logger.warning(
-                        "Failed to sync stakeholders for deal %s: %s",
-                        deal_id,
-                        str(e),
-                        extra={
-                            "event": "stakeholder_sync_failed_for_deal",
-                            "organisation_id": str(self.organisation_id),
-                            "deal_id": str(deal_id),
-                            "error": str(e),
-                        },
-                    )
+                    except Exception as e:
+                        del self._pending_research[pending_research_start:]
+                        result.failed_deals += 1
+                        result.errors.append(f"Deal {deal_id}: {str(e)}")
+                        logger.warning(
+                            "Failed to sync stakeholders for deal %s: %s",
+                            deal_id,
+                            str(e),
+                            extra={
+                                "event": "stakeholder_sync_failed_for_deal",
+                                "organisation_id": str(self.organisation_id),
+                                "deal_id": str(deal_id),
+                                "error": str(e),
+                            },
+                        )
+
+                await session.commit()
+                await self._dispatch_pending_research()
 
         logger.info(
             "Org stakeholder sync complete: org=%s deals=%d/%d created=%d updated=%d",
@@ -261,6 +270,28 @@ class StakeholderSyncService:
         )
 
         return result
+
+    def _iter_batches(self, deal_ids: list[UUID]) -> list[list[UUID]]:
+        """Split org-wide sync work into bounded transactions."""
+        return [
+            deal_ids[index : index + self._org_sync_batch_size]
+            for index in range(0, len(deal_ids), self._org_sync_batch_size)
+        ]
+
+    def _deal_savepoint(self, session: AsyncSession):
+        """Use per-deal savepoints when the session supports them."""
+        begin_nested = getattr(session, "begin_nested", None)
+        if begin_nested is not None:
+            return begin_nested()
+
+        class _NoopSavepoint:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        return _NoopSavepoint()
 
     async def sync_for_deal(self, deal_id: UUID) -> StakeholderSyncResult:
         """Sync stakeholders for a deal from CRMDealParticipant records.

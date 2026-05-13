@@ -229,6 +229,29 @@ class CRMDeal(SyncedRecordMixin, table=True):
         Index("ix_crm_deal_owner", "owner_external_id"),
         Index("ix_crm_deal_status", "organisation_id", "deal_status"),
         Index("ix_crm_deal_close_date", "close_date"),
+        Index(
+            "ix_crm_deal_org_active_created",
+            "organisation_id",
+            "is_deleted",
+            "created_at",
+            "deal_id",
+        ),
+        Index(
+            "ix_crm_deal_org_active_status_created",
+            "organisation_id",
+            "is_deleted",
+            "deal_status",
+            "created_at",
+            "deal_id",
+        ),
+        Index(
+            "ix_crm_deal_org_active_owner_created",
+            "organisation_id",
+            "is_deleted",
+            "owner_id",
+            "created_at",
+            "deal_id",
+        ),
         CheckConstraint(
             "(probability IS NULL) OR (probability >= 0 AND probability <= 100)",
             name="ck_crm_deal_probability",
@@ -572,6 +595,13 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         Index("ix_crm_deal_participant_type", "participant_type"),
         Index("ix_crm_deal_participant_related", "related_external_id"),
         Index("ix_crm_deal_participant_org", "organisation_id", "participant_type"),
+        Index(
+            "ix_crm_deal_participant_org_deal_type_active",
+            "organisation_id",
+            "deal_id",
+            "participant_type",
+            "is_deleted",
+        ),
     )
 
     # Identity

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
+from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
@@ -208,10 +209,12 @@ class _FakeDealIdQueryResult:
 class _FakeSyncSession:
     def __init__(self, rows: list[tuple[object, ...]] | None = None):
         self._rows = rows or []
+        self.statements = []
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
 
-    async def execute(self, _stmt):  # noqa: ANN001
+    async def execute(self, stmt):  # noqa: ANN001
+        self.statements.append(stmt)
         return _FakeDealIdQueryResult(self._rows)
 
 
@@ -354,6 +357,73 @@ async def test_sync_for_organisation_does_not_use_reserved_created_log_field(mon
     assert result.stakeholders_created == 2
     deal_session.commit.assert_awaited_once()
     deal_session.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_for_organisation_processes_multiple_deals_in_one_batch_session(
+    monkeypatch,
+) -> None:
+    organisation_id = uuid4()
+    first_deal_id = uuid4()
+    second_deal_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+
+    initial_session = _FakeSyncSession(rows=[(first_deal_id,), (second_deal_id,)])
+    batch_session = _FakeSyncSession()
+    monkeypatch.setattr(
+        stakeholder_sync_module,
+        "acquire_org_async_session",
+        _session_generator_factory([initial_session, batch_session]),
+    )
+
+    service._sync_deal_internal = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            StakeholderSyncResult(deal_id=first_deal_id, created=1),
+            StakeholderSyncResult(deal_id=second_deal_id, updated=1),
+        ]
+    )
+    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.sync_for_organisation()
+
+    assert result.successful_deals == 2
+    assert result.stakeholders_created == 1
+    assert result.stakeholders_updated == 1
+    assert service._sync_deal_internal.await_count == 2  # type: ignore[attr-defined]
+    assert service._sync_deal_internal.await_args_list[0].args == (  # type: ignore[attr-defined]
+        batch_session,
+        first_deal_id,
+    )
+    assert service._sync_deal_internal.await_args_list[1].args == (  # type: ignore[attr-defined]
+        batch_session,
+        second_deal_id,
+    )
+    batch_session.commit.assert_awaited_once()
+    batch_session.rollback.assert_not_awaited()
+    service._dispatch_pending_research.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_sync_for_organisation_selects_only_open_deals(monkeypatch) -> None:
+    organisation_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+
+    initial_session = _FakeSyncSession(rows=[])
+    monkeypatch.setattr(
+        stakeholder_sync_module,
+        "acquire_org_async_session",
+        _session_generator_factory([initial_session]),
+    )
+
+    await service.sync_for_organisation()
+
+    compiled_query = str(
+        initial_session.statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "crm_deals.deal_status = 'open'" in compiled_query
 
 
 @pytest.mark.asyncio
