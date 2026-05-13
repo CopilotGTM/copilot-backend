@@ -214,6 +214,21 @@ async def disconnect_integration(
                 response=response,
             )
 
+        if integration.is_active is False and integration.requires_reauth:
+            integration.requires_reauth = False
+            integration.last_sync_error = "Integration removed by user"
+            service.db.add(integration)
+            await service.db.commit()
+
+            logger.info(
+                "Removed expired inactive integration %s from action-required state for org %s",
+                integration_id,
+                service.user_ids.organisation_id,
+            )
+            return Response.success_response(
+                message="Integration removed from action-required state successfully", data=None
+            )
+
         if integration.is_active is False:
             return Response.bad_request_error_response(
                 message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE, response=response
