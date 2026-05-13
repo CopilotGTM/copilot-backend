@@ -367,6 +367,100 @@ def test_list_available_excludes_manually_disconnected_integrations_from_action_
     assert slack["action_required_integrations"] == []
 
 
+def test_disconnect_clears_inactive_requires_reauth_without_provider_revoke(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Removing an expired inactive row clears the flag that keeps it in attention UI."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    current_user = integrations_dependency_overrides["user_ids"]
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_id = uuid4()
+    integration = FakeKnowledgeIntegration(
+        integration_id=integration_id,
+        organisation_id=current_user.organisation_id,
+        created_by_user_id=current_user.user_id,
+        integration_type="gmail",
+        name="Expired Gmail",
+        is_active=False,
+        requires_reauth=True,
+        last_sync_status="auth_failed",
+        last_sync_error="Refresh token expired",
+    )
+    integration_service.add_integration(integration)
+
+    resp = client.delete(f"/users/integrations/copilot-oauth/disconnect/{integration_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "SUCCESS"
+    assert integration.is_active is False
+    assert integration.requires_reauth is False
+    assert integration.last_sync_error == "Integration removed by user"
+    assert integration_service.db._committed is True
+    assert integration_service.revoked_integrations == []
+
+
+def test_disconnect_rejects_inactive_integration_without_reauth(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Manually inactive rows still return the existing already-inactive error."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    current_user = integrations_dependency_overrides["user_ids"]
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_id = uuid4()
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=integration_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
+            integration_type="gmail",
+            name="Inactive Gmail",
+            is_active=False,
+            requires_reauth=False,
+            last_sync_error="Integration disconnected by user",
+        )
+    )
+
+    resp = client.delete(f"/users/integrations/copilot-oauth/disconnect/{integration_id}")
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["message"] == "Integration is already inactive"
+    assert integration_service.db._committed is False
+    assert integration_service.revoked_integrations == []
+
+
+def test_disconnect_active_integration_revokes_and_clears_reauth(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Active disconnect keeps the existing revoke/deactivate behavior."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    current_user = integrations_dependency_overrides["user_ids"]
+    integration_service = integrations_dependency_overrides["integration_service"]
+    integration_id = uuid4()
+    integration = FakeKnowledgeIntegration(
+        integration_id=integration_id,
+        organisation_id=current_user.organisation_id,
+        created_by_user_id=current_user.user_id,
+        integration_type="gmail",
+        name="Active Gmail",
+        is_active=True,
+        requires_reauth=True,
+        connection_id="gmail_conn_123",
+    )
+    integration_service.add_integration(integration)
+
+    resp = client.delete(f"/users/integrations/copilot-oauth/disconnect/{integration_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert integration.is_active is False
+    assert integration.requires_reauth is False
+    assert integration.last_sync_error == "Integration disconnected by user"
+    assert integration_service.db._committed is True
+    assert integration_service.revoked_integrations == [integration_id]
+
+
 def test_refresh_channels_accepts_slack(
     client: TestClient,
     integrations_dependency_overrides,

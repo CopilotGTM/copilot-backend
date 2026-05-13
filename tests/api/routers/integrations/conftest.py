@@ -14,6 +14,9 @@ from src.api.routers.integrations.copilot_oauth_routes import (
     get_copilot_callback_service,
     get_copilot_oauth_service,
 )
+from src.api.routers.integrations.copilot_oauth_routes import (
+    get_integration_service as get_copilot_oauth_integration_service,
+)
 from src.api.routers.integrations.deal_integration_routes import (
     get_integration_service as get_deal_integration_service,
 )
@@ -86,6 +89,7 @@ class FakeDB:
 
     def __init__(self):
         self._committed = False
+        self.added: list[Any] = []
 
     async def commit(self):
         self._committed = True
@@ -94,7 +98,7 @@ class FakeDB:
         pass
 
     def add(self, obj):
-        pass
+        self.added.append(obj)
 
 
 class FakeIntegrationService:
@@ -106,6 +110,7 @@ class FakeIntegrationService:
         self.integrations: dict[str, FakeKnowledgeIntegration] = {}
         self.channels: dict[str, list[dict]] = {}  # integration_id -> channels
         self.deal_channels: dict[str, list[dict]] = {}  # deal_id -> linked channels
+        self.revoked_integrations: list[UUID] = []
 
     async def close(self):
         pass
@@ -158,6 +163,7 @@ class FakeIntegrationService:
 
     async def revoke_custom_oauth_token(self, integration: Any) -> bool:
         """Revoke custom OAuth token (fake)."""
+        self.revoked_integrations.append(integration.integration_id)
         return True
 
     async def get_deal_linked_channels(self, deal_id: UUID) -> list[dict[str, Any]]:
@@ -436,6 +442,7 @@ def integrations_dependency_overrides(
     app.dependency_overrides[user_auth] = _override_user_auth
     app.dependency_overrides[get_list_integration_service] = _override_integration_service
     app.dependency_overrides[get_deal_integration_service] = _override_integration_service
+    app.dependency_overrides[get_copilot_oauth_integration_service] = _override_integration_service
     app.dependency_overrides[get_copilot_oauth_service] = _override_copilot_oauth_service
     app.dependency_overrides[get_copilot_callback_service] = _override_copilot_callback_service
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit_user_write
