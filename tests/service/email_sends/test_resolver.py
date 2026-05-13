@@ -1,4 +1,4 @@
-"""Tests for Outlook email sender integration resolution."""
+"""Tests for email sender integration resolution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.service.email_sends.models import EmailSendError
-from src.service.email_sends.resolver import OutlookEmailIntegrationResolver
+from src.service.email_sends.resolver import EmailIntegrationResolver
 
 
 class _Session:
@@ -48,7 +48,7 @@ def _integration(**overrides) -> KnowledgeIntegration:
 
 @pytest.mark.asyncio
 async def test_resolve_requires_outlook_email_connection() -> None:
-    resolver = OutlookEmailIntegrationResolver()
+    resolver = EmailIntegrationResolver()
 
     with pytest.raises(EmailSendError) as exc_info:
         await resolver.resolve(
@@ -62,7 +62,7 @@ async def test_resolve_requires_outlook_email_connection() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_requires_mail_send_scope() -> None:
-    resolver = OutlookEmailIntegrationResolver()
+    resolver = EmailIntegrationResolver()
 
     with pytest.raises(EmailSendError) as exc_info:
         await resolver.resolve(
@@ -76,7 +76,7 @@ async def test_resolve_requires_mail_send_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_requires_sender_selection_for_multiple_writable_mailboxes() -> None:
-    resolver = OutlookEmailIntegrationResolver()
+    resolver = EmailIntegrationResolver()
 
     with pytest.raises(EmailSendError) as exc_info:
         await resolver.resolve(
@@ -95,7 +95,7 @@ async def test_resolve_requires_sender_selection_for_multiple_writable_mailboxes
 
 @pytest.mark.asyncio
 async def test_resolve_accepts_explicit_sender_owned_by_user() -> None:
-    resolver = OutlookEmailIntegrationResolver()
+    resolver = EmailIntegrationResolver()
 
     resolved = await resolver.resolve(
         _Session([_integration(integration_email="seller@contoso.com")]),
@@ -105,3 +105,103 @@ async def test_resolve_accepts_explicit_sender_owned_by_user() -> None:
     )
 
     assert resolved.integration.integration_email == "seller@contoso.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_accepts_explicit_gmail_sender_owned_by_user() -> None:
+    resolver = EmailIntegrationResolver()
+
+    resolved = await resolver.resolve(
+        _Session(
+            [
+                _integration(
+                    integration_type=IntegrationType.GMAIL,
+                    integration_email="seller@gmail.com",
+                    scopes=[
+                        "https://www.googleapis.com/auth/gmail.readonly",
+                        "https://www.googleapis.com/auth/gmail.send",
+                    ],
+                )
+            ]
+        ),
+        UUID("11111111-1111-1111-1111-111111111111"),
+        UUID("22222222-2222-2222-2222-222222222222"),
+        sender_email="seller@gmail.com",
+    )
+
+    assert resolved.integration.integration_type == IntegrationType.GMAIL
+    assert resolved.integration.integration_email == "seller@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_requires_sender_selection_across_gmail_and_outlook() -> None:
+    resolver = EmailIntegrationResolver()
+
+    with pytest.raises(EmailSendError) as exc_info:
+        await resolver.resolve(
+            _Session(
+                [
+                    _integration(integration_email="seller@contoso.com"),
+                    _integration(
+                        integration_type=IntegrationType.GMAIL,
+                        integration_email="seller@gmail.com",
+                        scopes=[
+                            "https://www.googleapis.com/auth/gmail.readonly",
+                            "https://www.googleapis.com/auth/gmail.send",
+                        ],
+                    ),
+                ]
+            ),
+            UUID("11111111-1111-1111-1111-111111111111"),
+            UUID("22222222-2222-2222-2222-222222222222"),
+        )
+
+    assert exc_info.value.code == "email_sender_selection_required"
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_gmail_missing_send_scope() -> None:
+    resolver = EmailIntegrationResolver()
+
+    with pytest.raises(EmailSendError) as exc_info:
+        await resolver.resolve(
+            _Session(
+                [
+                    _integration(
+                        integration_type=IntegrationType.GMAIL,
+                        integration_email="seller@gmail.com",
+                        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+                    )
+                ]
+            ),
+            UUID("11111111-1111-1111-1111-111111111111"),
+            UUID("22222222-2222-2222-2222-222222222222"),
+        )
+
+    assert exc_info.value.code == "email_send_scope_required"
+
+
+@pytest.mark.asyncio
+async def test_resolve_requires_reauth_for_unusable_gmail_token() -> None:
+    resolver = EmailIntegrationResolver()
+
+    with pytest.raises(EmailSendError) as exc_info:
+        await resolver.resolve(
+            _Session(
+                [
+                    _integration(
+                        integration_type=IntegrationType.GMAIL,
+                        integration_email="seller@gmail.com",
+                        credentials={},
+                        scopes=[
+                            "https://www.googleapis.com/auth/gmail.readonly",
+                            "https://www.googleapis.com/auth/gmail.send",
+                        ],
+                    )
+                ]
+            ),
+            UUID("11111111-1111-1111-1111-111111111111"),
+            UUID("22222222-2222-2222-2222-222222222222"),
+        )
+
+    assert exc_info.value.code == "email_reauth_required"

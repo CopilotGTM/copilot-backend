@@ -80,14 +80,33 @@ def test_get_missing_required_scopes_accepts_broader_gmail_scopes() -> None:
 
 
 def test_get_missing_required_scopes_rejects_gmail_modify_for_readonly_integration() -> None:
-    """Reject non-equivalent Gmail scopes that do not satisfy readonly."""
-    # Contract: gmail.modify alone must not satisfy readonly-required integration.
+    """Reject send-only Gmail scopes that do not satisfy readonly sync."""
     assert get_missing_required_scopes(
         IntegrationType.GMAIL,
         [
-            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.send",
         ],
     ) == {"https://www.googleapis.com/auth/gmail.readonly"}
+
+
+def test_get_missing_required_scopes_accepts_gmail_send_equivalent_scopes() -> None:
+    """Accept Gmail grants that allow direct message sending."""
+    for send_scope in (
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://mail.google.com/",
+    ):
+        assert (
+            get_missing_required_scopes(
+                IntegrationType.GMAIL,
+                [
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    send_scope,
+                ],
+            )
+            == set()
+        )
 
 
 def test_get_missing_required_scopes_accepts_broader_google_calendar_scope() -> None:
@@ -267,6 +286,7 @@ def test_google_offline_access_is_validated_by_refresh_token_not_scope_echo() ->
             IntegrationType.GMAIL,
             [
                 "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
             ],
         )
         == set()

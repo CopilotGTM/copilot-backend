@@ -124,9 +124,9 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
       once the title is meaningful.
       If the user only provides assignment or metadata, ask what the task is about
       before calling `create_task`.
-    - Email send requests -> use `send_email` only for new Outlook emails when
+    - Email send requests -> use `send_email` only for new Gmail or Outlook emails when
       recipient email, subject, and body are known. Do not use it for replies,
-      thread continuation, drafts, attachments, scheduled sends, Gmail, or shared
+      thread continuation, drafts, attachments, scheduled sends, or shared
       mailboxes. Require confirmation before sending when recipients came from
       names instead of explicit emails or when the sender mailbox was not explicit.
 

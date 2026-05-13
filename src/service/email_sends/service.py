@@ -1,9 +1,10 @@
-"""Production service for creating user-owned Outlook email sends."""
+"""Production service for creating user-owned mailbox email sends."""
 
 from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -11,20 +12,31 @@ from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
     IntegrationActivityRequest,
     IntegrationActivityRequestStatus,
+    IntegrationType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.email_sends.gmail_client import GmailEmailSendClient
 from src.service.email_sends.microsoft_graph_client import MicrosoftEmailSendClient
 from src.service.email_sends.models import (
     EmailSendCreateRequest,
     EmailSendCreateResult,
     EmailSendError,
+    EmailSendProviderResult,
 )
-from src.service.email_sends.resolver import OutlookEmailIntegrationResolver
+from src.service.email_sends.resolver import EmailIntegrationResolver
 
 logger = get_logger(__name__)
 
 EMAIL_SEND_ACTIVITY_TYPE = "send_email"
+
+
+class EmailSendClient(Protocol):
+    async def send_mail(
+        self,
+        token_info,
+        request: EmailSendCreateRequest,
+    ) -> EmailSendProviderResult | None: ...
 
 
 def _activity_status_value(status: IntegrationActivityRequestStatus | str) -> str:
@@ -61,7 +73,7 @@ def derive_email_idempotency_key(
 
 
 class EmailSendService:
-    """Send new Outlook emails with service-owned security and audit boundaries."""
+    """Send new emails with service-owned security and audit boundaries."""
 
     def __init__(
         self,
@@ -69,14 +81,18 @@ class EmailSendService:
         *,
         organisation_id: UUID,
         requested_by_user_id: UUID,
-        integration_resolver: OutlookEmailIntegrationResolver | None = None,
+        integration_resolver: EmailIntegrationResolver | None = None,
         graph_client: MicrosoftEmailSendClient | None = None,
+        provider_clients: dict[IntegrationType, EmailSendClient] | None = None,
     ) -> None:
         self.session = session
         self.organisation_id = organisation_id
         self.requested_by_user_id = requested_by_user_id
-        self.integration_resolver = integration_resolver or OutlookEmailIntegrationResolver()
-        self.graph_client = graph_client or MicrosoftEmailSendClient()
+        self.integration_resolver = integration_resolver or EmailIntegrationResolver()
+        self.provider_clients: dict[IntegrationType, EmailSendClient] = provider_clients or {
+            IntegrationType.OUTLOOK_EMAIL: graph_client or MicrosoftEmailSendClient(),
+            IntegrationType.GMAIL: GmailEmailSendClient(),
+        }
 
     async def send_email(self, request: EmailSendCreateRequest) -> EmailSendCreateResult:
         """Create and persist a single email send with status transitions."""
@@ -103,7 +119,7 @@ class EmailSendService:
         if not sender_email:
             raise EmailSendError(
                 "email_sender_selection_required",
-                "Choose the Outlook sender mailbox before I send this email.",
+                "Choose the sender mailbox before I send this email.",
                 status_code=409,
             )
 
@@ -168,10 +184,14 @@ class EmailSendService:
             send_request = request.model_copy(
                 update={"sender_email": sender_email, "idempotency_key": idempotency_key}
             )
-            await self.graph_client.send_mail(resolved.token_info, send_request)
+            send_client = self._get_provider_client(resolved.integration.integration_type)
+            provider_result = await send_client.send_mail(resolved.token_info, send_request)
+            provider_status_code = provider_result.provider_status_code if provider_result else 202
+            provider_resource_id = provider_result.provider_resource_id if provider_result else None
 
             audit_row.status = IntegrationActivityRequestStatus.SENT
-            audit_row.provider_status_code = 202
+            audit_row.provider_status_code = provider_status_code
+            audit_row.provider_resource_id = provider_resource_id
             audit_row.history = self._append_history(audit_row, "SENT")
             audit_row.updated_at = datetime.now(UTC)
             await self.session.commit()
@@ -189,14 +209,24 @@ class EmailSendService:
             await self._mark_failed(audit_row, exc)
             raise
         except Exception as exc:
-            logger.exception("Outlook email send failed")
+            logger.exception("Email send failed")
             wrapped = EmailSendError(
                 "email_send_failed",
-                "Could not send the Outlook email.",
+                "Could not send the email.",
                 status_code=502,
             )
             await self._mark_failed(audit_row, wrapped)
             raise wrapped from exc
+
+    def _get_provider_client(self, integration_type: IntegrationType) -> EmailSendClient:
+        client = self.provider_clients.get(integration_type)
+        if client is None:
+            raise EmailSendError(
+                "email_send_provider_unsupported",
+                "This mailbox provider cannot send emails yet.",
+                status_code=409,
+            )
+        return client
 
     def _build_audit_row(
         self,
@@ -257,7 +287,7 @@ class EmailSendService:
             col(IntegrationActivityRequest.idempotency_key) == idempotency_key,
         )
         result = await self.session.execute(stmt)
-        return result.scalars().first()
+        return cast(IntegrationActivityRequest | None, result.scalars().first())
 
     async def _ensure_deal_access(self, deal_id: UUID | None) -> None:
         if deal_id is None:

@@ -1,4 +1,4 @@
-"""Resolve the current user's Outlook Mail integration for outbound sends."""
+"""Resolve the current user's mailbox integration for outbound sends."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from src.service.integrations.scope_validation import (
     get_missing_scope_labels,
 )
 
+EMAIL_SEND_INTEGRATION_TYPES = (IntegrationType.OUTLOOK_EMAIL, IntegrationType.GMAIL)
+
 
 @dataclass(frozen=True)
 class ResolvedEmailIntegration:
@@ -25,8 +27,8 @@ class ResolvedEmailIntegration:
     token_info: IntegrationTokenInfo
 
 
-class OutlookEmailIntegrationResolver:
-    """Find a user-owned Outlook Mail connection with Mail.Send permission."""
+class EmailIntegrationResolver:
+    """Find a user-owned Gmail or Outlook connection with send permission."""
 
     async def resolve(
         self,
@@ -41,7 +43,7 @@ class OutlookEmailIntegrationResolver:
             .where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.created_by_user_id) == requested_by_user_id,
-                col(KnowledgeIntegration.integration_type) == IntegrationType.OUTLOOK_EMAIL,
+                col(KnowledgeIntegration.integration_type).in_(EMAIL_SEND_INTEGRATION_TYPES),
                 or_(
                     col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                     col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
@@ -54,7 +56,7 @@ class OutlookEmailIntegrationResolver:
         if not integrations:
             raise EmailSendError(
                 "email_integration_required",
-                "Connect Outlook Email before I can send emails.",
+                "Connect Gmail or Outlook Email before I can send emails.",
                 status_code=409,
             )
 
@@ -72,7 +74,7 @@ class OutlookEmailIntegrationResolver:
                 raise EmailSendError(
                     "email_sender_not_found",
                     (
-                        f"I could not find an Outlook Email connection for {sender_email}. "
+                        f"I could not find a mailbox connection for {sender_email}. "
                         f"Available sender accounts: {self._format_available_accounts(integrations)}."
                     ),
                     status_code=409,
@@ -97,7 +99,7 @@ class OutlookEmailIntegrationResolver:
             raise EmailSendError(
                 "email_sender_selection_required",
                 (
-                    "You have multiple Outlook mailboxes that can send emails. "
+                    "You have multiple mailboxes that can send emails. "
                     f"Which sender should I use? Available sender accounts: "
                     f"{self._format_available_accounts(writable_integrations)}."
                 ),
@@ -114,7 +116,7 @@ class OutlookEmailIntegrationResolver:
         if integration.requires_reauth:
             raise EmailSendError(
                 "email_reauth_required",
-                "Reconnect Outlook Email before I can send emails.",
+                f"Reconnect {self._provider_label(integration)} before I can send emails.",
                 status_code=409,
             )
 
@@ -126,14 +128,14 @@ class OutlookEmailIntegrationResolver:
             labels = ", ".join(get_missing_scope_labels(missing))
             raise EmailSendError(
                 "email_send_scope_required",
-                f"Reconnect Outlook Email with these permissions: {labels}.",
+                f"Reconnect {self._provider_label(integration)} with these permissions: {labels}.",
                 status_code=409,
             )
 
         if not self._has_usable_token(integration):
             raise EmailSendError(
                 "email_reauth_required",
-                "Reconnect Outlook Email before I can send emails.",
+                f"Reconnect {self._provider_label(integration)} before I can send emails.",
                 status_code=409,
             )
 
@@ -154,3 +156,12 @@ class OutlookEmailIntegrationResolver:
             for integration in integrations
         ]
         return ", ".join(values)
+
+    @staticmethod
+    def _provider_label(integration: KnowledgeIntegration) -> str:
+        if integration.integration_type == IntegrationType.GMAIL:
+            return "Gmail"
+        return "Outlook Email"
+
+
+OutlookEmailIntegrationResolver = EmailIntegrationResolver

@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from src.service.email_sends.models import EmailSendAddress, EmailSendCreateRequest, EmailSendError
+from src.service.email_sends.models import (
+    EmailSendAddress,
+    EmailSendCreateRequest,
+    EmailSendError,
+    EmailSendProviderResult,
+)
 from src.service.integrations.api_error_utils import IntegrationPermissionError
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
@@ -52,7 +57,7 @@ class MicrosoftEmailSendClient:
         self,
         token_info: IntegrationTokenInfo,
         request: EmailSendCreateRequest,
-    ) -> None:
+    ) -> EmailSendProviderResult:
         payload = build_microsoft_send_mail_payload(request)
 
         async def _request(access_token: str) -> None:
@@ -87,3 +92,4 @@ class MicrosoftEmailSendClient:
                 "Outlook Email rejected the send request.",
                 status_code=502,
             ) from exc
+        return EmailSendProviderResult(provider_status_code=202)

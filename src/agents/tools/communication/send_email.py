@@ -1,9 +1,13 @@
-"""Agent tool for sending new Outlook emails."""
+"""Agent tool for sending new Gmail or Outlook emails."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from pydantic import ValidationError
 
 from src.agents.tools.base import execute_with_capabilities
 from src.service.email_sends.models import (
@@ -22,11 +26,126 @@ def _clean_text(value: str | None) -> str:
     return (value or "").strip()
 
 
-def _parse_recipients(values: list[str] | list[dict[str, Any]]) -> list[EmailSendAddress]:
+def _display_name(user: Any, fallback: str) -> str:
+    first = getattr(user, "first_name", "") or ""
+    last = getattr(user, "last_name", "") or ""
+    return f"{first} {last}".strip() or str(getattr(user, "email", fallback))
+
+
+def _normalized_full_name(user: Any) -> str:
+    first = getattr(user, "first_name", "") or ""
+    last = getattr(user, "last_name", "") or ""
+    return f"{first} {last}".strip().lower()
+
+
+async def _resolve_internal_user_recipient(
+    organisation_id: UUID,
+    name_or_email: str,
+) -> EmailSendAddress | None:
+    """Resolve an org app user to an email recipient when the user gives a name."""
+    from sqlalchemy import func, or_, select
+    from sqlmodel import col
+
+    from src.domain.models.master_tables.user_models import User
+    from src.infra.database.sessions import acquire_master_async_session
+
+    search = name_or_email.strip()
+    if not search:
+        return None
+
+    def same_org(user: Any) -> bool:
+        return getattr(user, "organisation_id", None) == organisation_id
+
+    async for session in acquire_master_async_session():
+        if "@" in search:
+            stmt = select(User).where(
+                col(User.organisation_id) == organisation_id,
+                col(User.email) == search.lower(),
+            )
+            result = await session.execute(stmt)
+            user = result.scalars().first()
+            if user and same_org(user):
+                return EmailSendAddress(email=str(user.email), name=_display_name(user, search))
+            return None
+
+        lower_search = search.lower()
+        tokens = [token for token in re.split(r"\s+", lower_search) if token]
+        full_name_expr = func.concat(col(User.first_name), " ", col(User.last_name))
+        conditions: list[Any] = [
+            full_name_expr.ilike(f"%{lower_search}%"),
+            col(User.first_name).ilike(f"%{lower_search}%"),
+            col(User.last_name).ilike(f"%{lower_search}%"),
+            col(User.email).ilike(f"%{lower_search}%"),
+        ]
+        for token in tokens:
+            conditions.extend(
+                [
+                    col(User.first_name).ilike(f"%{token}%"),
+                    col(User.last_name).ilike(f"%{token}%"),
+                    col(User.email).ilike(f"%{token}%"),
+                ]
+            )
+
+        stmt = (
+            select(User)
+            .where(
+                col(User.organisation_id) == organisation_id,
+                or_(*conditions),
+            )
+            .limit(10)
+        )
+        result = await session.execute(stmt)
+        users = [user for user in result.scalars().all() if same_org(user)]
+
+    if not users:
+        return None
+
+    for user in users:
+        if _normalized_full_name(user) == lower_search:
+            return EmailSendAddress(email=str(user.email), name=_display_name(user, search))
+
+    if len(tokens) >= 2:
+        first_token = tokens[0]
+        last_token = tokens[-1]
+        ordered_matches = [
+            user
+            for user in users
+            if (getattr(user, "first_name", "") or "").lower().startswith(first_token)
+            and (getattr(user, "last_name", "") or "").lower().startswith(last_token)
+        ]
+        if len(ordered_matches) == 1:
+            user = ordered_matches[0]
+            return EmailSendAddress(email=str(user.email), name=_display_name(user, search))
+        return None
+
+    if len(users) == 1:
+        user = users[0]
+        return EmailSendAddress(email=str(user.email), name=_display_name(user, search))
+
+    for user in users:
+        if (getattr(user, "email", "") or "").lower() == lower_search:
+            return EmailSendAddress(email=str(user.email), name=_display_name(user, search))
+
+    return None
+
+
+async def _parse_recipients(
+    organisation_id: UUID,
+    values: list[str] | list[dict[str, Any]],
+) -> tuple[list[EmailSendAddress], bool]:
     recipients: list[EmailSendAddress] = []
+    resolved_from_user = False
     for value in values:
         if isinstance(value, str):
-            recipients.append(EmailSendAddress(email=value))
+            try:
+                recipients.append(EmailSendAddress(email=value))
+                continue
+            except ValidationError:
+                resolved = await _resolve_internal_user_recipient(organisation_id, value)
+                if resolved is None:
+                    raise ValueError("recipient email required") from None
+                recipients.append(resolved)
+                resolved_from_user = True
             continue
         if isinstance(value, dict):
             email = value.get("email") or value.get("address")
@@ -37,7 +156,15 @@ def _parse_recipients(values: list[str] | list[dict[str, Any]]) -> list[EmailSen
                         name=str(value["name"]) if value.get("name") else None,
                     )
                 )
-    return recipients
+                continue
+            name = value.get("name") or value.get("input_value")
+            if name:
+                resolved = await _resolve_internal_user_recipient(organisation_id, str(name))
+                if resolved is None:
+                    raise ValueError("recipient email required") from None
+                recipients.append(resolved)
+                resolved_from_user = True
+    return recipients, resolved_from_user
 
 
 def _has_resolved_recipient(values: list[str] | list[dict[str, Any]]) -> bool:
@@ -69,15 +196,19 @@ async def send_email(
     idempotency_key: str | None = None,
     confirmed: bool = False,
 ) -> dict[str, Any]:
-    """Normalize tool input and delegate Outlook send side effects to the service."""
+    """Normalize tool input and delegate mailbox send side effects to the service."""
     user_id = context.user_id
     if not user_id:
         return {"status": "error", "message": "Cannot send email: user not identified."}
 
     try:
-        to_recipients = _parse_recipients(to)
-        cc_recipients = _parse_recipients(cc or [])
-        bcc_recipients = _parse_recipients(bcc or [])
+        to_recipients, to_resolved_from_user = await _parse_recipients(context.organisation_id, to)
+        cc_recipients, cc_resolved_from_user = await _parse_recipients(
+            context.organisation_id, cc or []
+        )
+        bcc_recipients, bcc_resolved_from_user = await _parse_recipients(
+            context.organisation_id, bcc or []
+        )
     except ValueError:
         return {
             "status": "needs_clarification",
@@ -106,6 +237,9 @@ async def send_email(
         _has_resolved_recipient(to)
         or _has_resolved_recipient(cc or [])
         or _has_resolved_recipient(bcc or [])
+        or to_resolved_from_user
+        or cc_resolved_from_user
+        or bcc_resolved_from_user
     ):
         confirmation_reasons.append("recipient_resolved_from_name")
 
@@ -186,13 +320,13 @@ def create_send_email(
         sender_email: str | None = None,
         confirmed: bool = False,
     ) -> dict[str, Any]:
-        """Send a new Outlook email.
+        """Send a new Gmail or Outlook email.
 
-        Use only for new emails, not replies, drafts, scheduled sends, Gmail,
-        attachments, or thread continuation. Required before sending: explicit
-        recipient email, subject, and body. If sender_email is not explicit or a
-        recipient came from a name/contact resolution, ask for confirmation and
-        call again with confirmed=True after the user approves.
+        Use only for new emails, not replies, drafts, scheduled sends, attachments,
+        or thread continuation. Required before sending: explicit recipient email,
+        subject, and body. If sender_email is not explicit or a recipient came from
+        a name/contact resolution, ask for confirmation and call again with
+        confirmed=True after the user approves.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
