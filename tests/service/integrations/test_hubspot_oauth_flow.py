@@ -43,6 +43,25 @@ def _session_generator(sessions: list[AsyncMock]):
     return _gen
 
 
+def _async_session_generator(sessions: list[AsyncMock]):
+    async def _gen():
+        yield sessions.pop(0)
+
+    return _gen()
+
+
+@pytest.fixture(autouse=True)
+def _mock_callback_connection_guard() -> None:
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_master_async_session",
+            side_effect=lambda: _async_session_generator([_make_session(FakeResult(scalar=None))]),
+        ),
+        patch.object(CopilotCallbackService, "_acquire_callback_processing_lock", AsyncMock()),
+    ):
+        yield
+
+
 def _make_session(*results: FakeResult) -> AsyncMock:
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=list(results))
@@ -145,6 +164,68 @@ async def test_callback_creates_hubspot_integration_with_placeholder_metadata() 
     assert created.connection_metadata["hubspot_portal_id"] == "123"
     assert created.connection_metadata["hubspot_portal_name"] == "Acme HubSpot"
     assert created.connection_metadata["hubspot_user_id"] == "987"
+
+
+@pytest.mark.asyncio
+async def test_callback_returns_existing_connection_before_redeeming_duplicate_code() -> None:
+    service = CopilotCallbackService()
+    user_id = uuid4()
+    organisation_id = uuid4()
+    connection_id = uuid4()
+    integration_id = uuid4()
+    mapping = SimpleNamespace(
+        connection_id=connection_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider_config_key="custom-hubspot",
+    )
+    integration = _make_integration(
+        organisation_id=organisation_id,
+        created_by_user_id=user_id,
+        integration_id=integration_id,
+        connection_id=str(connection_id),
+    )
+    master_session = _make_session(FakeResult(scalar=mapping))
+    org_session = _make_session(FakeResult(scalar=integration))
+    provider = AsyncMock()
+    provider.provider_key = "hubspot"
+
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.copilot_oauth_service.decode_oauth_state",
+            return_value={
+                "sub": str(user_id),
+                "org": str(organisation_id),
+                "type": IntegrationType.HUBSPOT.value,
+                "jti": str(connection_id),
+            },
+        ),
+        patch.object(
+            CopilotCallbackService,
+            "_fetch_user_from_master",
+            AsyncMock(return_value=_make_user(user_id=user_id, organisation_id=organisation_id)),
+        ),
+        patch.object(CopilotCallbackService, "_acquire_callback_processing_lock", AsyncMock()),
+        patch(
+            "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ) as get_provider,
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_master_async_session",
+            side_effect=lambda: _async_session_generator([master_session]),
+        ),
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_org_async_session",
+            side_effect=_session_generator([org_session]),
+        ),
+        patch.object(service, "_trigger_initial_sync"),
+    ):
+        result = await service.handle_oauth_callback(code="duplicate-code", state="signed-state")
+
+    assert result["integration_id"] == str(integration_id)
+    assert result["connection_id"] == str(connection_id)
+    get_provider.assert_not_called()
+    provider.exchange_code.assert_not_awaited()
 
 
 @pytest.mark.asyncio

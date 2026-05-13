@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlmodel import col
 from src.domain.models.master_tables import OrganisationIntegrationDetails, User
 from src.domain.models.organisation_tables.sync import (
@@ -261,14 +261,42 @@ class CopilotCallbackService:
             raise ValueError("State payload is missing jti claim")
         connection_id = str(jti)
 
-        provider = ProviderFactory.get_provider(integration_type)
-
         # Cross-check user against master DB — prevents forged state tokens
         # from creating integrations for other users
         user = await self._fetch_user_from_master(user_id)
         if not user or user.organisation_id != organisation_id:
             logger.error("User mismatch in state token")
             raise ValueError("Invalid user state context")
+
+        async for master_session in acquire_master_async_session():
+            await self._acquire_callback_processing_lock(master_session, connection_id)
+            existing_result = await self._find_existing_connection_result(
+                master_session,
+                connection_id,
+            )
+            if existing_result:
+                return existing_result
+
+            return await self._process_first_callback_for_connection(
+                code=code,
+                organisation_id=organisation_id,
+                user_id=user_id,
+                integration_type=integration_type,
+                connection_id=connection_id,
+            )
+
+        raise RuntimeError("Failed to acquire master session")
+
+    async def _process_first_callback_for_connection(
+        self,
+        *,
+        code: str,
+        organisation_id: UUID,
+        user_id: UUID,
+        integration_type: IntegrationType,
+        connection_id: str,
+    ) -> dict[str, Any]:
+        provider = ProviderFactory.get_provider(integration_type)
 
         # Session released before external calls — token exchange and user info
         # fetch can take several seconds depending on the provider
@@ -359,6 +387,37 @@ class CopilotCallbackService:
             integration_email=integration_email,
             provider_user_info=user_info,
         )
+
+    @staticmethod
+    async def _acquire_callback_processing_lock(master_session: Any, connection_id: str) -> None:
+        """Serialize callbacks for the same OAuth state jti across API workers."""
+        await master_session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:connection_id))"),
+            {"connection_id": connection_id},
+        )
+
+    async def _find_existing_connection_result(
+        self,
+        master_session: Any,
+        connection_id: str,
+    ) -> dict[str, Any] | None:
+        connection_uuid = UUID(connection_id)
+        stmt = select(OrganisationIntegrationDetails).where(
+            OrganisationIntegrationDetails.connection_id == connection_uuid  # type: ignore[arg-type]
+        )
+        mapping = (await master_session.execute(stmt)).scalar_one_or_none()
+        if not mapping:
+            return None
+
+        async for org_session in acquire_org_async_session(mapping.organisation_id):
+            integration_stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.integration_id) == mapping.integration_id,
+            )
+            integration = (await org_session.execute(integration_stmt)).scalars().first()
+            if integration:
+                return self._build_success_response(integration, reactivated=False)
+
+        return None
 
     async def _reactivate_integration(
         self,

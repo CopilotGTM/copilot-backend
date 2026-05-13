@@ -3,11 +3,13 @@ Fixtures and fake services for integrations API tests.
 """
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.routers.integrations.copilot_oauth_routes import (
     get_copilot_callback_service,
     get_copilot_oauth_service,
@@ -299,7 +301,7 @@ class FakeCopilotOAuthService:
         self,
         user_ids: UserIDs,
         integration_type: IntegrationType,
-    ) -> str:
+    ) -> SimpleNamespace:
         """Return a fake auth URL or raise configured errors."""
         if self.should_raise_unavailable:
             from src.service.integrations.copilot_oauth_service import (
@@ -311,7 +313,15 @@ class FakeCopilotOAuthService:
         if self.should_raise_value_error:
             raise ValueError("No custom integration provider found for type: unsupported")
 
-        return f"https://accounts.example.com/oauth/{integration_type.value}"
+        return SimpleNamespace(
+            auth_url=f"https://accounts.example.com/oauth/{integration_type.value}",
+            attempt_id=f"attempt-{integration_type.value}",
+        )
+
+    async def decode_oauth_state_allow_expired(self, state: str) -> dict[str, str]:
+        if state == "valid-state":
+            return {"jti": "attempt-from-valid-state"}
+        raise ValueError("Invalid state")
 
 
 class FakeCopilotCallbackService:
@@ -404,6 +414,9 @@ def integrations_dependency_overrides(
     def _override_user_auth():
         return fake_user
 
+    def _override_rate_limit_user_write():
+        return None
+
     async def _override_integration_service():
         try:
             yield fake_integration_service
@@ -425,6 +438,7 @@ def integrations_dependency_overrides(
     app.dependency_overrides[get_deal_integration_service] = _override_integration_service
     app.dependency_overrides[get_copilot_oauth_service] = _override_copilot_oauth_service
     app.dependency_overrides[get_copilot_callback_service] = _override_copilot_callback_service
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit_user_write
 
     yield {
         "user_ids": user_ids,

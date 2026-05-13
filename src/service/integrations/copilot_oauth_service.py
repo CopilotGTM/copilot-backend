@@ -1,4 +1,5 @@
 import datetime
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -29,6 +30,12 @@ class CopilotOAuthIntegrationUnavailableError(Exception):
         self.status = status
 
 
+@dataclass(frozen=True)
+class OAuthInitiationResult:
+    auth_url: str
+    attempt_id: str
+
+
 class CopilotOAuthService:
     """Generate OAuth authorization URLs and manage state tokens for integration connections.
 
@@ -52,7 +59,12 @@ class CopilotOAuthService:
             raise CopilotOAuthIntegrationUnavailableError(metadata.availability_status)
 
     @staticmethod
-    async def generate_oauth_state(user_ids: UserIDs, integration_type: IntegrationType) -> str:
+    async def generate_oauth_state(
+        user_ids: UserIDs,
+        integration_type: IntegrationType,
+        *,
+        jti: str | None = None,
+    ) -> str:
         """Generate a signed JWT embedding user/org context into the OAuth state parameter.
 
         The provider returns this token unchanged in the callback, allowing the callback
@@ -70,8 +82,8 @@ class CopilotOAuthService:
             "sub": str(user_ids.user_id),
             "org": str(user_ids.organisation_id),
             "type": integration_type.value,
-            # jti doubles as idempotency key — callback uses it to detect duplicate processing
-            "jti": str(uuid4()),
+            # jti doubles as attempt id and callback idempotency key.
+            "jti": jti or str(uuid4()),
             "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=15),
             "iat": datetime.datetime.now(datetime.UTC),
         }
@@ -91,12 +103,30 @@ class CopilotOAuthService:
             return dict(decoded)
         return {}
 
+    @staticmethod
+    async def decode_oauth_state_allow_expired(state_token: str) -> dict[str, Any]:
+        """Decode a signed OAuth state while ignoring only expiration.
+
+        This is used after callback failures so the popup can still be tied back
+        to the initiating browser attempt. Forged or malformed states remain
+        rejected because signature verification is still enabled.
+        """
+        decoded = jwt.decode(
+            state_token,
+            await _get_oauth_state_secret(),
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+        if isinstance(decoded, dict):
+            return dict(decoded)
+        return {}
+
     async def initiate_oauth_flow(
         self,
         *,
         user_ids: UserIDs,
         integration_type: IntegrationType,
-    ) -> str:
+    ) -> OAuthInitiationResult:
         """Build the provider's OAuth authorization URL with an embedded state JWT.
 
         Called by the /authorize endpoint. The returned URL is opened in a popup
@@ -116,7 +146,12 @@ class CopilotOAuthService:
         """
         self._ensure_integration_available(integration_type)
         provider = ProviderFactory.get_provider(integration_type)
-        state_token = await self.generate_oauth_state(user_ids, integration_type)
+        attempt_id = str(uuid4())
+        state_token = await self.generate_oauth_state(
+            user_ids,
+            integration_type,
+            jti=attempt_id,
+        )
 
         auth_url = await provider.get_authorization_url(state_token)
 
@@ -126,7 +161,7 @@ class CopilotOAuthService:
             user_ids.organisation_id,
             integration_type.value,
         )
-        return auth_url
+        return OAuthInitiationResult(auth_url=auth_url, attempt_id=attempt_id)
 
 
 copilot_oauth_service = CopilotOAuthService()

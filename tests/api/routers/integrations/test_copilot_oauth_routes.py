@@ -14,6 +14,7 @@ def test_copilot_authorize_success(client: TestClient, integrations_dependency_o
     assert body["status"] == "SUCCESS"
     assert body["message"] == "Authorization URL generated successfully."
     assert body["data"]["auth_url"] == "https://accounts.example.com/oauth/gmail"
+    assert body["data"]["attempt_id"] == "attempt-gmail"
 
 
 def test_copilot_authorize_unavailable_integration(
@@ -61,6 +62,7 @@ def test_copilot_callback_returns_popup_completion_html(
     assert "success=true" in location
     assert "integration_id=test-integration" in location
     assert "integration_type=" in location
+    assert "attempt_id=test-connection" in location
 
 
 def test_copilot_callback_error_returns_popup_completion_html(
@@ -79,6 +81,25 @@ def test_copilot_callback_error_returns_popup_completion_html(
     assert "/integrations/oauth/popup-complete" in location
     assert "success=false" in location
     assert "Invalid+or+expired+state+parameter" in location
+    assert "attempt_id=" not in location
+
+
+def test_copilot_callback_error_includes_attempt_id_when_state_is_signed(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Recoverable callback failures should still identify the active popup attempt."""
+    integrations_dependency_overrides["copilot_callback_service"].should_raise_value_error = True
+
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback?code=abc&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "attempt_id=attempt-from-valid-state" in location
 
 
 def test_copilot_callback_preserves_backend_error_message(
