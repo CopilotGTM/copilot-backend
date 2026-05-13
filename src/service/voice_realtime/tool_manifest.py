@@ -532,13 +532,20 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_REMINDER,
         description=(
-            "Create a reminder directly once the user provides a meaningful title and trigger time."
+            "Create a reminder directly once the user provides a meaningful title and trigger "
+            "time. Pass the user's trigger time exactly as spoken or typed."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "trigger_time": {"type": "string"},
+                "trigger_time": {
+                    "type": "string",
+                    "description": (
+                        "Raw local time expression exactly as spoken or typed, such as "
+                        "'10 AM', '12 AM', or 'tomorrow at 9'. Do not convert to UTC."
+                    ),
+                },
                 "reminder_type": {"type": "string", "enum": ["static", "agentic"]},
                 "message": {"type": "string"},
                 "agent_prompt": {"type": "string"},

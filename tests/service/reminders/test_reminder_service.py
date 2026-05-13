@@ -46,12 +46,30 @@ def test_to_list_item_includes_schedule_summary_and_action_flags() -> None:
     assert item.next_trigger_local_at == datetime(
         2026, 3, 3, 9, 0, tzinfo=item.next_trigger_local_at.tzinfo
     )
-    assert item.schedule_summary == "Weekly on Tuesday at 9:00 AM IST (next: Tue, Mar 03)"
+    assert item.schedule_summary == "Weekly on Tuesday at 9:00 AM IST"
     assert item.is_running is False
     assert item.current_run_status is None
     assert item.can_pause is True
     assert item.can_cancel is True
     assert item.can_delete is True
+
+
+def test_schedule_summary_keeps_next_trigger_out_of_cadence_label() -> None:
+    reminder = _build_reminder()
+
+    item = ReminderService._to_list_item(reminder)
+
+    assert "next:" not in item.schedule_summary.lower()
+    assert "Mar 03" not in item.schedule_summary
+
+
+def test_one_time_schedule_summary_does_not_repeat_next_run_timestamp() -> None:
+    reminder = _build_reminder()
+    reminder.recurrence = ReminderRecurrence.NONE
+
+    item = ReminderService._to_list_item(reminder)
+
+    assert item.schedule_summary == "One-time"
 
 
 def test_to_detail_marks_triggered_reminders_as_running_and_disables_destructive_actions() -> None:

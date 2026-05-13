@@ -183,6 +183,83 @@ async def test_create_reminder_creates_active_slack_reminder_and_success_payload
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("trigger_time", "expected_utc"),
+    [
+        ("May 15 2030 12 AM", datetime(2030, 5, 14, 18, 30, tzinfo=UTC)),
+        ("May 15 2030 10 AM", datetime(2030, 5, 15, 4, 30, tzinfo=UTC)),
+    ],
+)
+async def test_create_reminder_resolves_local_time_phrases_in_user_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+    trigger_time: str,
+    expected_utc: datetime,
+) -> None:
+    monkeypatch.setattr(
+        "src.service.reminders.reminder_service.schedule_reminder",
+        lambda *_args, **_kwargs: None,
+    )
+    context = _FakeContext(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        channel="slack",
+        metadata={
+            "team_id": "T123",
+            "channel_id": "C123",
+            "user_timezone": "Asia/Kolkata",
+        },
+    )
+
+    result = await create_reminder(
+        context=context,
+        title="Follow up with Acme",
+        trigger_time=trigger_time,
+        reminder_type="static",
+        message="Follow up with Acme",
+        recurrence="none",
+    )
+
+    assert result["status"] == "created"
+    reminder = context.session.added[0]
+    assert reminder.next_trigger_at == expected_utc
+    assert reminder.user_timezone == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
+async def test_create_reminder_direct_call_uses_context_timezone_when_timezone_not_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.service.reminders.reminder_service.schedule_reminder",
+        lambda *_args, **_kwargs: None,
+    )
+    context = _FakeContext(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        channel="slack",
+        metadata={
+            "team_id": "T123",
+            "channel_id": "C123",
+            "user_timezone": "Asia/Kolkata",
+        },
+    )
+
+    result = await create_reminder(
+        context=context,
+        title="Follow up with Acme",
+        trigger_time="May 15 2030 10 AM",
+        reminder_type="static",
+        message="Follow up with Acme",
+        recurrence="none",
+    )
+
+    assert result["status"] == "created"
+    reminder = context.session.added[0]
+    assert reminder.next_trigger_at == datetime(2030, 5, 15, 4, 30, tzinfo=UTC)
+    assert reminder.user_timezone == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
 async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

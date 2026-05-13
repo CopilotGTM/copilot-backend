@@ -38,6 +38,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     UserReminder,
 )
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.utils.timezone import resolve_timezone_name
 from src.service.reminders.reminder_service import ReminderService, ReminderServiceError
 
 if TYPE_CHECKING:
@@ -298,6 +299,19 @@ def _resolve_trigger_time(
         logger.debug("dateparser failed for: %s", trigger_time_expr, exc_info=True)
 
     return None
+
+
+def _resolve_effective_timezone(context: AgentContext, timezone_name: str | None) -> str:
+    metadata = context.metadata or {}
+    metadata_timezone = metadata.get("user_timezone")
+    return (
+        resolve_timezone_name(
+            timezone_name,
+            metadata_timezone if isinstance(metadata_timezone, str) else None,
+            default="UTC",
+        )
+        or "UTC"
+    )
 
 
 def _build_preview_card(
@@ -697,7 +711,7 @@ async def create_reminder(
     agent_prompt: str | None = None,
     deal_id: str | None = None,
     recurrence: str = "none",
-    timezone_name: str = "UTC",
+    timezone_name: str | None = None,
 ) -> dict[str, Any]:
     """Create an ACTIVE UserReminder and schedule it immediately."""
     organisation_id = context.organisation_id
@@ -751,7 +765,7 @@ async def create_reminder(
             ["agent_prompt"],
         )
 
-    effective_timezone = timezone_name or context.metadata.get("user_timezone") or "UTC"
+    effective_timezone = _resolve_effective_timezone(context, timezone_name)
     trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone)
     if not trigger_dt:
         return {
@@ -857,7 +871,7 @@ async def create_reminder_form(
     agent_prompt: str | None = None,
     deal_id: str | None = None,
     recurrence: str = "none",
-    timezone_name: str = "UTC",
+    timezone_name: str | None = None,
 ) -> dict[str, Any]:
     """Create a UserReminder in pending_confirmation status and send a preview card.
 
@@ -891,7 +905,8 @@ async def create_reminder_form(
         }
 
     # Resolve trigger time server-side (hybrid: ISO 8601 → dateparser)
-    trigger_dt = _resolve_trigger_time(trigger_time, timezone_name)
+    effective_timezone = _resolve_effective_timezone(context, timezone_name)
+    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone)
     if not trigger_dt:
         return {
             "status": "error",
@@ -910,7 +925,7 @@ async def create_reminder_form(
             )
 
             trigger_dt = ReminderExecutionService._compute_next_trigger(
-                trigger_dt, r_recurrence, timezone_name
+                trigger_dt, r_recurrence, effective_timezone
             )
         else:
             return {"status": "error", "message": "Trigger time must be in the future."}
@@ -979,7 +994,7 @@ async def create_reminder_form(
         message_content=message if r_type == ReminderType.STATIC else None,
         agent_config=agent_cfg,
         next_trigger_at=trigger_dt,
-        user_timezone=timezone_name,
+        user_timezone=effective_timezone,
         recurrence=r_recurrence,
         delivery_channel=channel,
         delivery_context=delivery_context,
@@ -998,7 +1013,7 @@ async def create_reminder_form(
         title=title,
         reminder_type=r_type.value,
         trigger_dt=trigger_dt,
-        timezone_name=timezone_name,
+        timezone_name=effective_timezone,
         recurrence=r_recurrence.value,
         message=message,
         agent_prompt=agent_prompt,
@@ -1010,7 +1025,7 @@ async def create_reminder_form(
         from src.service.bots.slack_bot_service import SlackBotService
 
         try:
-            local_dt = trigger_dt.astimezone(ZoneInfo(timezone_name))
+            local_dt = trigger_dt.astimezone(ZoneInfo(effective_timezone))
         except Exception:
             local_dt = trigger_dt
 
@@ -1145,10 +1160,12 @@ def create_create_reminder(
         - Provide agent_prompt with the instruction (e.g. "analyze deal Acme Corp")
         - Optionally provide deal_id if the analysis is deal-specific
 
-        Pass the user's time expression exactly as they said it in trigger_time.
-        The server resolves the time automatically. Examples:
+        Pass the user's time expression exactly as spoken or typed in trigger_time.
+        Do not convert it to UTC or rewrite local phrases. The server resolves
+        the time automatically with the user's timezone. Examples:
         - "in 5 minutes"
-        - "at 3 PM"
+        - "10 AM"
+        - "12 AM"
         - "tomorrow at 9 AM"
         - "2026-02-24T15:00:00"
 
@@ -1172,9 +1189,6 @@ def create_create_reminder(
             trigger_time,
         )
 
-        # Resolve timezone from context metadata (Teams provides it)
-        tz = context.metadata.get("user_timezone") or "UTC"
-
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateReminder",
@@ -1188,7 +1202,6 @@ def create_create_reminder(
                 "agent_prompt": agent_prompt,
                 "deal_id": deal_id,
                 "recurrence": recurrence or "none",
-                "timezone_name": tz,
             },
             description="Creating reminder",
             fallback_value={"status": "error", "message": "Failed to create reminder."},
