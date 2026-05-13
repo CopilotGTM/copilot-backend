@@ -968,12 +968,14 @@ This tells the backend where to redirect users after OAuth completion.
 ### Disconnect Integration Endpoint
 
 ```http
-DELETE /users/integrations/oauth/disconnect/{integration_id}
+DELETE /users/integrations/copilot-oauth/disconnect/{integration_id}
 ```
 
 ### Disconnect Integration Description
 
-Disconnects and deletes an integration, revoking OAuth tokens and removing all associated data.
+Disconnects an integration by revoking the provider OAuth token and marking the
+integration inactive. The integration row is retained for audit/history and for
+safe reconnect/reactivation flows.
 
 ### Disconnect Integration Authentication
 
@@ -989,8 +991,8 @@ Required - Bearer token
 
 ```json
 {
-  "status": "success",
-  "message": "Integration disconnected successfully",
+  "status": "SUCCESS",
+  "message": "Integration disconnected and marked as inactive successfully",
   "data": null
 }
 ```
@@ -1001,7 +1003,7 @@ Required - Bearer token
 
 ```json
 {
-  "status": "error",
+  "status": "ERROR",
   "message": "Integration not found",
   "data": null
 }
@@ -1011,22 +1013,24 @@ Required - Bearer token
 
 ```json
 {
-  "status": "error",
+  "status": "ERROR",
   "message": "Failed to disconnect integration",
   "data": null
 }
 ```
 
-### What Gets Deleted
+### What Changes
 
 When you disconnect an integration:
 
-1. ✅ **Nango Connection** - OAuth tokens revoked with provider
-2. ✅ **Integration Record** - Deleted from database
-3. ✅ **Sync History** - All sync records cascade deleted
-4. ✅ **Connection Metadata** - All stored metadata removed
+1. **Provider OAuth token** - Revoked where the provider supports revocation
+2. **Integration record** - Retained and marked inactive
+3. **Reauth state** - Cleared so the row no longer appears as action required
+4. **Sync error** - Updated to show the integration was disconnected by the user
 
-⚠️ **Warning:** This action is irreversible. User will need to re-authorize to reconnect.
+The frontend should treat a `SUCCESS` response with `data: null` as a completed
+disconnect and refresh the integrations list. It should not expect a
+`disconnected: true` response payload.
 
 ### Frontend Implementation
 
@@ -1038,7 +1042,7 @@ const disconnectIntegration = async (integrationId: string) => {
   
   try {
     const response = await fetch(
-      `/users/integrations/oauth/disconnect/${integrationId}`,
+      `/users/integrations/copilot-oauth/disconnect/${integrationId}`,
       {
         method: 'DELETE',
         headers: {
@@ -1050,7 +1054,7 @@ const disconnectIntegration = async (integrationId: string) => {
     
     const data = await response.json();
     
-    if (data.status === 'success') {
+    if (data.status === 'SUCCESS') {
       showNotification('Integration disconnected successfully');
       refreshIntegrations(); // Reload integrations list
     } else {
