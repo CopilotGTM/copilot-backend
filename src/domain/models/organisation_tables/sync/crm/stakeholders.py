@@ -74,6 +74,20 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
         UniqueConstraint("deal_id", "email", name="uq_deal_stakeholder_email"),
         Index("ix_deal_stakeholder_org_deal", "organisation_id", "deal_id"),
         Index("ix_deal_stakeholder_email", "email"),
+        Index(
+            "ix_deal_stakeholder_org_deal_email_active",
+            "organisation_id",
+            "deal_id",
+            "email",
+            "is_deleted",
+        ),
+        Index(
+            "ix_deal_stakeholder_org_deal_approval_active",
+            "organisation_id",
+            "deal_id",
+            "approval_status",
+            "is_deleted",
+        ),
     )
 
     stakeholder_id: UUID = Field(default_factory=uuid4, primary_key=True)
