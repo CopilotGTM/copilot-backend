@@ -124,6 +124,11 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
       once the title is meaningful.
       If the user only provides assignment or metadata, ask what the task is about
       before calling `create_task`.
+    - Email send requests -> use `send_email` only for new Outlook emails when
+      recipient email, subject, and body are known. Do not use it for replies,
+      thread continuation, drafts, attachments, scheduled sends, Gmail, or shared
+      mailboxes. Require confirmation before sending when recipients came from
+      names instead of explicit emails or when the sender mailbox was not explicit.
 
     **CRM write behavior on supported channels (Web/Voice/Teams/Slack/WhatsApp):**
     - Prefer the write tool over back-and-forth questions once required fields are present.
@@ -144,6 +149,9 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
       user's message is truly ambiguous about what the task is.
       Extract what you can, default the rest, and create directly.
       If the only known detail is assignment, ask for the task title first.
+    - For `send_email`, ask only for missing recipient email, subject, or body.
+      If the sender mailbox is implicit or multiple senders may exist, confirm
+      the sender and recipients before calling with `confirmed=True`.
 
     **Visualizations (Teams only):**
     Use `CreateVisualizationCard` only AFTER you have numeric data points prepared.

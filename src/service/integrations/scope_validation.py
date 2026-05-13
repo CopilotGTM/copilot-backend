@@ -21,6 +21,7 @@ from src.infra.config.google_integration_scopes import (
 from src.infra.config.microsoft_integration_scopes import (
     MICROSOFT_INTEGRATION_SCOPES,
     MICROSOFT_SCOPE_CALENDARS_READ_WRITE,
+    MICROSOFT_SCOPE_MAIL_SEND,
     MICROSOFT_SCOPE_OFFLINE_ACCESS,
     MICROSOFT_SCOPE_USER_READ,
     MICROSOFT_SCOPE_USER_READ_ALL,
@@ -130,6 +131,11 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             MICROSOFT_SCOPE_CALENDARS_READ_WRITE,
         }
     ),
+    MICROSOFT_SCOPE_MAIL_SEND: frozenset(
+        {
+            MICROSOFT_SCOPE_MAIL_SEND,
+        }
+    ),
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
@@ -150,6 +156,7 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "api": "Salesforce API access",
     "refresh_token": "Salesforce offline access",
     "Mail.Read": "Outlook mail access",
+    "Mail.Send": "Outlook mail send access",
     "Calendars.Read": "Outlook calendar access",
     "Calendars.ReadWrite": "Outlook calendar write access",
     "Chat.Read": "Microsoft Teams chat access",

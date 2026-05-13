@@ -107,6 +107,26 @@ def test_reminder_tools_are_available_on_supported_chat_and_voice_channels() -> 
     assert ToolName.CANCEL_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
 
 
+def test_send_email_is_available_on_supported_chat_and_voice_channels() -> None:
+    assert CHANNEL_ONLY_TOOLS[ToolName.SEND_EMAIL] == {
+        "teams",
+        "slack",
+        "whatsapp",
+        "web",
+        "voice",
+    }
+    assert ToolName.SEND_EMAIL not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+
+    for channel in ("web", "voice", "whatsapp", "slack", "teams"):
+        context = AgentContext(organisation_id=uuid4(), channel=channel)
+        registry = ToolRegistry(context, lambda: None)
+
+        tools = registry.get_tools_for_agent("GeneralAgent", channel=channel)
+        tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+        assert "send_email_tool" in tool_names
+
+
 def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
     context = AgentContext(
         organisation_id=uuid4(),
@@ -119,6 +139,8 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
         ToolName.CREATE_REMINDER,
         ToolName.LIST_REMINDERS,
         ToolName.CANCEL_REMINDER,
+        ToolName.SEND_CALENDAR_INVITE,
+        ToolName.SEND_EMAIL,
     }
 
 
@@ -127,6 +149,7 @@ def test_voice_realtime_agent_excludes_unsupported_backend_write_tools() -> None
     assert ToolName.CREATE_DEAL in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert ToolName.ADD_DEAL_NOTE in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert ToolName.ADD_STAKEHOLDER in AGENT_TOOLS["VoiceRealtimeAgent"]
+    assert ToolName.SEND_EMAIL in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert ToolName.SEARCH_INTERNAL_KNOWLEDGE in AGENT_TOOLS["VoiceRealtimeAgent"]
     assert set(build_voice_allowed_tools()).issubset(
         {tool_name.value for tool_name in AGENT_TOOLS["VoiceRealtimeAgent"]}

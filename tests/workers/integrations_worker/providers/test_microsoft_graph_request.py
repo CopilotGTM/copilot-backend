@@ -10,6 +10,7 @@ import httpx
 import pytest
 from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_post_json,
+    graph_api_post_no_content,
     graph_api_request,
 )
 
@@ -68,3 +69,50 @@ async def test_graph_api_post_json_supports_post_json_body_without_changing_get_
     assert captured["method"] == "POST"
     assert captured["path"] == "/v1.0/me/events"
     assert captured["body"] == '{"subject":"Discovery call"}'
+
+
+@pytest.mark.asyncio
+async def test_graph_api_post_no_content_accepts_empty_accepted_response() -> None:
+    """POST no-content helper should accept Graph 202 responses with no JSON body."""
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["body"] = request.read().decode()
+        return httpx.Response(202, content=b"")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await graph_api_post_no_content(
+            client,
+            "/v1.0/me/sendMail",
+            json_body={"message": {"subject": "Hello"}},
+        )
+
+    assert result is None
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1.0/me/sendMail"
+    assert captured["body"] == '{"message":{"subject":"Hello"}}'
+
+
+@pytest.mark.asyncio
+async def test_graph_api_post_no_content_does_not_retry_by_default() -> None:
+    """Non-idempotent no-content writes such as sendMail must not auto-retry."""
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, request=request, text="rate limited")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await graph_api_post_no_content(
+                client,
+                "/v1.0/me/sendMail",
+                json_body={"message": {"subject": "Hello"}},
+            )
+
+    assert attempts == 1

@@ -1,4 +1,4 @@
-"""Add calendar invite request audit table.
+"""Add shared integration activity request audit table.
 
 Revision ID: 3c7f79637747
 Revises: 3c7f79637748
@@ -19,15 +19,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Create the calendar invite request audit table and indexes.
+    """Create one audit table for provider-side activity writes.
 
-    This table is written before outbound provider calls, so operators always have
-    a persisted attempt row even when Graph returns an error mid-flight.
+    Calendar invites and outbound emails both use this table. Shared fields are
+    first-class columns; provider/tool-specific details live in JSON payload and
+    history so future activity types do not need a new table each time.
     """
-    # Build the write audit schema before any provider call can depend on it.
-    # Without this table, failed invites lose durable status and error context.
     op.create_table(
-        "calendar_invite_requests",
+        "integration_activity_requests",
         sa.Column(
             "request_id",
             sa.UUID(),
@@ -38,8 +37,9 @@ def upgrade() -> None:
         sa.Column("requested_by_user_id", sa.UUID(), nullable=False),
         sa.Column("integration_id", sa.UUID(), nullable=False),
         sa.Column("deal_id", sa.UUID(), nullable=True),
-        sa.Column("event_id", sa.UUID(), nullable=True),
-        sa.Column("provider_event_id", sa.String(length=255), nullable=True),
+        sa.Column("linked_record_type", sa.String(length=64), nullable=True),
+        sa.Column("linked_record_id", sa.UUID(), nullable=True),
+        sa.Column("activity_type", sa.String(length=64), nullable=False),
         sa.Column("idempotency_key", sa.String(length=128), nullable=False),
         sa.Column(
             "status",
@@ -47,21 +47,35 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'PENDING'"),
         ),
-        sa.Column("title", sa.String(length=500), nullable=False),
+        sa.Column("title", sa.String(length=998), nullable=False),
         sa.Column("body", sa.Text(), nullable=True),
         sa.Column("location", sa.String(length=500), nullable=True),
-        sa.Column("start_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("end_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("timezone", sa.String(length=128), nullable=False),
-        sa.Column("provider_timezone", sa.String(length=128), nullable=False),
+        sa.Column("start_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("end_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("timezone", sa.String(length=128), nullable=True),
+        sa.Column("provider_timezone", sa.String(length=128), nullable=True),
         sa.Column(
-            "attendees",
+            "participants",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
             server_default=sa.text("'[]'::jsonb"),
         ),
+        sa.Column("provider_resource_id", sa.String(length=255), nullable=True),
         sa.Column("conference_link", sa.Text(), nullable=True),
+        sa.Column(
+            "request_payload",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
+        ),
+        sa.Column("provider_status_code", sa.Integer(), nullable=True),
         sa.Column("provider_response", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "history",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default=sa.text("'[]'::jsonb"),
+        ),
         sa.Column("error_code", sa.String(length=128), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column(
@@ -76,80 +90,95 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.CheckConstraint("end_at > start_at", name="ck_calendar_invite_end_after_start"),
         sa.CheckConstraint(
             "status IN ('PENDING','SENDING','SENT','FAILED')",
-            name="ck_calendar_invite_status",
+            name="ck_integration_activity_request_status",
         ),
         sa.UniqueConstraint(
             "organisation_id",
             "requested_by_user_id",
+            "activity_type",
             "idempotency_key",
-            name="uq_calendar_invite_request_idempotency",
+            name="uq_integration_activity_request_idempotency",
         ),
         sa.ForeignKeyConstraint(["integration_id"], ["knowledge_integrations.integration_id"]),
         sa.ForeignKeyConstraint(["deal_id"], ["crm_deals.deal_id"]),
-        sa.ForeignKeyConstraint(["event_id"], ["calendar_events.event_id"]),
     )
 
     op.create_index(
-        "ix_calendar_invite_requests_organisation_id",
-        "calendar_invite_requests",
+        "ix_integration_activity_requests_organisation_id",
+        "integration_activity_requests",
         ["organisation_id"],
     )
     op.create_index(
-        "ix_calendar_invite_requests_requested_by_user_id",
-        "calendar_invite_requests",
+        "ix_integration_activity_requests_requested_by_user_id",
+        "integration_activity_requests",
         ["requested_by_user_id"],
     )
     op.create_index(
-        "ix_calendar_invite_requests_integration_id",
-        "calendar_invite_requests",
+        "ix_integration_activity_requests_integration_id",
+        "integration_activity_requests",
         ["integration_id"],
     )
     op.create_index(
-        "ix_calendar_invite_requests_deal_id",
-        "calendar_invite_requests",
+        "ix_integration_activity_requests_deal_id",
+        "integration_activity_requests",
         ["deal_id"],
     )
     op.create_index(
-        "ix_calendar_invite_requests_event_id",
-        "calendar_invite_requests",
-        ["event_id"],
+        "ix_integration_activity_requests_linked_record",
+        "integration_activity_requests",
+        ["linked_record_type", "linked_record_id"],
     )
     op.create_index(
-        "ix_calendar_invite_requests_provider_event_id",
-        "calendar_invite_requests",
-        ["provider_event_id"],
+        "ix_integration_activity_requests_provider_resource_id",
+        "integration_activity_requests",
+        ["provider_resource_id"],
     )
     op.create_index(
-        "ix_calendar_invite_org_status",
-        "calendar_invite_requests",
+        "ix_integration_activity_request_org_status",
+        "integration_activity_requests",
         ["organisation_id", "status"],
+    )
+    op.create_index(
+        "ix_integration_activity_request_type_status",
+        "integration_activity_requests",
+        ["activity_type", "status"],
     )
 
 
 def downgrade() -> None:
-    """Drop the calendar invite request table and indexes in reverse order."""
-    # Release supporting indexes first so PostgreSQL can drop table objects
-    # cleanly without transient dependency errors.
-    op.drop_index("ix_calendar_invite_org_status", table_name="calendar_invite_requests")
+    """Drop the shared provider activity request table."""
     op.drop_index(
-        "ix_calendar_invite_requests_provider_event_id",
-        table_name="calendar_invite_requests",
-    )
-    op.drop_index("ix_calendar_invite_requests_event_id", table_name="calendar_invite_requests")
-    op.drop_index("ix_calendar_invite_requests_deal_id", table_name="calendar_invite_requests")
-    op.drop_index(
-        "ix_calendar_invite_requests_integration_id",
-        table_name="calendar_invite_requests",
+        "ix_integration_activity_request_type_status",
+        table_name="integration_activity_requests",
     )
     op.drop_index(
-        "ix_calendar_invite_requests_requested_by_user_id",
-        table_name="calendar_invite_requests",
+        "ix_integration_activity_request_org_status",
+        table_name="integration_activity_requests",
     )
     op.drop_index(
-        "ix_calendar_invite_requests_organisation_id",
-        table_name="calendar_invite_requests",
+        "ix_integration_activity_requests_provider_resource_id",
+        table_name="integration_activity_requests",
     )
-    op.drop_table("calendar_invite_requests")
+    op.drop_index(
+        "ix_integration_activity_requests_linked_record",
+        table_name="integration_activity_requests",
+    )
+    op.drop_index(
+        "ix_integration_activity_requests_deal_id",
+        table_name="integration_activity_requests",
+    )
+    op.drop_index(
+        "ix_integration_activity_requests_integration_id",
+        table_name="integration_activity_requests",
+    )
+    op.drop_index(
+        "ix_integration_activity_requests_requested_by_user_id",
+        table_name="integration_activity_requests",
+    )
+    op.drop_index(
+        "ix_integration_activity_requests_organisation_id",
+        table_name="integration_activity_requests",
+    )
+    op.drop_table("integration_activity_requests")

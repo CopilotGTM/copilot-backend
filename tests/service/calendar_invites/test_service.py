@@ -7,8 +7,12 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from src.domain.models.organisation_tables.sync import CalendarInviteRequestStatus
-from src.service.calendar_invites.models import CalendarInviteAttendee, CalendarInviteCreateRequest
+from src.domain.models.organisation_tables.sync import IntegrationActivityRequestStatus
+from src.service.calendar_invites.models import (
+    CalendarInviteAttendee,
+    CalendarInviteCreateRequest,
+    CalendarInviteError,
+)
 from src.service.calendar_invites.service import CalendarInviteService, derive_idempotency_key
 
 
@@ -151,6 +155,20 @@ class _FakeWriter:
         self.calls.append("sync_attendees")
 
 
+def _invite_request(**overrides) -> CalendarInviteCreateRequest:
+    values = {
+        "organisation_id": UUID("11111111-1111-1111-1111-111111111111"),
+        "requested_by_user_id": UUID("22222222-2222-2222-2222-222222222222"),
+        "title": "Discovery call",
+        "start_at": datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
+        "end_at": datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
+        "timezone": "Asia/Kolkata",
+        "attendees": [CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
+    }
+    values.update(overrides)
+    return CalendarInviteCreateRequest(**values)
+
+
 @pytest.mark.asyncio
 async def test_create_invite_audits_graph_result_and_syncs_calendar_event() -> None:
     """Successful service flow should persist audit status and sync event state."""
@@ -190,9 +208,15 @@ async def test_create_invite_audits_graph_result_and_syncs_calendar_event() -> N
     )
 
     audit_row = session.added[0]
-    assert audit_row.status == CalendarInviteRequestStatus.SENT.value
-    assert audit_row.provider_event_id == "provider-event-1"
-    assert audit_row.event_id == UUID("44444444-4444-4444-4444-444444444444")
+    assert audit_row.status == IntegrationActivityRequestStatus.SENT.value
+    assert audit_row.activity_type == "send_calendar_invite"
+    assert audit_row.provider_resource_id == "provider-event-1"
+    assert audit_row.linked_record_type == "calendar_event"
+    assert audit_row.linked_record_id == UUID("44444444-4444-4444-4444-444444444444")
+    assert audit_row.participants == [
+        {"email": "buyer@example.com", "name": "Buyer", "optional": False}
+    ]
+    assert [entry["status"] for entry in audit_row.history] == ["PENDING", "SENDING", "SENT"]
     assert result.provider_event_id == "provider-event-1"
     assert writers[0].calls == ["upsert_event", "upsert_user_state", "sync_attendees"]
     assert session.committed == 2
@@ -239,33 +263,30 @@ async def test_create_invite_commits_audit_row_before_graph_call() -> None:
 
 def test_derive_idempotency_key_includes_selected_sender_email() -> None:
     """Same meeting details from different sender accounts should not collide."""
-    base_request = CalendarInviteCreateRequest(
-        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
-        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        title="Discovery call",
-        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
-        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
-        timezone="Asia/Kolkata",
-        attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
-        sender_email="seller@contoso.com",
-    )
+    base_request = _invite_request(sender_email="seller@contoso.com")
 
     other_sender_request = base_request.model_copy(update={"sender_email": "ae@contoso.com"})
 
     assert derive_idempotency_key(base_request) != derive_idempotency_key(other_sender_request)
 
 
+def test_derive_idempotency_key_includes_provider_payload_fields() -> None:
+    """Payload changes that affect provider event contents should not collide."""
+    base_request = _invite_request(body="Agenda", location="Zoom")
+    other_body = base_request.model_copy(update={"body": "Different agenda"})
+    other_location = base_request.model_copy(update={"location": "Teams"})
+    optional_attendee = base_request.model_copy(
+        update={"attendees": [CalendarInviteAttendee(email="buyer@example.com", optional=True)]}
+    )
+
+    assert derive_idempotency_key(base_request) != derive_idempotency_key(other_body)
+    assert derive_idempotency_key(base_request) != derive_idempotency_key(other_location)
+    assert derive_idempotency_key(base_request) != derive_idempotency_key(optional_attendee)
+
+
 def test_derive_idempotency_key_includes_resolved_integration_id() -> None:
     """Same invite details from different resolved integrations should not collide."""
-    request = CalendarInviteCreateRequest(
-        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
-        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        title="Discovery call",
-        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
-        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
-        timezone="Asia/Kolkata",
-        attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
-    )
+    request = _invite_request()
 
     assert derive_idempotency_key(
         request,
@@ -279,22 +300,23 @@ def test_derive_idempotency_key_includes_resolved_integration_id() -> None:
 @pytest.mark.asyncio
 async def test_create_invite_does_not_reuse_existing_sent_row_before_sender_resolution() -> None:
     """Idempotency replay must be scoped to the resolved sender integration."""
+    request = _invite_request()
+    attendees = [attendee.model_dump() for attendee in request.attendees]
     existing_row = SimpleNamespace(
-        status=CalendarInviteRequestStatus.SENT,
+        status=IntegrationActivityRequestStatus.SENT.value,
         request_id=UUID("55555555-5555-5555-5555-555555555555"),
-        event_id=UUID("66666666-6666-6666-6666-666666666666"),
-        provider_event_id="old-provider-event",
-        title="Discovery call",
+        linked_record_type="calendar_event",
+        linked_record_id=UUID("66666666-6666-6666-6666-666666666666"),
+        provider_resource_id="old-provider-event",
+        title=request.title,
+        body=request.body,
+        location=request.location,
+        start_at=request.start_at,
+        end_at=request.end_at,
+        timezone=request.timezone,
+        participants=attendees,
+        request_payload={"sender_email": request.sender_email, "attendees": attendees},
         conference_link="https://old.example.com",
-    )
-    request = CalendarInviteCreateRequest(
-        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
-        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        title="Discovery call",
-        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
-        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
-        timezone="Asia/Kolkata",
-        attendees=[CalendarInviteAttendee(email="buyer@example.com", name="Buyer")],
     )
     old_unscoped_key = derive_idempotency_key(request)
     session = _ExistingSentSession(existing_row, existing_key=old_unscoped_key)
@@ -313,6 +335,87 @@ async def test_create_invite_does_not_reuse_existing_sent_row_before_sender_reso
 
     assert result.provider_event_id == "provider-event-1"
     assert graph_client.requests
+
+
+@pytest.mark.asyncio
+async def test_create_invite_blocks_failed_replay_without_duplicate_insert() -> None:
+    """Existing failed audit rows should not fall through to duplicate inserts."""
+    request = _invite_request(
+        sender_email="seller@contoso.com",
+        idempotency_key="invite-123",
+    )
+    attendees = [attendee.model_dump() for attendee in request.attendees]
+    existing_row = SimpleNamespace(
+        status=IntegrationActivityRequestStatus.FAILED.value,
+        request_id=UUID("55555555-5555-5555-5555-555555555555"),
+        linked_record_type=None,
+        linked_record_id=None,
+        provider_resource_id=None,
+        title=request.title,
+        body=request.body,
+        location=request.location,
+        start_at=request.start_at,
+        end_at=request.end_at,
+        timezone=request.timezone,
+        participants=attendees,
+        request_payload={"sender_email": request.sender_email, "attendees": attendees},
+        conference_link=None,
+    )
+    session = _ExistingSentSession(existing_row, existing_key="invite-123")
+    graph_client = _FakeGraphClient()
+    service = CalendarInviteService(
+        session,
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        integration_resolver=_FakeResolver(),
+        graph_client=graph_client,
+        writer_factory=_FakeWriter,
+    )
+
+    with pytest.raises(CalendarInviteError) as exc_info:
+        await service.create_invite(request)
+
+    assert exc_info.value.code == "calendar_invite_replay_blocked"
+    assert session.added == []
+    assert graph_client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_create_invite_rejects_reused_idempotency_key_for_different_payload() -> None:
+    """Explicit idempotency keys must not alias a different invite request."""
+    request = _invite_request(sender_email="seller@contoso.com", idempotency_key="invite-123")
+    attendees = [attendee.model_dump() for attendee in request.attendees]
+    existing_row = SimpleNamespace(
+        status=IntegrationActivityRequestStatus.SENT.value,
+        request_id=UUID("55555555-5555-5555-5555-555555555555"),
+        linked_record_type="calendar_event",
+        linked_record_id=UUID("66666666-6666-6666-6666-666666666666"),
+        provider_resource_id="provider-event-1",
+        title="Different title",
+        body=request.body,
+        location=request.location,
+        start_at=request.start_at,
+        end_at=request.end_at,
+        timezone=request.timezone,
+        participants=attendees,
+        request_payload={"sender_email": request.sender_email, "attendees": attendees},
+        conference_link=None,
+    )
+    graph_client = _FakeGraphClient()
+    service = CalendarInviteService(
+        _ExistingSentSession(existing_row, existing_key="invite-123"),
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        integration_resolver=_FakeResolver(),
+        graph_client=graph_client,
+        writer_factory=_FakeWriter,
+    )
+
+    with pytest.raises(CalendarInviteError) as exc_info:
+        await service.create_invite(request)
+
+    assert exc_info.value.code == "calendar_invite_idempotency_conflict"
+    assert graph_client.requests == []
 
 
 @pytest.mark.asyncio
@@ -381,8 +484,8 @@ async def test_create_invite_syncs_google_calendar_event_response() -> None:
     )
 
     audit_row = session.added[0]
-    assert audit_row.status == CalendarInviteRequestStatus.SENT.value
-    assert audit_row.provider_event_id == "google-event-1"
+    assert audit_row.status == IntegrationActivityRequestStatus.SENT.value
+    assert audit_row.provider_resource_id == "google-event-1"
     assert audit_row.conference_link == "https://meet.google.com/abc-defg-hij"
     assert result.provider_event_id == "google-event-1"
     assert result.conference_link == "https://meet.google.com/abc-defg-hij"

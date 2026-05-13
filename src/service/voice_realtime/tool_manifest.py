@@ -152,6 +152,23 @@ def _build_get_email_details_factory(context: AgentContext) -> Callable[[], Call
     return partial(create_get_email_details, context, _build_empty_capabilities)
 
 
+def _build_send_email_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.communication.send_email import create_send_email
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_send_email, voice_context, _build_empty_capabilities)
+
+
 def _build_add_deal_note_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.context import AgentContext
     from src.agents.tools.crm.add_deal_note import create_add_deal_note
@@ -758,6 +775,28 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "additionalProperties": False,
         },
         factory_builder=_build_get_email_details_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.SEND_EMAIL,
+        description=(
+            "Send a new Outlook email when explicit recipient emails, subject, and body are known."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "to": {"type": "array", "items": {"type": "string"}},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "cc": {"type": "array", "items": {"type": "string"}},
+                "bcc": {"type": "array", "items": {"type": "string"}},
+                "deal_id": {"type": "string"},
+                "sender_email": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["to", "subject", "body"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_send_email_factory,
     ),
 )
 
