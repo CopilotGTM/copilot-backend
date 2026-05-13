@@ -68,6 +68,12 @@ resource "azuread_application" "copilotgtm" {
       type = "Scope"
     }
 
+    # Mail.Send — Send mail as the signed-in user
+    resource_access {
+      id   = "e383f46e-2787-4529-855e-0e479a3ffac0"
+      type = "Scope"
+    }
+
     # offline_access — Maintain access (refresh tokens)
     resource_access {
       id   = "7427e0e9-2fba-42fe-b0c0-848c9e6a8182"
