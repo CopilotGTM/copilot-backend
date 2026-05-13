@@ -229,6 +229,21 @@ class MeetingRecordingSessionService:
             return await self._get_by_provider_session_id(session, provider_session_id)
         return None
 
+    async def get_by_event(
+        self,
+        calendar_event_id: UUID,
+        provider: MeetingRecordingProvider = MeetingRecordingProvider.RECALL_AI,
+    ) -> MeetingRecordingSession | None:
+        """Resolve an existing session without creating a new send intent.
+
+        Dispatch uses this for already-started meetings: a late manual request
+        should report an active existing bot when one exists, but must not create
+        a fresh pending session for a call that is already underway.
+        """
+        async for session in acquire_org_async_session(self.organisation_id):
+            return await self._get_by_event(session, calendar_event_id, provider)
+        return None
+
     async def apply_webhook_update(
         self,
         provider_session_id: str,
