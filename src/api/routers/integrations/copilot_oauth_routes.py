@@ -44,6 +44,19 @@ async def get_copilot_callback_service() -> CopilotCallbackService:
     return copilot_callback_service
 
 
+async def _extract_attempt_id_from_state(
+    state: str,
+    oauth_service: CopilotOAuthService,
+) -> str | None:
+    try:
+        state_data = await oauth_service.decode_oauth_state_allow_expired(state)
+    except Exception:
+        return None
+
+    jti = state_data.get("jti")
+    return str(jti) if jti else None
+
+
 def _build_popup_completion_redirect(
     payload: dict[str, str],
     *,
@@ -77,13 +90,13 @@ async def initiate_custom_oauth_flow(
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     try:
-        auth_url = await oauth_service.initiate_oauth_flow(
+        result = await oauth_service.initiate_oauth_flow(
             user_ids=user_ids,
             integration_type=request.integration_type,
         )
         return Response.success_response(
             message="Authorization URL generated successfully.",
-            data={"auth_url": auth_url},
+            data={"auth_url": result.auth_url, "attempt_id": result.attempt_id},
         )
     except CopilotOAuthIntegrationUnavailableError as unavailable:
         logger.warning(
@@ -120,6 +133,7 @@ async def handle_oauth_callback(
     code: str,
     state: str,
     callback_service: CopilotCallbackService = Depends(get_copilot_callback_service),
+    oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
 ) -> RedirectResponse:
     """Handle the provider's OAuth redirect — unauthenticated, trust comes from the signed JWT state."""
     try:
@@ -130,25 +144,34 @@ async def handle_oauth_callback(
                 "message": "OAuth callback processed successfully",
                 "integration_id": str(result["integration_id"]),
                 "integration_type": str(result["integration_type"]),
+                "attempt_id": str(result["connection_id"]),
             },
             status_code=303,
         )
     except ValueError as e:
         logger.warning("Rejected custom OAuth callback: %s", str(e))
+        payload = {
+            "success": "false",
+            "message": str(e),
+        }
+        attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
+        if attempt_id:
+            payload["attempt_id"] = attempt_id
         return _build_popup_completion_redirect(
-            {
-                "success": "false",
-                "message": str(e),
-            },
+            payload,
             status_code=303,
         )
     except Exception as e:
         logger.error("Failed to process custom OAuth callback: %s", e, exc_info=True)
+        payload = {
+            "success": "false",
+            "message": IntegrationErrors.OAUTH_CALLBACK_FAILED,
+        }
+        attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
+        if attempt_id:
+            payload["attempt_id"] = attempt_id
         return _build_popup_completion_redirect(
-            {
-                "success": "false",
-                "message": IntegrationErrors.OAUTH_CALLBACK_FAILED,
-            },
+            payload,
             status_code=303,
         )
 

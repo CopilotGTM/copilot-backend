@@ -40,6 +40,25 @@ def _session_generator(sessions: list[AsyncMock]):
     return _gen
 
 
+def _async_session_generator(sessions: list[AsyncMock]):
+    async def _gen():
+        yield sessions.pop(0)
+
+    return _gen()
+
+
+@pytest.fixture(autouse=True)
+def _mock_callback_connection_guard() -> None:
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_master_async_session",
+            side_effect=lambda: _async_session_generator([_make_session(FakeResult(scalar=None))]),
+        ),
+        patch.object(CopilotCallbackService, "_acquire_callback_processing_lock", AsyncMock()),
+    ):
+        yield
+
+
 def _make_session(*results: FakeResult) -> AsyncMock:
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=list(results))

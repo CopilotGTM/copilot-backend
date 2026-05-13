@@ -72,9 +72,13 @@ async def test_initiate_oauth_flow_allows_beta_integration() -> None:
             user_ids=_make_user_ids(),
             integration_type=IntegrationType.GOOGLE_CALENDAR,
         )
+        state_token = fake_provider.get_authorization_url.await_args.args[0]
+        decoded = await CopilotOAuthService.decode_oauth_state(state_token)
 
-    assert result == "https://example.com/oauth"
+    assert result.auth_url == "https://example.com/oauth"
+    assert result.attempt_id
     fake_provider.get_authorization_url.assert_awaited_once()
+    assert decoded["jti"] == result.attempt_id
 
 
 @pytest.mark.asyncio
