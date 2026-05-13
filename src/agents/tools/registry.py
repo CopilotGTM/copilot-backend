@@ -86,6 +86,8 @@ class ToolName(str, Enum):
     # MEETING TOOLS - For meeting details, transcripts, summaries
     # Used by: Chat Agent, Meeting Summary Agent, Briefing Agent
     # -------------------------------------------------------------------------
+    LIST_MEETINGS = "list_meetings"  # List current user's calendar meetings
+    SEND_MEETING_BOT_INVITE = "send_meeting_bot_invite"  # Send recording bot to a meeting
     LIST_DEAL_MEETINGS = "list_deal_meetings"  # List meetings for a specific deal
     LIST_MEETINGS_BY_DATE = "list_meetings_by_date"  # List meetings across all deals by date
     GET_MEETING_DETAILS = "get_meeting_details"  # Full meeting info
@@ -203,6 +205,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.LIST_REMINDERS: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_CALENDAR_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.SEND_MEETING_BOT_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
 }
 
 
@@ -232,8 +235,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.GET_STAKEHOLDER_DETAILS,
     ToolName.GET_EXISTING_RISKS_BLOCKERS,
     # Meeting tools
-    ToolName.LIST_DEAL_MEETINGS,
-    ToolName.LIST_MEETINGS_BY_DATE,
+    ToolName.LIST_MEETINGS,
+    ToolName.SEND_MEETING_BOT_INVITE,
     ToolName.GET_MEETING_DETAILS,
     ToolName.GET_MEETING_SUMMARY,
     ToolName.GET_MEETING_TRANSCRIPT,
@@ -529,6 +532,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.RESOLVE_RISK_BLOCKER: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
     # Meeting Intelligence
+    ToolName.LIST_MEETINGS: ToolCategory.INTELLIGENCE,
+    ToolName.SEND_MEETING_BOT_INVITE: ToolCategory.INTELLIGENCE,
     ToolName.LIST_DEAL_MEETINGS: ToolCategory.INTELLIGENCE,
     ToolName.LIST_MEETINGS_BY_DATE: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DETAILS: ToolCategory.INTELLIGENCE,
@@ -653,7 +658,9 @@ class ToolRegistry:
             create_get_meeting_summary,
             create_get_meeting_transcript,
             create_list_deal_meetings,
+            create_list_meetings,
             create_list_meetings_by_date,
+            create_send_meeting_bot_invite,
         )
         from src.agents.tools.reminders import (
             create_cancel_reminder,
@@ -780,6 +787,12 @@ class ToolRegistry:
         )
 
         # Meeting Intelligence tools
+        self._tool_factories[ToolName.LIST_MEETINGS] = lambda: create_list_meetings(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEND_MEETING_BOT_INVITE] = (
+            lambda: create_send_meeting_bot_invite(self.context, self.capabilities_getter)
+        )
         self._tool_factories[ToolName.LIST_DEAL_MEETINGS] = lambda: create_list_deal_meetings(
             self.context, self.capabilities_getter
         )

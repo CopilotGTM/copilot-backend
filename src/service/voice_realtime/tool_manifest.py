@@ -90,6 +90,22 @@ def _build_search_accounts_factory(context: AgentContext) -> Callable[[], Callab
     return partial(create_search_accounts, context, _build_empty_capabilities)
 
 
+def _build_list_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.tools.intelligence.list_meetings_unified import create_list_meetings
+
+    return partial(create_list_meetings, context, _build_empty_capabilities)
+
+
+def _build_send_meeting_bot_invite_factory(
+    context: AgentContext,
+) -> Callable[[], Callable[..., Any]]:
+    from src.agents.tools.intelligence.send_meeting_bot_invite import (
+        create_send_meeting_bot_invite,
+    )
+
+    return partial(create_send_meeting_bot_invite, context, _build_empty_capabilities)
+
+
 def _build_list_deal_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.intelligence.list_meetings import create_list_deal_meetings
 
@@ -632,42 +648,38 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_search_accounts_factory,
     ),
     VoiceRealtimeToolDefinition(
-        tool_name=ToolName.LIST_DEAL_MEETINGS,
-        description="List meetings associated with a deal.",
+        tool_name=ToolName.LIST_MEETINGS,
+        description="List meetings from the current user's connected calendar.",
         parameters={
             "type": "object",
             "properties": {
-                "deal_id": {"type": "string"},
+                "start_datetime": {"type": "string"},
+                "end_datetime": {"type": "string"},
                 "limit": {"type": "integer"},
-                "include_past": {"type": "boolean"},
-                "include_upcoming": {"type": "boolean"},
+                "deal_id": {"type": "string"},
                 "attendee_email": {"type": "string"},
                 "attendee_name": {"type": "string"},
+                "has_transcript": {"type": "boolean"},
+                "has_summary": {"type": "boolean"},
             },
             "required": [],
             "additionalProperties": False,
         },
-        factory_builder=_build_list_deal_meetings_factory,
+        factory_builder=_build_list_meetings_factory,
     ),
     VoiceRealtimeToolDefinition(
-        tool_name=ToolName.LIST_MEETINGS_BY_DATE,
-        description="List meetings by date range or relative window.",
+        tool_name=ToolName.SEND_MEETING_BOT_INVITE,
+        description="Send a recording bot to a user-owned calendar meeting.",
         parameters={
             "type": "object",
             "properties": {
-                "filter_type": {"type": "string"},
-                "days": {"type": "integer"},
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"},
-                "deal_id": {"type": "string"},
-                "has_transcript": {"type": "boolean"},
-                "has_summary": {"type": "boolean"},
-                "attendee_email": {"type": "string"},
+                "event_id": {"type": "string"},
+                "confirmed": {"type": "boolean"},
             },
             "required": [],
             "additionalProperties": False,
         },
-        factory_builder=_build_list_meetings_by_date_factory,
+        factory_builder=_build_send_meeting_bot_invite_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.GET_MEETING_DETAILS,

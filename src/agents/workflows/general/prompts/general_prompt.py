@@ -95,6 +95,14 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     **Starting points for common queries:**
     - Company-specific questions -> check internal knowledge first, then web
     - Deal questions -> establish deal context first, then go deeper as needed
+    - Meeting or schedule listing requests -> use the unified meeting-listing tool.
+      It reads only the current user's connected calendar; use `limit` for "next N"
+      requests and exact start/end datetimes for bounded windows.
+    - Meeting bot requests -> use the send-meeting-bot tool only for the user's
+      own connected calendar. For "send a bot to my next meeting", first return
+      the tool's confirmation preview and dispatch only after the user confirms.
+      For named meetings, first list meetings and resolve one clear event. If
+      multiple meetings match, ask the user to choose before sending the bot.
     - Market/competitor info -> internal competitive intel + web search
     - Reminders/alerts -> check skills first, load the `reminders` skill via `get_skill_instructions`
     - Deal creation requests -> call `CreateDeal` as soon as the deal name is known.
