@@ -20,8 +20,16 @@ if TYPE_CHECKING:
     from src.agents.tools.intelligence.get_meeting_transcript import create_get_meeting_transcript
     from src.agents.tools.intelligence.list_meetings import create_list_deal_meetings
     from src.agents.tools.intelligence.list_meetings_by_date import create_list_meetings_by_date
+    from src.agents.tools.intelligence.list_meetings_unified import create_list_meetings
+    from src.agents.tools.intelligence.send_meeting_bot_invite import (
+        create_send_meeting_bot_invite,
+    )
 
 _EXPORTS = {
+    "create_list_meetings": (
+        "src.agents.tools.intelligence.list_meetings_unified",
+        "create_list_meetings",
+    ),
     "create_list_deal_meetings": (
         "src.agents.tools.intelligence.list_meetings",
         "create_list_deal_meetings",
@@ -49,6 +57,10 @@ _EXPORTS = {
     "create_list_meetings_by_date": (
         "src.agents.tools.intelligence.list_meetings_by_date",
         "create_list_meetings_by_date",
+    ),
+    "create_send_meeting_bot_invite": (
+        "src.agents.tools.intelligence.send_meeting_bot_invite",
+        "create_send_meeting_bot_invite",
     ),
 }
 
