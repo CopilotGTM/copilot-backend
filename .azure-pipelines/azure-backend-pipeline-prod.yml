@@ -115,7 +115,7 @@ stages:
   - stage: QualityCheck
     displayName: Code Quality & Tests
     dependsOn: CheckChanges
-    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: succeeded()
     jobs:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
@@ -203,7 +203,7 @@ stages:
     dependsOn:
       - CheckChanges
       - QualityCheck
-    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: succeeded()
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
@@ -587,7 +587,7 @@ stages:
     dependsOn:
       - CheckChanges
       - BuildAndPush
-    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     variables:
       - name: KUBECONFIG_FILE
         value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
