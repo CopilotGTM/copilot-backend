@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from src.domain.models.organisation_tables.sync import IntegrationActivityRequestStatus
+from src.domain.models.organisation_tables.sync import (
+    IntegrationActivityRequestStatus,
+    IntegrationType,
+)
 from src.service.email_sends.models import EmailSendAddress, EmailSendCreateRequest, EmailSendError
 from src.service.email_sends.service import EmailSendService, derive_email_idempotency_key
 
@@ -51,25 +54,46 @@ class _FakeSession:
 
 
 class _FakeResolver:
+    def __init__(self, integration_type=IntegrationType.OUTLOOK_EMAIL) -> None:
+        self.integration_type = integration_type
+
     async def resolve(self, session, organisation_id, requested_by_user_id, *, sender_email=None):
         return SimpleNamespace(
             integration=SimpleNamespace(
                 integration_id=UUID("33333333-3333-3333-3333-333333333333"),
                 integration_email=sender_email or "seller@contoso.com",
+                integration_type=self.integration_type,
             ),
             token_info=SimpleNamespace(access_token="token"),
         )
 
 
-class _FakeGraphClient:
-    def __init__(self, session: _FakeSession | None = None) -> None:
+class _FakeEmailClient:
+    def __init__(
+        self,
+        session: _FakeSession | None = None,
+        *,
+        provider_status_code: int = 202,
+        provider_resource_id: str | None = None,
+    ) -> None:
         self.requests: list[EmailSendCreateRequest] = []
         self.session = session
+        self.provider_status_code = provider_status_code
+        self.provider_resource_id = provider_resource_id
 
-    async def send_mail(self, token_info, request: EmailSendCreateRequest) -> None:
+    async def send_mail(self, token_info, request: EmailSendCreateRequest):
         if self.session is not None:
             assert self.session.committed == 1
         self.requests.append(request)
+        return SimpleNamespace(
+            provider_status_code=self.provider_status_code,
+            provider_resource_id=self.provider_resource_id,
+        )
+
+
+class _FakeGraphClient(_FakeEmailClient):
+    def __init__(self, session: _FakeSession | None = None) -> None:
+        super().__init__(session, provider_status_code=202)
 
 
 def _request(**overrides) -> EmailSendCreateRequest:
@@ -131,6 +155,33 @@ async def test_send_email_audits_sending_before_graph_and_marks_sent_after_202()
     assert result.provider_resource_id is None
     assert session.committed == 2
     assert graph_client.requests[0].idempotency_key == "email-123"
+
+
+@pytest.mark.asyncio
+async def test_send_email_uses_gmail_client_and_marks_sent_after_200() -> None:
+    session = _FakeSession()
+    gmail_client = _FakeEmailClient(
+        session,
+        provider_status_code=200,
+        provider_resource_id="gmail-message-1",
+    )
+    service = EmailSendService(
+        session,
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        integration_resolver=_FakeResolver(IntegrationType.GMAIL),
+        provider_clients={IntegrationType.GMAIL: gmail_client},
+    )
+
+    result = await service.send_email(_request(sender_email="seller@gmail.com"))
+
+    audit_row = session.added[0]
+    assert audit_row.status == IntegrationActivityRequestStatus.SENT.value
+    assert audit_row.provider_status_code == 200
+    assert audit_row.provider_resource_id == "gmail-message-1"
+    assert result.provider_status_code == 200
+    assert result.provider_resource_id == "gmail-message-1"
+    assert gmail_client.requests[0].sender_email == "seller@gmail.com"
 
 
 @pytest.mark.asyncio

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
-from src.agents.tools.communication.send_email import send_email
+from src.agents.tools.communication.send_email import create_send_email, send_email
 from src.service.email_sends.models import EmailSendCreateResult
 
 
@@ -22,6 +23,49 @@ class _FakeContext:
     @asynccontextmanager
     async def acquire_session(self):
         yield MagicMock()
+
+
+class _UserResult:
+    def __init__(self, users: list[SimpleNamespace]) -> None:
+        self._users = users
+
+    def scalars(self) -> _UserResult:
+        return self
+
+    def first(self) -> SimpleNamespace | None:
+        return self._users[0] if self._users else None
+
+    def all(self) -> list[SimpleNamespace]:
+        return self._users
+
+
+class _UserSession:
+    def __init__(self, users: list[SimpleNamespace]) -> None:
+        self.users = users
+
+    async def execute(self, stmt: object) -> _UserResult:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+        if "@" in compiled:
+            return _UserResult([user for user in self.users if user.email.lower() in compiled])
+        if "concat" not in compiled:
+            return _UserResult([])
+        return _UserResult(self.users)
+
+
+def _user_scope(users: list[SimpleNamespace]):
+    async def scope():
+        yield _UserSession(users)
+
+    return scope()
+
+
+def _user(first_name: str, last_name: str, email: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+    )
 
 
 @pytest.mark.asyncio
@@ -93,6 +137,82 @@ async def test_send_email_requires_exact_recipient_email_for_names() -> None:
 
     assert result["status"] == "needs_clarification"
     assert result["code"] == "email_send_recipient_email_required"
+
+
+@pytest.mark.asyncio
+async def test_send_email_resolves_internal_user_name_and_requires_confirmation(
+    monkeypatch,
+) -> None:
+    service = MagicMock()
+    monkeypatch.setattr("src.agents.tools.communication.send_email.EmailSendService", service)
+    monkeypatch.setattr(
+        "src.infra.database.sessions.acquire_master_async_session",
+        lambda: _user_scope([_user("Nikhil", "Singhal", "nikhil@copilotgtm.com")]),
+    )
+
+    result = await send_email(
+        context=_FakeContext(
+            organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        ),
+        to=["Nikhil Singhal"],
+        subject="Follow-up",
+        body="Thanks.",
+        sender_email="seller@contoso.com",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert "recipient_resolved_from_name" in result["confirmation_reasons"]
+    assert result["confirmation_payload"]["to"] == [
+        {"email": "nikhil@copilotgtm.com", "name": "Nikhil Singhal"}
+    ]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_email_sends_after_confirming_resolved_internal_user_name(
+    monkeypatch,
+) -> None:
+    created_requests = []
+
+    class FakeService:
+        def __init__(self, session, *, organisation_id, requested_by_user_id):
+            pass
+
+        async def send_email(self, request):
+            created_requests.append(request)
+            return EmailSendCreateResult(
+                request_id=UUID("33333333-3333-3333-3333-333333333333"),
+                status="sent",
+                subject=request.subject,
+                provider_status_code=202,
+            )
+
+    monkeypatch.setattr("src.agents.tools.communication.send_email.EmailSendService", FakeService)
+    monkeypatch.setattr(
+        "src.infra.database.sessions.acquire_master_async_session",
+        lambda: _user_scope([_user("Nikhil", "Singhal", "nikhil@copilotgtm.com")]),
+    )
+
+    result = await send_email(
+        context=_FakeContext(
+            organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        ),
+        to=["Nikhil Singhal"],
+        cc=["buyer@example.com"],
+        bcc=["Nikhil Singhal"],
+        subject="Follow-up",
+        body="Thanks.",
+        sender_email="seller@contoso.com",
+        confirmed=True,
+    )
+
+    assert result["status"] == "sent"
+    assert created_requests[0].to[0].email == "nikhil@copilotgtm.com"
+    assert created_requests[0].to[0].name == "Nikhil Singhal"
+    assert created_requests[0].cc[0].email == "buyer@example.com"
+    assert created_requests[0].bcc[0].email == "nikhil@copilotgtm.com"
 
 
 @pytest.mark.asyncio
@@ -190,3 +310,16 @@ async def test_send_email_calls_service_for_confirmed_explicit_email(monkeypatch
     assert result["provider_status_code"] == 202
     assert created_requests[0].to[0].email == "buyer@example.com"
     assert created_requests[0].sender_email == "seller@contoso.com"
+
+
+def test_send_email_tool_description_allows_gmail_and_outlook() -> None:
+    tool = create_send_email(
+        _FakeContext(
+            organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        ),
+        lambda: None,
+    )
+
+    assert "Gmail or Outlook" in (tool.__doc__ or "")
+    assert "not replies" in (tool.__doc__ or "")

@@ -1,4 +1,4 @@
-"""DTOs and errors for direct Outlook email sending."""
+"""DTOs and errors for direct mailbox email sending."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class EmailSendAddress(BaseModel):
 
 
 class EmailSendCreateRequest(BaseModel):
-    """Service-facing request contract for creating a new Outlook email."""
+    """Service-facing request contract for creating a new email."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -74,7 +74,7 @@ class EmailSendCreateRequest(BaseModel):
 
 
 class EmailSendCreateResult(BaseModel):
-    """Result returned after a new email send request is accepted by Graph."""
+    """Result returned after a new email send request is accepted by the provider."""
 
     request_id: UUID | None = None
     status: str
@@ -82,4 +82,11 @@ class EmailSendCreateResult(BaseModel):
     provider_status_code: int | None = None
     linked_record_type: str | None = None
     linked_record_id: UUID | None = None
+    provider_resource_id: str | None = None
+
+
+class EmailSendProviderResult(BaseModel):
+    """Provider response details that should be persisted on the audit row."""
+
+    provider_status_code: int
     provider_resource_id: str | None = None

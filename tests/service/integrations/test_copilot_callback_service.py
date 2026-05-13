@@ -10,7 +10,8 @@ def test_validate_required_scopes_allows_granted_gmail_scope() -> None:
         IntegrationType.GMAIL,
         {
             "scope": "https://www.googleapis.com/auth/userinfo.email "
-            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.readonly "
+            "https://www.googleapis.com/auth/gmail.send",
             "refresh_token": "refresh-token",
         },
     )
@@ -75,7 +76,7 @@ def test_validate_required_scopes_accepts_microsoft_without_offline_scope_echo()
     CopilotCallbackService()._validate_required_scopes(
         IntegrationType.OUTLOOK_EMAIL,
         {
-            "scope": "User.Read Mail.Read",
+            "scope": "User.Read Mail.Read Mail.Send",
             "refresh_token": "refresh-token",
         },
     )
@@ -86,7 +87,7 @@ def test_validate_required_scopes_rejects_microsoft_without_refresh_token() -> N
         CopilotCallbackService()._validate_required_scopes(
             IntegrationType.OUTLOOK_EMAIL,
             {
-                "scope": "User.Read Mail.Read",
+                "scope": "User.Read Mail.Read Mail.Send",
             },
         )
 
@@ -96,7 +97,8 @@ def test_validate_required_scopes_accepts_google_without_offline_scope_echo() ->
         IntegrationType.GMAIL,
         {
             "scope": "https://www.googleapis.com/auth/userinfo.email "
-            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.readonly "
+            "https://www.googleapis.com/auth/gmail.send",
             "refresh_token": "refresh-token",
         },
     )

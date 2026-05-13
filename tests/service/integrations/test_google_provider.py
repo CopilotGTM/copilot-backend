@@ -7,13 +7,14 @@ from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.service.integrations.providers.google_provider import GoogleProvider
 
 
-def test_google_provider_gmail_scopes_are_read_only() -> None:
+def test_google_provider_gmail_scopes_include_send() -> None:
     provider = GoogleProvider(IntegrationType.GMAIL)
 
     assert provider._get_scopes() == [
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
     ]
 
 

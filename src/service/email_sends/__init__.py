@@ -1,1 +1,1 @@
-"""Service package for user-owned Outlook email sends."""
+"""Service package for user-owned mailbox email sends."""

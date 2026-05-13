@@ -15,6 +15,7 @@ from src.infra.config.google_integration_scopes import (
     GOOGLE_SCOPE_CALENDAR_EVENTS,
     GOOGLE_SCOPE_CALENDAR_READONLY,
     GOOGLE_SCOPE_GMAIL_READONLY,
+    GOOGLE_SCOPE_GMAIL_SEND,
     GOOGLE_SCOPE_MEETINGS_SPACE_READONLY,
     get_google_required_granted_scopes,
 )
@@ -102,6 +103,14 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             "https://mail.google.com/",
         }
     ),
+    GOOGLE_SCOPE_GMAIL_SEND: frozenset(
+        {
+            GOOGLE_SCOPE_GMAIL_SEND,
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://mail.google.com/",
+        }
+    ),
     GOOGLE_SCOPE_CALENDAR_READONLY: frozenset(
         {
             GOOGLE_SCOPE_CALENDAR_READONLY,
@@ -140,6 +149,7 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     GOOGLE_SCOPE_GMAIL_READONLY: "Gmail access",
+    GOOGLE_SCOPE_GMAIL_SEND: "Gmail send access",
     GOOGLE_SCOPE_CALENDAR_READONLY: "Google Calendar access",
     GOOGLE_SCOPE_CALENDAR_EVENTS: "Google Calendar invite access",
     GOOGLE_SCOPE_MEETINGS_SPACE_READONLY: "Google Meet access",
