@@ -71,6 +71,8 @@ async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch)
             """Record request and return a synthetic successful invite result."""
             created_requests.append(request)
             return CalendarInviteCreateResult(
+                request_id=UUID("33333333-3333-3333-3333-333333333333"),
+                event_id=UUID("44444444-4444-4444-4444-444444444444"),
                 provider_event_id="provider-event-1",
                 subject=request.title,
                 conference_link="https://teams.microsoft.com/l/meetup-join/abc",
@@ -91,7 +93,14 @@ async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch)
     )
 
     assert result["status"] == "sent"
+    assert result["request_id"] == "33333333-3333-3333-3333-333333333333"
+    assert result["activity_request_id"] == "33333333-3333-3333-3333-333333333333"
+    assert result["activity_type"] == "send_calendar_invite"
+    assert result["linked_record_type"] == "calendar_event"
+    assert result["linked_record_id"] == "44444444-4444-4444-4444-444444444444"
+    assert result["provider_resource_id"] == "provider-event-1"
     assert result["provider_event_id"] == "provider-event-1"
+    assert result["event_id"] == "44444444-4444-4444-4444-444444444444"
     assert created_requests[0].timezone == "Asia/Kolkata"
     assert created_requests[0].attendees[0].email == "buyer@example.com"
     assert created_requests[0].sender_email == "seller@contoso.com"

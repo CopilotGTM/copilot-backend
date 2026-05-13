@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         create_list_deal_channel_messages,
     )
     from src.agents.tools.communication.list_emails import create_list_deal_emails
+    from src.agents.tools.communication.send_email import create_send_email
 
 _EXPORTS = {
     "create_read_chat_attachment": (
@@ -53,6 +54,10 @@ _EXPORTS = {
     "create_create_visualization_card": (
         "src.agents.tools.communication.create_visualization_card",
         "create_create_visualization_card",
+    ),
+    "create_send_email": (
+        "src.agents.tools.communication.send_email",
+        "create_send_email",
     ),
 }
 

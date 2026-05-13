@@ -204,6 +204,12 @@ async def send_calendar_invite(
     return {
         "status": "sent",
         "message": "Calendar invite sent.",
+        "request_id": str(result.request_id) if result.request_id else None,
+        "activity_request_id": str(result.request_id) if result.request_id else None,
+        "activity_type": "send_calendar_invite",
+        "linked_record_type": "calendar_event" if result.event_id else None,
+        "linked_record_id": str(result.event_id) if result.event_id else None,
+        "provider_resource_id": result.provider_event_id,
         "provider_event_id": result.provider_event_id,
         "event_id": str(result.event_id) if result.event_id else None,
         "conference_link": result.conference_link,

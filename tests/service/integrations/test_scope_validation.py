@@ -151,14 +151,30 @@ def test_get_missing_required_scopes_accepts_salesforce_offline_access_alias() -
     )
 
 
-def test_microsoft_outlook_email_missing_scope_detection_matches_mail_only_flow() -> None:
-    """Outlook Mail integration requires Mail.Read for baseline email permissions."""
+def test_microsoft_outlook_email_missing_scope_detection_matches_read_and_send_flow() -> None:
+    """Outlook Mail integration requires read plus send permissions."""
     assert get_missing_required_scopes(
         IntegrationType.OUTLOOK_EMAIL,
         [
             "User.Read",
+            "Mail.Read",
         ],
-    ) == {"Mail.Read"}
+    ) == {"Mail.Send"}
+
+
+def test_microsoft_outlook_email_accepts_mail_send_scope_for_send_tool() -> None:
+    """Mail.Send should satisfy Outlook email send prerequisites."""
+    assert (
+        get_missing_required_scopes(
+            IntegrationType.OUTLOOK_EMAIL,
+            [
+                "User.Read",
+                "Mail.Read",
+                "Mail.Send",
+            ],
+        )
+        == set()
+    )
 
 
 def test_microsoft_outlook_calendar_requires_write_scope_for_invites() -> None:
@@ -197,6 +213,7 @@ def test_microsoft_user_read_all_satisfies_user_read_profile_requirement() -> No
             [
                 "User.Read.All",
                 "Mail.Read",
+                "Mail.Send",
             ],
         )
         == set()
@@ -226,6 +243,7 @@ def test_microsoft_offline_access_is_validated_by_refresh_token_not_scope_echo()
             [
                 "User.Read",
                 "Mail.Read",
+                "Mail.Send",
             ],
         )
         == set()

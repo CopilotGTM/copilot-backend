@@ -14,7 +14,6 @@ from .calendar import (
     CalendarEventUserState,
     GenerationStatus,
 )
-from .calendar_invite import CalendarInviteRequest, CalendarInviteRequestStatus
 
 # DEPRECATED: Use meeting_intelligence models instead for new development
 # Kept for backward compatibility and potential future Gong/Chorus sync
@@ -76,6 +75,10 @@ from .email_models import (
     EmailFolder,
     EmailPriority,
     EmailThreadSummary,
+)
+from .integration_activity_request import (
+    IntegrationActivityRequest,
+    IntegrationActivityRequestStatus,
 )
 from .integration_models import (
     IntegrationScope,
@@ -140,8 +143,8 @@ __all__ = [
     "CalendarAttendee",
     "CalendarEventDealAssociation",
     "CalendarEventUserState",
-    "CalendarInviteRequest",
-    "CalendarInviteRequestStatus",
+    "IntegrationActivityRequest",
+    "IntegrationActivityRequestStatus",
     "AssociationStatus",
     "GenerationStatus",
     "IntegrationType",

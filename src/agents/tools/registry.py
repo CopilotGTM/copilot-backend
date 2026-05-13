@@ -111,6 +111,7 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
+    SEND_EMAIL = "send_email"
     READ_CHAT_ATTACHMENT = "read_chat_attachment"
     LIST_CHAT_ATTACHMENTS = "list_chat_attachments"
     LIST_DEAL_NOTES = "list_deal_notes"
@@ -173,6 +174,7 @@ REMINDER_MANAGEMENT_TOOLS = {
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
     ToolName.SEND_CALENDAR_INVITE,
+    ToolName.SEND_EMAIL,
 }
 
 VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
@@ -206,6 +208,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_CALENDAR_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_MEETING_BOT_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.SEND_EMAIL: {"teams", "slack", "whatsapp", "web", "voice"},
 }
 
 
@@ -249,6 +252,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     # Communication tools
     ToolName.LIST_DEAL_EMAILS,
     ToolName.GET_EMAIL_DETAILS,
+    ToolName.SEND_EMAIL,
     ToolName.READ_CHAT_ATTACHMENT,
     ToolName.LIST_DEAL_NOTES,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES,
@@ -556,6 +560,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    ToolName.SEND_EMAIL: ToolCategory.COMMUNICATION,
     ToolName.READ_CHAT_ATTACHMENT: ToolCategory.COMMUNICATION,
     ToolName.LIST_CHAT_ATTACHMENTS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
@@ -620,6 +625,7 @@ class ToolRegistry:
             create_list_deal_channel_messages,
             create_list_deal_emails,
             create_read_chat_attachment,
+            create_send_email,
         )
         from src.agents.tools.crm import (
             create_add_deal_note,
@@ -823,6 +829,9 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEND_EMAIL] = lambda: create_send_email(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.READ_CHAT_ATTACHMENT] = lambda: create_read_chat_attachment(

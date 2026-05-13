@@ -10,8 +10,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
-    CalendarInviteRequest,
-    CalendarInviteRequestStatus,
+    IntegrationActivityRequest,
+    IntegrationActivityRequestStatus,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
@@ -29,6 +29,12 @@ from src.service.integrations.calendar.writer import CalendarSyncWriter
 
 logger = get_logger(__name__)
 
+CALENDAR_INVITE_ACTIVITY_TYPE = "send_calendar_invite"
+
+
+def _activity_status_value(status: IntegrationActivityRequestStatus | str) -> str:
+    return status.value if isinstance(status, IntegrationActivityRequestStatus) else str(status)
+
 
 def derive_idempotency_key(
     request: CalendarInviteCreateRequest,
@@ -38,7 +44,12 @@ def derive_idempotency_key(
     """Derive a stable Graph transactionId from the user intent."""
     # Include the resolved integration when available so sender changes do not
     # replay an invite created from a different calendar account.
-    attendee_part = ",".join(sorted(attendee.email for attendee in request.attendees))
+    attendee_part = "|".join(
+        sorted(
+            f"{attendee.email},{attendee.name or ''},{attendee.optional}"
+            for attendee in request.attendees
+        )
+    )
     sender_part = (request.sender_email or "").strip().lower()
     raw = "|".join(
         [
@@ -47,8 +58,11 @@ def derive_idempotency_key(
             str(integration_id or ""),
             sender_part,
             request.title,
+            request.body or "",
+            request.location or "",
             request.start_at.isoformat(),
             request.end_at.isoformat(),
+            request.timezone,
             attendee_part,
         ]
     )
@@ -120,13 +134,38 @@ class CalendarInviteService:
         # Reuse prior successful attempts by sender-scoped idempotency key so
         # chat retry does not send duplicate invites in rapid retry loops.
         existing = await self._find_existing_request(idempotency_key)
-        if existing and existing.status == CalendarInviteRequestStatus.SENT:
+        existing_status = _activity_status_value(existing.status) if existing else None
+        if existing and not self._existing_matches_request(existing, request):
+            raise CalendarInviteError(
+                "calendar_invite_idempotency_conflict",
+                "This idempotency key was already used for a different calendar invite request.",
+                status_code=409,
+            )
+        if existing and existing_status == IntegrationActivityRequestStatus.SENT.value:
             return CalendarInviteCreateResult(
                 request_id=existing.request_id,
-                event_id=existing.event_id,
-                provider_event_id=existing.provider_event_id or "",
+                event_id=existing.linked_record_id,
+                provider_event_id=existing.provider_resource_id or "",
                 subject=existing.title,
                 conference_link=existing.conference_link,
+            )
+        if existing and existing_status == IntegrationActivityRequestStatus.SENDING.value:
+            raise CalendarInviteError(
+                "calendar_invite_status_unknown",
+                (
+                    "This calendar invite is already in progress or its final provider status is "
+                    "unknown. Confirm before attempting to resend."
+                ),
+                status_code=409,
+            )
+        if existing:
+            raise CalendarInviteError(
+                "calendar_invite_replay_blocked",
+                (
+                    "A previous attempt for this calendar invite already exists and was not "
+                    "confirmed as sent. Confirm before attempting to resend."
+                ),
+                status_code=409,
             )
 
         await self._ensure_deal_access(request.deal_id)
@@ -148,7 +187,8 @@ class CalendarInviteService:
             # Track ordering explicitly: SENDING -> Graph -> normalized sync -> SENT.
             # Commit SENDING before Graph so a crash after Microsoft accepts the
             # invite still leaves a local repair/audit record keyed by transactionId.
-            audit_row.status = CalendarInviteRequestStatus.SENDING
+            audit_row.status = IntegrationActivityRequestStatus.SENDING
+            audit_row.history = self._append_history(audit_row, "SENDING")
             audit_row.updated_at = datetime.now(UTC)
             await self.session.flush()
             await self.session.commit()
@@ -186,14 +226,16 @@ class CalendarInviteService:
                 )
             await writer.sync_attendees(event, normalized)
 
-            audit_row.status = CalendarInviteRequestStatus.SENT
-            audit_row.provider_event_id = provider_event_id
+            audit_row.status = IntegrationActivityRequestStatus.SENT
+            audit_row.provider_resource_id = provider_event_id
             audit_row.provider_response = provider_response
-            audit_row.event_id = event.event_id
+            audit_row.linked_record_type = "calendar_event"
+            audit_row.linked_record_id = event.event_id
             audit_row.conference_link = self._extract_conference_link(
                 provider_response,
                 resolved.provider,
             )
+            audit_row.history = self._append_history(audit_row, "SENT")
             audit_row.updated_at = datetime.now(UTC)
             await self.session.commit()
 
@@ -228,14 +270,16 @@ class CalendarInviteService:
         self,
         request: CalendarInviteCreateRequest,
         integration_id: UUID,
-    ) -> CalendarInviteRequest:
+    ) -> IntegrationActivityRequest:
         # Keep an explicit provider_timezone column for parity with Graph payload
         # and to support future troubleshooting when timezone conversions drift.
-        return CalendarInviteRequest(
+        attendees = [attendee.model_dump() for attendee in request.attendees]
+        return IntegrationActivityRequest(
             organisation_id=self.organisation_id,
             requested_by_user_id=self.requested_by_user_id,
             integration_id=integration_id,
             deal_id=request.deal_id,
+            activity_type=CALENDAR_INVITE_ACTIVITY_TYPE,
             title=request.title,
             body=request.body,
             location=request.location,
@@ -243,9 +287,33 @@ class CalendarInviteService:
             end_at=request.end_at,
             timezone=request.timezone,
             provider_timezone=request.timezone,
-            attendees=[attendee.model_dump() for attendee in request.attendees],
+            participants=attendees,
             idempotency_key=request.idempotency_key or "",
-            status=CalendarInviteRequestStatus.PENDING,
+            status=IntegrationActivityRequestStatus.PENDING,
+            request_payload={
+                "sender_email": request.sender_email,
+                "attendees": attendees,
+            },
+            history=[self._history_entry("PENDING")],
+        )
+
+    def _existing_matches_request(
+        self,
+        existing: IntegrationActivityRequest,
+        request: CalendarInviteCreateRequest,
+    ) -> bool:
+        attendees = [attendee.model_dump() for attendee in request.attendees]
+        payload = dict(existing.request_payload or {})
+        return (
+            existing.title == request.title
+            and existing.body == request.body
+            and existing.location == request.location
+            and existing.start_at == request.start_at
+            and existing.end_at == request.end_at
+            and existing.timezone == request.timezone
+            and list(existing.participants or []) == attendees
+            and payload.get("sender_email") == request.sender_email
+            and payload.get("attendees") == attendees
         )
 
     async def _create_provider_event(
@@ -281,16 +349,19 @@ class CalendarInviteService:
             return join_url if isinstance(join_url, str) else None
         return None
 
-    async def _find_existing_request(self, idempotency_key: str) -> CalendarInviteRequest | None:
+    async def _find_existing_request(
+        self, idempotency_key: str
+    ) -> IntegrationActivityRequest | None:
         # Query by org/user/idempotency so replay from one user cannot observe
         # or collide with another user's previous attempt.
-        stmt = select(CalendarInviteRequest).where(
-            col(CalendarInviteRequest.organisation_id) == self.organisation_id,
-            col(CalendarInviteRequest.requested_by_user_id) == self.requested_by_user_id,
-            col(CalendarInviteRequest.idempotency_key) == idempotency_key,
+        stmt = select(IntegrationActivityRequest).where(
+            col(IntegrationActivityRequest.organisation_id) == self.organisation_id,
+            col(IntegrationActivityRequest.requested_by_user_id) == self.requested_by_user_id,
+            col(IntegrationActivityRequest.activity_type) == CALENDAR_INVITE_ACTIVITY_TYPE,
+            col(IntegrationActivityRequest.idempotency_key) == idempotency_key,
         )
         result = await self.session.execute(stmt)
-        return cast(CalendarInviteRequest | None, result.scalars().first())
+        return cast(IntegrationActivityRequest | None, result.scalars().first())
 
     async def _ensure_deal_access(self, deal_id: UUID | None) -> None:
         if deal_id is None:
@@ -312,14 +383,15 @@ class CalendarInviteService:
 
     async def _mark_failed(
         self,
-        audit_row: CalendarInviteRequest,
+        audit_row: IntegrationActivityRequest,
         exc: CalendarInviteError,
     ) -> None:
         # Failure path is idempotent, durable, and best-effort.
         # Persisting status+error lets users and jobs know why retries stopped.
-        audit_row.status = CalendarInviteRequestStatus.FAILED
+        audit_row.status = IntegrationActivityRequestStatus.FAILED
         audit_row.error_code = exc.code
         audit_row.error_message = exc.message
+        audit_row.history = self._append_history(audit_row, "FAILED", error_code=exc.code)
         audit_row.updated_at = datetime.now(UTC)
         try:
             # Best-effort failure persistence: if committing a FAILED row fails,
@@ -329,3 +401,19 @@ class CalendarInviteService:
         except Exception:
             logger.exception("Failed to persist calendar invite failure state")
             await self.session.rollback()
+
+    @staticmethod
+    def _history_entry(status: str, *, error_code: str | None = None) -> dict[str, str]:
+        entry = {"status": status, "at": datetime.now(UTC).isoformat()}
+        if error_code:
+            entry["error_code"] = error_code
+        return entry
+
+    def _append_history(
+        self,
+        audit_row: IntegrationActivityRequest,
+        status: str,
+        *,
+        error_code: str | None = None,
+    ) -> list[dict]:
+        return [*list(audit_row.history or []), self._history_entry(status, error_code=error_code)]
