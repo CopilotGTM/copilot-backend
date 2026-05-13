@@ -93,8 +93,23 @@ class MeetingRecordingDispatchService:
             join_at = join_at.replace(tzinfo=UTC)
 
         if join_at <= datetime.now(UTC):
-            # Past events are intentionally skipped to avoid late-join failures and
-            # avoid sending a bot into already-ended calls.
+            existing_session = await self._session_service.get_by_event(calendar_event_id)
+            if existing_session and existing_session.sent_to_provider_at is not None:
+                provider = await self._build_provider()
+                if await self._provider_session_matches(
+                    provider=provider,
+                    provider_session_id=existing_session.provider_session_id,
+                    meeting_url=meeting_url,
+                    join_at=join_at,
+                ):
+                    return {
+                        "status": "already_sent",
+                        "calendar_event_id": str(calendar_event_id),
+                    }
+
+            # Already-started meetings are intentionally skipped to avoid late-join
+            # failures. We check an existing provider bot first so manual "send bot"
+            # requests can still report that the bot is already active.
             return {
                 "status": "skipped",
                 "reason": "meeting_already_started",

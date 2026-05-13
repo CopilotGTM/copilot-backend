@@ -200,6 +200,63 @@ class TestMeetingRecordingDispatchService:
         provider.fetch_session.assert_awaited_once_with("bot_123")
 
     @pytest.mark.asyncio
+    async def test_dispatch_event_started_meeting_checks_existing_provider_bot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An in-progress meeting reports already_sent when the existing bot is active."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        start_at = datetime.now(UTC) - timedelta(minutes=10)
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=start_at,
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_by_event=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=uuid4(),
+                    dedupe_key="meeting-recording-key",
+                    sent_to_provider_at=datetime.now(UTC) - timedelta(minutes=15),
+                    provider_session_id="bot_123",
+                    meeting_url=event.conference_link,
+                    join_at=start_at,
+                )
+            ),
+            get_or_create_pending_session=AsyncMock(),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        provider = SimpleNamespace(
+            fetch_session=AsyncMock(
+                return_value={
+                    "id": "bot_123",
+                    "meeting_url": event.conference_link,
+                    "join_at": start_at.isoformat(),
+                }
+            )
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "already_sent",
+            "calendar_event_id": str(event_id),
+        }
+        service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
+        service._session_service.mark_send_queued.assert_not_awaited()  # noqa: SLF001
+        provider.fetch_session.assert_awaited_once_with("bot_123")
+
+    @pytest.mark.asyncio
     async def test_dispatch_event_repairs_already_sent_when_provider_bot_is_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
