@@ -69,9 +69,9 @@ variable "image_alias" {
 }
 
 variable "image_buffer" {
-  description = "Standby buffer for the image. Use 0 for cost/quota-sensitive pools and higher values only when warm capacity is required."
+  description = "Standby buffer for the image. Keep this low for cost/quota-sensitive pools and raise it only when warm capacity is required."
   type        = string
-  default     = "100"
+  default     = "1"
 }
 
 variable "agent_state" {

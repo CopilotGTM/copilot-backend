@@ -523,20 +523,19 @@ class ReminderService:
 
         local_time = next_trigger_at.astimezone(tz)
         time_label = local_time.strftime("%I:%M %p %Z").lstrip("0")
-        short_date = local_time.strftime("%a, %b %d")
         weekday = local_time.strftime("%A")
 
         if recurrence == ReminderRecurrence.NONE:
-            summary = f"One-time on {short_date} at {time_label}"
+            summary = "One-time"
         elif recurrence == ReminderRecurrence.DAILY:
-            summary = f"Daily at {time_label} (next: {short_date})"
+            summary = f"Daily at {time_label}"
         elif recurrence == ReminderRecurrence.WEEKDAYS:
-            summary = f"Weekdays at {time_label} (next: {weekday}, {short_date})"
+            summary = f"Weekdays at {time_label}"
         elif recurrence == ReminderRecurrence.WEEKLY:
-            summary = f"Weekly on {weekday} at {time_label} (next: {short_date})"
+            summary = f"Weekly on {weekday} at {time_label}"
         elif recurrence == ReminderRecurrence.BIWEEKLY:
-            summary = f"Every 2 weeks on {weekday} at {time_label} (next: {short_date})"
+            summary = f"Every 2 weeks on {weekday} at {time_label}"
         else:
-            summary = f"Monthly on day {local_time.day} at {time_label} (next: {short_date})"
+            summary = f"Monthly on day {local_time.day} at {time_label}"
 
         return local_time, summary

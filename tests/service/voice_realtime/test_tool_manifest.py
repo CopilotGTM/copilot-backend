@@ -101,6 +101,19 @@ def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:
     assert "agent_prompt" in schema["parameters"]["properties"]
 
 
+def test_create_reminder_voice_schema_requires_raw_local_trigger_expression() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    trigger_time_schema = schemas[ToolName.CREATE_REMINDER.value]["parameters"]["properties"][
+        "trigger_time"
+    ]
+
+    assert "exactly as spoken or typed" in trigger_time_schema["description"]
+    assert "10 AM" in trigger_time_schema["description"]
+    assert "12 AM" in trigger_time_schema["description"]
+    assert "tomorrow at 9" in trigger_time_schema["description"]
+
+
 def test_send_email_voice_schema_is_available_for_direct_write() -> None:
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
