@@ -34,6 +34,7 @@ router = APIRouter(prefix="/copilot-oauth", tags=["copilot-integrations-oauth"])
 
 # Frontend route that receives the OAuth result and signals the parent window to close the popup
 _POPUP_COMPLETE_PATH = "/integrations/oauth/popup-complete"
+_MAX_PROVIDER_ERROR_MESSAGE_LEN = 300
 
 
 async def get_copilot_oauth_service() -> CopilotOAuthService:
@@ -76,6 +77,18 @@ def _build_popup_completion_redirect(
     return RedirectResponse(url=redirect_url, status_code=status_code)
 
 
+def _provider_error_message(error: str, error_description: str | None = None) -> str:
+    """Keep provider-supplied OAuth errors useful without allowing unbounded popup URLs."""
+    normalized_error = " ".join(error.split())
+    normalized_description = " ".join(error_description.split()) if error_description else None
+    message = (
+        f"{normalized_error}: {normalized_description}"
+        if normalized_description
+        else normalized_error
+    )
+    return message[:_MAX_PROVIDER_ERROR_MESSAGE_LEN]
+
+
 @router.post(
     "/authorize",
     response_model=GenericResponse[dict],
@@ -93,6 +106,7 @@ async def initiate_custom_oauth_flow(
         result = await oauth_service.initiate_oauth_flow(
             user_ids=user_ids,
             integration_type=request.integration_type,
+            oauth_base_url=request.oauth_base_url,
         )
         return Response.success_response(
             message="Authorization URL generated successfully.",
@@ -130,12 +144,49 @@ async def initiate_custom_oauth_flow(
     response_class=RedirectResponse,
 )
 async def handle_oauth_callback(
-    code: str,
-    state: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
     callback_service: CopilotCallbackService = Depends(get_copilot_callback_service),
     oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
 ) -> RedirectResponse:
     """Handle the provider's OAuth redirect — unauthenticated, trust comes from the signed JWT state."""
+    if error:
+        message = _provider_error_message(error, error_description)
+        logger.warning("Provider rejected custom OAuth callback: %s", message)
+        payload = {
+            "success": "false",
+            "message": message,
+        }
+        if state:
+            attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
+            if attempt_id:
+                payload["attempt_id"] = attempt_id
+        return _build_popup_completion_redirect(payload, status_code=303)
+
+    if not code:
+        logger.warning("Rejected custom OAuth callback: missing authorization code")
+        payload = {
+            "success": "false",
+            "message": "OAuth callback did not include an authorization code.",
+        }
+        if state:
+            attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
+            if attempt_id:
+                payload["attempt_id"] = attempt_id
+        return _build_popup_completion_redirect(payload, status_code=303)
+
+    if not state:
+        logger.warning("Rejected custom OAuth callback: missing state")
+        return _build_popup_completion_redirect(
+            {
+                "success": "false",
+                "message": "OAuth callback did not include state.",
+            },
+            status_code=303,
+        )
+
     try:
         result = await callback_service.handle_oauth_callback(code, state)
         return _build_popup_completion_redirect(

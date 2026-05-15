@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import jwt
@@ -14,6 +14,9 @@ from src.infra.config.integrations_metadata import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
+from src.service.integrations.providers.salesforce_provider import (
+    normalize_salesforce_oauth_base_url,
+)
 
 logger = get_logger(__name__)
 
@@ -64,6 +67,7 @@ class CopilotOAuthService:
         integration_type: IntegrationType,
         *,
         jti: str | None = None,
+        oauth_base_url: str | None = None,
     ) -> str:
         """Generate a signed JWT embedding user/org context into the OAuth state parameter.
 
@@ -87,6 +91,8 @@ class CopilotOAuthService:
             "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=15),
             "iat": datetime.datetime.now(datetime.UTC),
         }
+        if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+            payload["oauth_base_url"] = oauth_base_url
         encoded_jwt = jwt.encode(payload, await _get_oauth_state_secret(), algorithm="HS256")
         return encoded_jwt
 
@@ -126,6 +132,7 @@ class CopilotOAuthService:
         *,
         user_ids: UserIDs,
         integration_type: IntegrationType,
+        oauth_base_url: str | None = None,
     ) -> OAuthInitiationResult:
         """Build the provider's OAuth authorization URL with an embedded state JWT.
 
@@ -147,13 +154,23 @@ class CopilotOAuthService:
         self._ensure_integration_available(integration_type)
         provider = ProviderFactory.get_provider(integration_type)
         attempt_id = str(uuid4())
+        validated_oauth_base_url = None
+        if integration_type == IntegrationType.SALESFORCE:
+            validated_oauth_base_url = normalize_salesforce_oauth_base_url(oauth_base_url)
         state_token = await self.generate_oauth_state(
             user_ids,
             integration_type,
             jti=attempt_id,
+            oauth_base_url=validated_oauth_base_url,
         )
 
-        auth_url = await provider.get_authorization_url(state_token)
+        if integration_type == IntegrationType.SALESFORCE:
+            auth_url = await cast(Any, provider).get_authorization_url(
+                state_token,
+                oauth_base_url=validated_oauth_base_url,
+            )
+        else:
+            auth_url = await provider.get_authorization_url(state_token)
 
         logger.info(
             "Initiated Custom OAuth flow for user %s, org %s, provider %s",

@@ -13,12 +13,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.utils.logger import get_logger
+from src.service.integrations.providers.salesforce_provider import (
+    resolve_salesforce_oauth_base_url,
+)
 from src.service.integrations.sync_health import AuthTokenRevokedError
 
 logger = get_logger(__name__)
@@ -46,6 +49,7 @@ class IntegrationTokenInfo:
     organisation_id: UUID | None = None
     integration_id: UUID | None = None
     scopes: list[str] | None = None
+    oauth_base_url: str | None = None
 
     @classmethod
     def from_integration(cls, integration: Any, organisation_id: UUID) -> IntegrationTokenInfo:
@@ -65,6 +69,14 @@ class IntegrationTokenInfo:
             organisation_id=organisation_id,
             integration_id=integration.integration_id,
             scopes=list(integration.scopes or []),
+            oauth_base_url=(
+                resolve_salesforce_oauth_base_url(
+                    dict(integration.connection_metadata or {}),
+                    credentials,
+                )
+                if int_type == IntegrationType.SALESFORCE
+                else None
+            ),
         )
 
 
@@ -259,7 +271,16 @@ async def _refresh_and_persist_token(token_info: IntegrationTokenInfo) -> str:
         provider = ProviderFactory.get_provider(token_info.integration_type)
 
         try:
-            new_tokens = await provider.refresh_token(token_info.refresh_token)
+            if (
+                token_info.integration_type == IntegrationType.SALESFORCE
+                and token_info.oauth_base_url
+            ):
+                new_tokens = await cast(Any, provider).refresh_token(
+                    token_info.refresh_token,
+                    oauth_base_url=token_info.oauth_base_url,
+                )
+            else:
+                new_tokens = await provider.refresh_token(token_info.refresh_token)
         except Exception as exc:
             if _is_permanent_auth_error(exc):
                 raise AuthTokenRevokedError(

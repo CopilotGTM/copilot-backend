@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -17,6 +17,9 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
 from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
+from src.service.integrations.providers.salesforce_provider import (
+    normalize_salesforce_oauth_base_url,
+)
 from src.service.integrations.scope_validation import (
     get_missing_required_scopes,
     get_missing_required_token_fields,
@@ -165,6 +168,7 @@ class CopilotCallbackService:
         provider_key: str,
         token_payload: dict[str, Any],
         provider_user_info: dict[str, Any] | None = None,
+        oauth_base_url: str | None = None,
     ) -> None:
         """Merge provider tokens into the integration record and set expiry/metadata.
 
@@ -202,6 +206,8 @@ class CopilotCallbackService:
             metadata[self._TOKEN_TYPE_METADATA_KEY] = token_type
         if integration_type == IntegrationType.HUBSPOT and provider_user_info:
             self._apply_hubspot_user_info_metadata(metadata, provider_user_info)
+        if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+            metadata["oauth_base_url"] = oauth_base_url
         integration.connection_metadata = metadata
 
     def _apply_hubspot_user_info_metadata(
@@ -260,6 +266,13 @@ class CopilotCallbackService:
         if not jti:
             raise ValueError("State payload is missing jti claim")
         connection_id = str(jti)
+        oauth_base_url = None
+        if integration_type == IntegrationType.SALESFORCE:
+            raw_oauth_base_url = state_data.get("oauth_base_url") or state_data.get(
+                "salesforce_oauth_base_url"
+            )
+            if raw_oauth_base_url is not None:
+                oauth_base_url = normalize_salesforce_oauth_base_url(str(raw_oauth_base_url))
 
         # Cross-check user against master DB — prevents forged state tokens
         # from creating integrations for other users
@@ -283,6 +296,7 @@ class CopilotCallbackService:
                 user_id=user_id,
                 integration_type=integration_type,
                 connection_id=connection_id,
+                oauth_base_url=oauth_base_url,
             )
 
         raise RuntimeError("Failed to acquire master session")
@@ -295,18 +309,31 @@ class CopilotCallbackService:
         user_id: UUID,
         integration_type: IntegrationType,
         connection_id: str,
+        oauth_base_url: str | None = None,
     ) -> dict[str, Any]:
         provider = ProviderFactory.get_provider(integration_type)
 
         # Session released before external calls — token exchange and user info
         # fetch can take several seconds depending on the provider
         try:
-            tokens = await provider.exchange_code(code)
+            if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+                tokens = await cast(Any, provider).exchange_code(
+                    code,
+                    oauth_base_url=oauth_base_url,
+                )
+            else:
+                tokens = await provider.exchange_code(code)
             access_token = tokens.get("access_token")
             if not access_token:
                 raise ValueError("Missing access_token from provider")
 
-            user_info = await provider.get_user_info(str(access_token))
+            if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+                user_info = await cast(Any, provider).get_user_info(
+                    str(access_token),
+                    oauth_base_url=oauth_base_url,
+                )
+            else:
+                user_info = await provider.get_user_info(str(access_token))
             validation_payload = dict(tokens)
             if (
                 integration_type == IntegrationType.HUBSPOT
@@ -371,6 +398,7 @@ class CopilotCallbackService:
                     tokens=tokens,
                     integration_email=integration_email,
                     provider_user_info=user_info,
+                    oauth_base_url=oauth_base_url,
                 )
 
         # Scope comes from integration metadata, not the user's role — personal
@@ -386,6 +414,7 @@ class CopilotCallbackService:
             tokens=tokens,
             integration_email=integration_email,
             provider_user_info=user_info,
+            oauth_base_url=oauth_base_url,
         )
 
     @staticmethod
@@ -430,6 +459,7 @@ class CopilotCallbackService:
         tokens: dict[str, Any],
         integration_email: str,
         provider_user_info: dict[str, Any] | None = None,
+        oauth_base_url: str | None = None,
     ) -> dict[str, Any]:
         """Reactivate a previously disconnected integration with fresh tokens.
 
@@ -451,6 +481,7 @@ class CopilotCallbackService:
             provider_key=provider_key,
             token_payload=tokens,
             provider_user_info=provider_user_info,
+            oauth_base_url=oauth_base_url,
         )
         InitialSyncService().apply_post_connect_state(integration)
 
@@ -484,6 +515,7 @@ class CopilotCallbackService:
         tokens: dict[str, Any],
         integration_email: str,
         provider_user_info: dict[str, Any] | None = None,
+        oauth_base_url: str | None = None,
     ) -> dict[str, Any]:
         metadata = INTEGRATION_METADATA[integration_type]
         async for org_session in acquire_org_async_session(organisation_id):
@@ -505,6 +537,7 @@ class CopilotCallbackService:
                 provider_key=provider_key,
                 token_payload=tokens,
                 provider_user_info=provider_user_info,
+                oauth_base_url=oauth_base_url,
             )
             InitialSyncService().apply_post_connect_state(integration)
 
