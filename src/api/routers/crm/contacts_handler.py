@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -129,6 +130,7 @@ async def create_contact(
     body: CreateContactRequest,
     response: FastAPIResponse,
     service: ContactsAccessService = Depends(get_contacts_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactListItem]:
     """Create a new contact in the internal CRM."""
@@ -260,6 +262,7 @@ async def update_contact(
     body: UpdateContactRequest,
     response: FastAPIResponse,
     service: ContactsAccessService = Depends(get_contacts_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("contacts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactListItem]:
     """Update allowed fields on a contact."""
@@ -310,6 +313,7 @@ async def add_contact_to_deal(
     response: FastAPIResponse,
     service: ContactsAccessService = Depends(get_contacts_service),
     user_ids: UserIDs = Depends(get_current_user),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     """Add a contact to a deal as a participant."""

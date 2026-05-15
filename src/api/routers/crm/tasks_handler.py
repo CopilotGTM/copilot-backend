@@ -10,6 +10,7 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -417,6 +418,7 @@ async def create_task(
     request: CreateTaskRequest,
     response: FastAPIResponse,
     service: TasksWriteService = Depends(get_tasks_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("tasks:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
     """Create a new task, optionally linked to a deal."""
@@ -460,6 +462,7 @@ async def create_deal_task(
     request: CreateTaskRequest,
     response: FastAPIResponse,
     service: TasksWriteService = Depends(get_tasks_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("tasks:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
     """Create a new task associated with a deal (backwards-compatible endpoint)."""
@@ -502,6 +505,7 @@ async def update_task(
     request: UpdateTaskRequest,
     response: FastAPIResponse,
     service: TasksWriteService = Depends(get_tasks_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("tasks:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
     """Update an existing task."""
@@ -537,6 +541,7 @@ async def delete_task(
     task_id: UUID,
     response: FastAPIResponse,
     service: TasksWriteService = Depends(get_tasks_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("tasks:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
     """Soft delete a task."""

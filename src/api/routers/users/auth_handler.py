@@ -8,7 +8,7 @@ from src.api.dependencies.rate_limit import rate_limit_login, rate_limit_passwor
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.domain.models.admin_models import PasswordResetAction
-from src.domain.models.master_tables import SupabaseUserStatus, User
+from src.domain.models.master_tables import Organisation, SupabaseUserStatus, User
 from src.domain.models.user_models import (
     UserForgotPasswordRequest,
     UserLoginRequest,
@@ -26,6 +26,7 @@ from src.infra.config.constant import UserAuthErrors
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import USER_TIMEZONE_HEADER, validate_timezone_name
+from src.service.orgnisation.organisation_preferences import normalize_organisation_preferences
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -37,6 +38,14 @@ _user_table = getattr(User, "__table__", None)
 if _user_table is None:
     raise RuntimeError("User table metadata is not initialized")
 UserTable = cast("Table", _user_table)
+
+
+async def _load_organisation_preferences(organisation_id):
+    async with master_async_session_scope() as session:
+        organisation = await session.get(Organisation, organisation_id)
+        return normalize_organisation_preferences(
+            organisation.preferences if organisation else None
+        )
 
 
 @router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
@@ -62,6 +71,7 @@ async def user_login(
                 user_role = user.user_role
                 user_created_at = user.created_at
                 user_id = user.user_id
+                user_organisation_id = user.organisation_id
             else:
                 user_email = None
 
@@ -72,6 +82,7 @@ async def user_login(
             )
 
         logger.debug("User found in database")
+        user_organisation_preferences = await _load_organisation_preferences(user_organisation_id)
         request_timezone = validate_timezone_name(request.headers.get(USER_TIMEZONE_HEADER))
         effective_timezone = request_timezone or getattr(user, "timezone", None)
 
@@ -135,6 +146,8 @@ async def user_login(
                     state=UserLoginState.PENDING_SETUP,
                     last_login_at=last_login_at,
                     timezone=effective_timezone,
+                    organisation_id=user_organisation_id,
+                    organisation_preferences=user_organisation_preferences,
                     password_reset_link=password_reset_link,
                 )
                 return Response.success_response(
@@ -172,6 +185,8 @@ async def user_login(
                 email_verified=email_verified,
                 last_login_at=last_login_at,
                 timezone=effective_timezone,
+                organisation_id=user_organisation_id,
+                organisation_preferences=user_organisation_preferences,
                 tokens={
                     "access_token": access_token,
                     "refresh_token": refresh_token,
@@ -466,6 +481,9 @@ async def get_current_user_profile(
 ) -> GenericResponse[UserLoginResponse]:
     """Return the current authenticated user profile for mobile session bootstrap."""
     try:
+        organisation_preferences = await _load_organisation_preferences(
+            current_user.organisation_id
+        )
         return Response.success_response(
             message="Current user fetched successfully",
             data=UserLoginResponse(
@@ -478,6 +496,8 @@ async def get_current_user_profile(
                 email_verified=current_user.email_verified,
                 last_login_at=current_user.last_login_at,
                 timezone=current_user.timezone,
+                organisation_id=current_user.organisation_id,
+                organisation_preferences=organisation_preferences,
             ),
         )
     except Exception as e:

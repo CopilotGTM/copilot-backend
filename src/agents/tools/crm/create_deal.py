@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.policy import ensure_crm_write_scope
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStage,
     CRMPipeline,
@@ -32,6 +33,7 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
 from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -620,6 +622,10 @@ async def create_deal_direct(
             "status": "error",
             "message": "Deal name is required. Please ask the user for a deal name.",
         }
+    try:
+        await ensure_crm_write_scope(organisation_id, "deals:create")
+    except OrganisationPolicyDeniedError as exc:
+        return {"status": "error", "message": exc.message}
 
     payload: dict[str, Any] = {
         "name": deal_name,

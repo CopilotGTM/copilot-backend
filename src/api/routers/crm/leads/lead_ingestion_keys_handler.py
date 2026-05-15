@@ -9,6 +9,7 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -81,6 +82,7 @@ async def create_lead_ingestion_key(
     body: CreateLeadIngestionKeyRequest,
     response: FastAPIResponse,
     service: LeadIngestionKeyService = Depends(get_lead_ingestion_key_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_ingestion_keys:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadIngestionKeyCreateResponse]:
     """Create a private lead-ingestion key and expose the secret once to UI/API callers."""
@@ -152,6 +154,7 @@ async def update_lead_ingestion_key_status(
     body: UpdateLeadIngestionKeyStatusRequest,
     response: FastAPIResponse,
     service: LeadIngestionKeyService = Depends(get_lead_ingestion_key_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_ingestion_keys:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadIngestionKeyItem]:
     """Update a key's lifecycle state and return the refreshed ingestion key record."""
@@ -189,6 +192,7 @@ async def create_lead_form_private_key(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
     service: LeadIngestionKeyService = Depends(get_lead_ingestion_key_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_ingestion_keys:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadIngestionKeyCreateResponse]:
     """Create a private API key that can submit only through this lead form mapping."""
@@ -276,6 +280,7 @@ async def update_lead_form_private_key_status(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
     service: LeadIngestionKeyService = Depends(get_lead_ingestion_key_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_ingestion_keys:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadIngestionKeyItem]:
     """Pause, activate, or revoke a private key scoped to one lead form."""

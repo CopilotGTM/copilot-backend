@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -129,6 +130,7 @@ async def create_account(
     response: FastAPIResponse,
     body: CreateAccountRequest,
     service: AccountsAccessService = Depends(get_accounts_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("accounts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[AccountListItem]:
     """Create a new internal CRM account."""
@@ -225,6 +227,7 @@ async def update_account(
     response: FastAPIResponse,
     body: UpdateAccountRequest,
     service: AccountsAccessService = Depends(get_accounts_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("accounts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[AccountListItem]:
     """Update allowed fields on an existing CRM account."""

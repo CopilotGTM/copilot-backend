@@ -21,6 +21,7 @@ from src.domain.models.admin_org_models import (
     CreateOrganizationResponse,
     ListOrganizationResponse,
     PaginationOrganizations,
+    UpdateOrganisationAppSettingsRequest,
     UpdateOrganisationStatusRequest,
     UpdateOrganisationStatusResponse,
     UpdateOrganizationRequest,
@@ -504,6 +505,50 @@ async def update_organisation_status(
         )
         return Response.internal_server_error_response(
             message="Failed to update organization status", response=response
+        )
+
+
+@router.patch(
+    "/{organisation_id}/app-settings",
+    response_model=GenericResponse[ListOrganizationResponse],
+    tags=["admin_organisations"],
+)
+async def update_organisation_app_settings(
+    organisation_id: UUID,
+    request: UpdateOrganisationAppSettingsRequest,
+    response: FastAPIResponse,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
+) -> GenericResponse[ListOrganizationResponse]:
+    """Update admin-controlled organisation app settings."""
+    try:
+        if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+            return Response.forbidden_error_response(
+                AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED, response=response
+            )
+
+        org_response = await service.update_organisation_app_settings(
+            organisation_id=organisation_id,
+            admin_id=current_admin.admin_id,
+            settings=request,
+        )
+        return Response.success_response(
+            message="Organization app settings updated successfully",
+            data=org_response,
+        )
+    except OrganisationNotFoundError:
+        return Response.not_found_error_response(
+            AdminOrganizationErrors.ORGANIZATION_NOT_FOUND, response=response
+        )
+    except ValueError as ve:
+        return Response.bad_request_error_response(message=str(ve), response=response)
+    except Exception as e:
+        logger.error(
+            f"Error updating organization app settings for '{organisation_id}': {e}",
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(
+            message="Failed to update organization app settings", response=response
         )
 
 

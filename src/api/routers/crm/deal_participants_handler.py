@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -78,6 +79,7 @@ async def add_deal_participants(
     request: DealParticipantsCreateRequest,
     response: FastAPIResponse,
     service: DealParticipantService = Depends(get_participant_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantsWriteResponse]:
     """Attach contacts, companies, or users to an internal CRM deal."""
@@ -163,6 +165,7 @@ async def remove_deal_participant(
     participant_id: UUID,
     response: FastAPIResponse,
     service: DealParticipantService = Depends(get_participant_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantItem]:
     """Remove a participant from an internal CRM deal."""
@@ -223,6 +226,7 @@ async def update_deal_participant(
     request: DealParticipantUpdateRequest,
     response: FastAPIResponse,
     service: DealParticipantService = Depends(get_participant_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantItem]:
     """Update role label for a deal participant."""

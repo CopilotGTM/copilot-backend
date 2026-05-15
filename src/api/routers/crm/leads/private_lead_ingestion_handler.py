@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from src.api.dependencies.crm_write_guard import is_crm_write_scope_enabled
 from src.api.dependencies.rate_limit import client_ip_for_external_ingress
 from src.api.schemas.lead_form_models import (
     PrivateLeadFormSubmitRequest,
@@ -131,6 +132,15 @@ async def ingest_private_lead(
                 status_code=422,
                 field=field,
             )
+        if not await is_crm_write_scope_enabled(
+            ingress_key.organisation_id,
+            "leads:create",
+        ):
+            return _error_response(
+                code="internal_crm_writes_disabled",
+                message="Internal CRM writes are disabled for this organisation",
+                status_code=403,
+            )
         async for org_session in acquire_org_async_session(ingress_key.organisation_id):
             service = PrivateLeadIngestionService(
                 org_session=org_session,
@@ -241,6 +251,15 @@ async def ingest_private_form_submission(
                 message=message,
                 status_code=422,
                 field=field,
+            )
+        if not await is_crm_write_scope_enabled(
+            ingress_key.organisation_id,
+            "lead_forms:ingest",
+        ):
+            return _error_response(
+                code="internal_crm_writes_disabled",
+                message="Internal CRM writes are disabled for this organisation",
+                status_code=403,
             )
         async for org_session in acquire_org_async_session(ingress_key.organisation_id):
             service = PublicLeadFormSubmissionService(
