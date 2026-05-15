@@ -9,10 +9,12 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from src.agents.tools.crm.policy import ensure_crm_write_scope
 from src.infra.utils.logger import get_logger
 from src.service.bots.form_handlers.base import BaseFormHandler, FormHandlerResult
 from src.service.bots.form_handlers.identity import resolve_user_from_activity
 from src.service.bots.form_handlers.nonce import validate_and_consume_nonce
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 logger = get_logger(__name__)
 
@@ -132,6 +134,11 @@ class CreateDealFormHandler(BaseFormHandler):
                         )
                 except ValueError:
                     pass
+
+            try:
+                await ensure_crm_write_scope(org_id, "deals:create")
+            except OrganisationPolicyDeniedError as exc:
+                return FormHandlerResult(success=False, message=exc.message)
 
             # Create the deal
             from src.service.crm.internal.deal_write_service import (

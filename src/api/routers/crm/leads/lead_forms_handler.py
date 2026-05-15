@@ -16,6 +16,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_write_guard import (
+    is_crm_write_scope_enabled,
+    require_crm_write_scope,
+)
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -225,6 +229,7 @@ async def create_lead_form(
     request: Request,
     response: FastAPIResponse,
     service: LeadFormsService = Depends(get_lead_forms_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_forms:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadFormItem]:
     """Create a lead form and its public form ingress key for the current org."""
@@ -303,6 +308,7 @@ async def update_lead_form(
     request: Request,
     response: FastAPIResponse,
     service: LeadFormsService = Depends(get_lead_forms_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_forms:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadFormItem]:
     """Update metadata and mapped fields for a lead form.
@@ -351,6 +357,7 @@ async def update_lead_form_status(
     request: Request,
     response: FastAPIResponse,
     service: LeadFormsService = Depends(get_lead_forms_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("lead_forms:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadFormItem]:
     """Transition form lifecycle status and sync ingress key availability.
@@ -475,6 +482,17 @@ async def submit_public_lead_form(
         if not ingress_key:
             return _public_error_response(
                 LeadFormsServiceError("Lead form not found", status_code=404)
+            )
+        if not await is_crm_write_scope_enabled(
+            ingress_key.organisation_id,
+            "lead_forms:ingest",
+        ):
+            return _public_error_response(
+                LeadFormsServiceError(
+                    "Internal CRM writes are disabled for this organisation",
+                    status_code=403,
+                    data={"code": "internal_crm_writes_disabled"},
+                )
             )
 
         # Public submission writes both a submission audit row and a lead row in a

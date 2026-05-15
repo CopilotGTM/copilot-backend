@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -119,6 +120,7 @@ async def create_custom_field(
     request: CreateCustomFieldRequest,
     response: FastAPIResponse,
     service: CustomFieldWriteService = Depends(get_custom_field_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("custom_fields:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CustomFieldDefinitionItem]:
     """Create a custom column definition for the current organisation."""
@@ -155,6 +157,7 @@ async def update_custom_field(
     request: UpdateCustomFieldRequest,
     response: FastAPIResponse,
     service: CustomFieldWriteService = Depends(get_custom_field_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("custom_fields:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CustomFieldDefinitionItem]:
     """Update mutable properties of a custom column definition."""
@@ -189,6 +192,7 @@ async def delete_custom_field(
     field_id: UUID,
     response: FastAPIResponse,
     service: CustomFieldWriteService = Depends(get_custom_field_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("custom_fields:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[None]:
     """Soft-delete a custom column. Blocked when any deal still uses it."""

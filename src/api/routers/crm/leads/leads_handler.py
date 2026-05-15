@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -148,6 +149,7 @@ async def create_lead(
     body: CreateLeadRequest,
     response: FastAPIResponse,
     service: LeadsAccessService = Depends(get_leads_access_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("leads:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadListItem]:
     """Create a lead in the internal CRM."""
@@ -209,6 +211,7 @@ async def update_lead(
     body: UpdateLeadRequest,
     response: FastAPIResponse,
     service: LeadsAccessService = Depends(get_leads_access_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("leads:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadListItem]:
     """Update mutable lead fields."""
@@ -236,6 +239,7 @@ async def add_lead_participant(
     body: CreateLeadParticipantRequest,
     response: FastAPIResponse,
     service: LeadsAccessService = Depends(get_leads_access_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("leads:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadParticipantItem]:
     """Add a participant link to a lead."""
@@ -274,6 +278,7 @@ async def convert_lead(
     body: ConvertLeadRequest,
     response: FastAPIResponse,
     service: LeadsAccessService = Depends(get_leads_access_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("leads:convert")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadConversionResponse]:
     """Convert a lead into an internal CRM deal."""

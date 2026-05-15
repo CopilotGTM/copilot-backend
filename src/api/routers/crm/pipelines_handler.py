@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -185,6 +186,7 @@ async def create_pipeline(
     body: CreatePipelineRequest,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[PipelineItem]:
     """Create a new pipeline (optionally with stages) under the internal CRM."""
@@ -212,6 +214,7 @@ async def update_pipeline(
     body: UpdatePipelineRequest,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[PipelineItem]:
     """Rename a pipeline, flip the default flag, or change its display order."""
@@ -238,6 +241,7 @@ async def delete_pipeline(
     pipeline_id: UUID,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[None]:
     """Soft-delete a non-default pipeline that has no deals attached."""
@@ -263,6 +267,7 @@ async def create_pipeline_stage(
     body: CreateStageRequest,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[PipelineStageItem]:
     """Append a new stage to an existing pipeline."""
@@ -289,6 +294,7 @@ async def update_pipeline_stage(
     body: UpdateStageRequest,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[PipelineStageItem]:
     """Rename a stage or update its probability/display order."""
@@ -314,6 +320,7 @@ async def delete_pipeline_stage(
     stage_id: UUID,
     response: FastAPIResponse,
     service: PipelineWriteService = Depends(get_pipeline_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[None]:
     """Soft-delete a stage that has no deals referencing it."""

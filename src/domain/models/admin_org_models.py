@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from src.domain.models.master_tables import OrganisationStatus
 from src.domain.models.master_tables.organisation_job_models import (
     OrganisationJobStatus,
@@ -10,6 +10,74 @@ from src.domain.models.master_tables.organisation_job_models import (
 )
 
 T = TypeVar("T")
+
+OrganisationCrmProvider = Literal["copilotgtm", "hubspot", "salesforce"]
+OrganisationChannelSource = Literal["slack", "whatsapp", "teams", "google_chat"]
+OrganisationCrmMode = Literal["internal", "external"]
+OrganisationCrmWriteScope = Literal[
+    "accounts:create",
+    "accounts:update",
+    "contacts:create",
+    "contacts:update",
+    "contacts:delete",
+    "custom_fields:create",
+    "custom_fields:update",
+    "custom_fields:delete",
+    "deal_participants:create",
+    "deal_participants:update",
+    "deal_participants:delete",
+    "deals:create",
+    "deals:update",
+    "deals:delete",
+    "leads:create",
+    "leads:update",
+    "leads:convert",
+    "lead_forms:create",
+    "lead_forms:update",
+    "lead_forms:ingest",
+    "lead_ingestion_keys:create",
+    "lead_ingestion_keys:update",
+    "lead_ingestion_keys:delete",
+    "pipelines:create",
+    "pipelines:update",
+    "pipelines:delete",
+    "tasks:create",
+    "tasks:update",
+    "tasks:delete",
+]
+
+
+class OrganisationCrmWritePolicy(BaseModel):
+    allowed_scopes: list[OrganisationCrmWriteScope] = Field(default_factory=list)
+
+
+class OrganisationCrmSettings(BaseModel):
+    mode: OrganisationCrmMode = "internal"
+    provider: OrganisationCrmProvider = "copilotgtm"
+    write_policy: OrganisationCrmWritePolicy = Field(default_factory=OrganisationCrmWritePolicy)
+
+    @model_validator(mode="after")
+    def derive_mode(self) -> "OrganisationCrmSettings":
+        self.mode = "internal" if self.provider == "copilotgtm" else "external"
+        return self
+
+
+class OrganisationChannelSettings(BaseModel):
+    enabled: list[OrganisationChannelSource] = Field(default_factory=list)
+
+
+class OrganisationAppSettings(BaseModel):
+    crm: OrganisationCrmSettings = Field(default_factory=OrganisationCrmSettings)
+    channels: OrganisationChannelSettings = Field(default_factory=OrganisationChannelSettings)
+
+
+class UpdateOrganisationCrmSettingsRequest(BaseModel):
+    provider: OrganisationCrmProvider
+
+
+class UpdateOrganisationAppSettingsRequest(BaseModel):
+    crm: UpdateOrganisationCrmSettingsRequest | None = None
+    channels: OrganisationChannelSettings | None = None
 
 
 class ActiveJobInfo(BaseModel):
@@ -61,6 +129,7 @@ class ListOrganizationResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    preferences: dict[str, Any] = Field(default_factory=dict)
     # Active job info (if any provisioning/update job is in progress)
     active_job: ActiveJobInfo | None = None
 

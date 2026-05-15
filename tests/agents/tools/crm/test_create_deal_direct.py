@@ -8,6 +8,7 @@ import pytest
 from src.agents.context import AgentContext
 from src.agents.tools.crm.create_deal import create_create_deal, create_deal_direct
 from src.service.crm.internal.deal_write_service import DealWriteServiceError
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 
 class _AsyncSessionContext:
@@ -35,12 +36,46 @@ def _context(*, user_id: UUID | None = None) -> AgentContext:
     return context
 
 
+@pytest.fixture(autouse=True)
+def _allow_crm_write_scope_by_default():
+    with patch(
+        "src.agents.tools.crm.create_deal.ensure_crm_write_scope",
+        new=AsyncMock(return_value=None),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_create_deal_direct_requires_name() -> None:
     result = await create_deal_direct(context=_context(), name=" ")
 
     assert result["status"] == "error"
     assert "deal name" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_rejects_when_org_policy_disables_scope() -> None:
+    context = _context()
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.ensure_crm_write_scope",
+            new=AsyncMock(
+                side_effect=OrganisationPolicyDeniedError(
+                    "Internal CRM write scope 'deals:create' is disabled for this organisation",
+                    code="crm_write_scope_disabled",
+                )
+            ),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        result = await create_deal_direct(context=context, name="Acme Expansion")
+
+    service_cls.assert_not_called()
+    assert result == {
+        "status": "error",
+        "message": "Internal CRM write scope 'deals:create' is disabled for this organisation",
+    }
 
 
 @pytest.mark.asyncio

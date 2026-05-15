@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
 from src.domain.models.master_tables import UserAppRole
@@ -32,6 +33,8 @@ class UserLoginResponse(BaseModel):
     email_verified: bool | None = None
     last_login_at: datetime | None = None
     timezone: str | None = None
+    organisation_id: UUID | None = None
+    organisation_preferences: dict[str, Any] | None = None
     tokens: dict[str, Any] | None = None
     password_reset_link: str | None = None
 

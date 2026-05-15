@@ -12,6 +12,7 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -909,6 +910,7 @@ async def create_deal(
     request: DealCreateRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Create a new internal CRM deal."""
@@ -945,6 +947,7 @@ async def update_deal(
     request: DealUpdateRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Update fields for an internal CRM deal."""
@@ -979,6 +982,7 @@ async def update_deal_account(
     request: DealAccountUpdateRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Update account details for an internal CRM deal."""
@@ -1013,6 +1017,7 @@ async def update_deal_primary_contact(
     request: DealPrimaryContactUpdateRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Update primary contact details for an internal CRM deal."""
@@ -1057,6 +1062,7 @@ async def delete_deal(
     deal_id: UUID,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Soft delete an internal CRM deal."""
@@ -1091,6 +1097,7 @@ async def move_deal_stage(
     request: DealStageMoveRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Move a deal to a new stage and record stage history."""
@@ -1125,6 +1132,7 @@ async def close_deal(
     request: DealCloseRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Close an internal CRM deal and capture close metadata."""
@@ -1165,6 +1173,7 @@ async def reopen_deal(
     request: DealReopenRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Reopen an internal CRM deal and move it back to an open stage."""
@@ -1203,6 +1212,7 @@ async def assign_deal_owner(
     request: DealOwnerAssignRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("deals:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealWriteResponse]:
     """Assign or clear the owner for an internal CRM deal."""

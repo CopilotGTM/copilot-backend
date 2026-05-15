@@ -24,17 +24,29 @@ from src.domain.models.admin_org_models import (
     OrganisationActionHistoryResponse,
     PaginatedOrganisationActionHistoryResponse,
     PaginationOrganizations,
+    UpdateOrganisationAppSettingsRequest,
     UpdateOrganisationStatusResponse,
 )
-from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.domain.models.master_tables import (
+    Organisation,
+    OrganisationActionHistory,
+    OrganisationEventType,
+    OrganisationStatus,
+)
 from src.domain.models.master_tables.organisation_job_models import (
     OrganisationJob,
     OrganisationJobStatus,
     OrganisationJobType,
 )
 from src.domain.models.master_tables.super_admin_models import SuperAdmin
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.organisation_preferences import (
+    merge_organisation_app_settings,
+    normalize_organisation_preferences,
+)
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
@@ -43,6 +55,12 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger(__name__)
+
+
+def _organization_response(organization: Organisation) -> ListOrganizationResponse:
+    response = ListOrganizationResponse.model_validate(organization)
+    response.preferences = normalize_organisation_preferences(organization.preferences)
+    return response
 
 
 # -----------------------------------------------------------------------------
@@ -75,6 +93,10 @@ class NoUpdateDataError(AdminOrganisationServiceError):
     """Raised when no update data is provided."""
 
     pass
+
+
+class CrmProviderChangeLockedError(ValueError):
+    """Raised when CRM ownership is changed after CRM records exist."""
 
 
 # -----------------------------------------------------------------------------
@@ -176,7 +198,7 @@ class AdminOrganisationService:
         # Build response with active job info
         org_responses = []
         for org in items:
-            org_response = ListOrganizationResponse.model_validate(org)
+            org_response = _organization_response(org)
             if org.organisation_id in active_jobs_map:
                 org_response.active_job = active_jobs_map[org.organisation_id]
             org_responses.append(org_response)
@@ -253,7 +275,7 @@ class AdminOrganisationService:
                 error_code="ORGANIZATION_NOT_FOUND",
             )
 
-        return ListOrganizationResponse.from_orm(organization)
+        return _organization_response(organization)
 
     async def update_organisation(
         self,
@@ -288,13 +310,83 @@ class AdminOrganisationService:
                 organisation_id=organisation_id,
                 update_data=update_data,
             )
-            return ListOrganizationResponse.from_orm(organization)
+            return _organization_response(organization)
         except ValueError as e:
             if "not found" in str(e).lower():
                 raise OrganisationNotFoundError(
                     str(e), error_code="ORGANIZATION_NOT_FOUND"
                 ) from None
             raise
+
+    async def update_organisation_app_settings(
+        self,
+        organisation_id: UUID,
+        admin_id: UUID,
+        settings: UpdateOrganisationAppSettingsRequest,
+    ) -> ListOrganizationResponse:
+        organization = await self._session.get(Organisation, organisation_id)
+        if not organization:
+            raise OrganisationNotFoundError(
+                "Organization not found",
+                error_code="ORGANIZATION_NOT_FOUND",
+            )
+
+        next_preferences = merge_organisation_app_settings(
+            organization.preferences,
+            crm_provider=settings.crm.provider if settings.crm else None,
+            enabled_channel_sources=settings.channels.enabled if settings.channels else None,
+        )
+        current_preferences = normalize_organisation_preferences(organization.preferences)
+        current_provider = current_preferences.get("crm", {}).get("provider")
+        next_provider = next_preferences.get("crm", {}).get("provider")
+        if current_provider != next_provider and await self._organisation_has_any_deal(
+            organisation_id
+        ):
+            raise CrmProviderChangeLockedError(
+                "CRM source cannot be changed after any deal is created for this organisation"
+            )
+
+        if current_preferences == next_preferences:
+            return _organization_response(organization)
+
+        changed_keys = [
+            key
+            for key in ("crm", "channels", "capabilities")
+            if current_preferences.get(key) != next_preferences.get(key)
+        ]
+        organization.preferences = next_preferences
+        self._session.add(organization)
+        self._session.add(
+            OrganisationActionHistory(
+                organisation_id=organisation_id,
+                action=OrganisationEventType.FIELD_CHANGED,
+                actor_admin_id=admin_id,
+                details={
+                    "changes": [
+                        {
+                            "field": f"preferences.{key}",
+                            "old_value": current_preferences.get(key),
+                            "new_value": next_preferences.get(key),
+                        }
+                        for key in changed_keys
+                    ]
+                },
+            )
+        )
+        await self._session.commit()
+        await self._session.refresh(organization)
+        return _organization_response(organization)
+
+    async def _organisation_has_any_deal(self, organisation_id: UUID) -> bool:
+        """Return whether the tenant has ever created or synced a deal row."""
+        async for org_session in acquire_org_async_session(organisation_id):
+            result = await org_session.execute(
+                select(CRMDeal.deal_id)
+                .where(col(CRMDeal.organisation_id) == organisation_id)
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+        return False
 
     async def update_organisation_status(
         self,
