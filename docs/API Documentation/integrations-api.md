@@ -963,7 +963,51 @@ This tells the backend where to redirect users after OAuth completion.
 
 ---
 
-## 4. Disconnect Integration
+## 4. Custom OAuth Authorization URL
+
+### Endpoint
+
+```http
+POST /users/integrations/copilot-oauth/authorize
+```
+
+Returns a provider authorization URL that the frontend opens in an OAuth popup.
+
+### Request Body
+
+```json
+{
+  "integration_type": "salesforce",
+  "oauth_base_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `integration_type` | string | Yes | Integration to connect. |
+| `integration_name` | string | No | Optional display name for the connection. |
+| `oauth_base_url` | string | No | Optional provider login host. Salesforce defaults to `https://login.salesforce.com` when omitted. For sandbox or My Domain, send the Salesforce login/My Domain host, not a Lightning URL. |
+
+### Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Authorization URL generated successfully.",
+  "data": {
+    "auth_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com/services/oauth2/authorize?...",
+    "attempt_id": "7e31f..."
+  }
+}
+```
+
+For Salesforce, the selected OAuth base URL is signed into the state token and
+reused during callback token exchange. After OAuth succeeds, sync uses the
+`instance_url` returned by Salesforce.
+
+---
+
+## 5. Disconnect Integration
 
 ### Disconnect Integration Endpoint
 

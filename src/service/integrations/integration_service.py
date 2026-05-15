@@ -6,6 +6,7 @@ This service provides CRUD operations for integrations.
 
 import logging
 from typing import Any
+from typing import cast as type_cast
 from uuid import UUID
 
 from sqlalchemy import Boolean, and_, cast, or_, select
@@ -220,7 +221,24 @@ class IntegrationService:
 
         try:
             provider = ProviderFactory.get_provider(integration_type)
-            await provider.revoke_token(str(token_to_revoke))
+            oauth_base_url = None
+            if integration_type == IntegrationType.SALESFORCE:
+                from src.service.integrations.providers.salesforce_provider import (
+                    resolve_salesforce_oauth_base_url,
+                )
+
+                oauth_base_url = resolve_salesforce_oauth_base_url(
+                    dict(integration.connection_metadata or {}),
+                    dict(credentials),
+                )
+
+            if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+                await type_cast(Any, provider).revoke_token(
+                    str(token_to_revoke),
+                    oauth_base_url=oauth_base_url,
+                )
+            else:
+                await provider.revoke_token(str(token_to_revoke))
             logger.info(
                 "Revoked custom OAuth token for integration %s",
                 integration.integration_id,

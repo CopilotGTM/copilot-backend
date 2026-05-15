@@ -101,3 +101,25 @@ def test_detached_integration_snapshots_preserve_scopes_for_token_info() -> None
         assert token_info.integration_id == integration_id
         assert token_info.organisation_id == organisation_id
         assert token_info.scopes == scopes
+
+
+def test_non_salesforce_token_snapshot_ignores_oauth_base_url_metadata() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    snapshot = EmailIntegrationSyncData(
+        integration_id=integration_id,
+        integration_type=IntegrationType.GMAIL,
+        integration_type_value=IntegrationType.GMAIL.value,
+        connection_id="gmail-connection",
+        provider="gmail",
+        provider_key="gmail",
+        last_synced_at=None,
+        connection_metadata={"oauth_base_url": "https://evil.example.com"},
+        credentials={"access_token": "access-token", "refresh_token": "refresh-token"},
+        access_token_expires_at=None,
+        scopes=["gmail.readonly"],
+    )
+
+    token_info = IntegrationTokenInfo.from_integration(snapshot, organisation_id)
+
+    assert token_info.oauth_base_url is None

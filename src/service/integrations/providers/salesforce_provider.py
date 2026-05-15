@@ -17,14 +17,73 @@ _MAX_RETRIES = 3
 _BASE_BACKOFF_SEC = 1.0
 _MAX_BACKOFF_SEC = 30.0
 
+_PRODUCTION_OAUTH_BASE_URL = "https://login.salesforce.com"
+_SALESFORCE_OAUTH_PATHS = {
+    "authorize": "/services/oauth2/authorize",
+    "token": "/services/oauth2/token",
+    "revoke": "/services/oauth2/revoke",
+    "userinfo": "/services/oauth2/userinfo",
+}
+
+
+def normalize_salesforce_oauth_base_url(oauth_base_url: str | None = None) -> str:
+    """Return a safe Salesforce OAuth host for one connection attempt."""
+    raw_url = (oauth_base_url or "").strip()
+    if not raw_url:
+        return _PRODUCTION_OAUTH_BASE_URL
+
+    candidate = raw_url if "://" in raw_url else f"https://{raw_url}"
+    parsed = urllib.parse.urlparse(candidate)
+    host = (parsed.hostname or "").lower()
+
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError("Salesforce OAuth URL must be an HTTPS Salesforce login/My Domain host")
+
+    if host in {"login.salesforce.com", "test.salesforce.com"} or host.endswith(
+        ".my.salesforce.com"
+    ):
+        return f"https://{host}"
+
+    raise ValueError("Salesforce OAuth URL must be a Salesforce login/My Domain host")
+
+
+def resolve_salesforce_oauth_base_url(
+    metadata: dict[str, Any],
+    credentials: dict[str, Any],
+) -> str | None:
+    """Resolve the stored OAuth host while preserving old metadata compatibility."""
+    raw_oauth_base_url = (
+        metadata.get("oauth_base_url")
+        or metadata.get("salesforce_oauth_base_url")
+        or credentials.get("oauth_base_url")
+        or credentials.get("salesforce_oauth_base_url")
+    )
+    if not raw_oauth_base_url:
+        return None
+    return normalize_salesforce_oauth_base_url(str(raw_oauth_base_url))
+
+
+def salesforce_oauth_endpoint(oauth_base_url: str | None, endpoint: str) -> str:
+    base_url = normalize_salesforce_oauth_base_url(oauth_base_url)
+    return f"{base_url}{_SALESFORCE_OAUTH_PATHS[endpoint]}"
+
 
 class SalesforceProvider(BaseIntegrationProvider):
     """Salesforce-specific implementation of the integration provider pattern."""
 
-    AUTHORIZATION_BASE_URL = "https://login.salesforce.com/services/oauth2/authorize"
-    TOKEN_URL = "https://login.salesforce.com/services/oauth2/token"
-    REVOKE_URL = "https://login.salesforce.com/services/oauth2/revoke"
-    USERINFO_URL = "https://login.salesforce.com/services/oauth2/userinfo"
+    AUTHORIZATION_BASE_URL = salesforce_oauth_endpoint(None, "authorize")
+    TOKEN_URL = salesforce_oauth_endpoint(None, "token")
+    REVOKE_URL = salesforce_oauth_endpoint(None, "revoke")
+    USERINFO_URL = salesforce_oauth_endpoint(None, "userinfo")
 
     def __init__(self, integration_type: IntegrationType):
         super().__init__(integration_type)
@@ -98,7 +157,12 @@ class SalesforceProvider(BaseIntegrationProvider):
 
         raise RuntimeError("Exhausted retries without response")
 
-    async def get_authorization_url(self, state: str) -> str:
+    async def get_authorization_url(
+        self,
+        state: str,
+        *,
+        oauth_base_url: str | None = None,
+    ) -> str:
         await self._ensure_credentials()
         params = {
             "response_type": "code",
@@ -107,13 +171,20 @@ class SalesforceProvider(BaseIntegrationProvider):
             "scope": " ".join(self._get_scopes()),
             "state": state,
         }
-        return f"{self.AUTHORIZATION_BASE_URL}?{urllib.parse.urlencode(params)}"
+        authorize_url = salesforce_oauth_endpoint(oauth_base_url, "authorize")
+        return f"{authorize_url}?{urllib.parse.urlencode(params)}"
 
-    async def exchange_code(self, code: str, redirect_uri: str | None = None) -> dict[str, Any]:
+    async def exchange_code(
+        self,
+        code: str,
+        redirect_uri: str | None = None,
+        *,
+        oauth_base_url: str | None = None,
+    ) -> dict[str, Any]:
         await self._ensure_credentials()
         response = await self._request_with_retry(
             "POST",
-            self.TOKEN_URL,
+            salesforce_oauth_endpoint(oauth_base_url, "token"),
             data={
                 "grant_type": "authorization_code",
                 "client_id": self._client_id,
@@ -129,11 +200,16 @@ class SalesforceProvider(BaseIntegrationProvider):
             return json_response
         raise ValueError("Salesforce OAuth exchange returned an invalid payload")
 
-    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+    async def refresh_token(
+        self,
+        refresh_token: str,
+        *,
+        oauth_base_url: str | None = None,
+    ) -> dict[str, Any]:
         await self._ensure_credentials()
         response = await self._request_with_retry(
             "POST",
-            self.TOKEN_URL,
+            salesforce_oauth_endpoint(oauth_base_url, "token"),
             data={
                 "grant_type": "refresh_token",
                 "client_id": self._client_id,
@@ -148,19 +224,24 @@ class SalesforceProvider(BaseIntegrationProvider):
             return json_response
         raise ValueError("Salesforce token refresh returned an invalid payload")
 
-    async def revoke_token(self, token: str) -> None:
+    async def revoke_token(self, token: str, *, oauth_base_url: str | None = None) -> None:
         response = await self._request_with_retry(
             "POST",
-            self.REVOKE_URL,
+            salesforce_oauth_endpoint(oauth_base_url, "revoke"),
             data={"token": token},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         response.raise_for_status()
 
-    async def get_user_info(self, access_token: str) -> dict[str, Any]:
+    async def get_user_info(
+        self,
+        access_token: str,
+        *,
+        oauth_base_url: str | None = None,
+    ) -> dict[str, Any]:
         response = await self._request_with_retry(
             "GET",
-            self.USERINFO_URL,
+            salesforce_oauth_endpoint(oauth_base_url, "userinfo"),
             headers={"Authorization": f"Bearer {access_token}"},
         )
         response.raise_for_status()

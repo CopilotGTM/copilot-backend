@@ -9,7 +9,7 @@ internally to avoid holding connections open during long-running operations.
 """
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, or_, select
@@ -22,6 +22,9 @@ from src.domain.models.organisation_tables.sync import (
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.provider_factory import ProviderFactory
+from src.service.integrations.providers.salesforce_provider import (
+    resolve_salesforce_oauth_base_url,
+)
 from src.service.integrations.scope_validation import parse_granted_scopes_from_token_payload
 from src.service.integrations.sync_health import (
     SyncFailureType,
@@ -215,7 +218,20 @@ class CustomTokenRefreshService:
                     provider.provider_key,
                 )
 
-                token_payload = await provider.refresh_token(refresh_token)
+                oauth_base_url = None
+                if integration_type == IntegrationType.SALESFORCE:
+                    oauth_base_url = resolve_salesforce_oauth_base_url(
+                        dict(integration.connection_metadata or {}),
+                        dict(credentials),
+                    )
+
+                if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
+                    token_payload = await cast(Any, provider).refresh_token(
+                        refresh_token,
+                        oauth_base_url=oauth_base_url,
+                    )
+                else:
+                    token_payload = await provider.refresh_token(refresh_token)
                 access_token = token_payload.get("access_token")
                 if not isinstance(access_token, str) or not access_token:
                     raise ValueError("Provider refresh response missing access_token")

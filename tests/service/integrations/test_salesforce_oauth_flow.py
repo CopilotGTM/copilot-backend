@@ -157,6 +157,97 @@ async def test_callback_creates_salesforce_integration_with_queued_schema_metada
 
 
 @pytest.mark.asyncio
+async def test_callback_exchanges_salesforce_code_with_oauth_base_from_state() -> None:
+    service = CopilotCallbackService()
+    user_id = uuid4()
+    organisation_id = uuid4()
+    duplicate_session = _make_session(FakeResult(scalar=None))
+    reactivate_session = _make_session(FakeResult(scalar=None))
+    create_session = _make_session()
+
+    provider = AsyncMock()
+    provider.provider_key = "salesforce"
+    provider.exchange_code.return_value = {
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
+        "instance_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+    }
+    provider.get_user_info.return_value = {"email": "sales@acme.com"}
+
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.copilot_oauth_service.decode_oauth_state",
+            return_value={
+                "sub": str(user_id),
+                "org": str(organisation_id),
+                "type": IntegrationType.SALESFORCE.value,
+                "jti": str(uuid4()),
+                "oauth_base_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+            },
+        ),
+        patch.object(
+            CopilotCallbackService,
+            "_fetch_user_from_master",
+            AsyncMock(return_value=_make_user(user_id=user_id, organisation_id=organisation_id)),
+        ),
+        patch(
+            "src.service.integrations.copilot_callback_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+        patch(
+            "src.service.integrations.copilot_callback_service.acquire_org_async_session",
+            side_effect=_session_generator([duplicate_session, reactivate_session, create_session]),
+        ),
+        patch.object(service, "_save_connection_mapping", AsyncMock()),
+        patch.object(service, "_trigger_initial_sync"),
+    ):
+        await service.handle_oauth_callback(code="abc", state="signed-state")
+
+    provider.exchange_code.assert_awaited_once_with(
+        "abc",
+        oauth_base_url="https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+    )
+    provider.get_user_info.assert_awaited_once_with(
+        "new-access",
+        oauth_base_url="https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+    )
+    created = create_session.add.call_args[0][0]
+    assert (
+        created.connection_metadata["oauth_base_url"]
+        == "https://ameyo--gtmcopilot.sandbox.my.salesforce.com"
+    )
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_invalid_salesforce_oauth_base_from_state() -> None:
+    service = CopilotCallbackService()
+    user_id = uuid4()
+    organisation_id = uuid4()
+
+    with (
+        patch(
+            "src.service.integrations.copilot_callback_service.copilot_oauth_service.decode_oauth_state",
+            return_value={
+                "sub": str(user_id),
+                "org": str(organisation_id),
+                "type": IntegrationType.SALESFORCE.value,
+                "jti": str(uuid4()),
+                "oauth_base_url": "https://evil.example.com",
+            },
+        ),
+        patch.object(
+            CopilotCallbackService,
+            "_fetch_user_from_master",
+            AsyncMock(return_value=_make_user(user_id=user_id, organisation_id=organisation_id)),
+        ),
+        pytest.raises(ValueError, match="Salesforce OAuth URL"),
+    ):
+        await service.handle_oauth_callback(code="abc", state="signed-state")
+
+
+@pytest.mark.asyncio
 async def test_callback_reactivates_existing_salesforce_integration() -> None:
     service = CopilotCallbackService()
     user_id = uuid4()
@@ -375,6 +466,43 @@ async def test_disconnect_revokes_salesforce_refresh_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_disconnect_revokes_salesforce_token_with_stored_oauth_base_url() -> None:
+    integration = _make_integration(
+        credentials={
+            "access_token": "old-access",
+            "refresh_token": "refresh-token",
+        },
+        connection_metadata={
+            "oauth_base_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+        },
+    )
+    service = IntegrationService(
+        db_session=AsyncMock(),
+        user_ids=UserIDs(
+            user_id=uuid4(),
+            organisation_id=integration.organisation_id,
+            user_name="Test User",
+            user_email="test@example.com",
+        ),
+    )
+
+    provider = AsyncMock()
+    provider.revoke_token = AsyncMock()
+
+    with patch(
+        "src.service.integrations.providers.provider_factory.ProviderFactory.get_provider",
+        return_value=provider,
+    ):
+        result = await service.revoke_custom_oauth_token(integration)
+
+    assert result is True
+    provider.revoke_token.assert_awaited_once_with(
+        "refresh-token",
+        oauth_base_url="https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+    )
+
+
+@pytest.mark.asyncio
 async def test_custom_token_refresh_uses_salesforce_provider() -> None:
     organisation_id = uuid4()
     integration = _make_integration(organisation_id=organisation_id)
@@ -405,6 +533,45 @@ async def test_custom_token_refresh_uses_salesforce_provider() -> None:
     assert integration.credentials["access_token"] == "new-access"
     assert integration.credentials["refresh_token"] == "old-refresh"
     provider.refresh_token.assert_awaited_once_with("old-refresh")
+
+
+@pytest.mark.asyncio
+async def test_custom_token_refresh_uses_stored_oauth_base_url() -> None:
+    organisation_id = uuid4()
+    integration = _make_integration(
+        organisation_id=organisation_id,
+        connection_metadata={
+            "oauth_base_url": "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+        },
+    )
+    session = _make_session(FakeResult(scalar=integration))
+    provider = AsyncMock()
+    provider.provider_key = "salesforce"
+    provider.refresh_token.return_value = {
+        "access_token": "new-access",
+        "expires_in": 3600,
+        "scope": _SALESFORCE_GRANTED_SCOPE,
+    }
+
+    service = CustomTokenRefreshService(organisation_id=organisation_id)
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([session]),
+        ),
+        patch(
+            "src.service.integrations.custom_token_refresh_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await service.refresh_single_token_async(integration.integration_id)
+
+    assert result["success"] is True
+    provider.refresh_token.assert_awaited_once_with(
+        "old-refresh",
+        oauth_base_url="https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+    )
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
@@ -33,6 +33,25 @@ class OAuthInitiateRequest(BaseModel):
         max_length=100,
         description="Optional user-defined name for this integration (auto-generated if not provided)",
     )
+    oauth_base_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Optional provider OAuth login host. Salesforce defaults to login.salesforce.com.",
+    )
+
+    @field_validator("oauth_base_url", mode="before")
+    @classmethod
+    def normalize_empty_oauth_base_url(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def validate_oauth_base_url_provider(self) -> "OAuthInitiateRequest":
+        if self.oauth_base_url and self.integration_type != IntegrationType.SALESFORCE:
+            raise ValueError("oauth_base_url is only supported for Salesforce integrations")
+        return self
 
 
 class OAuthInitiateResponse(BaseModel):

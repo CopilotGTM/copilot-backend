@@ -302,13 +302,20 @@ class FakeCopilotOAuthService:
     def __init__(self):
         self.should_raise_unavailable = False
         self.should_raise_value_error = False
+        self.last_initiate_kwargs = None
 
     async def initiate_oauth_flow(
         self,
         user_ids: UserIDs,
         integration_type: IntegrationType,
+        oauth_base_url: str | None = None,
     ) -> SimpleNamespace:
         """Return a fake auth URL or raise configured errors."""
+        self.last_initiate_kwargs = {
+            "user_ids": user_ids,
+            "integration_type": integration_type,
+            "oauth_base_url": oauth_base_url,
+        }
         if self.should_raise_unavailable:
             from src.service.integrations.copilot_oauth_service import (
                 CopilotOAuthIntegrationUnavailableError,
