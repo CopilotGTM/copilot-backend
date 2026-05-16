@@ -1,34 +1,43 @@
+"""HubSpot webhook dispatcher facade.
+
+The public route calls this facade to avoid knowing the subscription table
+shape. HubSpot-specific subscription wiring stays in `subscriptions.py`, while
+the dispatch mechanics stay provider-neutral.
+"""
+
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-
 from src.infra.utils.logger import get_logger
-from src.service.integrations.webhooks.hubspot.constants import CONTACT_PRIVACY_DELETION
-from src.service.integrations.webhooks.hubspot.handlers.contact_privacy_deletion import (
-    HubSpotContactPrivacyDeletionHandler,
+from src.service.integrations.webhooks.common.registry import WebhookDispatcher
+from src.service.integrations.webhooks.hubspot.subscriptions import (
+    HUBSPOT_WEBHOOK_SUBSCRIPTIONS,
 )
 from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
 
 logger = get_logger(__name__)
 
-HubSpotWebhookHandler = Callable[[HubSpotWebhookEvent], Awaitable[None]]
+_DISPATCHER = WebhookDispatcher[HubSpotWebhookEvent](
+    provider="hubspot",
+    subscriptions=HUBSPOT_WEBHOOK_SUBSCRIPTIONS,
+)
 
 
 class HubSpotWebhookDispatcher:
-    """Dispatch normalized HubSpot webhook events to subscription handlers."""
-
-    _handlers: dict[str, HubSpotWebhookHandler] = {
-        CONTACT_PRIVACY_DELETION: HubSpotContactPrivacyDeletionHandler.handle,
-    }
+    """HubSpot adapter over the provider-agnostic webhook dispatcher."""
 
     @classmethod
     def is_supported(cls, subscription_type: str) -> bool:
-        return subscription_type in cls._handlers
+        """Expose route-time filtering without leaking registry internals."""
+        return _DISPATCHER.is_supported(subscription_type)
 
     @classmethod
     async def dispatch(cls, event: HubSpotWebhookEvent) -> bool:
-        handler = cls._handlers.get(event.subscription_type)
-        if handler is None:
+        """Dispatch one HubSpot event to the registered subscription handler."""
+        handled = await _DISPATCHER.dispatch(
+            event=event,
+            subscription_type=event.subscription_type,
+        )
+        if not handled:
             logger.info(
                 "Ignoring unsupported HubSpot webhook event",
                 extra={
@@ -39,7 +48,4 @@ class HubSpotWebhookDispatcher:
                     "event_id": event.event_id,
                 },
             )
-            return False
-
-        await handler(event)
-        return True
+        return handled

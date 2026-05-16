@@ -119,8 +119,7 @@ class HubSpotDealRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> DealSyncResult:
-        started_at = datetime.now(UTC)
-
+        """Run a full HubSpot deal sync for one org-scoped integration."""
         token_info = await self._load_token_info(organisation_id, integration_id)
 
         property_list = await self._build_property_list(token_info=token_info)
@@ -130,6 +129,53 @@ class HubSpotDealRecordSyncService:
             properties=property_list,
         ).fetch_all()
 
+        result = await self._persist_raw_deals(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            raw_deals=raw_deals,
+            property_list_size=len(property_list),
+        )
+        logger.info(
+            "HubSpot deals sync summary",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "fetched_deals": result.fetched_deals,
+                "property_list_size": result.property_list_size,
+                "deals_created": result.deals_created,
+                "deals_updated": result.deals_updated,
+                "unresolved_pipeline_link": result.unresolved_pipeline_link,
+                "unresolved_stage_link": result.unresolved_stage_link,
+                "unresolved_owner_link": result.unresolved_owner_link,
+                "unresolved_company_link": result.unresolved_company_link,
+                "unresolved_contact_link": result.unresolved_contact_link,
+                "unresolved_created_by_link": result.unresolved_created_by_link,
+                "unresolved_updated_by_link": result.unresolved_updated_by_link,
+                "skipped_malformed": result.skipped_malformed,
+                "stage_history_created": result.stage_history_created,
+                "stage_history_updated": result.stage_history_updated,
+                "stage_history_unresolved_stage": result.stage_history_unresolved_stage,
+                "stage_history_unresolved_from_stage": (result.stage_history_unresolved_from_stage),
+                "participants_created": result.participants_created,
+                "participants_updated": result.participants_updated,
+                "participants_unresolved_related": result.participants_unresolved_related,
+                "associations_created": result.associations_created,
+                "associations_updated": result.associations_updated,
+                "associations_unresolved_to_local": result.associations_unresolved_to_local,
+            },
+        )
+        return result
+
+    async def _persist_raw_deals(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_deals: list[dict[str, Any]],
+        property_list_size: int = 0,
+    ) -> DealSyncResult:
+        """Persist raw HubSpot deal payloads from full sync or webhook fetches."""
+        started_at = datetime.now(UTC)
         normalized, skipped_malformed = normalize_deals(raw_deals)
 
         # Extract sibling rows from the raw payload: stage transitions live in
@@ -163,7 +209,7 @@ class HubSpotDealRecordSyncService:
         )
 
         completed_at = datetime.now(UTC)
-        result = DealSyncResult(
+        return DealSyncResult(
             provider=self.PROVIDER,
             object_type=self.OBJECT_TYPE,
             organisation_id=organisation_id,
@@ -171,7 +217,7 @@ class HubSpotDealRecordSyncService:
             started_at=started_at,
             completed_at=completed_at,
             fetched_deals=len(raw_deals),
-            property_list_size=len(property_list),
+            property_list_size=property_list_size,
             deals_created=write_result.deals_created,
             deals_updated=write_result.deals_updated,
             unresolved_pipeline_link=write_result.unresolved_pipeline_link,
@@ -193,44 +239,17 @@ class HubSpotDealRecordSyncService:
             associations_updated=association_result.associations_updated,
             associations_unresolved_to_local=association_result.unresolved_to_local,
         )
-        logger.info(
-            "HubSpot deals sync summary",
-            extra={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-                "fetched_deals": result.fetched_deals,
-                "property_list_size": result.property_list_size,
-                "deals_created": result.deals_created,
-                "deals_updated": result.deals_updated,
-                "unresolved_pipeline_link": result.unresolved_pipeline_link,
-                "unresolved_stage_link": result.unresolved_stage_link,
-                "unresolved_owner_link": result.unresolved_owner_link,
-                "unresolved_company_link": result.unresolved_company_link,
-                "unresolved_contact_link": result.unresolved_contact_link,
-                "unresolved_created_by_link": result.unresolved_created_by_link,
-                "unresolved_updated_by_link": result.unresolved_updated_by_link,
-                "skipped_malformed": result.skipped_malformed,
-                "stage_history_created": result.stage_history_created,
-                "stage_history_updated": result.stage_history_updated,
-                "stage_history_unresolved_stage": result.stage_history_unresolved_stage,
-                "stage_history_unresolved_from_stage": (result.stage_history_unresolved_from_stage),
-                "participants_created": result.participants_created,
-                "participants_updated": result.participants_updated,
-                "participants_unresolved_related": result.participants_unresolved_related,
-                "associations_created": result.associations_created,
-                "associations_updated": result.associations_updated,
-                "associations_unresolved_to_local": result.associations_unresolved_to_local,
-            },
-        )
-        return result
 
     async def _load_token_info(
         self,
         organisation_id: UUID,
         integration_id: UUID,
     ) -> IntegrationTokenInfo:
+        """Load active HubSpot token context for one tenant integration."""
         async for session in acquire_org_async_session(organisation_id):
             stmt = select(KnowledgeIntegration).where(
+                # The integration id can come from worker/webhook routing; the
+                # organisation filter is the tenant boundary for token access.
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
             )
@@ -351,6 +370,7 @@ class HubSpotDealRecordSyncService:
         participants: list[NormalizedDealParticipant],
         edges: list[NormalizedDealAssociation],
     ) -> tuple[Any, StageHistoryWriteResult, ParticipantWriteResult, AssociationWriteResult]:
+        """Write deals and their sibling rows in one tenant-scoped transaction."""
         async for session in acquire_org_async_session(organisation_id):
             maps = await self._load_resolution_maps(
                 session=session,

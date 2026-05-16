@@ -1,3 +1,11 @@
+"""HubSpot contact privacy deletion handler.
+
+HubSpot privacy deletion events are provider-level compliance signals: when a
+contact is deleted for privacy reasons, we scrub local contact PII and related
+CRM/stakeholder references across approved tenant schemas that match the
+webhook portal.
+"""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -36,6 +44,12 @@ class HubSpotContactPrivacyDeletionHandler:
         deal_participants: list[CRMDealParticipant] | None = None,
         deals: list[CRMDeal] | None = None,
     ) -> None:
+        """Scrub PII from an already-loaded contact graph.
+
+        The handler keeps historical rows as tombstones for audit and FK
+        stability, but removes person-identifying fields from the contact and
+        directly linked stakeholder/activity/deal participant records.
+        """
         contact.is_deleted = True
         contact.first_name = None
         contact.last_name = None
@@ -111,6 +125,7 @@ class HubSpotContactPrivacyDeletionHandler:
 
     @classmethod
     async def handle(cls, event: HubSpotWebhookEvent) -> None:
+        """Process one HubSpot contact privacy deletion webhook event."""
         organisation_ids = await cls._list_active_organisation_ids()
         touched_contacts = 0
 
@@ -134,6 +149,7 @@ class HubSpotContactPrivacyDeletionHandler:
 
     @staticmethod
     async def _list_active_organisation_ids() -> list[UUID]:
+        """Return active approved organisations eligible for privacy scrubbing."""
         async for master_session in acquire_master_async_session():
             statement = select(col(Organisation.organisation_id)).where(
                 col(Organisation.is_active).is_(True),
@@ -151,6 +167,7 @@ class HubSpotContactPrivacyDeletionHandler:
         portal_id: str,
         object_id: str,
     ) -> int:
+        """Scrub matching contacts inside one organisation schema."""
         async for org_session in acquire_org_async_session(organisation_id):
             integrations = await cls._matching_hubspot_integrations(
                 org_session=org_session,
@@ -247,7 +264,10 @@ class HubSpotContactPrivacyDeletionHandler:
         organisation_id: UUID,
         portal_id: str,
     ) -> list[KnowledgeIntegration]:
+        """Return active HubSpot integrations whose metadata matches the portal."""
         statement = select(KnowledgeIntegration).where(
+            # Portal id comes from HubSpot, but org/schema and integration type
+            # remain the tenant boundary before any privacy write is allowed.
             col(KnowledgeIntegration.organisation_id) == organisation_id,
             col(KnowledgeIntegration.integration_type) == IntegrationType.HUBSPOT,
             col(KnowledgeIntegration.is_active).is_(True),
@@ -269,7 +289,10 @@ class HubSpotContactPrivacyDeletionHandler:
         integration_id: UUID,
         object_id: str,
     ) -> list[CRMContact]:
+        """Load contacts matching the deleted HubSpot contact object id."""
         statement = select(CRMContact).where(
+            # The external contact id is scoped by org and integration so a
+            # reused provider id cannot scrub another tenant's contact.
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.external_id) == object_id,
@@ -284,6 +307,7 @@ class HubSpotContactPrivacyDeletionHandler:
         organisation_id: UUID,
         contact_ids: list[UUID],
     ) -> list[DealStakeholder]:
+        """Load stakeholders linked to the deleted contacts."""
         if not contact_ids:
             return []
         statement = select(DealStakeholder).where(
@@ -302,6 +326,7 @@ class HubSpotContactPrivacyDeletionHandler:
         contact_ids: list[UUID],
         object_id: str,
     ) -> list[CRMActivity]:
+        """Load activities that reference the deleted contact locally or externally."""
         statement = select(CRMActivity).where(
             col(CRMActivity.organisation_id) == organisation_id,
             col(CRMActivity.integration_id) == integration_id,
@@ -322,6 +347,7 @@ class HubSpotContactPrivacyDeletionHandler:
         contact_ids: list[UUID],
         object_id: str,
     ) -> list[CRMDealParticipant]:
+        """Load deal participants that represent the deleted contact."""
         statement = select(CRMDealParticipant).where(
             col(CRMDealParticipant.organisation_id) == organisation_id,
             col(CRMDealParticipant.integration_id) == integration_id,
@@ -343,6 +369,7 @@ class HubSpotContactPrivacyDeletionHandler:
         contact_ids: list[UUID],
         object_id: str,
     ) -> list[CRMDeal]:
+        """Load deals that use the deleted contact as their primary contact."""
         statement = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
