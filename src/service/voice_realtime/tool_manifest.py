@@ -106,6 +106,23 @@ def _build_send_meeting_bot_invite_factory(
     return partial(create_send_meeting_bot_invite, context, _build_empty_capabilities)
 
 
+def _build_send_calendar_invite_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.context import AgentContext
+    from src.agents.tools.calendar.send_calendar_invite import create_send_calendar_invite
+
+    voice_context = AgentContext(
+        organisation_id=context.organisation_id,
+        deal_id=context.deal_id,
+        org_name=context.org_name,
+        user_id=context.user_id,
+        user_email=context.user_email,
+        channel="voice",
+        message_id=context.message_id,
+        metadata=context.metadata.copy(),
+    )
+    return partial(create_send_calendar_invite, voice_context, _build_empty_capabilities)
+
+
 def _build_list_deal_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.intelligence.list_meetings import create_list_deal_meetings
 
@@ -706,6 +723,35 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_send_meeting_bot_invite_factory,
     ),
     VoiceRealtimeToolDefinition(
+        tool_name=ToolName.SEND_CALENDAR_INVITE,
+        description=(
+            "Create a calendar meeting invite with a meeting link from the user's connected "
+            "calendar account."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_time": {"type": "string"},
+                "end_time": {"type": "string"},
+                "attendees": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Attendee emails or raw attendee names exactly as provided.",
+                },
+                "body": {"type": "string"},
+                "location": {"type": "string"},
+                "deal_id": {"type": "string"},
+                "timezone": {"type": "string"},
+                "sender_email": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["title", "start_time", "end_time", "attendees"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_send_calendar_invite_factory,
+    ),
+    VoiceRealtimeToolDefinition(
         tool_name=ToolName.GET_MEETING_DETAILS,
         description="Get detailed information for a specific meeting.",
         parameters={
@@ -786,7 +832,8 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.SEND_EMAIL,
         description=(
-            "Send a new Outlook email when explicit recipient emails, subject, and body are known."
+            "Send a new Gmail or Outlook email when explicit recipient emails, subject, and body "
+            "are known."
         ),
         parameters={
             "type": "object",

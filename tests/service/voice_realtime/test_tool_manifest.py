@@ -22,6 +22,7 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
         ToolName.CREATE_REMINDER,
         ToolName.LIST_REMINDERS,
         ToolName.CANCEL_REMINDER,
+        ToolName.SEND_CALENDAR_INVITE,
         ToolName.SEND_EMAIL,
     }
     assert allowed_tool_names.isdisjoint({tool.value for tool in excluded_tools})
@@ -32,11 +33,13 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
     assert ToolName.CREATE_REMINDER.value in allowed_tool_names
     assert ToolName.LIST_REMINDERS.value in allowed_tool_names
     assert ToolName.CANCEL_REMINDER.value in allowed_tool_names
+    assert ToolName.SEND_CALENDAR_INVITE.value in allowed_tool_names
     assert ToolName.SEND_EMAIL.value in allowed_tool_names
     assert ToolName.CREATE_TASK not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
     assert ToolName.ADD_DEAL_NOTE not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
     assert ToolName.ADD_STAKEHOLDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
     assert ToolName.CREATE_REMINDER not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
+    assert ToolName.SEND_CALENDAR_INVITE not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
     assert ToolName.SEND_EMAIL not in VOICE_REALTIME_WRITE_EXCLUDED_TOOLS
 
 
@@ -118,7 +121,17 @@ def test_send_email_voice_schema_is_available_for_direct_write() -> None:
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.SEND_EMAIL.value]
-    assert schema["description"].startswith("Send a new Outlook email")
+    assert schema["description"].startswith("Send a new Gmail or Outlook email")
     assert schema["parameters"]["required"] == ["to", "subject", "body"]
+    assert "sender_email" in schema["parameters"]["properties"]
+    assert "confirmed" in schema["parameters"]["properties"]
+
+
+def test_send_calendar_invite_voice_schema_is_available_for_direct_write() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
+    assert schema["description"].startswith("Create a calendar meeting invite")
+    assert schema["parameters"]["required"] == ["title", "start_time", "end_time", "attendees"]
     assert "sender_email" in schema["parameters"]["properties"]
     assert "confirmed" in schema["parameters"]["properties"]

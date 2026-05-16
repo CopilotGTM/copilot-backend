@@ -61,6 +61,15 @@ def test_general_prompt_requires_meaningful_task_title_before_create_task() -> N
     assert "ask what the task is about" in prompt
 
 
+def test_general_prompt_requires_calendar_invite_title_before_create_meeting() -> None:
+    prompt = get_general_prompt("Acme")
+
+    assert "For `send_calendar_invite`, ask only for missing title" in prompt
+    assert "start time, end time, or attendees" in prompt
+    assert "Do not invent a title" in prompt
+    assert "ask for the meeting title before calling the tool" in prompt
+
+
 def test_general_prompt_does_not_instruct_agent_switch_metadata() -> None:
     prompt = get_general_prompt("Acme")
     assert "switch_agent" not in prompt
