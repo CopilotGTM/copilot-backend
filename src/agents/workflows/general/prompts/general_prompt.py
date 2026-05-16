@@ -103,6 +103,11 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
       the tool's confirmation preview and dispatch only after the user confirms.
       For named meetings, first list meetings and resolve one clear event. If
       multiple meetings match, ask the user to choose before sending the bot.
+    - Meeting creation requests -> use `send_calendar_invite` only for new
+      calendar meeting invites from the user's connected calendar account. Ask
+      only for missing title, start time, end time, or attendees. Do not invent
+      a title. If the user asks to create/schedule a meeting but does not provide
+      a meeting title, ask for the meeting title before calling the tool.
     - Market/competitor info -> internal competitive intel + web search
     - Reminders/alerts -> check skills first, load the `reminders` skill via `get_skill_instructions`
     - Deal creation requests -> call `CreateDeal` as soon as the deal name is known.
@@ -152,6 +157,9 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - For `send_email`, ask only for missing recipient email, subject, or body.
       If the sender mailbox is implicit or multiple senders may exist, confirm
       the sender and recipients before calling with `confirmed=True`.
+    - For `send_calendar_invite`, ask only for missing title, start time, end
+      time, or attendees. Do not invent a title; ask for the meeting title
+      before calling the tool when it is not provided.
 
     **Visualizations (Teams only):**
     Use `CreateVisualizationCard` only AFTER you have numeric data points prepared.
