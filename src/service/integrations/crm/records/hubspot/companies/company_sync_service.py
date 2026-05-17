@@ -31,6 +31,7 @@ from src.service.integrations.crm.records.hubspot.companies.company_normalizer i
 )
 from src.service.integrations.crm.records.hubspot.companies.company_types import (
     CompanySyncResult,
+    CompanyWriteResult,
     NormalizedHubSpotCompany,
 )
 from src.service.integrations.crm.records.hubspot.companies.company_writer import (
@@ -93,6 +94,29 @@ class HubSpotCompanyRecordSyncService:
             skipped_malformed=skipped_malformed,
             deal_backfill_rows_updated=backfill_result["rows_updated"],
             deal_backfill_per_op=backfill_result["per_op"],
+        )
+
+    async def persist_raw_company(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_company: dict[str, Any],
+    ) -> tuple[CompanyWriteResult, dict[str, Any]]:
+        """Normalize and persist one HubSpot company snapshot from a webhook.
+
+        A single webhook is not a full active snapshot, so this path upserts the
+        target company and backfills only deals that reference that external id.
+        """
+        normalized, skipped_malformed = normalize_companies([raw_company])
+        if not normalized:
+            raise ValueError(
+                f"HubSpot company webhook payload was malformed; skipped={skipped_malformed}"
+            )
+        return await self._persist_single(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            company=normalized[0],
         )
 
     async def _load_token_info(
@@ -204,6 +228,68 @@ class HubSpotCompanyRecordSyncService:
 
         raise CompanySyncConfigurationError(
             "Could not acquire org session for companies record sync write"
+        )
+
+    async def _persist_single(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        company: NormalizedHubSpotCompany,
+    ) -> tuple[CompanyWriteResult, dict[str, Any]]:
+        async for session in acquire_org_async_session(organisation_id):
+            owner_map = await self._load_owner_map(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+
+            writer = HubSpotCompanyWriter(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            write_result = await writer.apply_single(company=company, owner_map=owner_map)
+
+            # Reload after flush so the webhook-created/reactivated company_id is
+            # available for deals that only had company_external_id.
+            company_map = await self._load_external_to_pk(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            company_pk = company_map.get(company.external_id)
+            backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+            if company_pk is not None:
+                backfill_result = await backfill_crm_deals(
+                    session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    ops=[
+                        DealFkBackfillOp(
+                            external_col="company_external_id",
+                            fk_col="company_id",
+                            name_col="company_name",
+                            label_col="company_domain",
+                            mapping={
+                                company.external_id: (
+                                    company_pk,
+                                    company.name,
+                                    company.domain,
+                                    None,
+                                )
+                            },
+                        )
+                    ],
+                )
+                backfill_payload["rows_updated"] = backfill_result.rows_updated
+                backfill_payload["per_op"] = dict(backfill_result.per_op)
+
+            await session.commit()
+            return write_result, backfill_payload
+
+        raise CompanySyncConfigurationError(
+            "Could not acquire org session for single company record sync write"
         )
 
     async def _load_external_to_pk(

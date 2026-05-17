@@ -15,6 +15,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
+from src.service.integrations.webhooks.hubspot.companies.subscriptions import (
+    COMPANY_CREATION,
+    COMPANY_DELETION,
+    COMPANY_PROPERTY_CHANGE,
+    COMPANY_PROPERTY_CHANGE_PROPERTY_SET,
+)
 from src.service.integrations.webhooks.hubspot.constants import HUBSPOT_WEBHOOK_EVENT_TASK
 from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
     DEAL_CREATION,
@@ -41,6 +47,15 @@ _DEAL_EVENT_PRIORITY = {
     DEAL_PROPERTY_CHANGE: 1,
     DEAL_CREATION: 2,
     DEAL_DELETION: 3,
+}
+_COMPANY_EVENT_PRIORITY = {
+    COMPANY_PROPERTY_CHANGE: 1,
+    COMPANY_CREATION: 2,
+    COMPANY_DELETION: 3,
+}
+_COALESCING_PRIORITIES = {
+    "deal": _DEAL_EVENT_PRIORITY,
+    "company": _COMPANY_EVENT_PRIORITY,
 }
 
 
@@ -83,25 +98,57 @@ def _event_property_name(event: HubSpotWebhookEvent) -> str | None:
     return str(property_name) if property_name is not None else None
 
 
+def _is_supported_event(event: HubSpotWebhookEvent) -> bool:
+    """Return whether this event is supported at both type and property level."""
+    if not HubSpotWebhookDispatcher.is_supported(event.subscription_type):
+        return False
+
+    if event.subscription_type != COMPANY_PROPERTY_CHANGE:
+        return True
+
+    property_name = _event_property_name(event)
+    if property_name in COMPANY_PROPERTY_CHANGE_PROPERTY_SET:
+        return True
+
+    logger.info(
+        "Ignoring unsupported HubSpot company propertyChange event",
+        extra={
+            "event": "hubspot_company_property_change_unsupported",
+            "subscription_type": event.subscription_type,
+            "portal_id": event.portal_id,
+            "object_id": event.object_id,
+            "event_id": event.event_id,
+            "property_name": property_name,
+        },
+    )
+    return False
+
+
 def _coalesce_batch_events(events: list[HubSpotWebhookEvent]) -> list[HubSpotWebhookEvent]:
     coalesced: list[HubSpotWebhookEvent] = []
-    deal_indexes: dict[tuple[str, str], int] = {}
+    coalescing_indexes: dict[tuple[str, str, str], int] = {}
 
     for event in events:
-        event_priority = _DEAL_EVENT_PRIORITY.get(event.subscription_type)
+        object_family = event.subscription_type.split(".", 1)[0]
+        priorities = _COALESCING_PRIORITIES.get(object_family)
+        if priorities is None:
+            coalesced.append(event)
+            continue
+
+        event_priority = priorities.get(event.subscription_type)
         if event_priority is None:
             coalesced.append(event)
             continue
 
-        deal_key = (event.portal_id, event.object_id)
-        existing_index = deal_indexes.get(deal_key)
+        coalescing_key = (object_family, event.portal_id, event.object_id)
+        existing_index = coalescing_indexes.get(coalescing_key)
         if existing_index is None:
-            deal_indexes[deal_key] = len(coalesced)
+            coalescing_indexes[coalescing_key] = len(coalesced)
             coalesced.append(event)
             continue
 
         existing_event = coalesced[existing_index]
-        existing_priority = _DEAL_EVENT_PRIORITY.get(existing_event.subscription_type, 0)
+        existing_priority = priorities.get(existing_event.subscription_type, 0)
         selected_event = existing_event
         ignored_event = event
         if event_priority > existing_priority:
@@ -110,9 +157,10 @@ def _coalesce_batch_events(events: list[HubSpotWebhookEvent]) -> list[HubSpotWeb
             coalesced[existing_index] = event
 
         logger.info(
-            "Coalesced HubSpot deal webhook event",
+            "Coalesced HubSpot webhook event",
             extra={
                 "event": "hubspot_webhook_event_coalesced",
+                "object_family": object_family,
                 "subscription_type": ignored_event.subscription_type,
                 "selected_subscription_type": selected_event.subscription_type,
                 "portal_id": ignored_event.portal_id,
@@ -216,7 +264,7 @@ async def handle_hubspot_webhook(request: Request) -> Response:
             )
             continue
 
-        if not HubSpotWebhookDispatcher.is_supported(event.subscription_type):
+        if not _is_supported_event(event):
             continue
 
         events.append(event)

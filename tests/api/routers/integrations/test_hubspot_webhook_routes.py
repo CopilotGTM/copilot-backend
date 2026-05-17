@@ -130,6 +130,123 @@ def test_hubspot_webhook_queues_deal_creation(monkeypatch) -> None:
     assert kwargs["object_id"] == "456"
 
 
+def test_hubspot_webhook_queues_company_creation(monkeypatch) -> None:
+    """Company creation events are accepted and queued to the integrations worker."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        lambda *_: False,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "company.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "company.creation"
+    assert kwargs["portal_id"] == "123"
+    assert kwargs["object_id"] == "456"
+
+
+def test_hubspot_webhook_ignores_unsupported_company_event(monkeypatch) -> None:
+    """Company events outside the registered v1 scope are acknowledged but not queued."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "company.merge",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
+def test_hubspot_webhook_ignores_unselected_company_property_change(monkeypatch) -> None:
+    """Company property changes outside the approved v1 property list are not queued."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "company.propertyChange",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                    "propertyName": "lifecyclestage",
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
 def test_hubspot_webhook_coalesces_deal_creation_property_change_burst(monkeypatch) -> None:
     """A create payload with immediate deal property changes should enqueue once."""
     client = _client()
@@ -187,6 +304,106 @@ def test_hubspot_webhook_coalesces_deal_creation_property_change_burst(monkeypat
     assert kwargs["event_id"] == "222"
 
 
+def test_hubspot_webhook_coalesces_company_creation_property_change_burst(monkeypatch) -> None:
+    """A create payload with immediate company property changes should enqueue once."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        lambda *_: False,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "company.propertyChange",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 111,
+                    "propertyName": "name",
+                },
+                {
+                    "subscriptionType": "company.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 222,
+                },
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "company.creation"
+    assert kwargs["event_id"] == "222"
+
+
+def test_hubspot_webhook_does_not_coalesce_deal_and_company_events(monkeypatch) -> None:
+    """Deal and company events with the same object id are queued independently."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        lambda *_: False,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "deal.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 111,
+                },
+                {
+                    "subscriptionType": "company.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 222,
+                },
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert send_task.await_count == 2
+    queued_types = [
+        call.kwargs["kwargs"]["subscription_type"] for call in send_task.await_args_list
+    ]
+    assert queued_types == ["deal.creation", "company.creation"]
+
+
 def test_hubspot_webhook_ignores_duplicate_event(monkeypatch) -> None:
     """Duplicate webhook deliveries are acknowledged without worker fanout."""
     # Once the route has claimed a HubSpot event, replayed deliveries should be
@@ -213,6 +430,46 @@ def test_hubspot_webhook_ignores_duplicate_event(monkeypatch) -> None:
             [
                 {
                     "subscriptionType": "contact.privacyDeletion",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
+def test_hubspot_webhook_ignores_duplicate_company_event(monkeypatch) -> None:
+    """Duplicate company webhook deliveries are acknowledged without worker fanout."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        lambda *_: True,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "company.creation",
                     "portalId": 123,
                     "objectId": 456,
                     "eventId": 789,

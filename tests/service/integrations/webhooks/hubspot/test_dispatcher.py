@@ -6,6 +6,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from src.service.integrations.webhooks.hubspot import dispatcher as dispatcher_module
+from src.service.integrations.webhooks.hubspot.companies.subscriptions import (
+    COMPANY_CREATION,
+    COMPANY_DELETION,
+    COMPANY_PROPERTY_CHANGE,
+)
 from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
     DEAL_CREATION,
     DEAL_DELETION,
@@ -59,3 +64,10 @@ def test_dispatcher_recognizes_hubspot_deal_events() -> None:
     assert HubSpotWebhookDispatcher.is_supported(DEAL_CREATION) is True
     assert HubSpotWebhookDispatcher.is_supported(DEAL_PROPERTY_CHANGE) is True
     assert HubSpotWebhookDispatcher.is_supported(DEAL_DELETION) is True
+
+
+def test_dispatcher_recognizes_hubspot_company_events() -> None:
+    """The dispatcher support check includes the v1 company webhook subscriptions."""
+    assert HubSpotWebhookDispatcher.is_supported(COMPANY_CREATION) is True
+    assert HubSpotWebhookDispatcher.is_supported(COMPANY_PROPERTY_CHANGE) is True
+    assert HubSpotWebhookDispatcher.is_supported(COMPANY_DELETION) is True

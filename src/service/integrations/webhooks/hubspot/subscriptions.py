@@ -8,6 +8,14 @@ route and dispatcher automatically pick it up through the shared registry.
 from __future__ import annotations
 
 from src.service.integrations.webhooks.common.registry import WebhookSubscription
+from src.service.integrations.webhooks.hubspot.companies.handler import (
+    HubSpotCompanyWebhookHandler,
+)
+from src.service.integrations.webhooks.hubspot.companies.subscriptions import (
+    COMPANY_CREATION,
+    COMPANY_DELETION,
+    COMPANY_PROPERTY_CHANGE,
+)
 from src.service.integrations.webhooks.hubspot.contacts.privacy_deletion import (
     HubSpotContactPrivacyDeletionHandler,
 )
@@ -40,5 +48,17 @@ HUBSPOT_WEBHOOK_SUBSCRIPTIONS: tuple[WebhookSubscription[HubSpotWebhookEvent], .
     WebhookSubscription(
         subscription_type=DEAL_DELETION,
         handler=HubSpotDealWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=COMPANY_CREATION,
+        handler=HubSpotCompanyWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=COMPANY_PROPERTY_CHANGE,
+        handler=HubSpotCompanyWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=COMPANY_DELETION,
+        handler=HubSpotCompanyWebhookHandler.handle,
     ),
 )

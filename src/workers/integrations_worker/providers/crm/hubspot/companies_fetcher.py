@@ -34,7 +34,7 @@ _MAX_PAGES = 5000
 # Hardcoded curated property list — every column CRMCompany materialises,
 # plus provider-native timestamps for fallbacks. Extend this list (or switch
 # to schema-driven discovery) when adding new columns.
-_COMPANY_PROPERTIES: tuple[str, ...] = (
+HUBSPOT_COMPANY_PROPERTIES: tuple[str, ...] = (
     "name",
     "domain",
     "website",
@@ -68,7 +68,7 @@ class HubSpotCompaniesFetcher:
         """Return every company as a raw dict. Archived records filtered server-side."""
         all_companies: list[dict[str, Any]] = []
         after: str | None = None
-        properties_param = ",".join(_COMPANY_PROPERTIES)
+        properties_param = ",".join(HUBSPOT_COMPANY_PROPERTIES)
 
         for page_no in range(_MAX_PAGES):
             params: dict[str, str] = {
