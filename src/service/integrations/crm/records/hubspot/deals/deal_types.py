@@ -100,6 +100,7 @@ class DealWriteResult:
 
     deals_created: int = 0
     deals_updated: int = 0
+    deals_skipped_stale: int = 0
 
     # Unresolved-link counters. A non-null `*_external_id` on the deal that
     # failed to find a matching dimension row in the in-session snapshot.
@@ -219,6 +220,7 @@ class DealSyncResult(RecordSyncResult):
     property_list_size: int = 0
     deals_created: int = 0
     deals_updated: int = 0
+    deals_skipped_stale: int = 0
     unresolved_pipeline_link: int = 0
     unresolved_stage_link: int = 0
     unresolved_owner_link: int = 0
@@ -244,6 +246,8 @@ class DealSyncResult(RecordSyncResult):
     error_message: str | None = None
 
     def to_metadata(self) -> dict[str, Any]:
+        """Build task-safe metadata from the result counters."""
+
         payload = self.base_metadata()
         payload.update(
             {
@@ -251,6 +255,7 @@ class DealSyncResult(RecordSyncResult):
                 "property_list_size": self.property_list_size,
                 "deals_created": self.deals_created,
                 "deals_updated": self.deals_updated,
+                "deals_skipped_stale": self.deals_skipped_stale,
                 "unresolved_pipeline_link": self.unresolved_pipeline_link,
                 "unresolved_stage_link": self.unresolved_stage_link,
                 "unresolved_owner_link": self.unresolved_owner_link,

@@ -1,3 +1,5 @@
+"""Regression coverage for HubSpot contact privacy deletion scrubbing."""
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -11,12 +13,13 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMParticipantType,
     DealStakeholder,
 )
-from src.service.integrations.webhooks.hubspot.handlers.contact_privacy_deletion import (
+from src.service.integrations.webhooks.hubspot.contacts.privacy_deletion import (
     HubSpotContactPrivacyDeletionHandler,
 )
 
 
 def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> None:
+    """Privacy deletion scrubs PII while preserving tombstone rows for history."""
     organisation_id = uuid4()
     integration_id = uuid4()
     contact = CRMContact(

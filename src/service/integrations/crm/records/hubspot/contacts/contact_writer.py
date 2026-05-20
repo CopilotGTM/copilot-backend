@@ -70,7 +70,10 @@ class HubSpotContactWriter:
                 row = self._new_row(contact, resolved_company_id, resolved_owner_id, now=now)
                 self.session.add(row)
                 result.contacts_created += 1
+            elif not existing.is_deleted and _has_same_or_newer_source_modified(existing, contact):
+                result.contacts_skipped_stale += 1
             else:
+                was_deleted = existing.is_deleted
                 self._apply_updates(
                     existing,
                     contact,
@@ -78,7 +81,11 @@ class HubSpotContactWriter:
                     resolved_owner_id,
                     now=now,
                 )
-                result.contacts_updated += 1
+                if was_deleted:
+                    existing.is_deleted = False
+                    result.contacts_reactivated += 1
+                else:
+                    result.contacts_updated += 1
 
         await self.session.flush()
         logger.info(
@@ -88,6 +95,8 @@ class HubSpotContactWriter:
                 "integration_id": str(self.integration_id),
                 "contacts_created": result.contacts_created,
                 "contacts_updated": result.contacts_updated,
+                "contacts_reactivated": result.contacts_reactivated,
+                "contacts_skipped_stale": result.contacts_skipped_stale,
                 "unresolved_company_link": result.unresolved_company_link,
                 "unresolved_owner_link": result.unresolved_owner_link,
             },
@@ -123,11 +132,14 @@ class HubSpotContactWriter:
         return resolved
 
     async def _load_existing_rows(self) -> dict[str, CRMContact]:
-        """Every non-deleted crm_contacts row for this integration, keyed by external_id."""
+        """Every crm_contacts row for this integration, keyed by external_id.
+
+        Deleted rows must be visible so HubSpot upserts can revive the tombstone
+        instead of attempting to insert another row for the same provider id.
+        """
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.integration_id) == self.integration_id,
-            col(CRMContact.is_deleted) == False,  # noqa: E712 — SQL boolean
         )
         rows = (await self.session.execute(stmt)).scalars().all()
         return {r.external_id: r for r in rows if r.external_id is not None}
@@ -222,3 +234,12 @@ class HubSpotContactWriter:
         row.last_seen_at = now
         row.properties = contact.properties
         row.data_payload = contact.data_payload
+
+
+def _has_same_or_newer_source_modified(
+    existing: CRMContact,
+    incoming: NormalizedHubSpotContact,
+) -> bool:
+    if existing.source_modified_at is None or incoming.source_modified_at is None:
+        return False
+    return existing.source_modified_at >= incoming.source_modified_at

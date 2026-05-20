@@ -1,3 +1,9 @@
+"""Typed payloads for HubSpot task sync and incremental upserts.
+
+The normalizer produces `NormalizedHubSpotTask`, writers return `TaskWriteResult`,
+and worker sync summaries serialize through `TaskSyncResult.to_metadata()`.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,6 +16,8 @@ from src.service.integrations.crm.records.common.record_sync_types import Record
 
 @dataclass(slots=True, frozen=True)
 class ActivityDimensionHit:
+    """Resolved local dimension row for a HubSpot task association."""
+
     internal_id: UUID
     name: str | None = None
     email: str | None = None
@@ -17,6 +25,8 @@ class ActivityDimensionHit:
 
 @dataclass(slots=True, frozen=True)
 class NormalizedHubSpotTask:
+    """HubSpot task snapshot after provider-specific fields are normalized."""
+
     external_id: str
     subject: str | None
     body: str | None
@@ -39,10 +49,13 @@ class NormalizedHubSpotTask:
 
 @dataclass(slots=True)
 class TaskWriteResult:
+    """Database write counters for one task writer application."""
+
     tasks_created: int = 0
     tasks_updated: int = 0
     tasks_reactivated: int = 0
     tasks_deactivated: int = 0
+    tasks_skipped_stale: int = 0
     unresolved_owner_link: int = 0
     unresolved_deal_link: int = 0
     unresolved_contact_link: int = 0
@@ -51,11 +64,14 @@ class TaskWriteResult:
 
 @dataclass(slots=True)
 class TaskSyncResult(RecordSyncResult):
+    """Worker-facing summary for a full HubSpot task sync run."""
+
     fetched_tasks: int = 0
     tasks_created: int = 0
     tasks_updated: int = 0
     tasks_reactivated: int = 0
     tasks_deactivated: int = 0
+    tasks_skipped_stale: int = 0
     unresolved_owner_link: int = 0
     unresolved_deal_link: int = 0
     unresolved_contact_link: int = 0
@@ -66,6 +82,7 @@ class TaskSyncResult(RecordSyncResult):
     counts: dict[str, int] = field(default_factory=dict)
 
     def to_metadata(self) -> dict[str, Any]:
+        """Serialize task-specific counters into `connection_metadata.record_sync`."""
         payload = self.base_metadata()
         payload.update(
             {
@@ -74,6 +91,7 @@ class TaskSyncResult(RecordSyncResult):
                 "tasks_updated": self.tasks_updated,
                 "tasks_reactivated": self.tasks_reactivated,
                 "tasks_deactivated": self.tasks_deactivated,
+                "tasks_skipped_stale": self.tasks_skipped_stale,
                 "unresolved_owner_link": self.unresolved_owner_link,
                 "unresolved_deal_link": self.unresolved_deal_link,
                 "unresolved_contact_link": self.unresolved_contact_link,

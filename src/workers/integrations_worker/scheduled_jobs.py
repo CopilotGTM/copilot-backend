@@ -1,3 +1,5 @@
+"""Scheduled integrations jobs and their cadence metadata."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -54,6 +56,18 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         task_name="integrations.sync_hubspot_deal_schema_all_orgs",
         schedule="0 2 */14 * *",
         max_lag_seconds=60 * 60 * 48,
+    ),
+    "sync-hubspot-core-incremental-all-orgs": ScheduledJob(
+        name="sync-hubspot-core-incremental-all-orgs",
+        task_name="integrations.sync_hubspot_core_incremental_all_orgs",
+        schedule="*/10 * * * *",
+        max_lag_seconds=60 * 15,
+    ),
+    "reconcile-hubspot-deletions-all-orgs": ScheduledJob(
+        name="reconcile-hubspot-deletions-all-orgs",
+        task_name="integrations.reconcile_hubspot_deletions_all_orgs",
+        schedule="17 */12 * * *",
+        max_lag_seconds=60 * 60 * 14,
     ),
     "sync-salesforce-opportunity-schema-all-orgs": ScheduledJob(
         name="sync-salesforce-opportunity-schema-all-orgs",

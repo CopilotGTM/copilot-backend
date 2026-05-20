@@ -1,7 +1,7 @@
 """Single-pass upsert writer for CRMDeal rows from HubSpot deals.
 
-Scope filter on every statement: `(organisation_id, integration_id,
-is_deleted=false)`. Resolves seven FKs at write time using `DealResolutionMaps`
+Scope filter on every statement: `(organisation_id, integration_id)`.
+Resolves seven FKs at write time using `DealResolutionMaps`
 loaded by the orchestrator before construction:
 
   * `pipeline_id`         ← `pipeline_external_id` via `pipeline_map`
@@ -16,9 +16,9 @@ Misses leave the FK NULL, keep the `*_external_id` populated, and tick the
 appropriate counter. We never fail the run on an unresolved link — the row
 still lands, and a future sync (or `backfill_crm_deals`) can resolve it.
 
-There is no deactivation pass. Deals that disappear from the HubSpot
-snapshot are left untouched intentionally; soft-deleting historical deal
-rows is a separate policy decision (see plan §7).
+There is no stale-deactivation pass. Deals that disappear from a full HubSpot
+snapshot are left untouched intentionally; explicit deletion webhooks can
+soft-delete rows, and a later provider upsert reactivates the same row.
 """
 
 from __future__ import annotations
@@ -85,6 +85,7 @@ class HubSpotDealWriter:
         normalized: list[NormalizedHubSpotDeal],
         maps: DealResolutionMaps,
     ) -> DealWriteResult:
+        """Upsert normalized HubSpot deals for this org/integration pair."""
         result = DealWriteResult()
         now = datetime.now(UTC)
 
@@ -98,7 +99,11 @@ class HubSpotDealWriter:
                 row = self._new_row(deal, resolved, now=now)
                 self.session.add(row)
                 result.deals_created += 1
+            elif _has_same_or_newer_source_modified(existing, deal):
+                result.deals_skipped_stale += 1
             else:
+                # Existing rows include soft-deleted tombstones. Updating the
+                # same row preserves local FKs while reactivating restored deals.
                 self._apply_updates(existing, deal, resolved, now=now)
                 result.deals_updated += 1
 
@@ -110,6 +115,7 @@ class HubSpotDealWriter:
                 "integration_id": str(self.integration_id),
                 "deals_created": result.deals_created,
                 "deals_updated": result.deals_updated,
+                "deals_skipped_stale": result.deals_skipped_stale,
                 "unresolved_pipeline_link": result.unresolved_pipeline_link,
                 "unresolved_stage_link": result.unresolved_stage_link,
                 "unresolved_owner_link": result.unresolved_owner_link,
@@ -191,11 +197,15 @@ class HubSpotDealWriter:
         )
 
     async def _load_existing_rows(self) -> dict[str, CRMDeal]:
-        """Every non-deleted crm_deals row for this integration, keyed by external_id."""
+        """Every crm_deals row for this integration, keyed by external_id.
+
+        Deletion webhooks soft-delete rows, but HubSpot may later restore or
+        emit updates for the same object id. Loading deleted rows keeps upserts
+        idempotent against the provider's unique external identity.
+        """
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.integration_id) == self.integration_id,
-            col(CRMDeal.is_deleted) == False,  # noqa: E712 — SQL boolean
         )
         rows = (await self.session.execute(stmt)).scalars().all()
         return {r.external_id: r for r in rows if r.external_id is not None}
@@ -207,6 +217,7 @@ class HubSpotDealWriter:
         *,
         now: datetime,
     ) -> CRMDeal:
+        """Create a CRMDeal row with unresolved links kept as external ids."""
         return CRMDeal(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
@@ -281,6 +292,7 @@ class HubSpotDealWriter:
         # deal_id PK is referenced by stage history / participants / associations
         # rows — never rewrite. AI-generated `deal_summary_data` is owned by
         # downstream agents; we don't touch it here either.
+        row.is_deleted = False
         row.name = deal.name
         row.amount = _decimal_to_float(deal.amount)
         row.currency = deal.currency
@@ -344,6 +356,22 @@ def _lookup(external_id: str | None, table: dict[str, DimensionHit]) -> Dimensio
     if not external_id:
         return None
     return table.get(external_id)
+
+
+def _has_same_or_newer_source_modified(
+    row: CRMDeal,
+    deal: NormalizedHubSpotDeal,
+) -> bool:
+    """Return True when the active local row already has this provider state."""
+    if row.is_deleted or row.source_modified_at is None or deal.source_modified_at is None:
+        return False
+    return _as_utc(row.source_modified_at) >= _as_utc(deal.source_modified_at)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _decimal_to_float(value: object) -> float | None:

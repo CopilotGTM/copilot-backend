@@ -1,38 +1,56 @@
+"""Public HubSpot webhook endpoint.
+
+HubSpot calls this unauthenticated route directly, so the route owns signature
+verification and event-shape validation. HubSpot-specific filtering, dedupe,
+debounce, coalescing, and fanout live in the webhook ingestion service.
+
+This route intentionally returns only an HTTP acknowledgement to HubSpot. Any
+operational detail about queued, duplicate, or ignored events belongs in logs
+and metrics, not in the public provider-facing response body.
+"""
+
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
-from src.infra.config.configs import hubspot_integration_config
-from src.infra.messaging.redis_client import get_redis_client
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from src.infra.utils.logger import get_logger
-from src.service.integrations.webhooks.hubspot.constants import HUBSPOT_WEBHOOK_EVENT_TASK
-from src.service.integrations.webhooks.hubspot.dispatcher import HubSpotWebhookDispatcher
-from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
+from src.service.integrations.webhooks.hubspot.ingestion_service import (
+    HubSpotWebhookIngestionService,
+)
 from src.service.integrations.webhooks.hubspot.verifier import (
     HubSpotWebhookVerificationError,
     verify_hubspot_v3_signature,
 )
-from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/hubspot", tags=["integrations", "hubspot-webhooks"])
 
+# Bound the public unauthenticated edge before signature verification work.
+# HubSpot webhook batches are small, so 256 KiB leaves headroom without letting
+# malformed requests force large body reads into API memory.
 HUBSPOT_WEBHOOK_MAX_BODY_BYTES = 256 * 1024
-HUBSPOT_WEBHOOK_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 
 
-def _request_uri_for_signature(request: Request) -> str:
-    configured_url = getattr(hubspot_integration_config, "WEBHOOK_PUBLIC_URL", "")
-    if configured_url:
-        return configured_url
-    return str(request.url)
+async def get_hubspot_webhook_ingestion_service() -> HubSpotWebhookIngestionService:
+    """Create the service dependency for HubSpot webhook ingestion.
+
+    The service is stateless today, but keeping it behind FastAPI dependency
+    injection matches the rest of the API layer and gives tests or internal
+    diagnostics a clean override point.
+    """
+    return HubSpotWebhookIngestionService()
 
 
 def _parse_events(raw_body: bytes) -> list[dict[str, Any]]:
+    """Normalize HubSpot's single-event or batch payload into a list.
+
+    HubSpot may deliver either shape depending on subscription and batching
+    behavior. Downstream ingestion only deals with a list so the filtering and
+    coalescing rules stay in one place.
+    """
     try:
         payload = json.loads(raw_body.decode("utf-8") or "[]")
     except json.JSONDecodeError as exc:
@@ -52,41 +70,22 @@ def _parse_events(raw_body: bytes) -> list[dict[str, Any]]:
     )
 
 
-def _dedupe_key(event: HubSpotWebhookEvent, raw_body: bytes) -> str:
-    if event.event_id:
-        return f"webhook:hubspot:{event.portal_id}:{event.event_id}"
-
-    body_hash = hashlib.sha256(raw_body).hexdigest()
-    return (
-        f"webhook:hubspot:{event.portal_id}:{event.subscription_type}:{event.object_id}:{body_hash}"
-    )
-
-
-def _is_duplicate_event(event: HubSpotWebhookEvent, raw_body: bytes) -> bool:
-    try:
-        redis = get_redis_client()
-        was_set = redis.set(
-            _dedupe_key(event, raw_body),
-            "1",
-            nx=True,
-            ex=HUBSPOT_WEBHOOK_DEDUPE_TTL_SECONDS,
-        )
-        return not bool(was_set)
-    except Exception:
-        logger.debug("HubSpot webhook dedupe check failed", exc_info=True)
-        return False
-
-
-def _release_dedupe_claim(event: HubSpotWebhookEvent, raw_body: bytes) -> None:
-    try:
-        redis = get_redis_client()
-        redis.delete(_dedupe_key(event, raw_body))
-    except Exception:
-        logger.debug("HubSpot webhook dedupe release failed", exc_info=True)
-
-
 @router.post("/webhook")
-async def handle_hubspot_webhook(request: Request) -> Response:
+async def handle_hubspot_webhook(
+    request: Request,
+    ingestion_service: HubSpotWebhookIngestionService = Depends(
+        get_hubspot_webhook_ingestion_service
+    ),
+) -> Response:
+    """Validate and enqueue HubSpot webhook events.
+
+    Called directly by HubSpot, without user authentication. The route rejects
+    invalid public traffic, then hands the verified payload to the ingestion
+    service so event-specific rules stay outside the HTTP boundary.
+    """
+    # Prefer the declared size check when present so oversized requests are
+    # rejected before reading the body. The actual byte-length check below is
+    # still required because public clients can omit or lie about this header.
     content_length = request.headers.get("content-length")
     try:
         declared_content_length = int(content_length) if content_length else 0
@@ -109,12 +108,13 @@ async def handle_hubspot_webhook(request: Request) -> Response:
             detail="HubSpot webhook body is too large",
         )
 
-    _, client_secret = await hubspot_integration_config.get_credentials()
     try:
-        verified = verify_hubspot_v3_signature(
-            client_secret=client_secret,
+        # HubSpot v3 signs the exact method, public URL, raw body, and timestamp.
+        # Parsing or rewriting the body first would change the bytes being
+        # verified and could reject legitimate provider deliveries.
+        verified = await verify_hubspot_v3_signature(
             method=request.method,
-            request_uri=_request_uri_for_signature(request),
+            request_uri=str(request.url),
             body=raw_body,
             timestamp=request.headers.get("x-hubspot-request-timestamp"),
             signature=request.headers.get("x-hubspot-signature-v3"),
@@ -132,52 +132,12 @@ async def handle_hubspot_webhook(request: Request) -> Response:
             detail="Invalid HubSpot webhook signature",
         )
 
-    events = _parse_events(raw_body)
-    for event_payload in events:
-        event = HubSpotWebhookEvent.from_payload(event_payload)
-        if event is None:
-            logger.warning(
-                "Ignoring malformed HubSpot webhook event",
-                extra={"event": "hubspot_webhook_event_malformed"},
-            )
-            continue
-
-        if not HubSpotWebhookDispatcher.is_supported(event.subscription_type):
-            continue
-
-        if _is_duplicate_event(event, raw_body):
-            logger.info(
-                "Duplicate HubSpot webhook event ignored",
-                extra={
-                    "event": "hubspot_webhook_event_duplicate",
-                    "subscription_type": event.subscription_type,
-                    "portal_id": event.portal_id,
-                    "object_id": event.object_id,
-                    "event_id": event.event_id,
-                },
-            )
-            continue
-
-        try:
-            task_id = await send_integrations_task_async(
-                task_name=HUBSPOT_WEBHOOK_EVENT_TASK,
-                kwargs=event.to_task_kwargs(),
-                queue="integrations_priority",
-                routing_key="integrations_priority",
-            )
-        except Exception:
-            _release_dedupe_claim(event, raw_body)
-            raise
-        logger.info(
-            "Queued HubSpot webhook event",
-            extra={
-                "event": "hubspot_webhook_event_queued",
-                "subscription_type": event.subscription_type,
-                "portal_id": event.portal_id,
-                "object_id": event.object_id,
-                "event_id": event.event_id,
-                "task_id": task_id,
-            },
-        )
+    # Only verified payloads reach JSON parsing and queue fanout. That keeps
+    # malformed unauthenticated traffic cheap and prevents noisy public requests
+    # from creating integration-worker work.
+    await ingestion_service.ingest(
+        raw_body=raw_body,
+        event_payloads=_parse_events(raw_body),
+    )
 
     return Response(status_code=status.HTTP_200_OK)

@@ -30,7 +30,7 @@ _DEFAULT_TIMEOUT = 30.0
 _PAGE_LIMIT = 100
 _MAX_PAGES = 5000
 
-_CONTACT_PROPERTIES: tuple[str, ...] = (
+HUBSPOT_CONTACT_PROPERTIES: tuple[str, ...] = (
     "firstname",
     "lastname",
     "jobtitle",
@@ -71,7 +71,7 @@ class HubSpotContactsFetcher:
         """Return every contact as a raw dict. Archived records filtered server-side."""
         all_contacts: list[dict[str, Any]] = []
         after: str | None = None
-        properties_param = ",".join(_CONTACT_PROPERTIES)
+        properties_param = ",".join(HUBSPOT_CONTACT_PROPERTIES)
 
         for page_no in range(_MAX_PAGES):
             params: dict[str, str] = {

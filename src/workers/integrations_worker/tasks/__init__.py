@@ -18,6 +18,10 @@ from .crm import (
     mark_salesforce_initial_sync_failed_task,
     mark_salesforce_initial_sync_succeeded_task,
     process_hubspot_webhook_event_task,
+    reconcile_hubspot_deletions_all_orgs_task,
+    reconcile_hubspot_deletions_task,
+    sync_hubspot_core_incremental_all_orgs_task,
+    sync_hubspot_core_incremental_task,
     sync_hubspot_deal_schema_all_orgs_task,
     sync_hubspot_deal_schema_task,
     sync_hubspot_notes_task,
@@ -83,6 +87,10 @@ __all__ = [
     # CRM schema sync (HubSpot)
     "sync_hubspot_deal_schema_all_orgs_task",
     "sync_hubspot_deal_schema_task",
+    "sync_hubspot_core_incremental_all_orgs_task",
+    "sync_hubspot_core_incremental_task",
+    "reconcile_hubspot_deletions_all_orgs_task",
+    "reconcile_hubspot_deletions_task",
     # CRM record sync (HubSpot, phase 2: pipelines + chain terminators)
     "sync_hubspot_pipelines_task",
     # CRM record sync (HubSpot, phase 3: users / owners)

@@ -103,6 +103,7 @@ def sync_hubspot_tasks_task(
                 result_metadata=result.to_metadata(),
                 error_class=None,
                 error_message=None,
+                sync_started_at=started_at,
             )
 
         completed_at = datetime.now(UTC).isoformat()
@@ -157,6 +158,7 @@ async def _update_integration_metadata(
     result_metadata: dict[str, Any],
     error_class: str | None,
     error_message: str | None,
+    sync_started_at: str | None = None,
 ) -> None:
     stmt = select(KnowledgeIntegration).where(
         col(KnowledgeIntegration.organisation_id) == organisation_id,
@@ -169,7 +171,7 @@ async def _update_integration_metadata(
     record_sync = dict(metadata.get("record_sync") or {})
     tasks_entry = {
         "status": status,
-        "last_synced_at": datetime.now(UTC).isoformat(),
+        "last_synced_at": sync_started_at or datetime.now(UTC).isoformat(),
         "fetched_tasks": result_metadata.get("fetched_tasks"),
         "tasks_created": result_metadata.get("tasks_created"),
         "tasks_updated": result_metadata.get("tasks_updated"),

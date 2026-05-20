@@ -55,6 +55,8 @@ class CompanyWriteResult:
     companies_updated: int = 0
     companies_reactivated: int = 0
     companies_deactivated: int = 0
+    companies_skipped_stale: int = 0
+    skipped_stale_external_ids: set[str] = field(default_factory=set)
     # How many companies declared an owner_external_id but failed resolution
     # against the live crm_users snapshot (owner archived, not yet synced,
     # or unknown). Row still persisted with owner_id=NULL.
@@ -70,6 +72,7 @@ class CompanySyncResult(RecordSyncResult):
     companies_updated: int = 0
     companies_reactivated: int = 0
     companies_deactivated: int = 0
+    companies_skipped_stale: int = 0
     unresolved_owner_link: int = 0
     skipped_malformed: int = 0
     deal_backfill_rows_updated: int = 0
@@ -78,6 +81,8 @@ class CompanySyncResult(RecordSyncResult):
     error_message: str | None = None
 
     def to_metadata(self) -> dict[str, Any]:
+        """Build task-safe metadata from the result counters."""
+
         payload = self.base_metadata()
         payload.update(
             {
@@ -86,6 +91,7 @@ class CompanySyncResult(RecordSyncResult):
                 "companies_updated": self.companies_updated,
                 "companies_reactivated": self.companies_reactivated,
                 "companies_deactivated": self.companies_deactivated,
+                "companies_skipped_stale": self.companies_skipped_stale,
                 "unresolved_owner_link": self.unresolved_owner_link,
                 "skipped_malformed": self.skipped_malformed,
                 "deal_backfill_rows_updated": self.deal_backfill_rows_updated,

@@ -121,6 +121,7 @@ def sync_hubspot_companies_task(
                 result_metadata=result.to_metadata(),
                 error_class=None,
                 error_message=None,
+                sync_started_at=started_at,
             )
 
         completed_at = datetime.now(UTC).isoformat()
@@ -179,6 +180,7 @@ async def _update_integration_metadata(
     result_metadata: dict[str, Any],
     error_class: str | None,
     error_message: str | None,
+    sync_started_at: str | None = None,
 ) -> None:
     """Persist outcome under `connection_metadata.record_sync.companies`.
 
@@ -196,7 +198,7 @@ async def _update_integration_metadata(
     record_sync = dict(metadata.get("record_sync") or {})
     companies_entry = {
         "status": status,
-        "last_synced_at": datetime.now(UTC).isoformat(),
+        "last_synced_at": sync_started_at or datetime.now(UTC).isoformat(),
         "fetched_companies": result_metadata.get("fetched_companies"),
         "companies_created": result_metadata.get("companies_created"),
         "companies_updated": result_metadata.get("companies_updated"),

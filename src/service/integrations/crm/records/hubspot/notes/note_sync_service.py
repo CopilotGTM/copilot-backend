@@ -19,6 +19,7 @@ from src.service.integrations.crm.records.hubspot.notes.note_normalizer import n
 from src.service.integrations.crm.records.hubspot.notes.note_types import (
     ActivityDimensionHit,
     NoteSyncResult,
+    NoteWriteResult,
 )
 from src.service.integrations.crm.records.hubspot.notes.note_writer import HubSpotNoteWriter
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -29,6 +30,8 @@ logger = get_logger(__name__)
 
 @dataclass(slots=True)
 class HubSpotNoteSyncContext:
+    """Provider token context loaded from an org-scoped HubSpot integration row."""
+
     token_info: IntegrationTokenInfo
 
 
@@ -37,6 +40,13 @@ class NoteSyncConfigurationError(ValueError):
 
 
 class HubSpotNoteRecordSyncService:
+    """Coordinate full and single-record HubSpot note writes.
+
+    Full sync callers fetch every note and may deactivate missing rows. The
+    incremental repair path calls `persist_raw_note()` with one full snapshot,
+    which deliberately avoids deactivating unrelated activities.
+    """
+
     PROVIDER = "hubspot"
     OBJECT_TYPE = "note"
 
@@ -46,8 +56,11 @@ class HubSpotNoteRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> NoteSyncResult:
+        """Fetch all HubSpot notes for an integration and persist an active snapshot."""
         started_at = datetime.now(UTC)
 
+        # Load credentials in a short DB session, then release it before the
+        # provider scan so a slow HubSpot page cannot hold a tenant connection.
         context = await self._load_context(organisation_id, integration_id)
         raw_notes = await HubSpotNotesFetcher(token_info=context.token_info).fetch_all()
         normalized, skipped_malformed = normalize_notes(raw_notes)
@@ -98,6 +111,32 @@ class HubSpotNoteRecordSyncService:
         )
         return result
 
+    async def persist_raw_note(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_note: dict,
+    ):
+        """Normalize and persist one HubSpot note snapshot from incremental repair."""
+        normalized, skipped_malformed = normalize_notes([raw_note])
+        if not normalized:
+            logger.warning(
+                "HubSpot note incremental payload was malformed",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "skipped_malformed": skipped_malformed,
+                },
+            )
+            return NoteWriteResult()
+
+        return await self._persist_single(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            note=normalized[0],
+        )
+
     async def _load_context(
         self,
         organisation_id: UUID,
@@ -108,6 +147,8 @@ class HubSpotNoteRecordSyncService:
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
             )
+            # The organisation predicate is the tenant trust boundary; queued
+            # worker payloads must not resolve integrations by external id alone.
             integration = (await session.execute(stmt)).scalar_one_or_none()
             if integration is None:
                 raise NoteSyncConfigurationError(
@@ -141,9 +182,41 @@ class HubSpotNoteRecordSyncService:
                 organisation_id=organisation_id,
                 integration_id=integration_id,
             )
+            # Dimension maps are loaded inside the same org session as the
+            # writer so note associations cannot link across tenant schemas.
             write_result = await writer.apply(
                 normalized=normalized,
                 all_external_ids=all_external_ids,
+                user_map=await self._load_user_map(session, organisation_id, integration_id),
+                deal_map=await self._load_deal_map(session, organisation_id, integration_id),
+                contact_map=await self._load_contact_map(session, organisation_id, integration_id),
+                company_map=await self._load_company_map(session, organisation_id, integration_id),
+            )
+            await session.commit()
+            return write_result
+
+        raise NoteSyncConfigurationError(
+            "Could not acquire org session for HubSpot note sync write"
+        )
+
+    async def _persist_single(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        note,
+    ):
+        async for session in acquire_org_async_session(organisation_id):
+            writer = HubSpotNoteWriter(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            # Single-record writes come from webhooks/incremental polling. They
+            # reuse the same association maps as full sync but do not mark other
+            # notes deleted just because they were absent from this one payload.
+            write_result = await writer.apply_single(
+                note=note,
                 user_map=await self._load_user_map(session, organisation_id, integration_id),
                 deal_map=await self._load_deal_map(session, organisation_id, integration_id),
                 contact_map=await self._load_contact_map(session, organisation_id, integration_id),

@@ -6,6 +6,12 @@ from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_company_record_sy
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_contact_record_sync_task import (
     sync_hubspot_contacts_task,
 )
+from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_core_incremental_all_orgs_task import (
+    sync_hubspot_core_incremental_all_orgs_task,
+)
+from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_core_incremental_task import (
+    sync_hubspot_core_incremental_task,
+)
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_deal_record_sync_task import (
     sync_hubspot_deals_task,
 )
@@ -14,6 +20,12 @@ from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_deal_schema_all_o
 )
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_deal_schema_task import (
     sync_hubspot_deal_schema_task,
+)
+from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_deletion_reconciliation_all_orgs_task import (
+    reconcile_hubspot_deletions_all_orgs_task,
+)
+from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_deletion_reconciliation_task import (
+    reconcile_hubspot_deletions_task,
 )
 from src.workers.integrations_worker.tasks.crm.hubspot.hubspot_initial_sync_failed_task import (
     mark_hubspot_initial_sync_failed_task,
@@ -77,6 +89,10 @@ __all__ = [
     "sync_hubspot_users_task",
     "sync_hubspot_companies_task",
     "sync_hubspot_contacts_task",
+    "sync_hubspot_core_incremental_all_orgs_task",
+    "sync_hubspot_core_incremental_task",
+    "reconcile_hubspot_deletions_all_orgs_task",
+    "reconcile_hubspot_deletions_task",
     "process_hubspot_webhook_event_task",
     "sync_hubspot_deals_task",
     "sync_hubspot_tasks_task",

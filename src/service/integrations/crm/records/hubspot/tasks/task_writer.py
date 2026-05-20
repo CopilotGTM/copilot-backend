@@ -1,3 +1,10 @@
+"""Write normalized HubSpot tasks into the shared CRM activity table.
+
+Called by both full task sync and single-record webhook/incremental refresh.
+The `deactivate_missing` switch is the safety boundary: full snapshots may
+soft-delete absent tasks, but single-record refreshes must only upsert one row.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -42,11 +49,56 @@ class HubSpotTaskWriter:
         contact_map: dict[str, ActivityDimensionHit],
         company_map: dict[str, ActivityDimensionHit],
     ) -> TaskWriteResult:
+        """Apply a full HubSpot task snapshot and soft-delete rows missing from it."""
+        return await self._apply(
+            normalized=normalized,
+            all_external_ids=all_external_ids,
+            user_map=user_map,
+            deal_map=deal_map,
+            contact_map=contact_map,
+            company_map=company_map,
+            deactivate_missing=True,
+        )
+
+    async def apply_single(
+        self,
+        *,
+        task: NormalizedHubSpotTask,
+        user_map: dict[str, ActivityDimensionHit],
+        deal_map: dict[str, ActivityDimensionHit],
+        contact_map: dict[str, ActivityDimensionHit],
+        company_map: dict[str, ActivityDimensionHit],
+    ) -> TaskWriteResult:
+        """Upsert one task without treating absent tasks as deleted."""
+        return await self._apply(
+            normalized=[task],
+            all_external_ids=[task.external_id],
+            user_map=user_map,
+            deal_map=deal_map,
+            contact_map=contact_map,
+            company_map=company_map,
+            deactivate_missing=False,
+        )
+
+    async def _apply(
+        self,
+        *,
+        normalized: list[NormalizedHubSpotTask],
+        all_external_ids: Iterable[str],
+        user_map: dict[str, ActivityDimensionHit],
+        deal_map: dict[str, ActivityDimensionHit],
+        contact_map: dict[str, ActivityDimensionHit],
+        company_map: dict[str, ActivityDimensionHit],
+        deactivate_missing: bool,
+    ) -> TaskWriteResult:
         result = TaskWriteResult()
         now = datetime.now(UTC)
         existing_by_external = await self._load_existing_rows()
 
         for task in normalized:
+            # Resolve associations before the write so missing dimensions are
+            # counted but do not block task ingestion; later syncs can repair
+            # the links once the related objects arrive.
             owner_hit = self._resolve_hit(
                 task.owner_external_id,
                 user_map,
@@ -95,6 +147,11 @@ class HubSpotTaskWriter:
                 result.tasks_created += 1
                 continue
 
+            if _is_stale_task(existing, task):
+                existing.last_seen_at = now
+                result.tasks_skipped_stale += 1
+                continue
+
             was_deleted = bool(existing.is_deleted)
             self._apply_updates(
                 existing,
@@ -112,13 +169,17 @@ class HubSpotTaskWriter:
             else:
                 result.tasks_updated += 1
 
-        snapshot_external_ids = set(all_external_ids)
-        for external_id, row in existing_by_external.items():
-            if external_id in snapshot_external_ids:
-                continue
-            if not row.is_deleted:
-                row.is_deleted = True
-                result.tasks_deactivated += 1
+        if deactivate_missing:
+            # Only full sync owns tombstoning. Incremental and webhook refreshes
+            # pass one object at a time, so using their payload as a complete
+            # snapshot would incorrectly delete every unrelated task.
+            snapshot_external_ids = set(all_external_ids)
+            for external_id, row in existing_by_external.items():
+                if external_id in snapshot_external_ids:
+                    continue
+                if not row.is_deleted:
+                    row.is_deleted = True
+                    result.tasks_deactivated += 1
 
         await self.session.flush()
         logger.info(
@@ -130,6 +191,7 @@ class HubSpotTaskWriter:
                 "tasks_updated": result.tasks_updated,
                 "tasks_reactivated": result.tasks_reactivated,
                 "tasks_deactivated": result.tasks_deactivated,
+                "tasks_skipped_stale": result.tasks_skipped_stale,
                 "unresolved_owner_link": result.unresolved_owner_link,
                 "unresolved_deal_link": result.unresolved_deal_link,
                 "unresolved_contact_link": result.unresolved_contact_link,
@@ -281,3 +343,12 @@ class HubSpotTaskWriter:
         row.properties = task.properties
         row.metrics = {}
         row.data_payload = task.data_payload
+
+
+def _is_stale_task(row: CRMActivity, task: NormalizedHubSpotTask) -> bool:
+    """Return whether a provider snapshot is older than the local active row."""
+    if row.source_modified_at is None or task.source_modified_at is None:
+        return False
+    if bool(row.is_deleted):
+        return False
+    return row.source_modified_at >= task.source_modified_at
