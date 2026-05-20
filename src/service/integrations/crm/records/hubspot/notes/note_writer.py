@@ -1,3 +1,10 @@
+"""Write normalized HubSpot notes into the shared CRM activity table.
+
+Called by both full note sync and single-record webhook/incremental refresh.
+The `deactivate_missing` switch is the safety boundary: full snapshots may
+soft-delete absent notes, but single-record refreshes must only upsert one row.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -42,11 +49,56 @@ class HubSpotNoteWriter:
         contact_map: dict[str, ActivityDimensionHit],
         company_map: dict[str, ActivityDimensionHit],
     ) -> NoteWriteResult:
+        """Apply a full HubSpot note snapshot and soft-delete rows missing from it."""
+        return await self._apply(
+            normalized=normalized,
+            all_external_ids=all_external_ids,
+            user_map=user_map,
+            deal_map=deal_map,
+            contact_map=contact_map,
+            company_map=company_map,
+            deactivate_missing=True,
+        )
+
+    async def apply_single(
+        self,
+        *,
+        note: NormalizedHubSpotNote,
+        user_map: dict[str, ActivityDimensionHit],
+        deal_map: dict[str, ActivityDimensionHit],
+        contact_map: dict[str, ActivityDimensionHit],
+        company_map: dict[str, ActivityDimensionHit],
+    ) -> NoteWriteResult:
+        """Upsert one note without treating absent notes as deleted."""
+        return await self._apply(
+            normalized=[note],
+            all_external_ids=[note.external_id],
+            user_map=user_map,
+            deal_map=deal_map,
+            contact_map=contact_map,
+            company_map=company_map,
+            deactivate_missing=False,
+        )
+
+    async def _apply(
+        self,
+        *,
+        normalized: list[NormalizedHubSpotNote],
+        all_external_ids: Iterable[str],
+        user_map: dict[str, ActivityDimensionHit],
+        deal_map: dict[str, ActivityDimensionHit],
+        contact_map: dict[str, ActivityDimensionHit],
+        company_map: dict[str, ActivityDimensionHit],
+        deactivate_missing: bool,
+    ) -> NoteWriteResult:
         result = NoteWriteResult()
         now = datetime.now(UTC)
         existing_by_external = await self._load_existing_rows()
 
         for note in normalized:
+            # Resolve associations before the write so missing dimensions are
+            # counted but do not block note ingestion; later syncs can repair
+            # the links once the related objects arrive.
             owner_hit = self._resolve_hit(
                 note.owner_external_id, user_map, result, field_name="owner"
             )
@@ -81,6 +133,11 @@ class HubSpotNoteWriter:
                 result.notes_created += 1
                 continue
 
+            if _is_stale_note(existing, note):
+                existing.last_seen_at = now
+                result.notes_skipped_stale += 1
+                continue
+
             was_deleted = bool(existing.is_deleted)
             self._apply_updates(
                 existing,
@@ -98,13 +155,17 @@ class HubSpotNoteWriter:
             else:
                 result.notes_updated += 1
 
-        snapshot_external_ids = set(all_external_ids)
-        for external_id, row in existing_by_external.items():
-            if external_id in snapshot_external_ids:
-                continue
-            if not row.is_deleted:
-                row.is_deleted = True
-                result.notes_deactivated += 1
+        if deactivate_missing:
+            # Only full sync owns tombstoning. Incremental and webhook refreshes
+            # pass one object at a time, so using their payload as a complete
+            # snapshot would incorrectly delete every unrelated note.
+            snapshot_external_ids = set(all_external_ids)
+            for external_id, row in existing_by_external.items():
+                if external_id in snapshot_external_ids:
+                    continue
+                if not row.is_deleted:
+                    row.is_deleted = True
+                    result.notes_deactivated += 1
 
         await self.session.flush()
         logger.info(
@@ -116,6 +177,7 @@ class HubSpotNoteWriter:
                 "notes_updated": result.notes_updated,
                 "notes_reactivated": result.notes_reactivated,
                 "notes_deactivated": result.notes_deactivated,
+                "notes_skipped_stale": result.notes_skipped_stale,
                 "unresolved_owner_link": result.unresolved_owner_link,
                 "unresolved_deal_link": result.unresolved_deal_link,
                 "unresolved_contact_link": result.unresolved_contact_link,
@@ -261,3 +323,12 @@ class HubSpotNoteWriter:
         row.properties = note.properties
         row.metrics = {}
         row.data_payload = note.data_payload
+
+
+def _is_stale_note(row: CRMActivity, note: NormalizedHubSpotNote) -> bool:
+    """Return whether a provider snapshot is older than the local active row."""
+    if row.source_modified_at is None or note.source_modified_at is None:
+        return False
+    if bool(row.is_deleted):
+        return False
+    return row.source_modified_at >= note.source_modified_at

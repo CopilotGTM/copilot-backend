@@ -1,3 +1,9 @@
+"""Regression tests for HubSpot note writer snapshot boundaries.
+
+These lock the difference between full snapshots, which may soft-delete absent
+rows, and single-record incremental refreshes, which must only upsert one note.
+"""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -32,7 +38,57 @@ def _normalized_note(*, external_id: str, deal_external_id: str | None) -> Norma
 
 
 @pytest.mark.asyncio
+async def test_single_record_apply_does_not_soft_delete_unrelated_rows() -> None:
+    """Single-record incremental refresh must not tombstone unrelated notes."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    updated = CRMActivity(
+        activity_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="note-1",
+        activity_type=CRMActivityType.NOTE.value,
+        is_deleted=False,
+    )
+    unrelated = CRMActivity(
+        activity_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="note-2",
+        activity_type=CRMActivityType.NOTE.value,
+        is_deleted=False,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = HubSpotNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
+        return_value={"note-1": updated, "note-2": unrelated}
+    )
+
+    result = await writer.apply_single(
+        note=_normalized_note(external_id="note-1", deal_external_id=None),
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+    )
+
+    assert result.notes_updated == 1
+    assert result.notes_deactivated == 0
+    assert unrelated.is_deleted is False
+
+
+@pytest.mark.asyncio
 async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() -> None:
+    """Full snapshots may reactivate seen notes and soft-delete missing ones."""
     organisation_id = uuid4()
     integration_id = uuid4()
     deal_id = uuid4()

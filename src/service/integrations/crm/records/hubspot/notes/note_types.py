@@ -1,3 +1,9 @@
+"""Typed payloads for HubSpot note sync and incremental upserts.
+
+Notes share the `crm_activities` table with tasks, but keep separate result
+types so sync metadata and writer counters stay explicit per object family.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,6 +16,8 @@ from src.service.integrations.crm.records.common.record_sync_types import Record
 
 @dataclass(slots=True, frozen=True)
 class ActivityDimensionHit:
+    """Resolved local dimension row for a HubSpot note association."""
+
     internal_id: UUID
     name: str | None = None
     email: str | None = None
@@ -17,6 +25,8 @@ class ActivityDimensionHit:
 
 @dataclass(slots=True, frozen=True)
 class NormalizedHubSpotNote:
+    """HubSpot note snapshot after provider-specific fields are normalized."""
+
     external_id: str
     subject: str | None
     body: str | None
@@ -35,10 +45,13 @@ class NormalizedHubSpotNote:
 
 @dataclass(slots=True)
 class NoteWriteResult:
+    """Database write counters for one note writer application."""
+
     notes_created: int = 0
     notes_updated: int = 0
     notes_reactivated: int = 0
     notes_deactivated: int = 0
+    notes_skipped_stale: int = 0
     unresolved_owner_link: int = 0
     unresolved_deal_link: int = 0
     unresolved_contact_link: int = 0
@@ -47,11 +60,14 @@ class NoteWriteResult:
 
 @dataclass(slots=True)
 class NoteSyncResult(RecordSyncResult):
+    """Worker-facing summary for a full HubSpot note sync run."""
+
     fetched_notes: int = 0
     notes_created: int = 0
     notes_updated: int = 0
     notes_reactivated: int = 0
     notes_deactivated: int = 0
+    notes_skipped_stale: int = 0
     unresolved_owner_link: int = 0
     unresolved_deal_link: int = 0
     unresolved_contact_link: int = 0
@@ -62,6 +78,7 @@ class NoteSyncResult(RecordSyncResult):
     counts: dict[str, int] = field(default_factory=dict)
 
     def to_metadata(self) -> dict[str, Any]:
+        """Serialize note-specific counters into `connection_metadata.record_sync`."""
         payload = self.base_metadata()
         payload.update(
             {
@@ -70,6 +87,7 @@ class NoteSyncResult(RecordSyncResult):
                 "notes_updated": self.notes_updated,
                 "notes_reactivated": self.notes_reactivated,
                 "notes_deactivated": self.notes_deactivated,
+                "notes_skipped_stale": self.notes_skipped_stale,
                 "unresolved_owner_link": self.unresolved_owner_link,
                 "unresolved_deal_link": self.unresolved_deal_link,
                 "unresolved_contact_link": self.unresolved_contact_link,

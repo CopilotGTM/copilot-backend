@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -160,3 +162,88 @@ async def test_single_apply_resolves_owner_and_counts_unresolved_owner() -> None
     assert unresolved.unresolved_owner_link == 1
     assert created_rows[0].owner_id == owner_id
     assert created_rows[1].owner_id is None
+
+
+@pytest.mark.asyncio
+async def test_single_apply_skips_stale_active_company_without_overwriting_snapshot() -> None:
+    """Older fetched company payloads must not overwrite newer webhook-written rows."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMCompany(
+        company_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Webhook latest Acme",
+        source_modified_at=datetime(2026, 5, 3, tzinfo=UTC),
+        is_active=True,
+        is_deleted=False,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotCompanyWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+
+    result = await writer.apply_single(
+        company=replace(
+            _normalized_company(external_id="123", name="Older incremental Acme"),
+            source_modified_at=datetime(2026, 5, 2, tzinfo=UTC),
+        ),
+        owner_map={},
+    )
+
+    assert result.companies_created == 0
+    assert result.companies_updated == 0
+    assert result.companies_skipped_stale == 1
+    assert result.skipped_stale_external_ids == {"123"}
+    assert existing.name == "Webhook latest Acme"
+    assert existing.source_modified_at == datetime(2026, 5, 3, tzinfo=UTC)
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_single_apply_reactivates_soft_deleted_company_even_when_timestamp_matches() -> None:
+    """Freshness skip must not block HubSpot restore/upsert reactivation."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    source_modified_at = datetime(2026, 5, 2, tzinfo=UTC)
+    existing = CRMCompany(
+        company_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Deleted Acme",
+        source_modified_at=source_modified_at,
+        is_active=False,
+        is_deleted=True,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotCompanyWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+
+    result = await writer.apply_single(
+        company=replace(
+            _normalized_company(external_id="123", name="Restored Acme"),
+            source_modified_at=source_modified_at,
+        ),
+        owner_map={},
+    )
+
+    assert result.companies_created == 0
+    assert result.companies_reactivated == 1
+    assert result.companies_skipped_stale == 0
+    assert existing.is_deleted is False
+    assert existing.is_active is True
+    assert existing.name == "Restored Acme"
+    session.add.assert_not_called()

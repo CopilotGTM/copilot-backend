@@ -63,6 +63,8 @@ class HubSpotCompanyRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> CompanySyncResult:
+        """Run the main execution path for this service or task."""
+
         started_at = datetime.now(UTC)
 
         token_info = await self._load_token_info(organisation_id, integration_id)
@@ -90,6 +92,7 @@ class HubSpotCompanyRecordSyncService:
             companies_updated=write_result.companies_updated,
             companies_reactivated=write_result.companies_reactivated,
             companies_deactivated=write_result.companies_deactivated,
+            companies_skipped_stale=write_result.companies_skipped_stale,
             unresolved_owner_link=write_result.unresolved_owner_link,
             skipped_malformed=skipped_malformed,
             deal_backfill_rows_updated=backfill_result["rows_updated"],
@@ -191,6 +194,8 @@ class HubSpotCompanyRecordSyncService:
             backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
             mapping: dict[str, tuple[UUID, str | None, str | None, None]] = {}
             for company in normalized:
+                if company.external_id in write_result.skipped_stale_external_ids:
+                    continue
                 pk = company_map.get(company.external_id)
                 if pk is None:
                     # Writer just inserted/updated this row and session flushed —
@@ -250,6 +255,10 @@ class HubSpotCompanyRecordSyncService:
                 integration_id=integration_id,
             )
             write_result = await writer.apply_single(company=company, owner_map=owner_map)
+
+            if company.external_id in write_result.skipped_stale_external_ids:
+                await session.commit()
+                return write_result, {"rows_updated": 0, "per_op": {}}
 
             # Reload after flush so the webhook-created/reactivated company_id is
             # available for deals that only had company_external_id.

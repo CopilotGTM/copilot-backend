@@ -391,6 +391,12 @@ integrationsCronJobs:
       schedule: "*/15 * * * *"
     - name: sync-email-all-orgs
       schedule: "*/30 * * * *"
+    - name: sync-hubspot-core-incremental-all-orgs
+      resourceName: sync-hubspot-core-incremental
+      schedule: "*/10 * * * *"
+    - name: reconcile-hubspot-deletions-all-orgs
+      resourceName: reconcile-hubspot-deletions
+      schedule: "17 */12 * * *"
 
 knowledgeCronJobs:
   enabled: true

@@ -68,13 +68,21 @@ class HubSpotCompanyWriter:
         existing_by_external = await self._load_existing_rows()
 
         for company in normalized:
-            resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
             existing = existing_by_external.get(company.external_id)
             if existing is None:
+                resolved_owner_id = self._resolve_owner_id(
+                    company.owner_external_id, owner_map, result
+                )
                 row = self._new_row(company, resolved_owner_id, now=now)
                 self.session.add(row)
                 result.companies_created += 1
+            elif _has_same_or_newer_source_modified(existing, company):
+                result.companies_skipped_stale += 1
+                result.skipped_stale_external_ids.add(company.external_id)
             else:
+                resolved_owner_id = self._resolve_owner_id(
+                    company.owner_external_id, owner_map, result
+                )
                 was_deleted = bool(existing.is_deleted)
                 was_active = bool(existing.is_active)
                 self._apply_updates(existing, company, resolved_owner_id, now=now)
@@ -102,6 +110,7 @@ class HubSpotCompanyWriter:
                 "companies_updated": result.companies_updated,
                 "companies_reactivated": result.companies_reactivated,
                 "companies_deactivated": result.companies_deactivated,
+                "companies_skipped_stale": result.companies_skipped_stale,
                 "unresolved_owner_link": result.unresolved_owner_link,
             },
         )
@@ -123,13 +132,17 @@ class HubSpotCompanyWriter:
         result = CompanyWriteResult()
         now = datetime.now(UTC)
         existing_by_external = await self._load_existing_rows()
-        resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
         existing = existing_by_external.get(company.external_id)
         if existing is None:
+            resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
             row = self._new_row(company, resolved_owner_id, now=now)
             self.session.add(row)
             result.companies_created += 1
+        elif _has_same_or_newer_source_modified(existing, company):
+            result.companies_skipped_stale += 1
+            result.skipped_stale_external_ids.add(company.external_id)
         else:
+            resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
             was_deleted = bool(existing.is_deleted)
             was_active = bool(existing.is_active)
             self._apply_updates(existing, company, resolved_owner_id, now=now)
@@ -149,6 +162,7 @@ class HubSpotCompanyWriter:
                 "companies_created": result.companies_created,
                 "companies_updated": result.companies_updated,
                 "companies_reactivated": result.companies_reactivated,
+                "companies_skipped_stale": result.companies_skipped_stale,
                 "unresolved_owner_link": result.unresolved_owner_link,
             },
         )
@@ -258,3 +272,24 @@ class HubSpotCompanyWriter:
         row.last_seen_at = now
         row.properties = company.properties
         row.data_payload = company.data_payload
+
+
+def _has_same_or_newer_source_modified(
+    row: CRMCompany,
+    company: NormalizedHubSpotCompany,
+) -> bool:
+    """Return True when the active local row already has this provider state."""
+    if (
+        row.is_deleted
+        or not row.is_active
+        or row.source_modified_at is None
+        or company.source_modified_at is None
+    ):
+        return False
+    return _as_utc(row.source_modified_at) >= _as_utc(company.source_modified_at)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

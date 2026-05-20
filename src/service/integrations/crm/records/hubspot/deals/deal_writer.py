@@ -99,6 +99,8 @@ class HubSpotDealWriter:
                 row = self._new_row(deal, resolved, now=now)
                 self.session.add(row)
                 result.deals_created += 1
+            elif _has_same_or_newer_source_modified(existing, deal):
+                result.deals_skipped_stale += 1
             else:
                 # Existing rows include soft-deleted tombstones. Updating the
                 # same row preserves local FKs while reactivating restored deals.
@@ -113,6 +115,7 @@ class HubSpotDealWriter:
                 "integration_id": str(self.integration_id),
                 "deals_created": result.deals_created,
                 "deals_updated": result.deals_updated,
+                "deals_skipped_stale": result.deals_skipped_stale,
                 "unresolved_pipeline_link": result.unresolved_pipeline_link,
                 "unresolved_stage_link": result.unresolved_stage_link,
                 "unresolved_owner_link": result.unresolved_owner_link,
@@ -353,6 +356,22 @@ def _lookup(external_id: str | None, table: dict[str, DimensionHit]) -> Dimensio
     if not external_id:
         return None
     return table.get(external_id)
+
+
+def _has_same_or_newer_source_modified(
+    row: CRMDeal,
+    deal: NormalizedHubSpotDeal,
+) -> bool:
+    """Return True when the active local row already has this provider state."""
+    if row.is_deleted or row.source_modified_at is None or deal.source_modified_at is None:
+        return False
+    return _as_utc(row.source_modified_at) >= _as_utc(deal.source_modified_at)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _decimal_to_float(value: object) -> float | None:

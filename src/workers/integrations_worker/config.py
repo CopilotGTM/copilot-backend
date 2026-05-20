@@ -1,3 +1,5 @@
+"""Integration flow logic for config."""
+
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -113,6 +115,28 @@ TASK_LIMITS: dict[str, dict] = {
         "soft": 120,
         "hard": 180,
         "retries": 0,
+    },
+    "integrations.sync_hubspot_core_incremental_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.sync_hubspot_core_incremental": {
+        "soft": 600,
+        "hard": 660,
+        "retries": 2,
+        "retry_delay": 60,
+    },
+    "integrations.reconcile_hubspot_deletions_all_orgs": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.reconcile_hubspot_deletions": {
+        "soft": 1800,
+        "hard": 1860,
+        "retries": 2,
+        "retry_delay": 120,
     },
     "integrations.sync_salesforce_opportunity_schema": {
         "soft": 900,
@@ -364,6 +388,22 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.sync_hubspot_deal_schema": {
                 "queue": "integrations_priority",  # Priority queue for manual / post-connect triggers
                 "routing_key": "integrations_priority",
+            },
+            "integrations.sync_hubspot_core_incremental_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_hubspot_core_incremental": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.reconcile_hubspot_deletions_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.reconcile_hubspot_deletions": {
+                "queue": "integrations",
+                "routing_key": "integrations",
             },
             "integrations.sync_salesforce_opportunity_schema_all_orgs": {
                 "queue": "integrations",

@@ -37,14 +37,13 @@ def test_hubspot_webhook_handles_contact_privacy_deletion(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
     )
-
     response = client.post(
         "/users/integrations/hubspot/webhook",
         content=json.dumps(
@@ -96,12 +95,16 @@ def test_hubspot_webhook_queues_deal_creation(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
     )
 
     response = client.post(
@@ -124,6 +127,7 @@ def test_hubspot_webhook_queues_deal_creation(monkeypatch) -> None:
 
     assert response.status_code == 200
     send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
     kwargs = send_task.await_args.kwargs["kwargs"]
     assert kwargs["subscription_type"] == "deal.creation"
     assert kwargs["portal_id"] == "123"
@@ -140,12 +144,16 @@ def test_hubspot_webhook_queues_company_creation(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
     )
 
     response = client.post(
@@ -168,8 +176,58 @@ def test_hubspot_webhook_queues_company_creation(monkeypatch) -> None:
 
     assert response.status_code == 200
     send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
     kwargs = send_task.await_args.kwargs["kwargs"]
     assert kwargs["subscription_type"] == "company.creation"
+    assert kwargs["portal_id"] == "123"
+    assert kwargs["object_id"] == "456"
+
+
+def test_hubspot_webhook_queues_contact_creation(monkeypatch) -> None:
+    """Contact creation events are accepted and queued to the integrations worker."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "contact.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "contact.creation"
     assert kwargs["portal_id"] == "123"
     assert kwargs["object_id"] == "456"
 
@@ -184,7 +242,7 @@ def test_hubspot_webhook_ignores_unsupported_company_event(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
 
@@ -220,7 +278,7 @@ def test_hubspot_webhook_ignores_unselected_company_property_change(monkeypatch)
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
 
@@ -247,6 +305,43 @@ def test_hubspot_webhook_ignores_unselected_company_property_change(monkeypatch)
     send_task.assert_not_awaited()
 
 
+def test_hubspot_webhook_ignores_unselected_deal_property_change(monkeypatch) -> None:
+    """Deal property changes outside the approved property list are not queued."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "deal.propertyChange",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                    "propertyName": "unmapped_custom_property",
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
 def test_hubspot_webhook_coalesces_deal_creation_property_change_burst(monkeypatch) -> None:
     """A create payload with immediate deal property changes should enqueue once."""
     client = _client()
@@ -257,12 +352,16 @@ def test_hubspot_webhook_coalesces_deal_creation_property_change_burst(monkeypat
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
     )
 
     response = client.post(
@@ -299,9 +398,246 @@ def test_hubspot_webhook_coalesces_deal_creation_property_change_burst(monkeypat
 
     assert response.status_code == 200
     send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
     kwargs = send_task.await_args.kwargs["kwargs"]
     assert kwargs["subscription_type"] == "deal.creation"
     assert kwargs["event_id"] == "222"
+
+
+def test_hubspot_webhook_deal_deletion_wins_over_creation_in_same_batch(
+    monkeypatch,
+) -> None:
+    """A same-batch deletion is the final state and should replace creation."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+    claim = AsyncMock()
+    released: list[object] = []
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        claim,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._release_refresh_pending",
+        lambda event: released.append(event),
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "deal.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 111,
+                },
+                {
+                    "subscriptionType": "deal.deletion",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 222,
+                },
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    claim.assert_not_called()
+    assert len(released) == 1
+    send_task.assert_awaited_once()
+    assert "countdown" not in send_task.await_args.kwargs
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "deal.deletion"
+    assert kwargs["event_id"] == "222"
+
+
+def test_hubspot_webhook_debounces_separate_deal_property_change_requests(
+    monkeypatch,
+) -> None:
+    """Separate property-change requests for one deal schedule only one refresh."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+    claimed_keys: set[str] = set()
+
+    def claim_refresh(event) -> bool:
+        """Perform the database/session operation needed by this test harness."""
+
+        key = f"{event.subscription_type}:{event.portal_id}:{event.object_id}"
+        if key in claimed_keys:
+            return False
+        claimed_keys.add(key)
+        return True
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        claim_refresh,
+    )
+
+    for event_id, property_name in [(111, "dealname"), (222, "amount")]:
+        response = client.post(
+            "/users/integrations/hubspot/webhook",
+            content=json.dumps(
+                [
+                    {
+                        "subscriptionType": "deal.propertyChange",
+                        "portalId": 123,
+                        "objectId": 456,
+                        "eventId": event_id,
+                        "propertyName": property_name,
+                    }
+                ]
+            ),
+            headers={
+                "X-HubSpot-Signature-v3": "sig",
+                "X-HubSpot-Request-Timestamp": "123",
+            },
+        )
+        assert response.status_code == 200
+
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "deal.propertyChange"
+    assert kwargs["event_id"] == "111"
+
+
+def test_hubspot_webhook_releases_deal_refresh_claim_when_enqueue_fails(
+    monkeypatch,
+) -> None:
+    """Broker failures release deal refresh claims so a retry can schedule later."""
+    client = _client(raise_server_exceptions=False)
+    send_task = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+    released: list[object] = []
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._release_refresh_pending",
+        lambda event: released.append(event),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._release_dedupe_claim",
+        lambda *_: None,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "deal.propertyChange",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                    "propertyName": "amount",
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 500
+    assert len(released) == 1
+
+
+def test_hubspot_webhook_deal_deletion_is_not_debounced(monkeypatch) -> None:
+    """Deal deletion events process immediately and clear any pending refresh."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+    claim = AsyncMock()
+    released: list[object] = []
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        claim,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._release_refresh_pending",
+        lambda event: released.append(event),
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "deal.deletion",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    claim.assert_not_called()
+    assert len(released) == 1
+    send_task.assert_awaited_once()
+    assert "countdown" not in send_task.await_args.kwargs
+    assert send_task.await_args.kwargs["kwargs"]["subscription_type"] == "deal.deletion"
 
 
 def test_hubspot_webhook_coalesces_company_creation_property_change_burst(monkeypatch) -> None:
@@ -314,12 +650,16 @@ def test_hubspot_webhook_coalesces_company_creation_property_change_burst(monkey
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
     )
 
     response = client.post(
@@ -349,8 +689,126 @@ def test_hubspot_webhook_coalesces_company_creation_property_change_burst(monkey
 
     assert response.status_code == 200
     send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
     kwargs = send_task.await_args.kwargs["kwargs"]
     assert kwargs["subscription_type"] == "company.creation"
+    assert kwargs["event_id"] == "222"
+
+
+def test_hubspot_webhook_debounces_separate_company_property_change_requests(
+    monkeypatch,
+) -> None:
+    """Separate property-change requests for one company schedule only one refresh."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+    claimed_keys: set[str] = set()
+
+    def claim_refresh(event) -> bool:
+        """Perform the database/session operation needed by this test harness."""
+
+        key = f"{event.subscription_type}:{event.portal_id}:{event.object_id}"
+        if key in claimed_keys:
+            return False
+        claimed_keys.add(key)
+        return True
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        claim_refresh,
+    )
+
+    for event_id, property_name in [(111, "name"), (222, "domain")]:
+        response = client.post(
+            "/users/integrations/hubspot/webhook",
+            content=json.dumps(
+                [
+                    {
+                        "subscriptionType": "company.propertyChange",
+                        "portalId": 123,
+                        "objectId": 456,
+                        "eventId": event_id,
+                        "propertyName": property_name,
+                    }
+                ]
+            ),
+            headers={
+                "X-HubSpot-Signature-v3": "sig",
+                "X-HubSpot-Request-Timestamp": "123",
+            },
+        )
+        assert response.status_code == 200
+
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "company.propertyChange"
+    assert kwargs["event_id"] == "111"
+
+
+def test_hubspot_webhook_coalesces_contact_creation_property_change_burst(monkeypatch) -> None:
+    """A create payload with immediate contact property changes should enqueue once."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "contact.propertyChange",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 111,
+                    "propertyName": "email",
+                },
+                {
+                    "subscriptionType": "contact.creation",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 222,
+                },
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "contact.creation"
     assert kwargs["event_id"] == "222"
 
 
@@ -364,12 +822,16 @@ def test_hubspot_webhook_does_not_coalesce_deal_and_company_events(monkeypatch) 
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
     )
 
     response = client.post(
@@ -416,11 +878,11 @@ def test_hubspot_webhook_ignores_duplicate_event(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: True,
     )
 
@@ -456,11 +918,11 @@ def test_hubspot_webhook_ignores_duplicate_company_event(monkeypatch) -> None:
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: True,
     )
 
@@ -499,15 +961,15 @@ def test_hubspot_webhook_releases_dedupe_claim_when_enqueue_fails(monkeypatch) -
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes.send_integrations_task_async",
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
         send_task,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._is_duplicate_event",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
         lambda *_: False,
     )
     monkeypatch.setattr(
-        "src.api.routers.integrations.hubspot_webhook_routes._release_dedupe_claim",
+        "src.service.integrations.webhooks.hubspot.ingestion_service._release_dedupe_claim",
         lambda event, raw_body: release_calls.append((event, raw_body)),
     )
 

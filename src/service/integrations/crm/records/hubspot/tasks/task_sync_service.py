@@ -19,6 +19,7 @@ from src.service.integrations.crm.records.hubspot.tasks.task_normalizer import n
 from src.service.integrations.crm.records.hubspot.tasks.task_types import (
     ActivityDimensionHit,
     TaskSyncResult,
+    TaskWriteResult,
 )
 from src.service.integrations.crm.records.hubspot.tasks.task_writer import HubSpotTaskWriter
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -29,6 +30,8 @@ logger = get_logger(__name__)
 
 @dataclass(slots=True)
 class HubSpotTaskSyncContext:
+    """Provider token context loaded from an org-scoped HubSpot integration row."""
+
     token_info: IntegrationTokenInfo
 
 
@@ -37,6 +40,13 @@ class TaskSyncConfigurationError(ValueError):
 
 
 class HubSpotTaskRecordSyncService:
+    """Coordinate full and single-record HubSpot task writes.
+
+    Full sync callers fetch every task and may deactivate missing rows. The
+    incremental repair path calls `persist_raw_task()` with one full snapshot,
+    which deliberately avoids deactivating unrelated activities.
+    """
+
     PROVIDER = "hubspot"
     OBJECT_TYPE = "task"
 
@@ -46,8 +56,11 @@ class HubSpotTaskRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> TaskSyncResult:
+        """Fetch all HubSpot tasks for an integration and persist an active snapshot."""
         started_at = datetime.now(UTC)
 
+        # Load credentials in a short DB session, then release it before the
+        # provider scan so a slow HubSpot page cannot hold a tenant connection.
         context = await self._load_context(organisation_id, integration_id)
         raw_tasks = await HubSpotTasksFetcher(token_info=context.token_info).fetch_all()
         normalized, skipped_malformed = normalize_tasks(raw_tasks)
@@ -98,6 +111,32 @@ class HubSpotTaskRecordSyncService:
         )
         return result
 
+    async def persist_raw_task(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_task: dict,
+    ):
+        """Normalize and persist one HubSpot task snapshot from incremental repair."""
+        normalized, skipped_malformed = normalize_tasks([raw_task])
+        if not normalized:
+            logger.warning(
+                "HubSpot task incremental payload was malformed",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "skipped_malformed": skipped_malformed,
+                },
+            )
+            return TaskWriteResult()
+
+        return await self._persist_single(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            task=normalized[0],
+        )
+
     async def _load_context(
         self,
         organisation_id: UUID,
@@ -108,6 +147,8 @@ class HubSpotTaskRecordSyncService:
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
             )
+            # The organisation predicate is the tenant trust boundary; queued
+            # worker payloads must not resolve integrations by external id alone.
             integration = (await session.execute(stmt)).scalar_one_or_none()
             if integration is None:
                 raise TaskSyncConfigurationError(
@@ -141,9 +182,41 @@ class HubSpotTaskRecordSyncService:
                 organisation_id=organisation_id,
                 integration_id=integration_id,
             )
+            # Dimension maps are loaded inside the same org session as the
+            # writer so task associations cannot link across tenant schemas.
             write_result = await writer.apply(
                 normalized=normalized,
                 all_external_ids=all_external_ids,
+                user_map=await self._load_user_map(session, organisation_id, integration_id),
+                deal_map=await self._load_deal_map(session, organisation_id, integration_id),
+                contact_map=await self._load_contact_map(session, organisation_id, integration_id),
+                company_map=await self._load_company_map(session, organisation_id, integration_id),
+            )
+            await session.commit()
+            return write_result
+
+        raise TaskSyncConfigurationError(
+            "Could not acquire org session for HubSpot task sync write"
+        )
+
+    async def _persist_single(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        task,
+    ):
+        async for session in acquire_org_async_session(organisation_id):
+            writer = HubSpotTaskWriter(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            # Single-record writes come from webhooks/incremental polling. They
+            # reuse the same association maps as full sync but do not mark other
+            # tasks deleted just because they were absent from this one payload.
+            write_result = await writer.apply_single(
+                task=task,
                 user_map=await self._load_user_map(session, organisation_id, integration_id),
                 deal_map=await self._load_deal_map(session, organisation_id, integration_id),
                 contact_map=await self._load_contact_map(session, organisation_id, integration_id),

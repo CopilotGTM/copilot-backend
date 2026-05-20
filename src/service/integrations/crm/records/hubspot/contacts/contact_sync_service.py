@@ -64,6 +64,8 @@ class HubSpotContactRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> ContactSyncResult:
+        """Run the main execution path for this service or task."""
+
         started_at = datetime.now(UTC)
 
         token_info = await self._load_token_info(organisation_id, integration_id)
@@ -89,6 +91,8 @@ class HubSpotContactRecordSyncService:
             fetched_contacts=len(raw_contacts),
             contacts_created=write_result.contacts_created,
             contacts_updated=write_result.contacts_updated,
+            contacts_reactivated=write_result.contacts_reactivated,
+            contacts_skipped_stale=write_result.contacts_skipped_stale,
             unresolved_company_link=write_result.unresolved_company_link,
             unresolved_owner_link=write_result.unresolved_owner_link,
             skipped_malformed=skipped_malformed,
@@ -205,6 +209,21 @@ class HubSpotContactRecordSyncService:
 
         raise ContactSyncConfigurationError(
             "Could not acquire org session for contacts record sync write"
+        )
+
+    async def persist_raw_contact(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_contact: dict[str, Any],
+    ) -> tuple[Any, dict[str, Any]]:
+        """Normalize and persist one contact without invoking a full contact fetch."""
+        normalized, _ = normalize_contacts([raw_contact])
+        return await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=normalized,
         )
 
     async def _load_company_map(

@@ -131,6 +131,7 @@ def send_integrations_task(
     queue: str = "integrations",
     routing_key: str | None = None,
     headers: dict | None = None,
+    countdown: int | None = None,
 ) -> str:
     """
     Send a task to the integrations worker (synchronous version).
@@ -139,6 +140,10 @@ def send_integrations_task(
     """
     client = get_integrations_celery_client()
 
+    send_options: dict[str, Any] = {}
+    if countdown is not None:
+        send_options["countdown"] = countdown
+
     result = client.send_task(
         task_name,
         args=args or [],
@@ -146,6 +151,7 @@ def send_integrations_task(
         queue=queue,
         routing_key=routing_key or queue,
         headers=correlation_headers(headers),
+        **send_options,
     )
 
     return str(result.id)
@@ -182,6 +188,7 @@ async def send_integrations_task_async(
     queue: str = "integrations",
     routing_key: str | None = None,
     headers: dict | None = None,
+    countdown: int | None = None,
 ) -> str:
     """
     Send a task to the integrations worker (async version).
@@ -202,6 +209,7 @@ async def send_integrations_task_async(
         queue,
         routing_key,
         headers,
+        countdown,
     )
 
     return task_id

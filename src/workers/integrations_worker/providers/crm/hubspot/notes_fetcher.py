@@ -22,7 +22,7 @@ _BASE_URL = "https://api.hubapi.com/crm/v3/objects/notes"
 _DEFAULT_TIMEOUT = 30.0
 _PAGE_LIMIT = 100
 _MAX_PAGES = 2_000
-_DEFAULT_PROPERTIES: tuple[str, ...] = (
+HUBSPOT_NOTE_PROPERTIES: tuple[str, ...] = (
     "hs_note_body",
     "hubspot_owner_id",
     "hs_attachment_ids",
@@ -39,7 +39,7 @@ class HubSpotNotesFetcher:
         self,
         *,
         token_info: IntegrationTokenInfo,
-        properties: tuple[str, ...] = _DEFAULT_PROPERTIES,
+        properties: tuple[str, ...] = HUBSPOT_NOTE_PROPERTIES,
         associations: tuple[str, ...] = _DEFAULT_ASSOCIATIONS,
     ) -> None:
         self.token_info = token_info
@@ -47,6 +47,7 @@ class HubSpotNotesFetcher:
         self._associations = tuple(sorted(set(associations)))
 
     async def fetch_all(self) -> list[dict[str, Any]]:
+        """Fetch every current note page for full-sync active snapshots."""
         all_notes: list[dict[str, Any]] = []
         after: str | None = None
 

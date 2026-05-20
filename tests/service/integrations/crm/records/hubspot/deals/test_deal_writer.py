@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -105,4 +106,90 @@ async def test_writer_reactivates_soft_deleted_deal_instead_of_inserting_duplica
     assert result.deals_updated == 1
     assert existing.is_deleted is False
     assert existing.name == "Acme renewal"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_writer_skips_stale_active_deal_without_overwriting_local_snapshot() -> None:
+    """Older fetched HubSpot payloads must not overwrite newer webhook-written rows."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Webhook latest name",
+        source_modified_at=datetime(2026, 5, 3, tzinfo=UTC),
+        is_deleted=False,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = HubSpotDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+
+    stale_payload = replace(
+        _normalized_deal(external_id="123", name="Older incremental name"),
+        source_modified_at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    result = await writer.apply(normalized=[stale_payload], maps=_empty_maps())
+
+    assert result.deals_created == 0
+    assert result.deals_updated == 0
+    assert result.deals_skipped_stale == 1
+    assert existing.name == "Webhook latest name"
+    assert existing.source_modified_at == datetime(2026, 5, 3, tzinfo=UTC)
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_writer_reactivates_soft_deleted_deal_even_when_timestamp_matches() -> None:
+    """Freshness skip must not block HubSpot restore/upsert reactivation."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    source_modified_at = datetime(2026, 5, 2, tzinfo=UTC)
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Deleted deal",
+        source_modified_at=source_modified_at,
+        is_deleted=True,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = HubSpotDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[
+            replace(
+                _normalized_deal(external_id="123", name="Restored deal"),
+                source_modified_at=source_modified_at,
+            )
+        ],
+        maps=_empty_maps(),
+    )
+
+    assert result.deals_created == 0
+    assert result.deals_updated == 1
+    assert result.deals_skipped_stale == 0
+    assert existing.is_deleted is False
+    assert existing.name == "Restored deal"
     session.add.assert_not_called()

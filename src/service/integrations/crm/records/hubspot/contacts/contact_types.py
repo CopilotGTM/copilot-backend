@@ -70,6 +70,8 @@ class ContactWriteResult:
 
     contacts_created: int = 0
     contacts_updated: int = 0
+    contacts_reactivated: int = 0
+    contacts_skipped_stale: int = 0
     # How many contacts declared a company_external_id but failed resolution
     # against the live crm_companies snapshot (company archived, not yet
     # synced, or unknown). Row still persisted with company_id=NULL.
@@ -86,6 +88,8 @@ class ContactSyncResult(RecordSyncResult):
     fetched_contacts: int = 0
     contacts_created: int = 0
     contacts_updated: int = 0
+    contacts_reactivated: int = 0
+    contacts_skipped_stale: int = 0
     unresolved_company_link: int = 0
     unresolved_owner_link: int = 0
     skipped_malformed: int = 0
@@ -95,12 +99,16 @@ class ContactSyncResult(RecordSyncResult):
     error_message: str | None = None
 
     def to_metadata(self) -> dict[str, Any]:
+        """Build task-safe metadata from the result counters."""
+
         payload = self.base_metadata()
         payload.update(
             {
                 "fetched_contacts": self.fetched_contacts,
                 "contacts_created": self.contacts_created,
                 "contacts_updated": self.contacts_updated,
+                "contacts_reactivated": self.contacts_reactivated,
+                "contacts_skipped_stale": self.contacts_skipped_stale,
                 "unresolved_company_link": self.unresolved_company_link,
                 "unresolved_owner_link": self.unresolved_owner_link,
                 "skipped_malformed": self.skipped_malformed,

@@ -90,6 +90,50 @@ def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
     assert job_spec["ttlSecondsAfterFinished"] == 900
 
 
+def test_hubspot_core_incremental_cronjob_renders_dispatch_contract() -> None:
+    """Assert HubSpot incremental polling is deployed as a hardened integrations CronJob."""
+    cronjobs = _render_worker_cronjobs()
+    incremental = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-sync-hubspot-core-incremental"
+    )
+
+    container = incremental["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+
+    assert incremental["spec"]["schedule"] == "*/10 * * * *"
+    assert incremental["spec"]["concurrencyPolicy"] == "Forbid"
+    assert container["command"] == [
+        "python",
+        "-m",
+        "src.workers.integrations_worker.cron_dispatch",
+        "--job",
+        "sync-hubspot-core-incremental-all-orgs",
+    ]
+
+
+def test_hubspot_delete_reconciliation_cronjob_renders_dispatch_contract() -> None:
+    """Assert slow HubSpot delete reconciliation is deployed as an integrations CronJob."""
+    cronjobs = _render_worker_cronjobs()
+    reconciliation = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-reconcile-hubspot-deletions"
+    )
+
+    container = reconciliation["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+
+    assert reconciliation["spec"]["schedule"] == "17 */12 * * *"
+    assert reconciliation["spec"]["concurrencyPolicy"] == "Forbid"
+    assert container["command"] == [
+        "python",
+        "-m",
+        "src.workers.integrations_worker.cron_dispatch",
+        "--job",
+        "reconcile-hubspot-deletions-all-orgs",
+    ]
+
+
 def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     """Assert deal-mapping and attachment CronJobs still render hardened settings."""
     cronjobs = _render_worker_cronjobs()

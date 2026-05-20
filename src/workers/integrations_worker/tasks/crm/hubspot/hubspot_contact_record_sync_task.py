@@ -61,6 +61,8 @@ def sync_hubspot_contacts_task(
     organisation_id: str,
     integration_id: str,
 ) -> dict[str, Any]:
+    """Execute sync hubspot contacts task."""
+
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
@@ -110,7 +112,9 @@ def sync_hubspot_contacts_task(
                 session,
                 sync_id,  # type: ignore[arg-type]
                 status=SyncStatus.SUCCESS,
-                records_processed=(result.contacts_created + result.contacts_updated),
+                records_processed=(
+                    result.contacts_created + result.contacts_updated + result.contacts_reactivated
+                ),
                 metadata=result.to_metadata(),
             )
             await _update_integration_metadata(
@@ -121,6 +125,7 @@ def sync_hubspot_contacts_task(
                 result_metadata=result.to_metadata(),
                 error_class=None,
                 error_message=None,
+                sync_started_at=started_at,
             )
 
         completed_at = datetime.now(UTC).isoformat()
@@ -179,6 +184,7 @@ async def _update_integration_metadata(
     result_metadata: dict[str, Any],
     error_class: str | None,
     error_message: str | None,
+    sync_started_at: str | None = None,
 ) -> None:
     """Persist outcome under `connection_metadata.record_sync.contacts`.
 
@@ -196,10 +202,11 @@ async def _update_integration_metadata(
     record_sync = dict(metadata.get("record_sync") or {})
     contacts_entry = {
         "status": status,
-        "last_synced_at": datetime.now(UTC).isoformat(),
+        "last_synced_at": sync_started_at or datetime.now(UTC).isoformat(),
         "fetched_contacts": result_metadata.get("fetched_contacts"),
         "contacts_created": result_metadata.get("contacts_created"),
         "contacts_updated": result_metadata.get("contacts_updated"),
+        "contacts_reactivated": result_metadata.get("contacts_reactivated"),
         "unresolved_company_link": result_metadata.get("unresolved_company_link"),
         "unresolved_owner_link": result_metadata.get("unresolved_owner_link"),
         "skipped_malformed": result_metadata.get("skipped_malformed"),

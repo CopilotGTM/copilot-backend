@@ -16,11 +16,17 @@ from src.service.integrations.webhooks.hubspot.companies.subscriptions import (
     COMPANY_DELETION,
     COMPANY_PROPERTY_CHANGE,
 )
+from src.service.integrations.webhooks.hubspot.contacts.handler import (
+    HubSpotContactWebhookHandler,
+)
 from src.service.integrations.webhooks.hubspot.contacts.privacy_deletion import (
     HubSpotContactPrivacyDeletionHandler,
 )
 from src.service.integrations.webhooks.hubspot.contacts.subscriptions import (
+    CONTACT_CREATION,
+    CONTACT_DELETION,
     CONTACT_PRIVACY_DELETION,
+    CONTACT_PROPERTY_CHANGE,
 )
 from src.service.integrations.webhooks.hubspot.deals.handler import HubSpotDealWebhookHandler
 from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
@@ -36,6 +42,18 @@ HUBSPOT_WEBHOOK_SUBSCRIPTIONS: tuple[WebhookSubscription[HubSpotWebhookEvent], .
     WebhookSubscription(
         subscription_type=CONTACT_PRIVACY_DELETION,
         handler=HubSpotContactPrivacyDeletionHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=CONTACT_CREATION,
+        handler=HubSpotContactWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=CONTACT_PROPERTY_CHANGE,
+        handler=HubSpotContactWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=CONTACT_DELETION,
+        handler=HubSpotContactWebhookHandler.handle,
     ),
     WebhookSubscription(
         subscription_type=DEAL_CREATION,
