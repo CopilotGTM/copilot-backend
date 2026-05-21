@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
@@ -20,6 +21,9 @@ from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_use
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_task_models import (
     CreateTaskRequest,
+    TaskAssignee,
+    TaskAssigneeOption,
+    TaskAssigneesResponse,
     TaskDetail,
     TaskListItem,
     TaskOption,
@@ -92,6 +96,98 @@ def _compute_is_overdue(due_date: datetime | None, status: str | None) -> bool:
     return due < reference
 
 
+def _normalize_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _parse_uuid(value: str | UUID | None) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_task_assignee(task) -> TaskAssignee | None:
+    """Return a stable assignee contract over CRM owner/external-assignee columns."""
+
+    properties = getattr(task, "properties", None) or {}
+
+    external_email = _normalize_email(getattr(task, "external_assignee_email", None))
+    external_name = getattr(task, "external_assignee_name", None)
+    if external_email or external_name:
+        if external_email:
+            filter_key = f"email:{external_email}"
+        else:
+            filter_key = f"external_name:{str(external_name).strip().lower()}"
+        return TaskAssignee(
+            kind="external",
+            filter_key=filter_key,
+            name=external_name,
+            email=external_email,
+        )
+
+    owner_email = _normalize_email(getattr(task, "owner_email", None))
+    owner_name = getattr(task, "owner_name", None)
+    public_user_id = _parse_uuid(properties.get("assigned_to_public_user_id"))
+    crm_user_id = _parse_uuid(getattr(task, "owner_id", None))
+    owner_external_id = getattr(task, "owner_external_id", None)
+    owner_external_uuid = _parse_uuid(owner_external_id)
+    if public_user_id is None and crm_user_id is None:
+        public_user_id = owner_external_uuid
+
+    if owner_email:
+        filter_key = f"email:{owner_email}"
+    elif public_user_id:
+        filter_key = f"public_user:{public_user_id}"
+    elif crm_user_id:
+        filter_key = f"crm_user:{crm_user_id}"
+    elif owner_external_id:
+        filter_key = f"owner_external:{owner_external_id}"
+    elif owner_name:
+        filter_key = f"name:{str(owner_name).strip().lower()}"
+    else:
+        return None
+
+    kind = "internal_user" if public_user_id else "crm_owner" if crm_user_id else "unknown"
+    return TaskAssignee(
+        kind=kind,
+        filter_key=filter_key,
+        name=owner_name,
+        email=owner_email,
+        public_user_id=public_user_id,
+        crm_user_id=crm_user_id,
+        owner_external_id=owner_external_id,
+    )
+
+
+def _build_task_due_metadata(task) -> dict[str, str | bool | None]:
+    properties = getattr(task, "properties", None) or {}
+    is_all_day = bool(getattr(task, "is_all_day", False))
+    timezone_name = properties.get("due_timezone")
+    due_local_date = properties.get("due_local_date")
+
+    due_date = getattr(task, "due_date", None)
+    if is_all_day and due_date is not None and timezone_name and not due_local_date:
+        try:
+            due = due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)
+            due_local_date = due.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+        except (ZoneInfoNotFoundError, ValueError):
+            due_local_date = None
+
+    return {
+        "due_local_date": due_local_date if isinstance(due_local_date, str) else None,
+        "due_timezone": timezone_name if isinstance(timezone_name, str) else None,
+        "is_all_day": is_all_day,
+    }
+
+
 async def get_tasks_access_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
@@ -114,7 +210,12 @@ async def get_tasks_write_service(
 ):
     """Dependency that yields a TasksWriteService instance for the current org."""
 
-    service = TasksWriteService(org_session, user_ids.organisation_id, user_ids.user_id)
+    service = TasksWriteService(
+        org_session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        user_timezone=user_ids.user_timezone,
+    )
     try:
         yield service
     finally:
@@ -136,6 +237,8 @@ async def _enrich_task_list_item(task, session: AsyncSession) -> TaskListItem:
             "is_overdue": _compute_is_overdue(task.due_date, task.status),
             "has_reminder": has_reminder,
             "deal_name": deal_name,
+            "assigned_to": _build_task_assignee(task),
+            **_build_task_due_metadata(task),
             # Mirrors the write-path guard in tasks_write_service._load_user_task:
             # integration_id is the authoritative CRM-synced predicate. Do NOT use
             # `source` here — it is nullable and can drift from integration_id.
@@ -158,6 +261,8 @@ async def _enrich_task_detail(task, session: AsyncSession) -> TaskDetail:
             "has_reminder": has_reminder,
             "deal_name": deal_name,
             "reminder": reminder_dict,
+            "assigned_to": _build_task_assignee(task),
+            **_build_task_due_metadata(task),
             # Mirrors the write-path guard in tasks_write_service._load_user_task:
             # integration_id is the authoritative CRM-synced predicate. Do NOT use
             # `source` here — it is nullable and can drift from integration_id.
@@ -225,6 +330,10 @@ async def list_tasks(
     priorities: list[str] | None = Query(None, description="Filter by priorities"),
     source: list[str] | None = Query(None, description="Filter by source"),
     owner_user_id: UUID | None = Query(None, description="Filter by assignee"),
+    assigned_to_key: str | None = Query(
+        None,
+        description="Canonical assignee filter key returned by /tasks/assignees.",
+    ),
     created_by_user_id: UUID | None = Query(None, description="Filter by creator"),
     due_from: datetime | None = Query(None, description="Due date range start"),
     due_to: datetime | None = Query(None, description="Due date range end"),
@@ -247,6 +356,7 @@ async def list_tasks(
             priorities=priorities,
             source=source,
             owner_user_id=owner_user_id,
+            assigned_to_key=assigned_to_key,
             created_by_user_id=created_by_user_id,
             due_from=due_from,
             due_to=due_to,
@@ -278,6 +388,50 @@ async def list_tasks(
         )
     except Exception as exc:
         logger.error("Unexpected error listing tasks: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@tasks_router.get(
+    "/tasks/assignees",
+    response_model=GenericResponse[TaskAssigneesResponse],
+    tags=["crm", "tasks"],
+    summary="List task assignees",
+    description="Return distinct assignees for task filter controls.",
+)
+async def list_task_assignees(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Search assignee name or email"),
+    limit: int = Query(200, ge=1, le=500),
+    service: TasksAccessService = Depends(get_tasks_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[TaskAssigneesResponse]:
+    try:
+        rows = await service.list_task_assignees(q=q, limit=limit)
+        options: list[TaskAssigneeOption] = []
+        for row in rows:
+            assigned_to = _build_task_assignee(row["task"])
+            if assigned_to is None:
+                continue
+            options.append(
+                TaskAssigneeOption(
+                    assigned_to=assigned_to,
+                    task_count=row["task_count"],
+                )
+            )
+        payload = TaskAssigneesResponse(assignees=options)
+        return Response.success_response(
+            message="Task assignees retrieved successfully",
+            data=payload,
+        )
+    except TasksAccessServiceError as exc:
+        logger.warning("Task assignee access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        logger.error("Unexpected error listing task assignees: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
