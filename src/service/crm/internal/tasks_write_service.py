@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +35,12 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
+from src.infra.utils.timezone import DEFAULT_TIMEZONE, resolve_timezone_name
 from src.service.crm.access.crm_user_service import build_user_display_name
+from src.service.crm.internal.internal_crm_user_service import (
+    InternalCRMUserService,
+    InternalCRMUserServiceError,
+)
 
 logger = get_logger(__name__)
 
@@ -63,10 +69,18 @@ class TasksWriteServiceError(Exception):
 class TasksWriteService:
     """Write operations for user-created tasks."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID, actor_user_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        actor_user_id: UUID,
+        *,
+        user_timezone: str | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
+        self.user_timezone = resolve_timezone_name(user_timezone)
 
     async def close(self) -> None:
         try:
@@ -94,7 +108,13 @@ class TasksWriteService:
         owner_user_id = (
             payload.get("owner_user_id") if "owner_user_id" in payload else self.actor_user_id
         )
-        owner_external_id, owner_name, owner_email = await self._resolve_owner(owner_user_id)
+        owner_id, owner_external_id, owner_name, owner_email = await self._resolve_owner(
+            owner_user_id
+        )
+        due_date, is_all_day, due_properties = self._normalize_due_payload(payload)
+        assignment_properties = (
+            {"assigned_to_public_user_id": str(owner_user_id)} if owner_user_id else {}
+        )
 
         now = datetime.now(UTC)
         completed_date = payload.get("completed_date")
@@ -120,7 +140,7 @@ class TasksWriteService:
             body=payload.get("body"),
             status=status,
             priority=priority,
-            due_date=payload.get("due_date"),
+            due_date=due_date,
             reminder_date=payload.get("reminder_date"),
             completed_date=completed_date,
             deal_id=deal.deal_id if deal else None,
@@ -132,10 +152,12 @@ class TasksWriteService:
             owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
+            owner_id=owner_id,
             external_assignee_email=external_assignee_email,
             external_assignee_name=external_assignee_name,
             source=CRMActivitySource.MANUAL.value,
             created_by_user_id=self.actor_user_id,
+            is_all_day=is_all_day,
             source_created_at=now,
             source_modified_at=now,
             synced_at=now,
@@ -143,6 +165,8 @@ class TasksWriteService:
             properties={
                 "is_user_created": True,
                 "created_via": "api",
+                **assignment_properties,
+                **due_properties,
             },
         )
 
@@ -195,7 +219,22 @@ class TasksWriteService:
             updated = True
 
         if "due_date" in payload:
-            task.due_date = payload.get("due_date")
+            due_date, is_all_day, due_properties = self._normalize_due_payload(payload)
+            task.due_date = due_date
+            task.is_all_day = is_all_day
+            properties = task.properties or {}
+            properties.pop("due_local_date", None)
+            properties.pop("due_timezone", None)
+            properties.update(due_properties)
+            task.properties = properties
+            updated = True
+        elif "is_all_day" in payload:
+            task.is_all_day = bool(payload.get("is_all_day"))
+            properties = task.properties or {}
+            if not task.is_all_day:
+                properties.pop("due_local_date", None)
+                properties.pop("due_timezone", None)
+            task.properties = properties
             updated = True
 
         if "reminder_date" in payload:
@@ -203,12 +242,19 @@ class TasksWriteService:
             updated = True
 
         if "owner_user_id" in payload:
-            owner_external_id, owner_name, owner_email = await self._resolve_owner(
+            owner_id, owner_external_id, owner_name, owner_email = await self._resolve_owner(
                 payload.get("owner_user_id")
             )
+            task.owner_id = owner_id
             task.owner_external_id = owner_external_id
             task.owner_name = owner_name
             task.owner_email = owner_email
+            properties = task.properties or {}
+            if payload.get("owner_user_id"):
+                properties["assigned_to_public_user_id"] = str(payload["owner_user_id"])
+            else:
+                properties.pop("assigned_to_public_user_id", None)
+            task.properties = properties
             updated = True
 
         # External assignee
@@ -633,24 +679,60 @@ class TasksWriteService:
             raise TasksWriteServiceError("External CRM tasks are read-only", 409)
         return task
 
+    def _normalize_due_payload(self, payload: dict[str, Any]) -> tuple[datetime | None, bool, dict]:
+        due_date = payload.get("due_date")
+        is_all_day = bool(payload.get("is_all_day")) if "is_all_day" in payload else False
+        if due_date is None:
+            return None, False, {}
+
+        timezone_name = resolve_timezone_name(
+            payload.get("due_timezone"),
+            self.user_timezone,
+            default=DEFAULT_TIMEZONE,
+        )
+        timezone = ZoneInfo(timezone_name)
+        due = due_date if due_date.tzinfo else due_date.replace(tzinfo=timezone)
+        due_utc = due.astimezone(UTC)
+
+        properties: dict[str, Any] = {}
+        if is_all_day:
+            properties["due_timezone"] = timezone_name
+            properties["due_local_date"] = due.astimezone(timezone).date().isoformat()
+
+        return due_utc, is_all_day, properties
+
     async def _resolve_owner(
         self, user_id: UUID | None
-    ) -> tuple[str | None, str | None, str | None]:
+    ) -> tuple[UUID | None, str | None, str | None, str | None]:
         if user_id is None:
-            return None, None, None
+            return None, None, None, None
 
         async with master_async_session_scope() as master_session:
             user = await master_session.get(User, user_id)
-        if not user:
-            raise TasksWriteServiceError("User not found", 404)
-        if user.organisation_id != self.organisation_id:
-            raise TasksWriteServiceError("User not in organisation", 403)
+            if not user:
+                raise TasksWriteServiceError("User not found", 404)
+            if user.organisation_id != self.organisation_id:
+                raise TasksWriteServiceError("User not in organisation", 403)
 
-        return (
-            str(user.user_id),
-            build_user_display_name(user),
-            str(user.email),
-        )
+            crm_user_id: UUID | None = None
+            try:
+                user_service = InternalCRMUserService(
+                    org_session=self.session,
+                    master_session=master_session,
+                    organisation_id=self.organisation_id,
+                    actor_user_id=self.actor_user_id,
+                )
+                crm_user = await user_service.ensure_crm_user(user_id)
+                crm_user_id = crm_user.user_id
+            except InternalCRMUserServiceError:
+                logger.debug("Could not resolve task assignee to crm_users", exc_info=True)
+
+            return (
+                crm_user_id,
+                str(user.user_id),
+                build_user_display_name(user),
+                str(user.email),
+            )
 
     @staticmethod
     def _normalize_enum(value: Any) -> str | None:

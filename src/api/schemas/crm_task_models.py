@@ -18,6 +18,33 @@ from src.domain.models.organisation_tables.sync.crm import (
 VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack"}
 
 
+class TaskAssignee(BaseModel):
+    """Canonical assignee metadata for task display and filtering."""
+
+    kind: str = Field(
+        description="Assignee source: internal_user, crm_owner, external, or unknown."
+    )
+    filter_key: str = Field(description="Stable key used by task assignee filters.")
+    name: str | None = None
+    email: str | None = None
+    public_user_id: UUID | None = None
+    crm_user_id: UUID | None = None
+    owner_external_id: str | None = None
+
+
+class TaskAssigneeOption(BaseModel):
+    """Distinct assignee option for task filter controls."""
+
+    assigned_to: TaskAssignee
+    task_count: int = Field(default=0, ge=0)
+
+
+class TaskAssigneesResponse(BaseModel):
+    """Task assignee filter options."""
+
+    assignees: list[TaskAssigneeOption]
+
+
 class ReminderConfig(BaseModel):
     """Nested reminder configuration for task create/update."""
 
@@ -90,10 +117,26 @@ class TaskListItem(BaseModel):
     due_date: datetime | None
     completed_date: datetime | None
     reminder_date: datetime | None
+    due_local_date: str | None = Field(
+        default=None,
+        description="Selected local calendar date for all-day/date-only tasks.",
+    )
+    due_timezone: str | None = Field(
+        default=None,
+        description="IANA timezone used to interpret due_local_date.",
+    )
+    is_all_day: bool = Field(
+        default=False,
+        description="True when the task due date should be displayed as a local date.",
+    )
     # Assigned to (owner)
     owner_id: UUID | None
     owner_name: str | None
     owner_email: str | None
+    assigned_to: TaskAssignee | None = Field(
+        default=None,
+        description="Canonical assignee used for display and filtering.",
+    )
     # External assignee (non-app user)
     external_assignee_email: str | None = None
     external_assignee_name: str | None = None
@@ -176,6 +219,7 @@ class TaskDetail(BaseModel):
     owner_id: UUID | None
     owner_name: str | None
     owner_email: str | None
+    assigned_to: TaskAssignee | None = None
 
     # External assignee (non-app user)
     external_assignee_email: str | None = None
@@ -189,6 +233,9 @@ class TaskDetail(BaseModel):
     due_date: datetime | None
     completed_date: datetime | None
     reminder_date: datetime | None
+    due_local_date: str | None = None
+    due_timezone: str | None = None
+    is_all_day: bool = False
     source_created_at: datetime | None
     source_modified_at: datetime | None
 
@@ -256,6 +303,10 @@ class CreateTaskRequest(BaseModel):
     due_date: datetime | None = Field(
         default=None,
         description="Due date/time for the task.",
+    )
+    is_all_day: bool | None = Field(
+        default=None,
+        description="Whether due_date is a date-only/all-day task in the user's timezone.",
     )
     reminder_date: datetime | None = Field(
         default=None,
@@ -359,6 +410,10 @@ class UpdateTaskRequest(BaseModel):
         default=None,
         description="Due date/time for the task.",
     )
+    is_all_day: bool | None = Field(
+        default=None,
+        description="Whether due_date is a date-only/all-day task in the user's timezone.",
+    )
     reminder_date: datetime | None = Field(
         default=None,
         description="Reminder date/time for the task.",
@@ -430,6 +485,10 @@ class GlobalTaskListParams(BaseModel):
     priorities: list[str] | None = Field(default=None, description="Filter by priorities")
     source: list[str] | None = Field(default=None, description="Filter by source")
     owner_user_id: UUID | None = Field(default=None, description="Filter by assignee")
+    assigned_to_key: str | None = Field(
+        default=None,
+        description="Canonical assignee filter key returned by /tasks/assignees.",
+    )
     created_by_user_id: UUID | None = Field(default=None, description="Filter by creator")
     due_from: datetime | None = Field(default=None, description="Due date range start")
     due_to: datetime | None = Field(default=None, description="Due date range end")

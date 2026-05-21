@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
@@ -15,6 +16,41 @@ from src.infra.utils.logger import get_logger
 logger = get_logger("tasks_access_service")
 
 _TASK_ACTIVITY_TYPES: set[str] = {"TASK", "TODO"}
+
+
+def _normalize_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _task_assignee_filter_key(task: Any) -> str | None:
+    external_email = _normalize_email(getattr(task, "external_assignee_email", None))
+    external_name = getattr(task, "external_assignee_name", None)
+    if external_email:
+        return f"email:{external_email}"
+    if external_name:
+        return f"external_name:{str(external_name).strip().lower()}"
+
+    owner_email = _normalize_email(getattr(task, "owner_email", None))
+    owner_id = getattr(task, "owner_id", None)
+    owner_external_id = getattr(task, "owner_external_id", None)
+    properties = getattr(task, "properties", None) or {}
+    public_user_id = properties.get("assigned_to_public_user_id")
+
+    if owner_email:
+        return f"email:{owner_email}"
+    if public_user_id:
+        return f"public_user:{public_user_id}"
+    if owner_id:
+        return f"crm_user:{owner_id}"
+    if owner_external_id:
+        return f"owner_external:{owner_external_id}"
+    owner_name = getattr(task, "owner_name", None)
+    if owner_name:
+        return f"name:{str(owner_name).strip().lower()}"
+    return None
 
 
 class TasksAccessServiceError(Exception):
@@ -102,6 +138,7 @@ class TasksAccessService:
         priorities: Iterable[str] | None = None,
         source: Iterable[str] | None = None,
         owner_user_id: UUID | None = None,
+        assigned_to_key: str | None = None,
         created_by_user_id: UUID | None = None,
         due_from: datetime | None = None,
         due_to: datetime | None = None,
@@ -145,7 +182,17 @@ class TasksAccessService:
             stmt = stmt.where(c.source.in_(list(source)))
 
         if owner_user_id is not None:
-            stmt = stmt.where(c.owner_id == owner_user_id)
+            owner_value = str(owner_user_id)
+            stmt = stmt.where(
+                or_(
+                    c.owner_id == owner_user_id,
+                    c.owner_external_id == owner_value,
+                    c.properties["assigned_to_public_user_id"].as_string() == owner_value,
+                )
+            )
+
+        if assigned_to_key:
+            stmt = stmt.where(self._assigned_to_key_condition(assigned_to_key))
 
         if created_by_user_id is not None:
             stmt = stmt.where(c.created_by_user_id == created_by_user_id)
@@ -201,6 +248,118 @@ class TasksAccessService:
         rows: list[CRMActivity] = list(res.scalars().all())
 
         return rows, total_count
+
+    def _assigned_to_key_condition(self, assigned_to_key: str):
+        c = cast(Any, CRMActivity).__table__.c
+        prefix, _, raw_value = assigned_to_key.partition(":")
+        value = raw_value.strip()
+        lowered = value.lower()
+
+        if not prefix or not value:
+            return c.activity_id.is_(None)
+
+        if prefix == "email":
+            return or_(
+                func.lower(c.owner_email) == lowered,
+                func.lower(c.external_assignee_email) == lowered,
+            )
+
+        if prefix == "public_user":
+            return or_(
+                c.owner_external_id == value,
+                c.properties["assigned_to_public_user_id"].as_string() == value,
+            )
+
+        if prefix == "crm_user":
+            try:
+                return c.owner_id == UUID(value)
+            except ValueError:
+                return c.activity_id.is_(None)
+
+        if prefix == "owner_external":
+            return c.owner_external_id == value
+
+        if prefix in {"name", "external_name"}:
+            return or_(
+                func.lower(c.owner_name) == lowered,
+                func.lower(c.external_assignee_name) == lowered,
+            )
+
+        return c.activity_id.is_(None)
+
+    async def list_task_assignees(
+        self,
+        *,
+        q: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        c = cast(Any, CRMActivity).__table__.c
+        stmt = select(
+            c.owner_id,
+            c.owner_external_id,
+            c.owner_name,
+            c.owner_email,
+            c.external_assignee_email,
+            c.external_assignee_name,
+            c.properties,
+        ).where(
+            c.organisation_id == self.organisation_id,
+            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+            or_(
+                c.owner_id.is_not(None),
+                c.owner_external_id.is_not(None),
+                c.owner_email.is_not(None),
+                c.owner_name.is_not(None),
+                c.external_assignee_email.is_not(None),
+                c.external_assignee_name.is_not(None),
+            ),
+        )
+
+        if q:
+            like_expr = f"%{q.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    c.owner_name.ilike(like_expr),
+                    c.owner_email.ilike(like_expr),
+                    c.owner_external_id.ilike(like_expr),
+                    c.external_assignee_name.ilike(like_expr),
+                    c.external_assignee_email.ilike(like_expr),
+                )
+            )
+
+        result = await self.org_session.execute(stmt.limit(2000))
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in result.all():
+            task = SimpleNamespace(
+                owner_id=row.owner_id,
+                owner_external_id=row.owner_external_id,
+                owner_name=row.owner_name,
+                owner_email=row.owner_email,
+                external_assignee_email=row.external_assignee_email,
+                external_assignee_name=row.external_assignee_name,
+                properties=row.properties or {},
+            )
+            filter_key = _task_assignee_filter_key(task)
+            if not filter_key:
+                continue
+            if filter_key not in grouped:
+                grouped[filter_key] = {"task": task, "task_count": 0}
+            grouped[filter_key]["task_count"] += 1
+
+        return sorted(
+            grouped.values(),
+            key=lambda item: (
+                (
+                    getattr(item["task"], "external_assignee_name", None)
+                    or getattr(item["task"], "owner_name", None)
+                    or getattr(item["task"], "external_assignee_email", None)
+                    or getattr(item["task"], "owner_email", None)
+                    or ""
+                ).lower(),
+                _task_assignee_filter_key(item["task"]) or "",
+            ),
+        )[:limit]
 
     async def get_task_by_id(self, task_id: UUID) -> CRMActivity | None:
         """Fetch a single activity by ID (backwards compatible with task_id param name)."""
