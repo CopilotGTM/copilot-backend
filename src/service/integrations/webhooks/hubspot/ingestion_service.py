@@ -38,6 +38,25 @@ from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
     DEAL_PROPERTY_CHANGE_PROPERTY_SET,
 )
 from src.service.integrations.webhooks.hubspot.dispatcher import HubSpotWebhookDispatcher
+from src.service.integrations.webhooks.hubspot.notes.subscriptions import (
+    HUBSPOT_GENERIC_NOTE_SUBSCRIPTION_MAP,
+    HUBSPOT_GENERIC_OBJECT_SUBSCRIPTIONS,
+    HUBSPOT_NOTE_OBJECT_TYPE_ID,
+    NOTE_ASSOCIATION_CHANGE,
+    NOTE_CREATION,
+    NOTE_DELETION,
+    NOTE_PROPERTY_CHANGE,
+    NOTE_PROPERTY_CHANGE_PROPERTY_SET,
+)
+from src.service.integrations.webhooks.hubspot.tasks.subscriptions import (
+    HUBSPOT_GENERIC_TASK_SUBSCRIPTION_MAP,
+    HUBSPOT_TASK_OBJECT_TYPE_ID,
+    TASK_ASSOCIATION_CHANGE,
+    TASK_CREATION,
+    TASK_DELETION,
+    TASK_PROPERTY_CHANGE,
+    TASK_PROPERTY_CHANGE_PROPERTY_SET,
+)
 from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
 from src.workers.integrations_worker.client import send_integrations_task_async
 
@@ -54,15 +73,29 @@ HUBSPOT_WEBHOOK_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 HUBSPOT_WEBHOOK_REFRESH_DEBOUNCE_TTL_SECONDS = 45
 HUBSPOT_WEBHOOK_REFRESH_COUNTDOWN_SECONDS = 30
 
-_CREATION_SUBSCRIPTION_TYPES = frozenset({COMPANY_CREATION, CONTACT_CREATION, DEAL_CREATION})
-_DELETION_SUBSCRIPTION_TYPES = frozenset({COMPANY_DELETION, CONTACT_DELETION, DEAL_DELETION})
+_CREATION_SUBSCRIPTION_TYPES = frozenset(
+    {COMPANY_CREATION, CONTACT_CREATION, DEAL_CREATION, NOTE_CREATION, TASK_CREATION}
+)
+_DELETION_SUBSCRIPTION_TYPES = frozenset(
+    {COMPANY_DELETION, CONTACT_DELETION, DEAL_DELETION, NOTE_DELETION, TASK_DELETION}
+)
 _PROPERTY_CHANGE_SUBSCRIPTION_TYPES = frozenset(
-    {COMPANY_PROPERTY_CHANGE, CONTACT_PROPERTY_CHANGE, DEAL_PROPERTY_CHANGE}
+    {
+        COMPANY_PROPERTY_CHANGE,
+        CONTACT_PROPERTY_CHANGE,
+        DEAL_PROPERTY_CHANGE,
+        NOTE_PROPERTY_CHANGE,
+        TASK_PROPERTY_CHANGE,
+    }
+)
+_ASSOCIATION_CHANGE_SUBSCRIPTION_TYPES = frozenset(
+    {NOTE_ASSOCIATION_CHANGE, TASK_ASSOCIATION_CHANGE}
 )
 _COALESCED_SUBSCRIPTION_TYPES = (
     _CREATION_SUBSCRIPTION_TYPES
     | _DELETION_SUBSCRIPTION_TYPES
     | _PROPERTY_CHANGE_SUBSCRIPTION_TYPES
+    | _ASSOCIATION_CHANGE_SUBSCRIPTION_TYPES
 )
 _DELAYED_REFRESH_SUBSCRIPTION_TYPES = frozenset(
     {
@@ -72,6 +105,12 @@ _DELAYED_REFRESH_SUBSCRIPTION_TYPES = frozenset(
         CONTACT_PROPERTY_CHANGE,
         DEAL_CREATION,
         DEAL_PROPERTY_CHANGE,
+        NOTE_CREATION,
+        NOTE_PROPERTY_CHANGE,
+        NOTE_ASSOCIATION_CHANGE,
+        TASK_CREATION,
+        TASK_PROPERTY_CHANGE,
+        TASK_ASSOCIATION_CHANGE,
     }
 )
 
@@ -119,7 +158,7 @@ class HubSpotWebhookIngestionService:
         # This lets the HubSpot app contain future subscriptions without making
         # older deployed workers process event types they do not understand.
         for event_payload in event_payloads:
-            event = HubSpotWebhookEvent.from_payload(event_payload)
+            event = _event_from_payload(event_payload)
             if event is None:
                 logger.warning(
                     "Ignoring malformed HubSpot webhook event",
@@ -179,7 +218,7 @@ class HubSpotWebhookIngestionService:
                     continue
                 enqueue_countdown = HUBSPOT_WEBHOOK_REFRESH_COUNTDOWN_SECONDS
 
-            if event.subscription_type in {COMPANY_DELETION, CONTACT_DELETION, DEAL_DELETION}:
+            if event.subscription_type in _DELETION_SUBSCRIPTION_TYPES:
                 # Deletions should not wait behind an earlier create/update
                 # debounce window. Releasing the pending key lets the deletion
                 # task queue immediately and soft-delete the local row.
@@ -269,6 +308,66 @@ def _event_property_name(event: HubSpotWebhookEvent) -> str | None:
     return str(property_name) if property_name is not None else None
 
 
+def _event_from_payload(payload: dict[str, Any]) -> HubSpotWebhookEvent | None:
+    """Build a typed event, normalizing generic HubSpot note webhooks first."""
+    subscription_type = payload.get("subscriptionType")
+    if str(subscription_type) in HUBSPOT_GENERIC_OBJECT_SUBSCRIPTIONS:
+        return _generic_object_event_from_payload(payload)
+    return HubSpotWebhookEvent.from_payload(payload)
+
+
+def _generic_object_event_from_payload(payload: dict[str, Any]) -> HubSpotWebhookEvent | None:
+    """Map supported generic object events to internal object-family events.
+
+    Expanded HubSpot note subscriptions arrive as `object.*` events. We keep
+    the provider payload unchanged in `raw` while using synthetic `note.*`
+    names for internal routing and debounce semantics.
+    """
+    subscription_type = str(payload.get("subscriptionType") or "")
+    object_type_id = str(payload.get("objectTypeId") or "")
+    subscription_map = _generic_object_subscription_map(object_type_id)
+    if subscription_map is None:
+        logger.info(
+            "Ignoring unsupported HubSpot generic object webhook event",
+            extra={
+                "event": "hubspot_generic_object_webhook_event_unsupported",
+                "subscription_type": subscription_type,
+                "object_type_id": object_type_id,
+                "portal_id": payload.get("portalId"),
+                "object_id": payload.get("objectId"),
+                "event_id": payload.get("eventId"),
+            },
+        )
+        return HubSpotWebhookEvent.from_payload(payload)
+
+    internal_subscription_type = subscription_map.get(subscription_type)
+    if internal_subscription_type is None:
+        return HubSpotWebhookEvent.from_payload(payload)
+
+    note_payload = dict(payload)
+    note_payload["subscriptionType"] = internal_subscription_type
+    event = HubSpotWebhookEvent.from_payload(note_payload)
+    if event is None:
+        return None
+    return HubSpotWebhookEvent(
+        subscription_type=event.subscription_type,
+        portal_id=event.portal_id,
+        object_id=event.object_id,
+        event_id=event.event_id,
+        occurred_at=event.occurred_at,
+        raw=payload,
+    )
+
+
+def _generic_object_subscription_map(object_type_id: str) -> dict[str, str] | None:
+    """Return the internal event map for a supported generic object type."""
+    if object_type_id == HUBSPOT_NOTE_OBJECT_TYPE_ID:
+        return HUBSPOT_GENERIC_NOTE_SUBSCRIPTION_MAP
+    if object_type_id == HUBSPOT_TASK_OBJECT_TYPE_ID:
+        return HUBSPOT_GENERIC_TASK_SUBSCRIPTION_MAP
+    return None
+
+
 def _is_supported_event(event: HubSpotWebhookEvent) -> bool:
     """Return whether this event is supported at both type and property level.
 
@@ -287,6 +386,12 @@ def _is_supported_event(event: HubSpotWebhookEvent) -> bool:
 
     if event.subscription_type == COMPANY_PROPERTY_CHANGE:
         return _is_supported_company_property_change(event)
+
+    if event.subscription_type == NOTE_PROPERTY_CHANGE:
+        return _is_supported_note_property_change(event)
+
+    if event.subscription_type == TASK_PROPERTY_CHANGE:
+        return _is_supported_task_property_change(event)
 
     return True
 
@@ -341,6 +446,46 @@ def _is_supported_company_property_change(event: HubSpotWebhookEvent) -> bool:
         "Ignoring unsupported HubSpot company propertyChange event",
         extra={
             "event": "hubspot_company_property_change_unsupported",
+            "subscription_type": event.subscription_type,
+            "portal_id": event.portal_id,
+            "object_id": event.object_id,
+            "event_id": event.event_id,
+            "property_name": property_name,
+        },
+    )
+    return False
+
+
+def _is_supported_note_property_change(event: HubSpotWebhookEvent) -> bool:
+    """Allow note property changes only for fields the note writer consumes."""
+    property_name = _event_property_name(event)
+    if property_name in NOTE_PROPERTY_CHANGE_PROPERTY_SET:
+        return True
+
+    logger.info(
+        "Ignoring unsupported HubSpot note propertyChange event",
+        extra={
+            "event": "hubspot_note_property_change_unsupported",
+            "subscription_type": event.subscription_type,
+            "portal_id": event.portal_id,
+            "object_id": event.object_id,
+            "event_id": event.event_id,
+            "property_name": property_name,
+        },
+    )
+    return False
+
+
+def _is_supported_task_property_change(event: HubSpotWebhookEvent) -> bool:
+    """Allow task property changes only for fields the task writer consumes."""
+    property_name = _event_property_name(event)
+    if property_name in TASK_PROPERTY_CHANGE_PROPERTY_SET:
+        return True
+
+    logger.info(
+        "Ignoring unsupported HubSpot task propertyChange event",
+        extra={
+            "event": "hubspot_task_property_change_unsupported",
             "subscription_type": event.subscription_type,
             "portal_id": event.portal_id,
             "object_id": event.object_id,

@@ -232,6 +232,259 @@ def test_hubspot_webhook_queues_contact_creation(monkeypatch) -> None:
     assert kwargs["object_id"] == "456"
 
 
+def test_hubspot_webhook_queues_generic_note_creation(monkeypatch) -> None:
+    """Generic HubSpot note creation events normalize to internal note events."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+
+    payload = {
+        "subscriptionType": "object.creation",
+        "objectTypeId": "0-46",
+        "portalId": 123,
+        "objectId": 456,
+        "eventId": 789,
+    }
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps([payload]),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "note.creation"
+    assert kwargs["portal_id"] == "123"
+    assert kwargs["object_id"] == "456"
+    assert kwargs["event_payload"] == payload
+
+
+def test_hubspot_webhook_ignores_generic_non_note_object(monkeypatch) -> None:
+    """Generic object events for unsupported object families are acknowledged."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "object.creation",
+                    "objectTypeId": "0-1",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
+def test_hubspot_webhook_ignores_unselected_note_property_change(monkeypatch) -> None:
+    """Generic note property changes outside the approved list are not queued."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "object.propertyChange",
+                    "objectTypeId": "0-46",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                    "propertyName": "hs_lastmodifieddate",
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
+def test_hubspot_webhook_queues_generic_task_creation(monkeypatch) -> None:
+    """Generic HubSpot task creation events normalize to internal task events."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+
+    payload = {
+        "subscriptionType": "object.creation",
+        "objectTypeId": "0-27",
+        "portalId": 123,
+        "objectId": 456,
+        "eventId": 789,
+    }
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps([payload]),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["countdown"] == 30
+    kwargs = send_task.await_args.kwargs["kwargs"]
+    assert kwargs["subscription_type"] == "task.creation"
+    assert kwargs["portal_id"] == "123"
+    assert kwargs["object_id"] == "456"
+    assert kwargs["event_payload"] == payload
+
+
+def test_hubspot_webhook_queues_generic_task_property_change(monkeypatch) -> None:
+    """Selected generic HubSpot task property changes queue task refreshes."""
+    client = _client()
+    send_task = AsyncMock(return_value="task-123")
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._is_duplicate_event",
+        lambda *_: False,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service._claim_refresh_pending",
+        lambda *_: True,
+    )
+
+    payload = {
+        "subscriptionType": "object.propertyChange",
+        "objectTypeId": "0-27",
+        "portalId": 123,
+        "objectId": 456,
+        "eventId": 789,
+        "propertyName": "hs_task_status",
+    }
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps([payload]),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_awaited_once()
+    assert send_task.await_args.kwargs["kwargs"]["subscription_type"] == "task.propertyChange"
+
+
+def test_hubspot_webhook_ignores_unselected_task_property_change(monkeypatch) -> None:
+    """Generic task property changes outside the approved list are not queued."""
+    client = _client()
+    send_task = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.api.routers.integrations.hubspot_webhook_routes.verify_hubspot_v3_signature",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.webhooks.hubspot.ingestion_service.send_integrations_task_async",
+        send_task,
+    )
+
+    response = client.post(
+        "/users/integrations/hubspot/webhook",
+        content=json.dumps(
+            [
+                {
+                    "subscriptionType": "object.propertyChange",
+                    "objectTypeId": "0-27",
+                    "portalId": 123,
+                    "objectId": 456,
+                    "eventId": 789,
+                    "propertyName": "hs_lastmodifieddate",
+                }
+            ]
+        ),
+        headers={
+            "X-HubSpot-Signature-v3": "sig",
+            "X-HubSpot-Request-Timestamp": "123",
+        },
+    )
+
+    assert response.status_code == 200
+    send_task.assert_not_awaited()
+
+
 def test_hubspot_webhook_ignores_unsupported_company_event(monkeypatch) -> None:
     """Company events outside the registered v1 scope are acknowledged but not queued."""
     client = _client()

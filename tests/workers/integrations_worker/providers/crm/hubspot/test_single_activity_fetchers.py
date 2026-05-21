@@ -5,11 +5,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from src.workers.integrations_worker.providers.crm.hubspot.notes_fetcher import (
+    HUBSPOT_NOTE_PROPERTIES,
+)
 from src.workers.integrations_worker.providers.crm.hubspot.single_note_fetcher import (
     HubSpotSingleNoteFetcher,
 )
 from src.workers.integrations_worker.providers.crm.hubspot.single_task_fetcher import (
     HubSpotSingleTaskFetcher,
+)
+from src.workers.integrations_worker.providers.crm.hubspot.tasks_fetcher import (
+    HUBSPOT_TASK_PROPERTIES,
 )
 
 
@@ -66,3 +72,17 @@ async def test_single_note_fetcher_returns_none_on_404(monkeypatch) -> None:
     ).fetch()
 
     assert result is None
+
+
+def test_single_note_fetcher_default_properties_include_note_timestamp() -> None:
+    """Single-note webhook refreshes fetch timeline and modified timestamps."""
+    assert "hs_timestamp" in HUBSPOT_NOTE_PROPERTIES
+    assert "hs_lastmodifieddate" in HUBSPOT_NOTE_PROPERTIES
+
+
+def test_single_task_fetcher_default_properties_include_webhook_fields() -> None:
+    """Single-task webhook refreshes fetch task fields used by the allow-list."""
+    assert "hs_task_priority" in HUBSPOT_TASK_PROPERTIES
+    assert "hs_task_type" in HUBSPOT_TASK_PROPERTIES
+    assert "hs_timestamp" in HUBSPOT_TASK_PROPERTIES
+    assert "hs_lastmodifieddate" in HUBSPOT_TASK_PROPERTIES

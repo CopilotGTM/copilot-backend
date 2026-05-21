@@ -17,6 +17,18 @@ from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
     DEAL_PROPERTY_CHANGE,
 )
 from src.service.integrations.webhooks.hubspot.dispatcher import HubSpotWebhookDispatcher
+from src.service.integrations.webhooks.hubspot.notes.subscriptions import (
+    NOTE_ASSOCIATION_CHANGE,
+    NOTE_CREATION,
+    NOTE_DELETION,
+    NOTE_PROPERTY_CHANGE,
+)
+from src.service.integrations.webhooks.hubspot.tasks.subscriptions import (
+    TASK_ASSOCIATION_CHANGE,
+    TASK_CREATION,
+    TASK_DELETION,
+    TASK_PROPERTY_CHANGE,
+)
 from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
 
 
@@ -71,3 +83,19 @@ def test_dispatcher_recognizes_hubspot_company_events() -> None:
     assert HubSpotWebhookDispatcher.is_supported(COMPANY_CREATION) is True
     assert HubSpotWebhookDispatcher.is_supported(COMPANY_PROPERTY_CHANGE) is True
     assert HubSpotWebhookDispatcher.is_supported(COMPANY_DELETION) is True
+
+
+def test_dispatcher_recognizes_hubspot_note_events() -> None:
+    """The dispatcher support check includes normalized note webhook subscriptions."""
+    assert HubSpotWebhookDispatcher.is_supported(NOTE_CREATION) is True
+    assert HubSpotWebhookDispatcher.is_supported(NOTE_PROPERTY_CHANGE) is True
+    assert HubSpotWebhookDispatcher.is_supported(NOTE_ASSOCIATION_CHANGE) is True
+    assert HubSpotWebhookDispatcher.is_supported(NOTE_DELETION) is True
+
+
+def test_dispatcher_recognizes_hubspot_task_events() -> None:
+    """The dispatcher support check includes normalized task webhook subscriptions."""
+    assert HubSpotWebhookDispatcher.is_supported(TASK_CREATION) is True
+    assert HubSpotWebhookDispatcher.is_supported(TASK_PROPERTY_CHANGE) is True
+    assert HubSpotWebhookDispatcher.is_supported(TASK_ASSOCIATION_CHANGE) is True
+    assert HubSpotWebhookDispatcher.is_supported(TASK_DELETION) is True

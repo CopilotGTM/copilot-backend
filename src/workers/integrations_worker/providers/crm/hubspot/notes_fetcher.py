@@ -26,7 +26,9 @@ HUBSPOT_NOTE_PROPERTIES: tuple[str, ...] = (
     "hs_note_body",
     "hubspot_owner_id",
     "hs_attachment_ids",
+    "hs_timestamp",
     "hs_createdate",
+    "createdate",
     "hs_lastmodifieddate",
 )
 _DEFAULT_ASSOCIATIONS: tuple[str, ...] = ("deals", "contacts", "companies")
