@@ -34,6 +34,20 @@ from src.service.integrations.webhooks.hubspot.deals.subscriptions import (
     DEAL_DELETION,
     DEAL_PROPERTY_CHANGE,
 )
+from src.service.integrations.webhooks.hubspot.notes.handler import HubSpotNoteWebhookHandler
+from src.service.integrations.webhooks.hubspot.notes.subscriptions import (
+    NOTE_ASSOCIATION_CHANGE,
+    NOTE_CREATION,
+    NOTE_DELETION,
+    NOTE_PROPERTY_CHANGE,
+)
+from src.service.integrations.webhooks.hubspot.tasks.handler import HubSpotTaskWebhookHandler
+from src.service.integrations.webhooks.hubspot.tasks.subscriptions import (
+    TASK_ASSOCIATION_CHANGE,
+    TASK_CREATION,
+    TASK_DELETION,
+    TASK_PROPERTY_CHANGE,
+)
 from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
 
 HUBSPOT_WEBHOOK_SUBSCRIPTIONS: tuple[WebhookSubscription[HubSpotWebhookEvent], ...] = (
@@ -78,5 +92,37 @@ HUBSPOT_WEBHOOK_SUBSCRIPTIONS: tuple[WebhookSubscription[HubSpotWebhookEvent], .
     WebhookSubscription(
         subscription_type=COMPANY_DELETION,
         handler=HubSpotCompanyWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=NOTE_CREATION,
+        handler=HubSpotNoteWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=NOTE_PROPERTY_CHANGE,
+        handler=HubSpotNoteWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=NOTE_ASSOCIATION_CHANGE,
+        handler=HubSpotNoteWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=NOTE_DELETION,
+        handler=HubSpotNoteWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=TASK_CREATION,
+        handler=HubSpotTaskWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=TASK_PROPERTY_CHANGE,
+        handler=HubSpotTaskWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=TASK_ASSOCIATION_CHANGE,
+        handler=HubSpotTaskWebhookHandler.handle,
+    ),
+    WebhookSubscription(
+        subscription_type=TASK_DELETION,
+        handler=HubSpotTaskWebhookHandler.handle,
     ),
 )

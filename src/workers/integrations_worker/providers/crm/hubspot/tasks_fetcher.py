@@ -26,6 +26,8 @@ HUBSPOT_TASK_PROPERTIES: tuple[str, ...] = (
     "hs_task_subject",
     "hs_task_body",
     "hs_task_status",
+    "hs_task_priority",
+    "hs_task_type",
     "hs_timestamp",
     "hubspot_owner_id",
     "hs_createdate",

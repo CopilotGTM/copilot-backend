@@ -68,7 +68,11 @@ def _normalize_one(raw: object) -> NormalizedHubSpotNote | None:
         company_external_id=company_external_id,
         related_object_type=related_object_type,
         related_external_id=related_external_id,
-        source_created_at=_parse_hubspot_datetime(properties.get("hs_createdate")),
+        source_created_at=(
+            _parse_hubspot_datetime(properties.get("hs_timestamp"))
+            or _parse_hubspot_datetime(properties.get("hs_createdate"))
+            or _parse_hubspot_datetime(properties.get("createdate"))
+        ),
         source_modified_at=_parse_hubspot_datetime(properties.get("hs_lastmodifieddate")),
         properties=normalized_properties,
         data_payload=raw,

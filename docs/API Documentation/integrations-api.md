@@ -8,6 +8,80 @@
 
 ---
 
+## HubSpot Webhook Notes
+
+HubSpot note webhooks are handled through expanded generic object webhooks. HubSpot sends
+note changes as `object.*` events with `objectTypeId = 0-46`; the backend normalizes these
+to internal `note.*` events before queueing work for the integrations worker.
+
+Supported note webhook events:
+
+| HubSpot event | Required objectTypeId | Internal event | Behavior |
+|---------------|-----------------------|----------------|----------|
+| `object.creation` | `0-46` | `note.creation` | Debounced full note fetch and upsert |
+| `object.propertyChange` | `0-46` | `note.propertyChange` | Debounced full note fetch and upsert |
+| `object.associationChange` | `0-46` | `note.associationChange` | Debounced full note fetch and association refresh |
+| `object.deletion` | `0-46` | `note.deletion` | Immediate idempotent local soft delete |
+
+Supported note property-change subscriptions:
+
+- `hs_note_body`
+- `hubspot_owner_id`
+- `hs_attachment_ids`
+- `hs_timestamp`
+
+Do not subscribe to `hs_lastmodifieddate`. The backend fetches it with the full note snapshot
+and uses it for stale-write protection, while `hs_timestamp` is treated as the note's timeline
+timestamp.
+
+Operational checklist:
+
+- Enable expanded or generic object webhook support for the HubSpot Note object.
+- Confirm the app has the required note/activity read scope before rollout.
+- Reauthorize existing installs if the note read scope changes.
+- Keep polling/reconciliation enabled as the safety net for missed webhook deliveries.
+- Treat HubSpot 403 during note fetch as app scope or authorization failure, not as deletion.
+
+---
+
+## HubSpot Webhook Tasks
+
+HubSpot task webhooks are handled through expanded generic object webhooks. HubSpot sends
+task changes as `object.*` events with `objectTypeId = 0-27`; the backend normalizes these
+to internal `task.*` events before queueing work for the integrations worker.
+
+Supported task webhook events:
+
+| HubSpot event | Required objectTypeId | Internal event | Behavior |
+|---------------|-----------------------|----------------|----------|
+| `object.creation` | `0-27` | `task.creation` | Debounced full task fetch and upsert |
+| `object.propertyChange` | `0-27` | `task.propertyChange` | Debounced full task fetch and upsert |
+| `object.associationChange` | `0-27` | `task.associationChange` | Debounced full task fetch and association refresh |
+| `object.deletion` | `0-27` | `task.deletion` | Immediate idempotent local soft delete |
+
+Supported task property-change subscriptions:
+
+- `hs_task_subject`
+- `hs_task_body`
+- `hs_task_status`
+- `hs_task_priority`
+- `hs_task_type`
+- `hs_timestamp`
+- `hubspot_owner_id`
+
+Do not subscribe to `hs_lastmodifieddate`. The backend fetches it with the full task snapshot
+and uses it for stale-write protection.
+
+Operational checklist:
+
+- Enable expanded or generic object webhook support for the HubSpot Task object.
+- Confirm the app has the required task/activity read scope before rollout.
+- Reauthorize existing installs if the task read scope changes.
+- Keep polling/reconciliation enabled as the safety net for missed webhook deliveries.
+- Treat HubSpot 403 during task fetch as app scope or authorization failure, not as deletion.
+
+---
+
 ## Deprecated / Future Use: Calendar Invite Creation API
 
 This API is intentionally not registered right now. Calendar invite creation is currently owned by
