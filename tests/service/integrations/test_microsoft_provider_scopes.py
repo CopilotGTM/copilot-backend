@@ -10,6 +10,7 @@ def test_outlook_email_requests_only_profile_and_mail_scopes() -> None:
         "offline_access",
         "User.Read",
         "Mail.Read",
+        "Mail.Send",
     ]
 
 
@@ -17,7 +18,7 @@ def test_outlook_calendar_requests_profile_calendar_and_meeting_scopes() -> None
     assert MicrosoftProvider(IntegrationType.OUTLOOK_CALENDAR)._get_scopes() == [
         "offline_access",
         "User.Read",
-        "Calendars.Read",
+        "Calendars.ReadWrite",
         "OnlineMeetings.Read",
     ]
 

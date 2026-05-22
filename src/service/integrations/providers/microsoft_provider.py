@@ -6,7 +6,10 @@ from typing import Any
 import httpx
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.configs import microsoft_integration_config
-from src.infra.config.microsoft_integration_scopes import get_microsoft_integration_scopes
+from src.infra.config.microsoft_integration_scopes import (
+    get_microsoft_admin_consent_scopes,
+    get_microsoft_integration_scopes,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations.providers.base_provider import BaseIntegrationProvider
 
@@ -29,6 +32,7 @@ class MicrosoftProvider(BaseIntegrationProvider):
     """
 
     AUTHORIZATION_BASE_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    ADMIN_CONSENT_BASE_URL = "https://login.microsoftonline.com/{tenant}/v2.0/adminconsent"
     TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
     USER_INFO_URL = "https://graph.microsoft.com/v1.0/me"
 
@@ -60,6 +64,12 @@ class MicrosoftProvider(BaseIntegrationProvider):
     def _get_scopes(self) -> list[str]:
         """Determine required scopes based on IntegrationType."""
         return list(get_microsoft_integration_scopes(self.integration_type))
+
+    @staticmethod
+    def _admin_consent_scope_value(scope: str) -> str:
+        if scope in {"offline_access", "openid", "profile", "email"}:
+            return scope
+        return f"https://graph.microsoft.com/{scope}"
 
     async def _request_with_retry(
         self,
@@ -117,6 +127,20 @@ class MicrosoftProvider(BaseIntegrationProvider):
         }
         url = f"{self.AUTHORIZATION_BASE_URL}?{urllib.parse.urlencode(params)}"
         return url
+
+    async def get_admin_consent_url(self, state: str, tenant: str = "organizations") -> str:
+        await self._ensure_credentials()
+        scopes = [
+            self._admin_consent_scope_value(scope) for scope in get_microsoft_admin_consent_scopes()
+        ]
+        params = {
+            "client_id": self._client_id,
+            "redirect_uri": self.redirect_uri,
+            "scope": " ".join(scopes),
+            "state": state,
+        }
+        base_url = self.ADMIN_CONSENT_BASE_URL.format(tenant=tenant)
+        return f"{base_url}?{urllib.parse.urlencode(params)}"
 
     async def exchange_code(self, code: str, redirect_uri: str | None = None) -> dict[str, Any]:
         await self._ensure_credentials()

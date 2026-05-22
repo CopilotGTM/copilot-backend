@@ -7,6 +7,8 @@ that depends on user-consented Microsoft Graph permissions.
 
 from __future__ import annotations
 
+import hashlib
+
 from src.domain.models.organisation_tables.sync import IntegrationType
 
 MICROSOFT_SCOPE_OFFLINE_ACCESS = "offline_access"
@@ -49,3 +51,45 @@ def get_microsoft_integration_scopes(integration_type: IntegrationType) -> tuple
     validation failures.
     """
     return MICROSOFT_INTEGRATION_SCOPES.get(integration_type, ())
+
+
+def get_microsoft_admin_consent_scopes() -> tuple[str, ...]:
+    """Return the org-level Microsoft consent bundle for all user-owned integrations."""
+    seen: set[str] = set()
+    scopes: list[str] = []
+    for integration_type in (
+        IntegrationType.OUTLOOK_EMAIL,
+        IntegrationType.OUTLOOK_CALENDAR,
+        IntegrationType.TEAMS,
+    ):
+        for scope in get_microsoft_integration_scopes(integration_type):
+            if scope in seen:
+                continue
+            seen.add(scope)
+            scopes.append(scope)
+    return tuple(scopes)
+
+
+def get_microsoft_admin_consent_scope_version() -> str:
+    """Stable version for detecting stale Microsoft admin consent after scope changes."""
+    scope_blob = "\n".join(get_microsoft_admin_consent_scopes()).encode("utf-8")
+    return hashlib.sha256(scope_blob).hexdigest()[:12]
+
+
+def normalize_microsoft_scope(scope: str) -> str:
+    prefix = "https://graph.microsoft.com/"
+    return scope.removeprefix(prefix)
+
+
+def parse_microsoft_scope_string(scope: str | None) -> list[str]:
+    if not scope:
+        return []
+    scopes: list[str] = []
+    seen: set[str] = set()
+    for raw_scope in scope.replace(",", " ").split():
+        normalized = normalize_microsoft_scope(raw_scope.strip())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        scopes.append(normalized)
+    return scopes
