@@ -31,6 +31,7 @@ from src.api.middleware.public_form_cors import PublicLeadFormCORSMiddleware
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
+from src.api.routers.app_preferences.agent_actions_handler import agent_action_approval_router
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
@@ -223,6 +224,11 @@ def create_fastapi_app():
     fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
+    fastapp.include_router(
+        agent_action_approval_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
     voice_realtime_api_enabled = _voice_realtime_api_enabled()
     logger.info(
         "Voice realtime API routes %s",
