@@ -142,6 +142,7 @@ async def create_account(
             industry=body.industry,
             linkedin_url=body.linkedin_url,
         )
+        await service.org_session.commit()
 
         item = AccountListItem(
             **company.model_dump(),
