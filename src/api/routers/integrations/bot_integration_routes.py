@@ -13,10 +13,7 @@ from src.api.schemas.integrations.bot_integration_schemas import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.integrations.bot_integration_service import (
-    BotAlreadyInstalledError,
-    BotIntegrationService,
-)
+from src.service.integrations.bot_integration_service import BotIntegrationService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/bots", tags=["integrations"])
@@ -67,11 +64,6 @@ async def get_slack_bot_connect_url(
             message="Slack bot connect URL generated successfully",
             data=data,
         )
-    except BotAlreadyInstalledError as exc:
-        return Response.conflict_error_response(
-            message=str(exc),
-            response=response,
-        )
     except Exception:
         logger.exception("Failed to generate Slack bot connect URL")
         return Response.internal_server_error_response(
@@ -94,11 +86,6 @@ async def get_whatsapp_bot_connect_url(
         return Response.success_response(
             message="WhatsApp bot connect URL generated successfully",
             data=data,
-        )
-    except BotAlreadyInstalledError as exc:
-        return Response.conflict_error_response(
-            message=str(exc),
-            response=response,
         )
     except Exception:
         logger.exception("Failed to generate WhatsApp bot connect URL")

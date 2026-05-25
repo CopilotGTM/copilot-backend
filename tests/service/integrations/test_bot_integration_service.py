@@ -224,33 +224,6 @@ async def test_get_slack_connect_url_uses_bot_callback_and_bot_scopes(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_get_slack_connect_url_rejects_existing_org_installation():
-    from src.service.integrations.bot_integration_service import (
-        BotAlreadyInstalledError,
-        BotIntegrationService,
-    )
-
-    session = _FakeSession(
-        {
-            "installations": [
-                SimpleNamespace(
-                    installation_id=uuid4(),
-                    provider=BotPlatformProvider.SLACK,
-                    external_workspace_id="T123",
-                    external_workspace_name="Acme Slack",
-                    installed_at=datetime(2026, 5, 11, 1, 2, 3, tzinfo=UTC),
-                    last_used_at=None,
-                )
-            ],
-        }
-    )
-    service = BotIntegrationService(session=session, user_ids=_user_ids())
-
-    with pytest.raises(BotAlreadyInstalledError):
-        await service.get_slack_connect_url()
-
-
-@pytest.mark.asyncio
 async def test_get_whatsapp_connect_url_uses_configured_bot_number(monkeypatch):
     from src.service.integrations import bot_integration_service
     from src.service.integrations.bot_integration_service import BotIntegrationService
@@ -269,37 +242,3 @@ async def test_get_whatsapp_connect_url_uses_configured_bot_number(monkeypatch):
     assert response.provider == "whatsapp"
     assert response.expires_at is None
     assert response.connect_url == "https://wa.me/15556300848?text=hi"
-
-
-@pytest.mark.asyncio
-async def test_get_whatsapp_connect_url_rejects_existing_org_installation(monkeypatch):
-    from src.service.integrations import bot_integration_service
-    from src.service.integrations.bot_integration_service import (
-        BotAlreadyInstalledError,
-        BotIntegrationService,
-    )
-
-    monkeypatch.setattr(
-        bot_integration_service.whatsapp_config,
-        "WHATSAPP_BOT_PHONE_NUMBER",
-        "+1 (555) 630-0848",
-        raising=False,
-    )
-    session = _FakeSession(
-        {
-            "installations": [
-                SimpleNamespace(
-                    installation_id=uuid4(),
-                    provider=BotPlatformProvider.WHATSAPP,
-                    external_workspace_id="phone-number-id-123",
-                    external_workspace_name="Acme WhatsApp",
-                    installed_at=datetime(2026, 5, 11, 1, 2, 3, tzinfo=UTC),
-                    last_used_at=None,
-                )
-            ],
-        }
-    )
-    service = BotIntegrationService(session=session, user_ids=_user_ids())
-
-    with pytest.raises(BotAlreadyInstalledError):
-        await service.get_whatsapp_connect_url()
