@@ -251,6 +251,24 @@ def test_copilot_callback_provider_error_marks_microsoft_admin_consent_required(
     assert "attempt_id=attempt-from-valid-state" in location
 
 
+def test_copilot_callback_plain_microsoft_access_denied_marks_admin_consent_required(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Microsoft can return only access_denied when tenant policy blocks user consent."""
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback?error=access_denied&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "action_required=admin_consent_required" in location
+    assert "integration_type=outlook_email" in location
+    assert "attempt_id=attempt-from-valid-state" in location
+
+
 def test_copilot_callback_missing_code_returns_popup_completion_html(
     client: TestClient, integrations_dependency_overrides
 ) -> None:

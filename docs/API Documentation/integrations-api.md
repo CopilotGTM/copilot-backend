@@ -1134,7 +1134,7 @@ flowchart TD
 |-----------|----------------|-------------------|
 | Microsoft has not rejected OAuth | No admin-consent signal | Show normal `Connect`; let Microsoft decide whether admin approval is needed. |
 | Normal Microsoft OAuth succeeds | Popup redirect has `success=true`; `/available` returns connected integration row | Refresh integrations and show the connected account. |
-| Microsoft rejects normal OAuth with admin approval required | Popup redirect has `success=false`, `action_required=admin_consent_required`, and `integration_type=<provider>` | Show `Grant admin consent` for Microsoft cards. |
+| Microsoft rejects normal OAuth with admin approval required, including a bare Microsoft `access_denied` callback without provider detail | Popup redirect has `success=false`, `action_required=admin_consent_required`, and `integration_type=<provider>` | Show `Grant admin consent` for Microsoft cards. |
 | Admin consent succeeds | Admin-consent callback redirects with `success=true` | Hide admin-consent CTA; user must retry normal Microsoft OAuth to create their delegated connection. |
 
 The frontend should open the returned `auth_url` in the same popup flow used for OAuth.
@@ -1179,10 +1179,11 @@ OAuth tokens.
 | `400` | Requested integration is not a Microsoft integration. |
 | `500` | Microsoft OAuth credentials or backend configuration are unavailable. |
 
-When Microsoft rejects a normal OAuth callback with an admin-approval error, the popup
-completion redirect includes `action_required=admin_consent_required` and
-`integration_type=<triggering Microsoft integration>`. The frontend should then surface
-the admin-consent CTA for Microsoft instead of guessing from stored organization
+When Microsoft rejects a normal OAuth callback with an admin-approval error, or returns
+a bare `access_denied` callback for a Microsoft user-owned integration without provider
+detail, the popup completion redirect includes `action_required=admin_consent_required`
+and `integration_type=<triggering Microsoft integration>`. The frontend should then
+surface the admin-consent CTA for Microsoft instead of guessing from stored organization
 preference state.
 
 ---

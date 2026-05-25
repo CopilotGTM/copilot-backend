@@ -119,7 +119,12 @@ def _is_microsoft_admin_consent_required_error(
     error_description: str | None,
 ) -> bool:
     combined = f"{error} {error_description or ''}".lower()
-    return any(marker in combined for marker in _MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS)
+    if any(marker in combined for marker in _MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS):
+        return True
+
+    # Some tenant-policy blocks come back as bare access_denied without the
+    # "Need admin approval" text, which is the only signal the frontend receives.
+    return error.strip().lower() == "access_denied" and not error_description
 
 
 @router.post(
