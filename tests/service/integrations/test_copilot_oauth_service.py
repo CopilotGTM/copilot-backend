@@ -83,6 +83,81 @@ async def test_initiate_oauth_flow_allows_beta_integration() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initiate_microsoft_admin_consent_flow_builds_adminconsent_url() -> None:
+    service = CopilotOAuthService()
+
+    with (
+        patch(
+            "src.service.integrations.copilot_oauth_service.get_integration_metadata",
+            return_value=FakeMetadata(availability_status="beta"),
+        ),
+        patch(
+            "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+            new=AsyncMock(return_value="oauth-signing-secret"),
+        ),
+        patch(
+            "src.service.integrations.providers.microsoft_provider.microsoft_integration_config.get_credentials",
+            new=AsyncMock(return_value=("client-id", "client-secret")),
+        ),
+        patch(
+            "src.service.integrations.providers.microsoft_provider.microsoft_integration_config.REDIRECT_URI",
+            "https://api.example.com/users/integrations/copilot-oauth/callback",
+        ),
+    ):
+        result = await service.initiate_microsoft_admin_consent_flow(
+            user_ids=_make_user_ids(),
+            integration_type=IntegrationType.OUTLOOK_CALENDAR,
+        )
+        parsed = urlparse(result.auth_url)
+        query = parse_qs(parsed.query)
+        decoded = await CopilotOAuthService.decode_oauth_state(query["state"][0])
+
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "login.microsoftonline.com"
+    assert parsed.path == "/organizations/v2.0/adminconsent"
+    assert query["client_id"] == ["client-id"]
+    assert query["redirect_uri"] == [
+        "https://api.example.com/users/integrations/copilot-oauth/callback"
+    ]
+    assert query["scope"] == [
+        "offline_access https://graph.microsoft.com/User.Read "
+        "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send "
+        "https://graph.microsoft.com/Calendars.ReadWrite "
+        "https://graph.microsoft.com/OnlineMeetings.Read "
+        "https://graph.microsoft.com/Team.ReadBasic.All "
+        "https://graph.microsoft.com/Channel.ReadBasic.All "
+        "https://graph.microsoft.com/Chat.Read"
+    ]
+    assert decoded["type"] == IntegrationType.OUTLOOK_CALENDAR.value
+    assert decoded["purpose"] == "microsoft_admin_consent"
+    assert decoded["jti"] == result.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_initiate_microsoft_admin_consent_flow_rejects_non_microsoft() -> None:
+    service = CopilotOAuthService()
+
+    with pytest.raises(ValueError, match="Admin consent is only supported for Microsoft"):
+        await service.initiate_microsoft_admin_consent_flow(
+            user_ids=_make_user_ids(),
+            integration_type=IntegrationType.GMAIL,
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_microsoft_admin_consent_callback_rejects_ungranted_response() -> None:
+    service = CopilotOAuthService()
+
+    with pytest.raises(ValueError, match="Microsoft admin consent was not granted"):
+        await service.handle_microsoft_admin_consent_callback(
+            state="unused",
+            admin_consent="False",
+            tenant="tenant-id",
+            scope="User.Read",
+        )
+
+
+@pytest.mark.asyncio
 async def test_initiate_salesforce_oauth_flow_includes_validated_custom_base_in_state() -> None:
     service = CopilotOAuthService()
     fake_provider = AsyncMock()

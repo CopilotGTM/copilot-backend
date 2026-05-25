@@ -1081,7 +1081,122 @@ reused during callback token exchange. After OAuth succeeds, sync uses the
 
 ---
 
-## 5. Disconnect Integration
+## 5. Microsoft Admin Consent Authorization URL
+
+### Endpoint
+
+```http
+POST /users/integrations/copilot-oauth/microsoft/admin-consent
+```
+
+Returns one Microsoft Entra admin-consent URL for CopilotGTM's Microsoft integration
+app. The request can be triggered from Outlook Email, Outlook Calendar, or Teams, but
+the consent URL always requests the shared Microsoft scope bundle for all current
+user-owned Microsoft integrations:
+
+- `offline_access`
+- `User.Read`
+- `Mail.Read`
+- `Mail.Send`
+- `Calendars.ReadWrite`
+- `OnlineMeetings.Read`
+- `Team.ReadBasic.All`
+- `Channel.ReadBasic.All`
+- `Chat.Read`
+
+Use this when a user sees Microsoft's "Need admin approval" page during the normal
+Microsoft OAuth flow. Do not require this before every Microsoft connection attempt:
+some tenants allow user consent and some admins can complete normal delegated consent
+without a separate admin-consent step.
+
+### Runtime Flow
+
+```mermaid
+flowchart TD
+    A[User clicks Outlook Email, Outlook Calendar, or Teams] --> B[Frontend starts normal Microsoft OAuth]
+    B --> C{Microsoft allows delegated user consent?}
+    C -->|Yes| D[Backend OAuth callback exchanges code and stores user's Microsoft connection]
+    D --> E[GET /users/integrations/available shows the integration connected]
+    C -->|No: Need admin approval| F[Backend callback redirects popup with action_required=admin_consent_required]
+    F --> G[Frontend marks shared Microsoft consent as action required]
+    G --> H[Frontend shows Admin approval required on Microsoft cards]
+    H --> I[User opens or copies Microsoft admin approval link]
+    I --> J[Frontend calls POST /copilot-oauth/microsoft/admin-consent]
+    J --> K[Backend returns Microsoft /adminconsent URL for the shared scope bundle]
+    K --> L[Tenant admin approves in Microsoft Entra]
+    L --> M[Backend admin-consent callback stores preferences.integrations.microsoft.admin_consent]
+    M --> N[Frontend clears local admin-consent action state]
+    N --> O[User retries normal Microsoft OAuth]
+    O --> D
+```
+
+| Situation | Backend Signal | Frontend Behavior |
+|-----------|----------------|-------------------|
+| Microsoft has not rejected OAuth | No admin-consent signal | Show normal `Connect`; let Microsoft decide whether admin approval is needed. |
+| Normal Microsoft OAuth succeeds | Popup redirect has `success=true`; `/available` returns connected integration row | Refresh integrations and show the connected account. |
+| Microsoft rejects normal OAuth with admin approval required, including a bare Microsoft `access_denied` callback without provider detail | Popup redirect has `success=false`, `action_required=admin_consent_required`, and `integration_type=<provider>` | Show `Admin approval required` for Microsoft cards, explain that only a Microsoft tenant admin can approve, and offer open/copy actions for the approval link. |
+| Admin consent succeeds | Admin-consent callback redirects with `success=true` | Hide admin-consent CTA and tell the original user to connect again to create their delegated connection. |
+| Admin consent is denied from the Microsoft admin-consent flow | Popup redirect has `success=false`, `action_required=admin_consent_required`, `integration_type=<provider>`, and a message telling the user to sign in with a Microsoft tenant admin account or send the approval link to an admin | Keep the Microsoft card in the admin-required state and show the specific denial guidance. |
+
+The frontend should show an explanatory modal before navigating to the returned
+`auth_url`. Do not collect Microsoft admin credentials in CopilotGTM. Microsoft owns
+credential entry, and the copied approval link can be opened by a different Microsoft
+tenant admin in their own browser or session because the signed state carries the
+CopilotGTM organization/user context. After an Entra administrator approves the app,
+Microsoft redirects back to the existing OAuth callback URL with `admin_consent=True`.
+The backend records the consent result once under
+`preferences.integrations.microsoft.admin_consent`, then redirects the popup to
+`/integrations/oauth/popup-complete`.
+
+Admin consent does not create a user integration token. After approval, the user must
+retry the normal Microsoft connect flow so CopilotGTM can receive that user's delegated
+OAuth tokens.
+
+### Request Body
+
+```json
+{
+  "integration_type": "outlook_calendar"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `integration_type` | string | Yes | Must be `outlook_email`, `outlook_calendar`, or `teams`. This only records which card triggered the shared Microsoft admin-consent flow. |
+
+### Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Microsoft admin consent URL generated successfully.",
+  "data": {
+    "auth_url": "https://login.microsoftonline.com/organizations/v2.0/adminconsent?...",
+    "attempt_id": "7e31f..."
+  }
+}
+```
+
+### Error Responses
+
+| Status | Cause |
+|--------|-------|
+| `400` | Requested integration is not a Microsoft integration. |
+| `500` | Microsoft OAuth credentials or backend configuration are unavailable. |
+
+When Microsoft rejects a normal OAuth callback with an admin-approval error, or returns
+a bare `access_denied` callback for a Microsoft user-owned integration without provider
+detail, the popup completion redirect includes `action_required=admin_consent_required`
+and `integration_type=<triggering Microsoft integration>`. The frontend should then
+surface the admin approval required state for Microsoft instead of guessing from stored
+organization preference state. If Microsoft returns `access_denied` for a signed
+Microsoft admin-consent state, the backend preserves
+`action_required=admin_consent_required` and returns the message:
+`Admin consent was not granted. Sign in with a Microsoft tenant admin account or send the approval link to your admin.`
+
+---
+
+## 6. Disconnect Integration
 
 ### Disconnect Integration Endpoint
 

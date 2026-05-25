@@ -33,12 +33,14 @@ def test_list_available_with_connections(client: TestClient, integrations_depend
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
 
     # Add a connected Teams integration
     integration_id = uuid4()
     integration = FakeKnowledgeIntegration(
         integration_id=integration_id,
-        organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+        organisation_id=current_user.organisation_id,
+        created_by_user_id=current_user.user_id,
         integration_type="teams",
         name="Company Teams",
         is_active=True,
@@ -68,12 +70,14 @@ def test_list_available_multiple_same_type(client: TestClient, integrations_depe
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
 
     # Add multiple Slack integrations
     for i in range(3):
         integration = FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="slack",
             name=f"Slack Workspace {i + 1}",
             is_active=True,
@@ -103,12 +107,14 @@ def test_list_available_mixed_active_inactive(
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
 
     # Add active integration
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="teams",
             name="Active Teams",
             is_active=True,
@@ -119,7 +125,8 @@ def test_list_available_mixed_active_inactive(
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="slack",
             name="Inactive Slack",
             is_active=False,
@@ -141,10 +148,12 @@ def test_list_available_includes_requires_reauth_instances(
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="gmail",
             name="Expired Gmail",
             is_active=False,
@@ -245,8 +254,11 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
     assert outlook_email["has_action_required"] is True
     connected = outlook_email["connected_integrations"][0]
     assert connected["action_required"] == "additional_permissions"
-    assert connected["missing_scopes"] == ["Mail.Read"]
-    assert connected["missing_scope_labels"] == ["Outlook mail access"]
+    assert connected["missing_scopes"] == ["Mail.Read", "Mail.Send"]
+    assert connected["missing_scope_labels"] == [
+        "Outlook mail access",
+        "Outlook mail send access",
+    ]
 
 
 def test_list_available_marks_outlook_calendar_write_scope_as_additional_permission(

@@ -35,6 +35,19 @@ router = APIRouter(prefix="/copilot-oauth", tags=["copilot-integrations-oauth"])
 # Frontend route that receives the OAuth result and signals the parent window to close the popup
 _POPUP_COMPLETE_PATH = "/integrations/oauth/popup-complete"
 _MAX_PROVIDER_ERROR_MESSAGE_LEN = 300
+_MICROSOFT_ADMIN_CONSENT_PURPOSE = "microsoft_admin_consent"
+_MICROSOFT_ADMIN_CONSENT_DENIED_MESSAGE = (
+    "Admin consent was not granted. Sign in with a Microsoft tenant admin account "
+    "or send the approval link to your admin."
+)
+_MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS = (
+    "need admin approval",
+    "admin approval",
+    "admin consent",
+    "admin_consent",
+    "aadsts65001",
+)
+_MICROSOFT_USER_OWNED_TYPES = {"outlook_email", "outlook_calendar", "teams"}
 
 
 async def get_copilot_oauth_service() -> CopilotOAuthService:
@@ -56,6 +69,23 @@ async def _extract_attempt_id_from_state(
 
     jti = state_data.get("jti")
     return str(jti) if jti else None
+
+
+async def _extract_oauth_state_context(
+    state: str,
+    oauth_service: CopilotOAuthService,
+) -> dict[str, str]:
+    try:
+        state_data = await oauth_service.decode_oauth_state_allow_expired(state)
+    except Exception:
+        return {}
+
+    context: dict[str, str] = {}
+    for key in ("jti", "type", "purpose"):
+        value = state_data.get(key)
+        if value:
+            context[key] = str(value)
+    return context
 
 
 def _build_popup_completion_redirect(
@@ -87,6 +117,19 @@ def _provider_error_message(error: str, error_description: str | None = None) ->
         else normalized_error
     )
     return message[:_MAX_PROVIDER_ERROR_MESSAGE_LEN]
+
+
+def _is_microsoft_admin_consent_required_error(
+    error: str,
+    error_description: str | None,
+) -> bool:
+    combined = f"{error} {error_description or ''}".lower()
+    if any(marker in combined for marker in _MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS):
+        return True
+
+    # Some tenant-policy blocks come back as bare access_denied without the
+    # "Need admin approval" text, which is the only signal the frontend receives.
+    return error.strip().lower() == "access_denied" and not error_description
 
 
 @router.post(
@@ -137,6 +180,44 @@ async def initiate_custom_oauth_flow(
         )
 
 
+@router.post(
+    "/microsoft/admin-consent",
+    response_model=GenericResponse[dict],
+    summary="Create Microsoft admin consent URL",
+    description="Generates a Microsoft Entra admin-consent URL for a Microsoft integration.",
+)
+async def initiate_microsoft_admin_consent_flow(
+    request: OAuthInitiateRequest,
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
+    _rl: None = Depends(rate_limit_user_write),
+) -> GenericResponse[dict]:
+    try:
+        result = await oauth_service.initiate_microsoft_admin_consent_flow(
+            user_ids=user_ids,
+            integration_type=request.integration_type,
+        )
+        return Response.success_response(
+            message="Microsoft admin consent URL generated successfully.",
+            data={"auth_url": result.auth_url, "attempt_id": result.attempt_id},
+        )
+    except ValueError as e:
+        logger.warning(
+            "Failed to initiate Microsoft admin consent for user %s org %s: %s",
+            user_ids.user_id,
+            user_ids.organisation_id,
+            str(e),
+        )
+        return Response.bad_request_error_response(message=str(e), response=response)
+    except Exception as e:
+        logger.error("Failed to initiate Microsoft admin consent: %s", e, exc_info=True)
+        return Response.internal_server_error_response(
+            message=IntegrationErrors.OAUTH_INITIATION_FAILED,
+            response=response,
+        )
+
+
 @router.get(
     "/callback",
     summary="OAuth Callback Handler",
@@ -148,6 +229,9 @@ async def handle_oauth_callback(
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
+    admin_consent: str | None = None,
+    tenant: str | None = None,
+    scope: str | None = None,
     callback_service: CopilotCallbackService = Depends(get_copilot_callback_service),
     oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
 ) -> RedirectResponse:
@@ -160,10 +244,73 @@ async def handle_oauth_callback(
             "message": message,
         }
         if state:
+            state_context = await _extract_oauth_state_context(state, oauth_service)
+            attempt_id = state_context.get("jti")
+            integration_type = state_context.get("type")
+            purpose = state_context.get("purpose")
+            if attempt_id:
+                payload["attempt_id"] = attempt_id
+            if integration_type:
+                payload["integration_type"] = integration_type
+            if (
+                error.strip().lower() == "access_denied"
+                and purpose == _MICROSOFT_ADMIN_CONSENT_PURPOSE
+                and integration_type in _MICROSOFT_USER_OWNED_TYPES
+            ):
+                payload["message"] = _MICROSOFT_ADMIN_CONSENT_DENIED_MESSAGE
+                payload["action_required"] = "admin_consent_required"
+            if (
+                integration_type in _MICROSOFT_USER_OWNED_TYPES
+                and _is_microsoft_admin_consent_required_error(error, error_description)
+            ):
+                payload["action_required"] = "admin_consent_required"
+        return _build_popup_completion_redirect(payload, status_code=303)
+
+    if admin_consent is not None:
+        if not state:
+            return _build_popup_completion_redirect(
+                {
+                    "success": "false",
+                    "message": "Microsoft admin consent callback did not include state.",
+                },
+                status_code=303,
+            )
+        try:
+            result = await oauth_service.handle_microsoft_admin_consent_callback(
+                state=state,
+                admin_consent=admin_consent,
+                tenant=tenant,
+                scope=scope,
+            )
+            return _build_popup_completion_redirect(
+                {
+                    "success": "true",
+                    "message": "Microsoft admin consent completed successfully",
+                    "integration_type": str(result["integration_type"]),
+                    "attempt_id": str(result["attempt_id"]),
+                },
+                status_code=303,
+            )
+        except ValueError as e:
+            logger.warning("Rejected Microsoft admin consent callback: %s", str(e))
+            payload = {
+                "success": "false",
+                "message": str(e),
+            }
             attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
             if attempt_id:
                 payload["attempt_id"] = attempt_id
-        return _build_popup_completion_redirect(payload, status_code=303)
+            return _build_popup_completion_redirect(payload, status_code=303)
+        except Exception as e:
+            logger.error("Failed to process Microsoft admin consent callback: %s", e, exc_info=True)
+            payload = {
+                "success": "false",
+                "message": IntegrationErrors.OAUTH_CALLBACK_FAILED,
+            }
+            attempt_id = await _extract_attempt_id_from_state(state, oauth_service)
+            if attempt_id:
+                payload["attempt_id"] = attempt_id
+            return _build_popup_completion_redirect(payload, status_code=303)
 
     if not code:
         logger.warning("Rejected custom OAuth callback: missing authorization code")

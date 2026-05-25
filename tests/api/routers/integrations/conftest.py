@@ -303,6 +303,8 @@ class FakeCopilotOAuthService:
         self.should_raise_unavailable = False
         self.should_raise_value_error = False
         self.last_initiate_kwargs = None
+        self.last_admin_consent_initiate_kwargs = None
+        self.last_admin_consent_callback_kwargs = None
 
     async def initiate_oauth_flow(
         self,
@@ -331,9 +333,55 @@ class FakeCopilotOAuthService:
             attempt_id=f"attempt-{integration_type.value}",
         )
 
+    async def initiate_microsoft_admin_consent_flow(
+        self,
+        user_ids: UserIDs,
+        integration_type: IntegrationType,
+    ) -> SimpleNamespace:
+        self.last_admin_consent_initiate_kwargs = {
+            "user_ids": user_ids,
+            "integration_type": integration_type,
+        }
+        if self.should_raise_value_error:
+            raise ValueError("Admin consent is only supported for Microsoft integrations")
+        return SimpleNamespace(
+            auth_url=f"https://login.microsoftonline.com/organizations/v2.0/adminconsent/{integration_type.value}",
+            attempt_id=f"admin-consent-{integration_type.value}",
+        )
+
+    async def handle_microsoft_admin_consent_callback(
+        self,
+        *,
+        state: str,
+        admin_consent: str,
+        tenant: str | None,
+        scope: str | None,
+    ) -> dict[str, str]:
+        self.last_admin_consent_callback_kwargs = {
+            "state": state,
+            "admin_consent": admin_consent,
+            "tenant": tenant,
+            "scope": scope,
+        }
+        if admin_consent != "True":
+            raise ValueError("Microsoft admin consent was not granted")
+        if self.should_raise_value_error:
+            raise ValueError("Invalid or expired state parameter")
+        return {
+            "integration_type": "outlook_calendar",
+            "tenant": tenant or "tenant-id",
+            "attempt_id": "admin-consent-attempt",
+        }
+
     async def decode_oauth_state_allow_expired(self, state: str) -> dict[str, str]:
+        if state == "admin-consent-state":
+            return {
+                "jti": "admin-consent-attempt",
+                "type": "outlook_calendar",
+                "purpose": "microsoft_admin_consent",
+            }
         if state == "valid-state":
-            return {"jti": "attempt-from-valid-state"}
+            return {"jti": "attempt-from-valid-state", "type": "outlook_email"}
         raise ValueError("Invalid state")
 
 
@@ -401,6 +449,7 @@ def fake_copilot_callback_service():
 @pytest.fixture(scope="function")
 def integrations_dependency_overrides(
     client,
+    monkeypatch,
     integration_test_ids,
     fake_integration_service,
     fake_copilot_oauth_service,

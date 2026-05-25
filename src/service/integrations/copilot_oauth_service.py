@@ -1,9 +1,10 @@
 import datetime
 from dataclasses import dataclass
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import jwt
+from src.domain.models.master_tables import Organisation, User
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.auth.user_context import UserIDs
 from src.infra.config.configs import security_secrets_config
@@ -12,13 +13,22 @@ from src.infra.config.integrations_metadata import (
     IntegrationMetadata,
     get_integration_metadata,
 )
+from src.infra.config.microsoft_integration_scopes import (
+    get_microsoft_admin_consent_scope_version,
+    get_microsoft_admin_consent_scopes,
+    parse_microsoft_scope_string,
+)
+from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.providers.microsoft_provider import MicrosoftProvider
 from src.service.integrations.providers.provider_factory import ProviderFactory
 from src.service.integrations.providers.salesforce_provider import (
     normalize_salesforce_oauth_base_url,
 )
+from src.service.integrations.scope_validation import is_microsoft_integration
 
 logger = get_logger(__name__)
+_MICROSOFT_ADMIN_CONSENT_PURPOSE = "microsoft_admin_consent"
 
 
 async def _get_oauth_state_secret() -> str:
@@ -68,6 +78,7 @@ class CopilotOAuthService:
         *,
         jti: str | None = None,
         oauth_base_url: str | None = None,
+        purpose: str | None = None,
     ) -> str:
         """Generate a signed JWT embedding user/org context into the OAuth state parameter.
 
@@ -93,6 +104,8 @@ class CopilotOAuthService:
         }
         if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
             payload["oauth_base_url"] = oauth_base_url
+        if purpose:
+            payload["purpose"] = purpose
         encoded_jwt = jwt.encode(payload, await _get_oauth_state_secret(), algorithm="HS256")
         return encoded_jwt
 
@@ -179,6 +192,100 @@ class CopilotOAuthService:
             integration_type.value,
         )
         return OAuthInitiationResult(auth_url=auth_url, attempt_id=attempt_id)
+
+    async def initiate_microsoft_admin_consent_flow(
+        self,
+        *,
+        user_ids: UserIDs,
+        integration_type: IntegrationType,
+    ) -> OAuthInitiationResult:
+        if not is_microsoft_integration(integration_type):
+            raise ValueError("Admin consent is only supported for Microsoft integrations")
+
+        self._ensure_integration_available(integration_type)
+        attempt_id = str(uuid4())
+        state_token = await self.generate_oauth_state(
+            user_ids,
+            integration_type,
+            jti=attempt_id,
+            purpose=_MICROSOFT_ADMIN_CONSENT_PURPOSE,
+        )
+        auth_url = await MicrosoftProvider(integration_type).get_admin_consent_url(state_token)
+
+        logger.info(
+            "Initiated Microsoft admin consent flow for user %s, org %s, provider %s",
+            user_ids.user_id,
+            user_ids.organisation_id,
+            integration_type.value,
+        )
+        return OAuthInitiationResult(auth_url=auth_url, attempt_id=attempt_id)
+
+    async def handle_microsoft_admin_consent_callback(
+        self,
+        *,
+        state: str,
+        admin_consent: str,
+        tenant: str | None,
+        scope: str | None,
+    ) -> dict[str, str]:
+        if admin_consent != "True":
+            raise ValueError("Microsoft admin consent was not granted")
+
+        state_data = await self.decode_oauth_state(state)
+        if state_data.get("purpose") != _MICROSOFT_ADMIN_CONSENT_PURPOSE:
+            raise ValueError("Invalid Microsoft admin consent state")
+
+        try:
+            user_id = str(UUID(str(state_data["sub"])))
+            organisation_id = UUID(str(state_data["org"]))
+            integration_type = IntegrationType(state_data["type"])
+        except Exception as e:
+            raise ValueError("State payload is missing required claims") from e
+
+        if not is_microsoft_integration(integration_type):
+            raise ValueError("Admin consent is only supported for Microsoft integrations")
+
+        attempt_id = str(state_data.get("jti") or "")
+        if not attempt_id:
+            raise ValueError("State payload is missing jti claim")
+
+        async for master_session in acquire_master_async_session():
+            user = await master_session.get(User, UUID(user_id))
+            if not user or user.organisation_id != organisation_id:
+                raise ValueError("Invalid user state context")
+
+            organisation = await master_session.get(Organisation, organisation_id)
+            if not organisation:
+                raise ValueError("Organisation not found for Microsoft admin consent")
+
+            preferences = dict(organisation.preferences or {})
+            integrations = dict(preferences.get("integrations") or {})
+            microsoft = dict(integrations.get("microsoft") or {})
+            granted_scopes = parse_microsoft_scope_string(scope)
+            microsoft["admin_consent"] = {
+                "granted": True,
+                "tenant": tenant,
+                "granted_scopes": granted_scopes,
+                "required_scopes": list(get_microsoft_admin_consent_scopes()),
+                "scope_version": get_microsoft_admin_consent_scope_version(),
+                "attempt_id": attempt_id,
+                "initiated_by_user_id": user_id,
+                "trigger_integration_type": integration_type.value,
+                "granted_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            }
+            integrations["microsoft"] = microsoft
+            preferences["integrations"] = integrations
+            organisation.preferences = preferences
+
+            master_session.add(organisation)
+            await master_session.commit()
+            return {
+                "integration_type": integration_type.value,
+                "tenant": tenant or "",
+                "attempt_id": attempt_id,
+            }
+
+        raise RuntimeError("Failed to acquire master session")
 
 
 copilot_oauth_service = CopilotOAuthService()

@@ -49,7 +49,9 @@ def test_provider_error_message_is_bounded() -> None:
 
 def test_copilot_authorize_rejects_oauth_base_url_for_non_salesforce(
     client: TestClient,
+    integrations_dependency_overrides,
 ) -> None:
+    _ = integrations_dependency_overrides
     payload = {
         "integration_type": "gmail",
         "oauth_base_url": "https://accounts.google.com",
@@ -91,6 +93,45 @@ def test_copilot_authorize_invalid_provider(
     assert "No custom integration provider found" in body["message"]
 
 
+def test_copilot_microsoft_admin_consent_authorize_success(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    payload = {"integration_type": "outlook_calendar"}
+
+    resp = client.post("/users/integrations/copilot-oauth/microsoft/admin-consent", json=payload)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["message"] == "Microsoft admin consent URL generated successfully."
+    assert body["data"]["auth_url"].startswith(
+        "https://login.microsoftonline.com/organizations/v2.0/adminconsent"
+    )
+    assert body["data"]["attempt_id"] == "admin-consent-outlook_calendar"
+    service = integrations_dependency_overrides["copilot_oauth_service"]
+    assert service.last_admin_consent_initiate_kwargs["integration_type"].value == (
+        "outlook_calendar"
+    )
+
+
+def test_copilot_microsoft_admin_consent_authorize_rejects_non_microsoft(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    integrations_dependency_overrides["copilot_oauth_service"].should_raise_value_error = True
+
+    resp = client.post(
+        "/users/integrations/copilot-oauth/microsoft/admin-consent",
+        json={"integration_type": "gmail"},
+    )
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["status"] == "ERROR"
+    assert "Admin consent is only supported for Microsoft integrations" in body["message"]
+
+
 def test_copilot_callback_returns_popup_completion_html(
     client: TestClient, integrations_dependency_overrides
 ) -> None:
@@ -107,6 +148,49 @@ def test_copilot_callback_returns_popup_completion_html(
     assert "integration_id=test-integration" in location
     assert "integration_type=" in location
     assert "attempt_id=test-connection" in location
+
+
+def test_copilot_callback_handles_microsoft_admin_consent_response(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback"
+        "?admin_consent=True&tenant=tenant-123&scope=User.Read&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=true" in location
+    assert "integration_type=outlook_calendar" in location
+    assert "attempt_id=admin-consent-attempt" in location
+    assert "message=Microsoft+admin+consent+completed+successfully" in location
+    service = integrations_dependency_overrides["copilot_oauth_service"]
+    assert service.last_admin_consent_callback_kwargs == {
+        "state": "valid-state",
+        "admin_consent": "True",
+        "tenant": "tenant-123",
+        "scope": "User.Read",
+    }
+
+
+def test_copilot_callback_rejects_ungranted_microsoft_admin_consent_response(
+    client: TestClient,
+    integrations_dependency_overrides,
+) -> None:
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback"
+        "?admin_consent=False&tenant=tenant-123&scope=User.Read&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "message=Microsoft+admin+consent+was+not+granted" in location
 
 
 def test_copilot_callback_error_returns_popup_completion_html(
@@ -144,6 +228,69 @@ def test_copilot_callback_provider_error_returns_popup_completion_html(
     assert "success=false" in location
     assert "access_denied%3A+user+denied" in location
     assert "attempt_id=attempt-from-valid-state" in location
+
+
+def test_copilot_callback_provider_error_marks_microsoft_admin_consent_required(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Blocked Microsoft user consent should let the frontend show an admin-consent CTA."""
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback"
+        "?error=access_denied"
+        "&error_description=Need%20admin%20approval"
+        "&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "action_required=admin_consent_required" in location
+    assert "integration_type=outlook_email" in location
+    assert "attempt_id=attempt-from-valid-state" in location
+
+
+def test_copilot_callback_plain_microsoft_access_denied_marks_admin_consent_required(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Microsoft can return only access_denied when tenant policy blocks user consent."""
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback?error=access_denied&state=valid-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "action_required=admin_consent_required" in location
+    assert "integration_type=outlook_email" in location
+    assert "attempt_id=attempt-from-valid-state" in location
+
+
+def test_copilot_callback_admin_consent_access_denied_preserves_required_action(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback"
+        "?error=access_denied"
+        "&error_description=admin%20denied"
+        "&state=admin-consent-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "action_required=admin_consent_required" in location
+    assert "integration_type=outlook_calendar" in location
+    assert "attempt_id=admin-consent-attempt" in location
+    assert (
+        "message=Admin+consent+was+not+granted.+Sign+in+with+a+Microsoft+tenant+admin+"
+        "account+or+send+the+approval+link+to+your+admin."
+    ) in location
 
 
 def test_copilot_callback_missing_code_returns_popup_completion_html(
