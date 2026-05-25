@@ -123,9 +123,10 @@ class BotIntegrationService:
         )
 
     async def _build_whatsapp_card(self) -> AvailableBotIntegration:
+        installation = await self._get_whatsapp_installation()
         identity_mapping = await self._get_whatsapp_identity_mapping()
+        installed = installation is not None
         identity_linked = identity_mapping is not None
-        installed = bool(self._get_whatsapp_bot_phone_number_digits())
 
         return AvailableBotIntegration(
             provider=WHATSAPP_BOT_METADATA.provider,
@@ -137,6 +138,17 @@ class BotIntegrationService:
             connection_mode="qr_deep_link",
             connect_url=None,
             installed=installed,
+            installation=(
+                BotInstallationResponse(
+                    installation_id=installation.installation_id,
+                    workspace_id=installation.external_workspace_id,
+                    workspace_name=installation.external_workspace_name,
+                    installed_at=installation.installed_at,
+                    last_used_at=installation.last_used_at,
+                )
+                if installation
+                else None
+            ),
             identity_linked=identity_linked,
             identity_mapping_id=identity_mapping.mapping_id if identity_mapping else None,
             action_required=self._get_action_required(installed, identity_linked),
@@ -147,6 +159,19 @@ class BotIntegrationService:
             select(BotPlatformInstallation)
             .where(
                 col(BotPlatformInstallation.provider) == BotPlatformProvider.SLACK.value,
+                col(BotPlatformInstallation.organisation_id) == self.user_ids.organisation_id,
+                col(BotPlatformInstallation.is_active).is_(True),
+            )
+            .order_by(col(BotPlatformInstallation.installed_at).desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def _get_whatsapp_installation(self) -> Any | None:
+        stmt = (
+            select(BotPlatformInstallation)
+            .where(
+                col(BotPlatformInstallation.provider) == BotPlatformProvider.WHATSAPP.value,
                 col(BotPlatformInstallation.organisation_id) == self.user_ids.organisation_id,
                 col(BotPlatformInstallation.is_active).is_(True),
             )

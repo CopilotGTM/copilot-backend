@@ -40,6 +40,7 @@ class BotPlatformProvider(str, Enum):
 
     TEAMS = "teams"
     SLACK = "slack"
+    WHATSAPP = "whatsapp"
     GOOGLE_CHAT = "google_chat"
 
 
@@ -52,6 +53,7 @@ class BotPlatformInstallation(TimestampMixin, table=True):
     For Teams: bot_token is NULL (Bot Framework handles auth with single app credential).
                Stores service_url in metadata for proactive messaging.
     For Slack: bot_token stores the workspace-specific xoxb-... token.
+    For WhatsApp: external_workspace_id stores the WhatsApp phone number ID.
     """
 
     __tablename__ = "bot_platform_installations"
@@ -77,7 +79,7 @@ class BotPlatformInstallation(TimestampMixin, table=True):
     # Provider
     provider: BotPlatformProvider = Field(
         sa_column=Column(String(32), nullable=False),
-        description="Bot platform (slack, teams, google_chat).",
+        description="Bot platform (slack, teams, whatsapp, google_chat).",
     )
 
     # External workspace identification
