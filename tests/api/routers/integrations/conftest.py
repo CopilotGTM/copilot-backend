@@ -374,6 +374,12 @@ class FakeCopilotOAuthService:
         }
 
     async def decode_oauth_state_allow_expired(self, state: str) -> dict[str, str]:
+        if state == "admin-consent-state":
+            return {
+                "jti": "admin-consent-attempt",
+                "type": "outlook_calendar",
+                "purpose": "microsoft_admin_consent",
+            }
         if state == "valid-state":
             return {"jti": "attempt-from-valid-state", "type": "outlook_email"}
         raise ValueError("Invalid state")

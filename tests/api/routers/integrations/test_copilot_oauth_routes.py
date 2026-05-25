@@ -269,6 +269,30 @@ def test_copilot_callback_plain_microsoft_access_denied_marks_admin_consent_requ
     assert "attempt_id=attempt-from-valid-state" in location
 
 
+def test_copilot_callback_admin_consent_access_denied_preserves_required_action(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    resp = client.get(
+        "/users/integrations/copilot-oauth/callback"
+        "?error=access_denied"
+        "&error_description=admin%20denied"
+        "&state=admin-consent-state",
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert "/integrations/oauth/popup-complete" in location
+    assert "success=false" in location
+    assert "action_required=admin_consent_required" in location
+    assert "integration_type=outlook_calendar" in location
+    assert "attempt_id=admin-consent-attempt" in location
+    assert (
+        "message=Admin+consent+was+not+granted.+Sign+in+with+a+Microsoft+tenant+admin+"
+        "account+or+send+the+approval+link+to+your+admin."
+    ) in location
+
+
 def test_copilot_callback_missing_code_returns_popup_completion_html(
     client: TestClient, integrations_dependency_overrides
 ) -> None:

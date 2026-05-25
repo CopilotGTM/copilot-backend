@@ -35,6 +35,11 @@ router = APIRouter(prefix="/copilot-oauth", tags=["copilot-integrations-oauth"])
 # Frontend route that receives the OAuth result and signals the parent window to close the popup
 _POPUP_COMPLETE_PATH = "/integrations/oauth/popup-complete"
 _MAX_PROVIDER_ERROR_MESSAGE_LEN = 300
+_MICROSOFT_ADMIN_CONSENT_PURPOSE = "microsoft_admin_consent"
+_MICROSOFT_ADMIN_CONSENT_DENIED_MESSAGE = (
+    "Admin consent was not granted. Sign in with a Microsoft tenant admin account "
+    "or send the approval link to your admin."
+)
 _MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS = (
     "need admin approval",
     "admin approval",
@@ -76,7 +81,7 @@ async def _extract_oauth_state_context(
         return {}
 
     context: dict[str, str] = {}
-    for key in ("jti", "type"):
+    for key in ("jti", "type", "purpose"):
         value = state_data.get(key)
         if value:
             context[key] = str(value)
@@ -242,10 +247,18 @@ async def handle_oauth_callback(
             state_context = await _extract_oauth_state_context(state, oauth_service)
             attempt_id = state_context.get("jti")
             integration_type = state_context.get("type")
+            purpose = state_context.get("purpose")
             if attempt_id:
                 payload["attempt_id"] = attempt_id
             if integration_type:
                 payload["integration_type"] = integration_type
+            if (
+                error.strip().lower() == "access_denied"
+                and purpose == _MICROSOFT_ADMIN_CONSENT_PURPOSE
+                and integration_type in _MICROSOFT_USER_OWNED_TYPES
+            ):
+                payload["message"] = _MICROSOFT_ADMIN_CONSENT_DENIED_MESSAGE
+                payload["action_required"] = "admin_consent_required"
             if (
                 integration_type in _MICROSOFT_USER_OWNED_TYPES
                 and _is_microsoft_admin_consent_required_error(error, error_description)
