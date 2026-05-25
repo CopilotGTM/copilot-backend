@@ -42,6 +42,10 @@ SLACK_BOT_SCOPES = [
 ]
 
 
+class BotAlreadyInstalledError(RuntimeError):
+    """Raised when an organisation already has an active bot installation."""
+
+
 class BotIntegrationService:
     """Builds bot provider cards and provider-owned connect URLs."""
 
@@ -61,6 +65,9 @@ class BotIntegrationService:
 
     async def get_slack_connect_url(self) -> SlackBotConnectResponse:
         """Build the Slack OAuth v2 install URL for the workspace bot."""
+        if await self._get_slack_installation():
+            raise BotAlreadyInstalledError("Slack bot is already connected for this organisation")
+
         _, _, client_id, _ = await slack_config.get_credentials()
         if not client_id:
             raise RuntimeError("Slack client ID is not configured")
@@ -80,6 +87,11 @@ class BotIntegrationService:
 
     async def get_whatsapp_connect_url(self) -> WhatsAppBotConnectResponse:
         """Build the WhatsApp click-to-chat URL used by the QR connect modal."""
+        if await self._get_whatsapp_installation():
+            raise BotAlreadyInstalledError(
+                "WhatsApp bot is already connected for this organisation"
+            )
+
         phone_number = self._get_whatsapp_bot_phone_number_digits()
         if not phone_number:
             raise RuntimeError("WhatsApp bot phone number is not configured")
@@ -123,9 +135,10 @@ class BotIntegrationService:
         )
 
     async def _build_whatsapp_card(self) -> AvailableBotIntegration:
+        installation = await self._get_whatsapp_installation()
         identity_mapping = await self._get_whatsapp_identity_mapping()
+        installed = installation is not None
         identity_linked = identity_mapping is not None
-        installed = bool(self._get_whatsapp_bot_phone_number_digits())
 
         return AvailableBotIntegration(
             provider=WHATSAPP_BOT_METADATA.provider,
@@ -137,6 +150,17 @@ class BotIntegrationService:
             connection_mode="qr_deep_link",
             connect_url=None,
             installed=installed,
+            installation=(
+                BotInstallationResponse(
+                    installation_id=installation.installation_id,
+                    workspace_id=installation.external_workspace_id,
+                    workspace_name=installation.external_workspace_name,
+                    installed_at=installation.installed_at,
+                    last_used_at=installation.last_used_at,
+                )
+                if installation
+                else None
+            ),
             identity_linked=identity_linked,
             identity_mapping_id=identity_mapping.mapping_id if identity_mapping else None,
             action_required=self._get_action_required(installed, identity_linked),
@@ -147,6 +171,19 @@ class BotIntegrationService:
             select(BotPlatformInstallation)
             .where(
                 col(BotPlatformInstallation.provider) == BotPlatformProvider.SLACK.value,
+                col(BotPlatformInstallation.organisation_id) == self.user_ids.organisation_id,
+                col(BotPlatformInstallation.is_active).is_(True),
+            )
+            .order_by(col(BotPlatformInstallation.installed_at).desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def _get_whatsapp_installation(self) -> Any | None:
+        stmt = (
+            select(BotPlatformInstallation)
+            .where(
+                col(BotPlatformInstallation.provider) == BotPlatformProvider.WHATSAPP.value,
                 col(BotPlatformInstallation.organisation_id) == self.user_ids.organisation_id,
                 col(BotPlatformInstallation.is_active).is_(True),
             )
