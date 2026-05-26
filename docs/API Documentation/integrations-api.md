@@ -220,8 +220,10 @@ Current Salesforce behavior:
 
 - Salesforce returns an `install_url` prerequisite only when
   `SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL` is configured.
-- Dev is configured for sandbox installs through `test.salesforce.com`.
-- Prod is configured for production customer org installs through `login.salesforce.com`.
+- Dev and prod are configured with `login.salesforce.com` install URLs so
+  production Salesforce org admins can install the package from the prerequisite CTA.
+  Use a `test.salesforce.com` package URL only when the environment is intended for
+  sandbox-only install testing.
 - Salesforce client ID and client secret remain secret-backed and are not returned by this API.
 - The operational package IDs and install URLs remain documented in
   `docs/Technical Documentation/integrations/salesforce-external-client-app-packaging.md`.
@@ -232,7 +234,7 @@ Example:
 {
   "type": "install_url",
   "required_before_connect": true,
-  "url": "https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC",
+  "url": "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC",
   "label": "Install CopilotGTM in Salesforce"
 }
 ```

@@ -114,7 +114,7 @@ Recommended values:
 ```yaml
 # charts/application/values-dev.yaml
 SALESFORCE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
-SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
+SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
 
 # charts/application/values-prod.yaml
 SALESFORCE_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
@@ -131,7 +131,7 @@ custom Salesforce org:
 
 | Field | Example | Purpose |
 | --- | --- | --- |
-| `SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL` | `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC` | Admin installs CopilotGTM's External Client App package into the target Salesforce org |
+| `SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL` | `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC` | Admin installs CopilotGTM's External Client App package into the target Salesforce org |
 | `oauth_base_url` request field | `https://ameyo--gtmcopilot.sandbox.my.salesforce.com` | OAuth authorization/token exchange host for that target Salesforce org |
 
 ## CLI Commands Used

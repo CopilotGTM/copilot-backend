@@ -122,7 +122,6 @@ class MicrosoftProvider(BaseIntegrationProvider):
             "response_type": "code",
             "scope": " ".join(scopes),
             "response_mode": "query",
-            "prompt": "consent",
             "state": state,
         }
         url = f"{self.AUTHORIZATION_BASE_URL}?{urllib.parse.urlencode(params)}"

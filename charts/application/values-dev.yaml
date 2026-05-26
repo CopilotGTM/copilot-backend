@@ -32,7 +32,7 @@ api:
     HUBSPOT_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     HUBSPOT_WEBHOOK_PUBLIC_URL: "https://devapi.copilotgtm.com/users/integrations/hubspot/webhook"
     SALESFORCE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
-    SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
+    SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
     WHATSAPP_BOT_PHONE_NUMBER: "+15556300848"
   autoscaling:
     minReplicas: 1

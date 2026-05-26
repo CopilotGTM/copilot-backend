@@ -54,7 +54,7 @@ Recommended field names:
   "admin_prerequisite": {
     "type": "install_url",
     "required_before_connect": true,
-    "url": "https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC",
+    "url": "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC",
     "label": "Install CopilotGTM in Salesforce"
   }
 }
@@ -87,7 +87,7 @@ For Salesforce, the install URL differs by CopilotGTM environment:
 
 | CopilotGTM environment | OAuth app | Install URL host |
 | --- | --- | --- |
-| Dev | `CopilotGTMDev` | `test.salesforce.com`, because dev is used against customer sandboxes |
+| Dev | `CopilotGTMDev` | `login.salesforce.com`, because production Salesforce org admins may validate against the dev backend |
 | Prod | `CopilotGTMProd` | `login.salesforce.com`, because production customers install into production Salesforce orgs |
 
 The backend should continue loading Salesforce client ID and client secret from
@@ -109,6 +109,6 @@ OAuth base URL are different:
 
 | Value | Example | Used for |
 | --- | --- | --- |
-| Install URL | `https://test.salesforce.com/packaging/installPackage.apexp?p0=...` | Admin installs CopilotGTM External Client App package |
+| Install URL | `https://login.salesforce.com/packaging/installPackage.apexp?p0=...` | Admin installs CopilotGTM External Client App package |
 | OAuth base URL | `https://ameyo--gtmcopilot.sandbox.my.salesforce.com` | User authorizes CopilotGTM against the target org |
 
