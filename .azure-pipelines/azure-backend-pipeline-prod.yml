@@ -10,11 +10,6 @@ trigger:
   branches:
     include:
       - release/backend/*
-  paths:
-    exclude:
-      - infra/**
-      - .azure-pipelines/**
-      - docs/**
 
 pr: none  # No PR triggers for prod pipeline
 
