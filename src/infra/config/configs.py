@@ -1193,6 +1193,9 @@ class SalesforceIntegrationConfig:
 
     REDIRECT_URI: str = os.getenv("SALESFORCE_REDIRECT_URI", os.getenv("REDIRECT_URI", ""))
     SALESFORCE_HTTP_TIMEOUT_SEC: float = float(os.getenv("SALESFORCE_HTTP_TIMEOUT_SEC", "10"))
+    EXTERNAL_CLIENT_APP_INSTALL_URL: str = os.getenv(
+        "SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL", ""
+    )
 
     _client_id: str | None = os.getenv("SALESFORCE_CLIENT_ID")
     _client_secret: str | None = os.getenv("SALESFORCE_CLIENT_SECRET")
@@ -1202,6 +1205,11 @@ class SalesforceIntegrationConfig:
     _credentials_ttl_hours: float = float(os.getenv("SALESFORCE_CREDENTIALS_TTL_HOURS", "6"))
     _credentials_loaded_at: float | None = None
     _refresh_lock: asyncio.Lock | None = None
+
+    def __init__(self) -> None:
+        self.EXTERNAL_CLIENT_APP_INSTALL_URL = os.getenv(
+            "SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL", ""
+        )
 
     @property
     def salesforce_client_id(self) -> str:

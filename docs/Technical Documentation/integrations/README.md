@@ -11,7 +11,9 @@ Use this folder as the concise source of truth for runtime behavior. The worker 
 | [architecture-overview.md](architecture-overview.md) | High-level architecture, supported providers, directory structure |
 | [crm-initial-sync.md](crm-initial-sync.md) | Live HubSpot/Salesforce post-connect CRM chain, metadata, and persisted tables |
 | [oauth-and-token-management.md](oauth-and-token-management.md) | Custom OAuth flow, callback scope validation, token storage, refresh, and revocation detection |
+| [provider-admin-installation-prerequisites.md](provider-admin-installation-prerequisites.md) | Generic install/admin-approval prerequisite pattern for provider OAuth apps |
 | [reauth-and-permission-recovery.md](reauth-and-permission-recovery.md) | Backend reconnect model, expired-auth vs permission-drift handling, and API state contract |
+| [salesforce-external-client-app-packaging.md](salesforce-external-client-app-packaging.md) | Salesforce External Client App package IDs, install URLs, and what packaging metadata belongs in Git |
 | [three-tier-sync-architecture.md](three-tier-sync-architecture.md) | Celery task tiers, beat schedule, session management |
 | [error-handling-and-resilience.md](error-handling-and-resilience.md) | 401 retry, 429 rate limiting, circuit breaker, timeout tracking |
 | [sync-by-provider.md](sync-by-provider.md) | Per-provider sync details: calendar, email, messaging, CRM |

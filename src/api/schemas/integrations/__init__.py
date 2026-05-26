@@ -10,7 +10,6 @@ from .bot_integration_schemas import (
     WhatsAppBotConnectResponse,
 )
 from .integration_schemas import (
-    # Available integrations
     AvailableIntegration,
     AvailableIntegrationsResponse,
     # Channels
@@ -19,6 +18,8 @@ from .integration_schemas import (
     ChannelLinkResponse,
     ChannelListResponse,
     EmptyResponse,
+    # Available integrations
+    IntegrationAdminPrerequisite,
     # Integration CRUD
     IntegrationCreate,
     # Errors
@@ -60,6 +61,7 @@ __all__ = [
     # Refresh
     "RefreshChannelsResponse",
     # Available integrations
+    "IntegrationAdminPrerequisite",
     "AvailableIntegration",
     "AvailableIntegrationsResponse",
     "AvailableBotIntegration",

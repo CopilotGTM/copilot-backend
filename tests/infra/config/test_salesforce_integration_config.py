@@ -39,3 +39,22 @@ class TestSalesforceIntegrationConfigEnvVar:
             await config.get_credentials()
 
         mock_vault.assert_not_called()
+
+
+class TestSalesforceExternalClientAppInstallUrl:
+    """Salesforce package install URL is non-secret runtime config."""
+
+    def test_defaults_to_empty_install_url_when_env_var_absent(self, monkeypatch) -> None:
+        monkeypatch.delenv("SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL", raising=False)
+
+        config = SalesforceIntegrationConfig()
+
+        assert config.EXTERNAL_CLIENT_APP_INSTALL_URL == ""
+
+    def test_reads_install_url_from_env(self, monkeypatch) -> None:
+        install_url = "https://test.salesforce.com/packaging/installPackage.apexp?p0=04td"
+        monkeypatch.setenv("SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL", install_url)
+
+        config = SalesforceIntegrationConfig()
+
+        assert install_url == config.EXTERNAL_CLIENT_APP_INSTALL_URL

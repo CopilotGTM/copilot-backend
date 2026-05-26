@@ -199,6 +199,7 @@ Dockerfile.local
 .vscode/
 crm_data_exports/
 tmpclaude-*
+.tmp-salesforce/
 nul
 .claude/
 
