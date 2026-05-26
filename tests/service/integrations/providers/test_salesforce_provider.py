@@ -2,7 +2,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
-from src.service.integrations.providers.salesforce_provider import SalesforceProvider
+from src.service.integrations.providers.salesforce_provider import (
+    SalesforceProvider,
+    normalize_salesforce_oauth_base_url,
+)
 
 
 @pytest.mark.asyncio
@@ -24,6 +27,43 @@ async def test_salesforce_provider_builds_authorization_url() -> None:
     assert params["state"] == ["signed-state"]
     assert params["redirect_uri"] == [provider.redirect_uri]
     assert params["scope"] == ["refresh_token offline_access api openid profile email"]
+
+
+@pytest.mark.parametrize(
+    ("raw_url", "expected"),
+    [
+        (
+            "https://ameyo--gtmcopilot.sandbox.lightning.force.com/lightning/page/home",
+            "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+        ),
+        (
+            "https://ameyo--gtmcopilot.sandbox.my.salesforce.com/lightning/page/home",
+            "https://ameyo--gtmcopilot.sandbox.my.salesforce.com",
+        ),
+        ("https://login.salesforce.com", "https://login.salesforce.com"),
+        ("https://test.salesforce.com/", "https://test.salesforce.com"),
+        ("", "https://login.salesforce.com"),
+    ],
+)
+def test_normalize_salesforce_oauth_base_url_accepts_salesforce_hosts_and_pages(
+    raw_url: str,
+    expected: str,
+) -> None:
+    assert normalize_salesforce_oauth_base_url(raw_url) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_url",
+    [
+        "http://test.salesforce.com",
+        "https://evil.example.com",
+        "https://user:test@test.salesforce.com",
+        "https://test.salesforce.com:8443",
+    ],
+)
+def test_normalize_salesforce_oauth_base_url_rejects_unsafe_hosts(raw_url: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_salesforce_oauth_base_url(raw_url)
 
 
 @pytest.mark.asyncio
