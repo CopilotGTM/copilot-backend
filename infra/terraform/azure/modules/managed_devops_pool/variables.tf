@@ -69,9 +69,14 @@ variable "image_alias" {
 }
 
 variable "image_buffer" {
-  description = "Standby buffer for the image. Keep this low for cost/quota-sensitive pools and raise it only when warm capacity is required."
+  description = "Percentage of standby agents assigned to this image. This module configures one image, so Azure requires 100."
   type        = string
-  default     = "1"
+  default     = "100"
+
+  validation {
+    condition     = var.image_buffer == "100"
+    error_message = "image_buffer must be \"100\" because this module configures exactly one image and Azure requires image buffer percentages to total 100."
+  }
 }
 
 variable "agent_state" {
