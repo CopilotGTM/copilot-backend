@@ -8,7 +8,7 @@ These schemas define the request/response structures for:
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -249,6 +249,17 @@ class LinkedChannel(BaseModel):
     parent_name: str | None = Field(default=None, description="Parent Name (e.g. Team Name)")
 
 
+class IntegrationAdminPrerequisite(BaseModel):
+    """Admin action required before a provider's normal user OAuth flow."""
+
+    type: Literal["install_url"] = Field(..., description="Prerequisite action type")
+    required_before_connect: bool = Field(
+        ..., description="Whether this action must happen before the normal connect flow"
+    )
+    url: str = Field(..., description="Admin URL for completing the prerequisite action")
+    label: str = Field(..., description="Display label for the prerequisite action")
+
+
 class AvailableIntegration(BaseModel):
     """Information about an available integration type."""
 
@@ -280,6 +291,10 @@ class AvailableIntegration(BaseModel):
     linked_channels: list[LinkedChannel] = Field(
         default_factory=list,
         description="List of channels linked to the current deal context",
+    )
+    admin_prerequisite: IntegrationAdminPrerequisite | None = Field(
+        default=None,
+        description="Optional admin prerequisite to complete before starting provider OAuth",
     )
 
 

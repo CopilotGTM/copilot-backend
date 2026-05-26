@@ -26,6 +26,12 @@ _SALESFORCE_OAUTH_PATHS = {
 }
 
 
+def _normalize_salesforce_oauth_host(host: str) -> str:
+    if host.endswith(".lightning.force.com"):
+        return f"{host.removesuffix('.lightning.force.com')}.my.salesforce.com"
+    return host
+
+
 def normalize_salesforce_oauth_base_url(oauth_base_url: str | None = None) -> str:
     """Return a safe Salesforce OAuth host for one connection attempt."""
     raw_url = (oauth_base_url or "").strip()
@@ -34,7 +40,7 @@ def normalize_salesforce_oauth_base_url(oauth_base_url: str | None = None) -> st
 
     candidate = raw_url if "://" in raw_url else f"https://{raw_url}"
     parsed = urllib.parse.urlparse(candidate)
-    host = (parsed.hostname or "").lower()
+    host = _normalize_salesforce_oauth_host((parsed.hostname or "").lower())
 
     if (
         parsed.scheme != "https"
@@ -44,7 +50,6 @@ def normalize_salesforce_oauth_base_url(oauth_base_url: str | None = None) -> st
         or parsed.port
         or parsed.query
         or parsed.fragment
-        or parsed.path not in {"", "/"}
     ):
         raise ValueError("Salesforce OAuth URL must be an HTTPS Salesforce login/My Domain host")
 

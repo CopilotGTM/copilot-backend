@@ -190,6 +190,55 @@ GET /users/integrations/available
 | `total_available` | integer | Total number of integration types |
 | `total_connected` | integer | Total connected integrations |
 
+### Available Integration Fields
+
+Each item in `data.integrations` includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `integration_type` | string | Provider key, for example `salesforce`, `hubspot`, `gmail`, or `teams`. |
+| `name` | string | Display name for the integration. |
+| `description` | string | Brief description of what the integration does. |
+| `logo_url` | string\|null | Provider logo URL. |
+| `category` | string | Category slug. |
+| `category_name` | string | Human-readable category name. |
+| `availability_status` | string | One of `available`, `coming_soon`, `beta`, or `deprecated`. |
+| `is_connected` | boolean | Whether the current user can see an active connection for this provider. |
+| `has_action_required` | boolean | Whether any visible instance needs reconnect or additional permissions. |
+| `connected_integrations` | array | Active visible instances of this integration type. |
+| `action_required_integrations` | array | Inactive or reconnect-required instances needing user attention. |
+| `linked_channels` | array | Channels linked to the current deal context, if requested by a deal-specific route. |
+| `admin_prerequisite` | object\|null | Optional admin action to complete before starting normal provider OAuth. |
+
+### Admin Prerequisite
+
+`admin_prerequisite` is a generic provider-level signal. It is `null` for providers
+that do not need a backend-configured admin setup step. When present, the frontend
+should present the action before starting the provider's normal OAuth flow.
+
+Current Salesforce behavior:
+
+- Salesforce returns an `install_url` prerequisite only when
+  `SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL` is configured.
+- Dev and prod are configured with `login.salesforce.com` install URLs so
+  production Salesforce org admins can install the package from the prerequisite CTA.
+  Use a `test.salesforce.com` package URL only when the environment is intended for
+  sandbox-only install testing.
+- Salesforce client ID and client secret remain secret-backed and are not returned by this API.
+- The operational package IDs and install URLs remain documented in
+  `docs/Technical Documentation/integrations/salesforce-external-client-app-packaging.md`.
+
+Example:
+
+```json
+{
+  "type": "install_url",
+  "required_before_connect": true,
+  "url": "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC",
+  "label": "Install CopilotGTM in Salesforce"
+}
+```
+
 ### Connected Integration Fields
 
 Each item in `connected_integrations` array includes:
@@ -1586,7 +1635,17 @@ interface Integration {
   category_name: string;
   availability_status: 'available' | 'coming_soon' | 'beta' | 'deprecated';
   is_connected: boolean;
+  has_action_required: boolean;
   connected_integrations: ConnectedIntegration[];
+  action_required_integrations: ConnectedIntegration[];
+  admin_prerequisite: AdminPrerequisite | null;
+}
+
+interface AdminPrerequisite {
+  type: 'install_url';
+  required_before_connect: boolean;
+  url: string;
+  label: string;
 }
 
 interface ConnectedIntegration {

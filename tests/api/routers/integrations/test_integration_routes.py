@@ -27,6 +27,87 @@ def test_list_available_no_connections(client: TestClient, integrations_dependen
         assert integration["is_connected"] is False
 
 
+def test_list_available_salesforce_includes_admin_prerequisite_when_install_url_configured(
+    client: TestClient, integrations_dependency_overrides, monkeypatch
+) -> None:
+    """Salesforce advertises the admin package install prerequisite from backend config."""
+    from src.infra.config.configs import salesforce_integration_config
+
+    install_url = "https://test.salesforce.com/packaging/installPackage.apexp?p0=04td"
+    monkeypatch.setattr(
+        salesforce_integration_config,
+        "EXTERNAL_CLIENT_APP_INSTALL_URL",
+        install_url,
+        raising=False,
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    salesforce = next(
+        (i for i in data["integrations"] if i["integration_type"] == "salesforce"),
+        None,
+    )
+    assert salesforce is not None
+    assert salesforce["admin_prerequisite"] == {
+        "type": "install_url",
+        "required_before_connect": True,
+        "url": install_url,
+        "label": "Install CopilotGTM in Salesforce",
+    }
+
+
+def test_list_available_salesforce_admin_prerequisite_is_null_when_install_url_absent(
+    client: TestClient, integrations_dependency_overrides, monkeypatch
+) -> None:
+    """Salesforce keeps the generic field null until the package URL is configured."""
+    from src.infra.config.configs import salesforce_integration_config
+
+    monkeypatch.setattr(
+        salesforce_integration_config,
+        "EXTERNAL_CLIENT_APP_INSTALL_URL",
+        "",
+        raising=False,
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    salesforce = next(
+        (i for i in data["integrations"] if i["integration_type"] == "salesforce"),
+        None,
+    )
+    assert salesforce is not None
+    assert salesforce["admin_prerequisite"] is None
+
+
+def test_list_available_non_salesforce_admin_prerequisite_is_null(
+    client: TestClient, integrations_dependency_overrides, monkeypatch
+) -> None:
+    """Provider prerequisites stay generic and opt-in per provider."""
+    from src.infra.config.configs import salesforce_integration_config
+
+    monkeypatch.setattr(
+        salesforce_integration_config,
+        "EXTERNAL_CLIENT_APP_INSTALL_URL",
+        "https://test.salesforce.com/packaging/installPackage.apexp?p0=04td",
+        raising=False,
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    non_salesforce = next(
+        (i for i in data["integrations"] if i["integration_type"] != "salesforce"),
+        None,
+    )
+    assert non_salesforce is not None
+    assert non_salesforce["admin_prerequisite"] is None
+
+
 def test_list_available_with_connections(client: TestClient, integrations_dependency_overrides):
     """Test listing available integrations with some connected."""
     # Contract: connected integrations appear as connected=true with instance details.

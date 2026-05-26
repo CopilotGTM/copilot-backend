@@ -23,11 +23,13 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import (
     AvailableIntegration,
     AvailableIntegrationsResponse,
+    IntegrationAdminPrerequisite,
     RefreshChannelsResponse,
 )
 from src.api.schemas.integrations.response_builders import build_integration_response
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.config.configs import salesforce_integration_config
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import AvailabilityStatus, get_all_integration_metadata
 from src.infra.utils.logger import get_logger
@@ -36,6 +38,24 @@ from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["integrations"])
+
+
+def _get_admin_prerequisite(
+    integration_type: IntegrationType,
+) -> IntegrationAdminPrerequisite | None:
+    if integration_type != IntegrationType.SALESFORCE:
+        return None
+
+    install_url = salesforce_integration_config.EXTERNAL_CLIENT_APP_INSTALL_URL.strip()
+    if not install_url:
+        return None
+
+    return IntegrationAdminPrerequisite(
+        type="install_url",
+        required_before_connect=True,
+        url=install_url,
+        label="Install CopilotGTM in Salesforce",
+    )
 
 
 async def get_integration_service(
@@ -121,6 +141,7 @@ async def list_available_integrations(
                     has_action_required=has_action_required,
                     connected_integrations=connected_instances,
                     action_required_integrations=action_required_instances,
+                    admin_prerequisite=_get_admin_prerequisite(int_type),
                 )
             )
 

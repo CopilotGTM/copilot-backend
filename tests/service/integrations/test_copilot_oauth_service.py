@@ -222,15 +222,24 @@ async def test_initiate_salesforce_oauth_flow_defaults_to_production_login() -> 
 
 
 @pytest.mark.asyncio
-async def test_initiate_salesforce_oauth_flow_rejects_lightning_url() -> None:
+async def test_initiate_salesforce_oauth_flow_normalizes_lightning_url() -> None:
     service = CopilotOAuthService()
+    fake_provider = AsyncMock()
+    fake_provider.get_authorization_url.return_value = "https://example.com/oauth"
 
     with (
         patch(
             "src.service.integrations.copilot_oauth_service.get_integration_metadata",
             return_value=FakeMetadata(availability_status="beta"),
         ),
-        pytest.raises(ValueError, match="Salesforce OAuth URL"),
+        patch(
+            "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+            new=AsyncMock(return_value="oauth-signing-secret"),
+        ),
+        patch(
+            "src.service.integrations.copilot_oauth_service.ProviderFactory.get_provider",
+            return_value=fake_provider,
+        ),
     ):
         await service.initiate_oauth_flow(
             user_ids=_make_user_ids(),
@@ -239,6 +248,12 @@ async def test_initiate_salesforce_oauth_flow_rejects_lightning_url() -> None:
                 "https://ameyo--gtmcopilot.sandbox.lightning.force.com/lightning/page/home"
             ),
         )
+        state_token = fake_provider.get_authorization_url.await_args.args[0]
+        oauth_base_url = fake_provider.get_authorization_url.await_args.kwargs["oauth_base_url"]
+        decoded = await CopilotOAuthService.decode_oauth_state(state_token)
+
+    assert oauth_base_url == "https://ameyo--gtmcopilot.sandbox.my.salesforce.com"
+    assert decoded["oauth_base_url"] == oauth_base_url
 
 
 @pytest.mark.asyncio
