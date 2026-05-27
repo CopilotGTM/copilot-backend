@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 from uuid import UUID
 
@@ -42,9 +43,17 @@ class MeetingsServiceError(Exception):
 class MeetingsService:
     """Service for managing CRM deal meetings."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        storage_factory: Callable[
+            [UUID], AzureOrganisationBlobStorage
+        ] = AzureOrganisationBlobStorage,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.storage_factory = storage_factory
 
     @property
     def session(self) -> AsyncSession:
@@ -230,6 +239,21 @@ class MeetingsService:
                     status_code=409,
                 )
 
+    async def _blob_exists_for_job(self, job: DealJobs) -> bool:
+        storage_path = job.job_metadata.get("storage_path") if job.job_metadata else None
+        if not storage_path:
+            return False
+
+        storage = self.storage_factory(self.organisation_id)
+        try:
+            return await storage.get_blob_properties(storage_path) is not None
+        finally:
+            await storage.close()
+
+    def _mark_transcript_upload_missing_blob(self, job: DealJobs) -> None:
+        job.status = JobStatus.FAILED
+        job.error_message = "Transcript file was not uploaded to storage. Please retry the upload."
+
     async def presign_transcript_upload(
         self,
         deal_id: UUID,
@@ -256,7 +280,12 @@ class MeetingsService:
         )
         active_job = (await self.session.execute(active_stmt)).scalars().first()
         if active_job:
-            return active_job, "", 0
+            if active_job.status == JobStatus.PENDING and not await self._blob_exists_for_job(
+                active_job
+            ):
+                self._mark_transcript_upload_missing_blob(active_job)
+            else:
+                return active_job, "", 0
 
         storage_path = f"transcripts/{deal_id}/{event_id}/{filename}"
 
@@ -279,7 +308,7 @@ class MeetingsService:
         await self.session.refresh(job)
 
         expires_minutes = 15
-        storage = AzureOrganisationBlobStorage(self.organisation_id)
+        storage = self.storage_factory(self.organisation_id)
         try:
             upload_url = await storage.generate_write_sas(storage_path, minutes=expires_minutes)
         finally:
@@ -312,6 +341,13 @@ class MeetingsService:
             raise MeetingsServiceError("Upload job not found.", status_code=404)
         if job.status != JobStatus.PENDING:
             raise MeetingsServiceError("Job is not in pending state.", status_code=409)
+        if not await self._blob_exists_for_job(job):
+            self._mark_transcript_upload_missing_blob(job)
+            await self.session.commit()
+            raise MeetingsServiceError(
+                "Uploaded transcript file was not found. Please retry the upload.",
+                status_code=400,
+            )
 
         job.status = JobStatus.IN_PROGRESS
         await self.session.flush()

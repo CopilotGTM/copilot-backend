@@ -13,6 +13,7 @@ from src.domain.models.organisation_tables.sync.email_models import (
 from src.workers.deal_worker.services.deal_asset_email_attachment_service import (
     _build_attachment_source_record_id,
     _build_storage_path,
+    _email_has_attachments_filter,
     _is_supported_attachment_mimetype,
     _map_email_direction_to_asset_direction,
     _normalize_mimetype,
@@ -144,3 +145,12 @@ class TestDirectionMapping:
         assert (
             _map_email_direction_to_asset_direction("UNKNOWN") == DealAssetDirection.INTERNAL.value
         )
+
+
+class TestEmailAttachmentQueryFilters:
+    def test_has_attachments_filter_matches_string_backed_column(self):
+        compiled = str(
+            _email_has_attachments_filter().compile(compile_kwargs={"literal_binds": True})
+        )
+
+        assert "emails.has_attachments = 'true'" in compiled

@@ -201,6 +201,47 @@ def _record_folder_cursor_update(
         )
 
 
+async def _persist_cursor_updates(
+    *,
+    org_id: UUID,
+    sync_data: IntegrationSyncData,
+    cursor_updates: dict[str, str | None],
+) -> None:
+    if not cursor_updates:
+        return
+
+    async for session in acquire_org_async_session(org_id):
+        stmt = select(KnowledgeIntegration).where(
+            col(KnowledgeIntegration.integration_id) == sync_data.integration_id,
+        )
+        result = await session.execute(stmt)
+        integration = result.scalar_one_or_none()
+
+        if integration is None:
+            logger.warning(
+                "Cannot persist email cursor because integration no longer exists",
+                extra={
+                    "event": "email_cursor_persist_integration_missing",
+                    "integration_id": str(sync_data.integration_id),
+                },
+            )
+            return
+
+        _persist_cursors(integration, sync_data.provider, cursor_updates)
+        attributes.flag_modified(integration, "connection_metadata")
+        await session.commit()
+
+        logger.info(
+            "Email cursor updates committed",
+            extra={
+                "event": "email_cursor_updates_committed",
+                "integration_id": str(sync_data.integration_id),
+                "folder_count": len(cursor_updates),
+            },
+        )
+        break
+
+
 async def _fetch_folders_for_provider(
     *,
     sync_data: IntegrationSyncData,
@@ -679,6 +720,12 @@ class EmailDeltaSyncService:
                     new_cursor=new_cursor,
                     cursor_updates=delta_link_updates,
                 )
+                if new_cursor:
+                    await _persist_cursor_updates(
+                        org_id=org_id,
+                        sync_data=sync_data,
+                        cursor_updates={folder_data.external_folder_id: new_cursor},
+                    )
                 return {
                     "folder_id": str(folder_data.folder_id),
                     "folder_name": folder_name,
@@ -758,6 +805,12 @@ class EmailDeltaSyncService:
                 new_cursor=new_cursor,
                 cursor_updates=delta_link_updates,
             )
+            if new_cursor:
+                await _persist_cursor_updates(
+                    org_id=org_id,
+                    sync_data=sync_data,
+                    cursor_updates={folder_data.external_folder_id: new_cursor},
+                )
 
             logger.info(
                 "Folder messages synced",
