@@ -18,7 +18,7 @@ logger = get_logger("chat_message_processing_task")
 
 
 @app.task(name="chat.process_message", acks_late=True, bind=True, max_retries=5)
-def process_message(self, organisation_id: UUID, job_id: UUID):
+def process_message(self, organisation_id: UUID | str, job_id: UUID | str):
     """Process a chat message job.
 
     Delegates to MessageProcessingService which handles:
@@ -28,20 +28,22 @@ def process_message(self, organisation_id: UUID, job_id: UUID):
 
     The service follows the fresh session pattern internally.
     """
-    logger.info("Processing chat message job org=%s job=%s", organisation_id, job_id)
+    org_uuid = UUID(str(organisation_id))
+    job_uuid = UUID(str(job_id))
+    logger.info("Processing chat message job org=%s job=%s", org_uuid, job_uuid)
 
     try:
-        service = MessageProcessingService(organisation_id)
-        success = service.process(job_id, celery_task=self)
+        service = MessageProcessingService(org_uuid)
+        success = service.process(job_uuid, celery_task=self)
 
         if success:
-            logger.info("Chat message job completed job=%s", job_id)
+            logger.info("Chat message job completed job=%s", job_uuid)
         else:
-            logger.warning("Chat message job failed job=%s", job_id)
+            logger.warning("Chat message job failed job=%s", job_uuid)
 
     except Retry:
         # Re-raise Celery retry exceptions
         raise
     except Exception as e:
-        logger.exception("Chat message job failed with exception job=%s error=%s", job_id, e)
+        logger.exception("Chat message job failed with exception job=%s error=%s", job_uuid, e)
         raise
