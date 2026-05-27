@@ -11,6 +11,8 @@ _HTTP_SERVER_REQUEST_COUNT: Any = None
 _HTTP_SERVER_REQUEST_DURATION: Any = None
 _CELERY_TASK_EXECUTION_COUNT: Any = None
 _CELERY_TASK_DURATION: Any = None
+_CELERY_TASK_RSS_MB: Any = None
+_CELERY_TASK_RSS_DELTA_MB: Any = None
 
 _init_lock = Lock()
 
@@ -39,22 +41,47 @@ def _ensure_http_instruments() -> None:
 
 def _ensure_celery_instruments() -> None:
     global _CELERY_TASK_EXECUTION_COUNT, _CELERY_TASK_DURATION
-    if _CELERY_TASK_EXECUTION_COUNT is not None:
+    global _CELERY_TASK_RSS_MB, _CELERY_TASK_RSS_DELTA_MB
+    if (
+        _CELERY_TASK_EXECUTION_COUNT is not None
+        and _CELERY_TASK_DURATION is not None
+        and _CELERY_TASK_RSS_MB is not None
+        and _CELERY_TASK_RSS_DELTA_MB is not None
+    ):
         return
     with _init_lock:
-        if _CELERY_TASK_EXECUTION_COUNT is not None:
+        if (
+            _CELERY_TASK_EXECUTION_COUNT is not None
+            and _CELERY_TASK_DURATION is not None
+            and _CELERY_TASK_RSS_MB is not None
+            and _CELERY_TASK_RSS_DELTA_MB is not None
+        ):
             return
         meter = metrics.get_meter("copilotgtm.observability")
-        _CELERY_TASK_EXECUTION_COUNT = meter.create_counter(
-            name="copilotgtm.celery.task.execution.count",
-            description="Total Celery task executions by outcome.",
-            unit="{task}",
-        )
-        _CELERY_TASK_DURATION = meter.create_histogram(
-            name="copilotgtm.celery.task.duration",
-            description="Celery task execution duration in milliseconds.",
-            unit="ms",
-        )
+        if _CELERY_TASK_EXECUTION_COUNT is None:
+            _CELERY_TASK_EXECUTION_COUNT = meter.create_counter(
+                name="copilotgtm.celery.task.execution.count",
+                description="Total Celery task executions by outcome.",
+                unit="{task}",
+            )
+        if _CELERY_TASK_DURATION is None:
+            _CELERY_TASK_DURATION = meter.create_histogram(
+                name="copilotgtm.celery.task.duration",
+                description="Celery task execution duration in milliseconds.",
+                unit="ms",
+            )
+        if _CELERY_TASK_RSS_MB is None:
+            _CELERY_TASK_RSS_MB = meter.create_histogram(
+                name="copilotgtm.celery.task.rss",
+                description="Celery task process resident set size at task completion.",
+                unit="MiBy",
+            )
+        if _CELERY_TASK_RSS_DELTA_MB is None:
+            _CELERY_TASK_RSS_DELTA_MB = meter.create_histogram(
+                name="copilotgtm.celery.task.rss.delta",
+                description="Celery task process resident set size change during task execution.",
+                unit="MiBy",
+            )
 
 
 def _status_family(status_code: int) -> str:
@@ -100,4 +127,27 @@ def record_celery_task_run(
         _CELERY_TASK_DURATION.record(duration_ms, attributes)
 
 
-__all__ = ["record_celery_task_run", "record_http_server_request"]
+def record_celery_task_memory(
+    *,
+    task_name: str | None,
+    queue: str | None,
+    status: str | None,
+    rss_mb: float,
+    rss_delta_mb: float | None,
+) -> None:
+    _ensure_celery_instruments()
+    attributes = {
+        "celery.task_name": task_name or "unknown",
+        "celery.queue": queue or "unknown",
+        "celery.status": (status or "UNKNOWN").upper(),
+    }
+    _CELERY_TASK_RSS_MB.record(rss_mb, attributes)
+    if rss_delta_mb is not None:
+        _CELERY_TASK_RSS_DELTA_MB.record(rss_delta_mb, attributes)
+
+
+__all__ = [
+    "record_celery_task_memory",
+    "record_celery_task_run",
+    "record_http_server_request",
+]

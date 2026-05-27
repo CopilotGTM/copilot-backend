@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from typing import Any
 
@@ -21,13 +22,17 @@ from src.infra.observability.context import (
     set_celery_context,
     set_request_id,
 )
-from src.infra.observability.metrics import record_celery_task_run
+from src.infra.observability.metrics import record_celery_task_memory, record_celery_task_run
+from src.infra.observability.process_memory import get_current_rss_mb
 from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import get_logger, resolve_celery_component
 
 init_sentry()
 
 _signals_registered = False
+
+_DEFAULT_CELERY_TASK_TIME_LIMIT_SECONDS = 300
+_DEFAULT_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS = 240
 
 
 def _resolve_signal_app_name(sender: Any | None = None) -> str | None:
@@ -62,6 +67,31 @@ def _resolve_task_queue(task: Any | None) -> str | None:
     except Exception:
         queue = None
     return str(queue) if queue else None
+
+
+def _is_task_memory_logging_enabled() -> bool:
+    return os.getenv("CELERY_TASK_MEMORY_LOGGING_ENABLED", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _task_memory_min_delta_mb() -> float:
+    try:
+        return float(os.getenv("CELERY_TASK_MEMORY_LOGGING_MIN_DELTA_MB", "0"))
+    except ValueError:
+        return 0.0
+
+
+def _should_emit_task_memory(rss_delta_mb: float | None) -> bool:
+    min_delta_mb = _task_memory_min_delta_mb()
+    if min_delta_mb <= 0:
+        return True
+    if rss_delta_mb is None:
+        return True
+    return abs(rss_delta_mb) >= min_delta_mb
 
 
 def _register_observability_signals() -> None:
@@ -139,6 +169,8 @@ def _register_observability_signals() -> None:
         if request is not None:
             # Keep timing state on the Celery request object so postrun can emit duration reliably.
             request._observability_started_at = time.perf_counter()
+            if _is_task_memory_logging_enabled():
+                request._observability_rss_start_mb = get_current_rss_mb()
 
     @task_postrun.connect(weak=False)
     def _task_postrun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
@@ -149,16 +181,54 @@ def _register_observability_signals() -> None:
             if isinstance(started_at, (int, float))
             else None
         )
+
         if request is not None and hasattr(request, "_observability_started_at"):
             del request._observability_started_at
 
+        rss_start_mb = getattr(request, "_observability_rss_start_mb", None)
+        if request is not None and hasattr(request, "_observability_rss_start_mb"):
+            del request._observability_rss_start_mb
+
+        task_name = getattr(task, "name", None)
+        queue = _resolve_task_queue(task)
+        status = str(kwargs.get("state") or "UNKNOWN")
+
         # Emit task metrics before resetting context so queue/task labels still resolve correctly.
         record_celery_task_run(
-            task_name=getattr(task, "name", None),
-            queue=_resolve_task_queue(task),
-            status=str(kwargs.get("state") or "UNKNOWN"),
+            task_name=task_name,
+            queue=queue,
+            status=status,
             duration_ms=duration_ms,
         )
+        if _is_task_memory_logging_enabled():
+            rss_end_mb = get_current_rss_mb()
+            rss_delta_mb = (
+                rss_end_mb - rss_start_mb
+                if isinstance(rss_start_mb, (int, float)) and rss_end_mb is not None
+                else None
+            )
+            if rss_end_mb is not None and _should_emit_task_memory(rss_delta_mb):
+                record_celery_task_memory(
+                    task_name=task_name,
+                    queue=queue,
+                    status=status,
+                    rss_mb=rss_end_mb,
+                    rss_delta_mb=rss_delta_mb,
+                )
+                get_logger("celery_task").info(
+                    "Celery task memory usage",
+                    extra={
+                        "event": "celery_task_memory",
+                        "task_name": task_name,
+                        "queue": queue,
+                        "status": status,
+                        "duration_ms": duration_ms,
+                        "rss_start_mb": rss_start_mb,
+                        "rss_end_mb": rss_end_mb,
+                        "rss_delta_mb": rss_delta_mb,
+                        "process_id": os.getpid(),
+                    },
+                )
         reset_context()
 
     @task_failure.connect(weak=False)
@@ -240,8 +310,8 @@ def create_celery_app(worker_name, config, tasks_module):
         celery_app.conf.beat_schedule = config.beat_schedule
 
     # Default time limits (can be overridden by worker-specific config)
-    default_time_limit = 300  # 5 minutes
-    default_soft_time_limit = 240  # 4 minutes
+    default_time_limit = _DEFAULT_CELERY_TASK_TIME_LIMIT_SECONDS
+    default_soft_time_limit = _DEFAULT_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS
 
     # Allow worker-specific time limits
     if hasattr(config, "task_time_limit"):

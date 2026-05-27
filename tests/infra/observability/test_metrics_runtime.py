@@ -1,4 +1,8 @@
-from src.infra.observability.metrics import record_celery_task_run, record_http_server_request
+from src.infra.observability.metrics import (
+    record_celery_task_memory,
+    record_celery_task_run,
+    record_http_server_request,
+)
 
 
 class _FakeMetric:
@@ -112,3 +116,33 @@ def test_record_celery_task_run_tracks_status_and_optional_duration(monkeypatch)
             },
         )
     ]
+
+
+def test_record_celery_task_memory_tracks_rss_and_delta_with_stable_labels(monkeypatch) -> None:
+    rss_histogram = _FakeMetric()
+    delta_histogram = _FakeMetric()
+
+    monkeypatch.setattr(
+        "src.infra.observability.metrics._CELERY_TASK_RSS_MB",
+        rss_histogram,
+    )
+    monkeypatch.setattr(
+        "src.infra.observability.metrics._CELERY_TASK_RSS_DELTA_MB",
+        delta_histogram,
+    )
+
+    record_celery_task_memory(
+        task_name="integrations.sync_hubspot_deals",
+        queue="integrations",
+        status="SUCCESS",
+        rss_mb=512.25,
+        rss_delta_mb=64.5,
+    )
+
+    expected_attributes = {
+        "celery.task_name": "integrations.sync_hubspot_deals",
+        "celery.queue": "integrations",
+        "celery.status": "SUCCESS",
+    }
+    assert rss_histogram.calls == [(512.25, expected_attributes)]
+    assert delta_histogram.calls == [(64.5, expected_attributes)]

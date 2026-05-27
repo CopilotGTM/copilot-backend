@@ -86,6 +86,10 @@ chat-beat:
       memory: "512Mi"
 
 integrations-worker:
+  config:
+    memoryLogging:
+      enabled: true
+      minDeltaMb: 0
   resources:
     requests:
       cpu: "500m"
@@ -97,6 +101,9 @@ integrations-worker:
 deal-worker:
   config:
     concurrency: 2
+    memoryLogging:
+      enabled: true
+      minDeltaMb: 0
   resources:
     requests:
       cpu: "500m"
