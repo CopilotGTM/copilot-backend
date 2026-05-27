@@ -9,6 +9,7 @@ timing is not guaranteed to be strictly ordered.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -21,6 +22,10 @@ from src.service.integrations.meeting_recording.providers import RecallMeetingRe
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
 TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done"}
+
+
+def _enum_value(value: Enum | str) -> str:
+    return value.value if isinstance(value, Enum) else value
 
 
 class RecallMeetingRecordingWebhookService:
@@ -123,8 +128,8 @@ class RecallMeetingRecordingWebhookService:
             "provider_session_id": bot_id,
             "session_id": str(record.session_id),
             "organisation_id": str(self.organisation_id),
-            "normalized_status": record.status.value,
-            "transcript_status": record.transcript_status.value,
+            "normalized_status": _enum_value(record.status),
+            "transcript_status": _enum_value(record.transcript_status),
         }
 
     async def _fetch_transcript_artifact(

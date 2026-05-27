@@ -5,7 +5,7 @@ OAuth tokens are managed by custom OAuth via token_resolution module.
 API calls go directly to Microsoft Graph.
 
 Uses Microsoft Graph Delta Query for efficient incremental sync:
-- Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
+- Initial sync: /messages/delta with receivedDateTime filter (last 365 days)
 - Incremental sync: Use stored deltaLink (returns ONLY new/changed/deleted messages)
 
 Microsoft Graph API documentation:
@@ -40,6 +40,7 @@ logger = get_logger(__name__)
 
 # Batch size for body backfill requests (Microsoft Graph $batch supports up to 20)
 _BODY_BATCH_SIZE = 20
+_DELTA_PAGE_SIZE = 500
 
 
 @dataclass
@@ -219,7 +220,7 @@ async def fetch_messages(
     Fetch Outlook email messages via direct Microsoft Graph API using Delta Query.
 
     Uses Microsoft Graph Delta API for efficient incremental sync:
-    - Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
+    - Initial sync: /messages/delta with receivedDateTime filter (last 365 days)
     - Incremental sync: Use stored deltaLink (returns ONLY changes)
 
     Args:
@@ -271,7 +272,7 @@ async def fetch_messages(
         async with httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {token}",
-                "Prefer": "odata.maxpagesize=50",
+                "Prefer": f"odata.maxpagesize={_DELTA_PAGE_SIZE}",
             },
             timeout=30.0,
         ) as client:

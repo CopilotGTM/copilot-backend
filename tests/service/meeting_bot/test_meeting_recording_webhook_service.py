@@ -62,6 +62,42 @@ async def test_bot_in_call_recording_updates_session_status(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_webhook_response_accepts_string_backed_status_columns(monkeypatch) -> None:
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.SENT,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    updated.status = "IN_CALL"
+    updated.transcript_status = "PENDING"
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    service.session_service.apply_webhook_update.return_value = updated
+
+    payload = {
+        "event": "bot.in_call_recording",
+        "data": {
+            "data": {"code": "in_call_recording", "updated_at": "2026-04-23T12:00:00Z"},
+            "bot": {"id": "bot_123"},
+        },
+    }
+
+    result = await service.process_recall_webhook(payload)
+
+    assert result["normalized_status"] == "IN_CALL"
+    assert result["transcript_status"] == "PENDING"
+
+
+@pytest.mark.asyncio
 async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
     organisation_id = uuid4()
     existing = MeetingRecordingSession(

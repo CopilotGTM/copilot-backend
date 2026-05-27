@@ -187,7 +187,7 @@ class CalendarEventUserState(SQLModel, table=True):
         description="Calendar integration that synced this mailbox-specific copy.",
     )
     external_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
+        sa_column=Column(String(1024), nullable=False),
         description="Mailbox-specific provider event ID for this integration/user.",
     )
     is_deleted: bool = Field(

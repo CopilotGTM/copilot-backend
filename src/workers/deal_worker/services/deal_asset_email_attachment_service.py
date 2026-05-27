@@ -20,6 +20,7 @@ from uuid import UUID
 import httpx
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 from src.domain.models.organisation_tables.deal_asset_models import (
     DealAsset,
@@ -136,6 +137,10 @@ def _is_supported_attachment_mimetype(mimetype: str | None) -> bool:
 
 def _is_gmail(integration_type: IntegrationType) -> bool:
     return integration_type == IntegrationType.GMAIL
+
+
+def _email_has_attachments_filter() -> ColumnElement[bool]:
+    return col(Email.has_attachments) == "true"
 
 
 class DealAssetEmailAttachmentService:
@@ -269,7 +274,7 @@ class DealAssetEmailAttachmentService:
                     col(DealEmailAssociation.organisation_id) == self.organisation_id,
                     col(DealEmailAssociation.status) == "ACTIVE",
                     col(Email.organisation_id) == self.organisation_id,
-                    col(Email.has_attachments) == True,  # noqa: E712
+                    _email_has_attachments_filter(),
                 )
                 .distinct()
             )
@@ -310,7 +315,7 @@ class DealAssetEmailAttachmentService:
                     col(DealEmailAssociation.organisation_id) == self.organisation_id,
                     col(DealEmailAssociation.status) == "ACTIVE",
                     col(Email.organisation_id) == self.organisation_id,
-                    col(Email.has_attachments) == True,  # noqa: E712
+                    _email_has_attachments_filter(),
                     col(KnowledgeIntegration.organisation_id) == self.organisation_id,
                     col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                     col(KnowledgeIntegration.integration_type).in_(

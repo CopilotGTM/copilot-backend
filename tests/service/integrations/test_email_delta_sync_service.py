@@ -10,6 +10,7 @@ import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.api_error_utils import IntegrationPermissionError
 from src.service.integrations.email_delta_sync_service import (
+    EMAIL_DELTA_LINKS_KEY,
     EmailDeltaSyncService,
     FolderSyncData,
     IntegrationSyncData,
@@ -124,3 +125,85 @@ async def test_folder_cursor_is_not_recorded_when_message_write_fails() -> None:
 
     assert result["status"] == "failed"
     assert cursor_updates == {}
+
+
+@pytest.mark.asyncio
+async def test_folder_cursor_is_persisted_after_successful_message_write() -> None:
+    service = EmailDeltaSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    folder_id = uuid4()
+    cursor_updates: dict[str, str | None] = {}
+
+    sync_data = IntegrationSyncData(
+        integration_id=integration_id,
+        integration_type=IntegrationType.OUTLOOK_EMAIL,
+        integration_type_value=IntegrationType.OUTLOOK_EMAIL.value,
+        connection_id="conn-1",
+        provider="outlook",
+        provider_key="outlook",
+        last_synced_at=datetime(2024, 1, 1, tzinfo=UTC),
+        connection_metadata={},
+        credentials={"access_token": "token"},
+        access_token_expires_at=None,
+        scopes=["Mail.Read"],
+    )
+    folder_data = FolderSyncData(
+        folder_id=folder_id,
+        external_folder_id="inbox",
+        folder_name="Inbox",
+        folder_type="inbox",
+        last_synced_at=datetime(2024, 1, 1, tzinfo=UTC),
+        delta_link=None,
+    )
+
+    integration = MagicMock()
+    integration.integration_id = integration_id
+    integration.connection_metadata = {}
+    folder = MagicMock()
+
+    message_write_result = MagicMock()
+    message_write_result.scalar_one_or_none.return_value = integration
+    folder_result = MagicMock()
+    folder_result.scalar_one_or_none.return_value = folder
+    cursor_persist_result = MagicMock()
+    cursor_persist_result.scalar_one_or_none.return_value = integration
+
+    write_session = AsyncMock()
+    write_session.execute = AsyncMock(side_effect=[message_write_result, folder_result])
+    persist_session = AsyncMock()
+    persist_session.execute = AsyncMock(return_value=cursor_persist_result)
+
+    sessions = iter([write_session, persist_session])
+
+    async def mock_acquire(*args, **kwargs):
+        yield next(sessions)
+
+    with (
+        patch(
+            "src.service.integrations.email_delta_sync_service._fetch_messages_for_provider",
+            AsyncMock(return_value=([{"id": "message-1"}], "new-delta")),
+        ),
+        patch(
+            "src.service.integrations.email_delta_sync_service.acquire_org_async_session",
+            side_effect=mock_acquire,
+        ),
+        patch(
+            "src.service.integrations.email_delta_sync_service.EmailSyncService"
+        ) as mock_email_service_cls,
+    ):
+        mock_email_service = mock_email_service_cls.return_value
+        mock_email_service.sync_messages = AsyncMock(return_value={"records_processed": 1})
+
+        result = await service._sync_folder_messages_fresh_session(
+            token_info=MagicMock(),
+            org_id=organisation_id,
+            sync_data=sync_data,
+            folder_data=folder_data,
+            delta_link_updates=cursor_updates,
+        )
+
+    assert result["messages_synced"] == 1
+    assert cursor_updates == {"inbox": "new-delta"}
+    assert integration.connection_metadata[EMAIL_DELTA_LINKS_KEY]["inbox"] == "new-delta"
+    persist_session.commit.assert_awaited_once()
