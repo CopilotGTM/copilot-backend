@@ -89,8 +89,10 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.config.secretName | default .Values.global.secretName }}
-          {{- if .Values.workloadIdentity.clientId }}
+          {{- $memoryLogging := .Values.config.memoryLogging | default dict }}
+          {{- if or .Values.workloadIdentity.clientId .Values.config.gracefulTimeout ($memoryLogging.enabled | default false) }}
           env:
+            {{- if .Values.workloadIdentity.clientId }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
               value: "*"
             - name: AZURE_LOG_LEVEL
@@ -101,14 +103,17 @@ spec:
             - name: AZURE_TENANT_ID
               value: {{ .Values.workloadIdentity.tenantId | quote }}
             {{- end }}
+            {{- end }}
             {{- if .Values.config.gracefulTimeout }}
             - name: CELERYD_WORKER_SHUTDOWN_TIMEOUT
               value: {{ .Values.config.gracefulTimeout | quote }}
             {{- end }}
-          {{- else if .Values.config.gracefulTimeout }}
-          env:
-            - name: CELERYD_WORKER_SHUTDOWN_TIMEOUT
-              value: {{ .Values.config.gracefulTimeout | quote }}
+            {{- if ($memoryLogging.enabled | default false) }}
+            - name: CELERY_TASK_MEMORY_LOGGING_ENABLED
+              value: "true"
+            - name: CELERY_TASK_MEMORY_LOGGING_MIN_DELTA_MB
+              value: {{ ($memoryLogging.minDeltaMb | default 0) | quote }}
+            {{- end }}
           {{- end }}
           {{- if and .Values.shutdown.enabled (not .Values.config.beatMode) }}
           lifecycle:

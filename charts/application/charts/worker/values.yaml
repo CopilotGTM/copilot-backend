@@ -28,6 +28,9 @@ config:
   beatMode: false
   # Schedule interval for beat mode (seconds) - default 2 hours
   scheduleInterval: 7200
+  memoryLogging:
+    enabled: false
+    minDeltaMb: 0
 
 global:
   secretName: "" # Will be populated by parent chart
