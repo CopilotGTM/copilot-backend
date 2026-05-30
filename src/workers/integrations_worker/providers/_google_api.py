@@ -37,7 +37,9 @@ __all__ = [
     "call_with_token_retry",
     "get_access_token",
     "gmail_api_request",
+    "gmail_api_post_json",
     "calendar_api_request",
+    "calendar_api_post_json",
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,6 +164,50 @@ async def _google_api_request(
     return result
 
 
+async def _google_api_post_json(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    *,
+    json_body: dict[str, Any],
+    integration_type: IntegrationType | None = None,
+) -> dict[str, Any]:
+    """Make a JSON POST request to a Google API with shared retry semantics.
+
+    Used by webhook subscription setup (`users.watch`, `events.watch`) so POST
+    calls classify permission drift and 429s the same way as existing GET sync
+    fetches.
+    """
+    url = f"{base_url}{endpoint}"
+
+    async def _do() -> dict[str, Any]:
+        response = await client.post(url, json=json_body)
+        if response.status_code == 403:
+            # Google reports missing scopes with several response shapes. Keep
+            # this classification aligned with GET requests so reconnect flows
+            # can surface a provider-permission issue instead of a generic sync
+            # failure.
+            response_text = response.text.lower()
+            if (
+                "insufficientpermissions" in response_text
+                or "insufficient permissions" in response_text
+                or "insufficient authentication scopes" in response_text
+                or "access_token_scope_insufficient" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    _get_google_permission_message(integration_type),
+                    status_code=403,
+                    provider="google",
+                    endpoint=endpoint,
+                    response_summary=response.text,
+                )
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    result: dict[str, Any] = await _request_with_rate_limit_retry(_do)
+    return result
+
+
 async def gmail_api_request(
     client: httpx.AsyncClient,
     endpoint: str,
@@ -178,6 +224,22 @@ async def gmail_api_request(
     )
 
 
+async def gmail_api_post_json(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    json_body: dict[str, Any],
+) -> dict[str, Any]:
+    """Make a JSON POST request to the Gmail API with 429 rate-limit retry."""
+    return await _google_api_post_json(
+        client,
+        GMAIL_BASE_URL,
+        endpoint,
+        json_body=json_body,
+        integration_type=IntegrationType.GMAIL,
+    )
+
+
 async def calendar_api_request(
     client: httpx.AsyncClient,
     endpoint: str,
@@ -190,5 +252,21 @@ async def calendar_api_request(
         GOOGLE_CALENDAR_BASE_URL,
         endpoint,
         params=params,
+        integration_type=IntegrationType.GOOGLE_CALENDAR,
+    )
+
+
+async def calendar_api_post_json(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    json_body: dict[str, Any],
+) -> dict[str, Any]:
+    """Make a JSON POST request to the Google Calendar API with 429 rate-limit retry."""
+    return await _google_api_post_json(
+        client,
+        GOOGLE_CALENDAR_BASE_URL,
+        endpoint,
+        json_body=json_body,
         integration_type=IntegrationType.GOOGLE_CALENDAR,
     )

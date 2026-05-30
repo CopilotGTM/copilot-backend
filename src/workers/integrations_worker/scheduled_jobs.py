@@ -45,6 +45,12 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="0 */12 * * *",
         max_lag_seconds=60 * 60 * 18,
     ),
+    "renew-google-subscriptions": ScheduledJob(
+        name="renew-google-subscriptions",
+        task_name="integrations.renew_google_subscriptions_all",
+        schedule="0 2 * * *",
+        max_lag_seconds=60 * 60 * 30,
+    ),
     "sync-hubspot-deal-schema-all-orgs": ScheduledJob(
         name="sync-hubspot-deal-schema-all-orgs",
         task_name="integrations.sync_hubspot_deal_schema_all_orgs",

@@ -116,6 +116,17 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 180,
         "retries": 0,
     },
+    "integrations.ensure_google_subscription": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.renew_google_subscriptions_all": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
     "integrations.sync_hubspot_deal_schema": {
         "soft": 900,
         "hard": 960,
@@ -334,6 +345,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "routing_key": "integrations_priority",
             },
             "integrations.renew_microsoft_graph_subscriptions_all": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.ensure_google_subscription": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.renew_google_subscriptions_all": {
                 "queue": "integrations",
                 "routing_key": "integrations",
             },

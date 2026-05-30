@@ -32,6 +32,11 @@ MICROSOFT_WEBHOOK_INTEGRATION_TYPES = {
     IntegrationType.OUTLOOK_EMAIL,
 }
 
+GOOGLE_WEBHOOK_INTEGRATION_TYPES = {
+    IntegrationType.GOOGLE_CALENDAR,
+    IntegrationType.GMAIL,
+}
+
 
 class InitialSyncService:
     """Service for post-connect sync handoff on newly authenticated integrations.
@@ -151,6 +156,16 @@ class InitialSyncService:
                         org_id_str,
                         int_id_str,
                     )
+                if integration_type in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                    # Calendar subscriptions should be created only after the
+                    # initial sync has had a chance to establish the syncToken.
+                    # If the webhook fires first, the sync task still has a
+                    # full-sync fallback, but this ordering keeps the hot path
+                    # incremental.
+                    self._trigger_google_subscription_ensure(
+                        org_id_str,
+                        int_id_str,
+                    )
                 return
 
             # Email
@@ -160,6 +175,14 @@ class InitialSyncService:
                     # Email follows the same contract as calendar: first sync
                     # stores folder delta links, then webhooks trigger refreshes.
                     self._trigger_microsoft_graph_subscription_ensure(
+                        org_id_str,
+                        int_id_str,
+                    )
+                if integration_type in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                    # Gmail watches publish only a wake-up history id; the
+                    # existing email sync owns cursor persistence and recovery
+                    # from expired history windows.
+                    self._trigger_google_subscription_ensure(
                         org_id_str,
                         int_id_str,
                     )
@@ -231,6 +254,20 @@ class InitialSyncService:
             routing_key="integrations_priority",
         )
         logger.info("Triggered Microsoft Graph subscription ensure: integration=%s", int_id_str)
+
+    def _trigger_google_subscription_ensure(
+        self,
+        org_id_str: str,
+        int_id_str: str,
+    ) -> None:
+        """Create the Google webhook subscription after Google post-connect sync dispatch."""
+        send_integrations_task(
+            task_name="integrations.ensure_google_subscription",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+            queue="integrations_priority",
+            routing_key="integrations_priority",
+        )
+        logger.info("Triggered Google subscription ensure: integration=%s", int_id_str)
 
     def _trigger_hubspot_initial_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Dispatch the HubSpot post-connect Celery chain.

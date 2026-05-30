@@ -34,6 +34,24 @@ CalendarEvent is org-scoped: multiple users' calendars contribute to the same ca
 - **Sync tokens**: Google Calendar API returns a `syncToken` after full sync; subsequent requests use it for incremental changes
 - Uses `call_with_token_retry` for automatic 401 recovery
 
+### Google Calendar Webhooks
+
+Google Calendar uses event channels as low-latency triggers. Webhook payloads
+are not persisted directly. After the backend validates the stored channel id,
+resource id, and channel token, it schedules the existing single-integration
+incremental sync task:
+
+- Google Calendar: `integrations.sync_calendar_integration`
+
+The sync task remains the only writer for provider data and continues to use
+the existing Google Calendar sync token metadata.
+
+Calendar subscription metadata is stored in
+`connection_metadata.google_webhook_subscriptions.calendar` and renewed by
+`integrations.renew_google_subscriptions_all`, which dispatches the
+integration-scoped `integrations.ensure_google_subscription` task for each
+active Google Calendar integration.
+
 ---
 
 ## Email Sync
@@ -131,6 +149,30 @@ API-triggered all-org sync remains available for repair/backfill.
 - **History expiry**: If `historyId` is too old (400/404), falls back to full fetch
 - **Label-based**: Messages are fetched per-label (INBOX, SENT); label ID is injected into message payload as `_gmail_label_id`
 - **Category filtering**: Gmail inbox sync excludes `CATEGORY_PROMOTIONS`, `CATEGORY_SOCIAL`, `CATEGORY_UPDATES`, and `CATEGORY_FORUMS` using the Gmail query where possible, with a post-fetch safety filter for any category messages that still appear.
+
+### Gmail Webhooks
+
+Gmail uses Cloud Pub/Sub push notifications as low-latency triggers. Webhook
+payloads are not persisted directly. Because Pub/Sub push endpoints are static,
+the backend routes Gmail notifications by decoded account `emailAddress` and
+matches active Gmail integrations by `integration_email`. It then schedules the
+existing single-integration incremental sync task:
+
+- Gmail: `integrations.sync_email_integration`
+
+The sync task remains the only writer for provider data and continues to use
+the existing Gmail history cursor metadata.
+
+The Pub/Sub push endpoint must include the configured
+`GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN`, and the received Pub/Sub envelope must match
+`GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION`, before any integration lookup or sync
+enqueue occurs.
+
+Gmail watch metadata is stored in
+`connection_metadata.google_webhook_subscriptions.gmail` and renewed by
+`integrations.renew_google_subscriptions_all`, which dispatches the
+integration-scoped `integrations.ensure_google_subscription` task for each
+active Gmail integration.
 
 ### Change Detection (Incremental)
 `sync_messages_incremental` batch-loads existing messages by external_id, then compares key fields (subject, from_email, is_read, labels, parent folder) to skip unchanged records.

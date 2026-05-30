@@ -17,6 +17,8 @@ Use this folder as the concise source of truth for runtime behavior. The worker 
 | [three-tier-sync-architecture.md](three-tier-sync-architecture.md) | Celery task tiers, beat schedule, session management |
 | [error-handling-and-resilience.md](error-handling-and-resilience.md) | 401 retry, 429 rate limiting, circuit breaker, timeout tracking |
 | [sync-by-provider.md](sync-by-provider.md) | Per-provider sync details: calendar, email, messaging, CRM |
+| [google-webhook-flow.md](google-webhook-flow.md) | Gmail and Google Calendar webhook trigger, subscription, and renewal flow |
+| [microsoft-graph-webhook-flow.md](microsoft-graph-webhook-flow.md) | Outlook Email and Outlook Calendar Graph webhook trigger, subscription, and renewal flow |
 
 ## Current CRM Reality
 
