@@ -206,6 +206,7 @@ async def _persist_cursor_updates(
     org_id: UUID,
     sync_data: IntegrationSyncData,
     cursor_updates: dict[str, str | None],
+    folder_id: UUID | None = None,
 ) -> None:
     if not cursor_updates:
         return
@@ -229,6 +230,16 @@ async def _persist_cursor_updates(
 
         _persist_cursors(integration, sync_data.provider, cursor_updates)
         attributes.flag_modified(integration, "connection_metadata")
+
+        if folder_id is not None:
+            folder_stmt = select(EmailFolder).where(
+                col(EmailFolder.folder_id) == folder_id,
+            )
+            folder_result = await session.execute(folder_stmt)
+            folder = folder_result.scalar_one_or_none()
+            if folder:
+                folder.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+
         await session.commit()
 
         logger.info(
@@ -725,6 +736,7 @@ class EmailDeltaSyncService:
                         org_id=org_id,
                         sync_data=sync_data,
                         cursor_updates={folder_data.external_folder_id: new_cursor},
+                        folder_id=folder_data.folder_id,
                     )
                 return {
                     "folder_id": str(folder_data.folder_id),
