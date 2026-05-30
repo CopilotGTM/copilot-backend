@@ -387,10 +387,8 @@ integrationsCronJobs:
       schedule: "0 6 * * *"
     - name: sync-deal-messages-all-orgs
       schedule: "*/30 * * * *"
-    - name: sync-calendar-events
-      schedule: "*/15 * * * *"
-    - name: sync-email-all-orgs
-      schedule: "*/30 * * * *"
+    - name: renew-microsoft-graph-subscriptions
+      schedule: "0 */12 * * *"
     - name: sync-hubspot-core-incremental-all-orgs
       resourceName: sync-hubspot-core-incremental
       schedule: "*/10 * * * *"

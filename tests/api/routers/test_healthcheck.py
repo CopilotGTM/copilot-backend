@@ -59,10 +59,10 @@ def test_integrations_scheduler_health_endpoint_returns_scheduler_status(
         return_value={
             "healthy": False,
             "jobs": {
-                "sync-calendar-events": {
+                "sync-deal-messages-all-orgs": {
                     "healthy": False,
                     "status": "stale",
-                    "task_name": "integrations.sync_calendar_all_orgs",
+                    "task_name": "integrations.sync_deal_messages_all_orgs",
                 }
             },
         },
@@ -74,7 +74,7 @@ def test_integrations_scheduler_health_endpoint_returns_scheduler_status(
     )
 
     assert response.status_code == 503
-    assert response.json()["detail"]["jobs"]["sync-calendar-events"]["status"] == "stale"
+    assert response.json()["detail"]["jobs"]["sync-deal-messages-all-orgs"]["status"] == "stale"
 
 
 def test_deal_scheduler_health_endpoint_returns_scheduler_status(

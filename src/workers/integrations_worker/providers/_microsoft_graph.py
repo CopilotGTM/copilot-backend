@@ -34,6 +34,7 @@ __all__ = [
     "graph_api_request",
     "graph_api_post_no_content",
     "graph_api_post_json",
+    "graph_api_patch_json",
     "graph_api_request_url",
 ]
 
@@ -208,6 +209,43 @@ async def graph_api_post_no_content(
     max_retries = _MAX_RETRIES if retry_on_rate_limit else 0
     await _request_with_rate_limit_retry(_do, max_retries=max_retries)
     return None
+
+
+async def graph_api_patch_json(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    json_body: dict[str, Any],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """PATCH JSON to Microsoft Graph with the shared 429 retry/error handling.
+
+    Currently used by subscription renewal. Keeping it in the provider module
+    means renewal and sync calls share the same permission-error translation.
+    """
+    url = f"{GRAPH_BASE_URL}{endpoint}"
+
+    async def _do() -> dict[str, Any]:
+        response = await client.patch(url, params=params, json=json_body)
+        if response.status_code == 403:
+            response_text = response.text.lower()
+            if (
+                "insufficient privileges" in response_text
+                or "required application permissions" in response_text
+                or "insufficient permissions" in response_text
+            ):
+                raise IntegrationPermissionError(
+                    "Required Microsoft permissions were not granted. "
+                    "Please reconnect this integration.",
+                    status_code=403,
+                    provider="microsoft",
+                    endpoint=endpoint,
+                    response_summary=response.text,
+                )
+        response.raise_for_status()
+        return response.json()  # type: ignore[no-any-return]
+
+    return await _request_with_rate_limit_retry(_do)
 
 
 async def graph_api_request_url(

@@ -101,6 +101,31 @@ Users can enable/disable monitoring for any stored folder by changing `is_monito
 - **Body backfill**: Body is excluded from `$select` in delta query (same reason as calendar). After pagination, bodies are backfilled in a second pass via individual message GET calls.
 - **"Other" filtering**: Outlook's `inferenceClassification == "other"` messages (newsletters, automated mail, etc.) are filtered out of message sync. Deleted markers are preserved so the local state can still process removals.
 
+### Microsoft Graph Webhooks
+
+Outlook Calendar and Outlook Email use Microsoft Graph change notifications as
+low-latency triggers. Webhook payloads are not persisted directly. After the
+backend validates the stored `clientState` and subscription id, it schedules
+the existing single-integration incremental sync task:
+
+- Outlook Calendar: `integrations.sync_calendar_integration`
+- Outlook Email: `integrations.sync_email_integration`
+
+The sync task remains the only writer for provider data. Calendar continues to
+use `connection_metadata.calendar_delta_link`; email continues to use
+`connection_metadata.email_folder_delta_links`.
+
+Subscriptions are stored in
+`connection_metadata.microsoft_graph_subscriptions` and renewed by
+`integrations.renew_microsoft_graph_subscriptions_all`, which dispatches the
+integration-scoped `integrations.ensure_microsoft_graph_subscription` task for
+each active Outlook Calendar or Outlook Email integration.
+
+Scheduled all-org calendar/email polling is disabled by default for Outlook.
+After the first sync stores the Microsoft delta cursors, Graph webhooks are the
+low-latency trigger that schedules the integration-level delta sync. Manual or
+API-triggered all-org sync remains available for repair/backfill.
+
 ### Gmail-Specific
 - **History API**: `GET /gmail/v1/users/me/messages` for initial; `history.list` with `historyId` for incremental
 - **History expiry**: If `historyId` is too old (400/404), falls back to full fetch
