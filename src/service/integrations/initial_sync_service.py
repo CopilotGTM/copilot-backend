@@ -27,6 +27,11 @@ from src.workers.integrations_worker.client import send_integrations_task
 
 logger = get_logger(__name__)
 
+MICROSOFT_WEBHOOK_INTEGRATION_TYPES = {
+    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.OUTLOOK_EMAIL,
+}
+
 
 class InitialSyncService:
     """Service for post-connect sync handoff on newly authenticated integrations.
@@ -139,11 +144,25 @@ class InitialSyncService:
             # Calendar
             if integration_type in self.CALENDAR_INTEGRATION_TYPES:
                 self._trigger_calendar_sync(org_id_str, int_id_str)
+                if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                    # Initial sync establishes the first delta cursor; the
+                    # subscription ensures future changes wake that same sync.
+                    self._trigger_microsoft_graph_subscription_ensure(
+                        org_id_str,
+                        int_id_str,
+                    )
                 return
 
             # Email
             if integration_type in self.EMAIL_INTEGRATION_TYPES:
                 self._trigger_email_sync(org_id_str, int_id_str)
+                if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                    # Email follows the same contract as calendar: first sync
+                    # stores folder delta links, then webhooks trigger refreshes.
+                    self._trigger_microsoft_graph_subscription_ensure(
+                        org_id_str,
+                        int_id_str,
+                    )
                 return
 
             # Messaging (Teams)
@@ -198,6 +217,20 @@ class InitialSyncService:
             kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
+
+    def _trigger_microsoft_graph_subscription_ensure(
+        self,
+        org_id_str: str,
+        int_id_str: str,
+    ) -> None:
+        """Create the Graph webhook subscription after Outlook post-connect sync dispatch."""
+        send_integrations_task(
+            task_name="integrations.ensure_microsoft_graph_subscription",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+            queue="integrations_priority",
+            routing_key="integrations_priority",
+        )
+        logger.info("Triggered Microsoft Graph subscription ensure: integration=%s", int_id_str)
 
     def _trigger_hubspot_initial_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Dispatch the HubSpot post-connect Celery chain.

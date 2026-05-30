@@ -39,17 +39,11 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="*/30 * * * *",
         max_lag_seconds=60 * 60,
     ),
-    "sync-calendar-events": ScheduledJob(
-        name="sync-calendar-events",
-        task_name="integrations.sync_calendar_all_orgs",
-        schedule="*/15 * * * *",
-        max_lag_seconds=60 * 30,
-    ),
-    "sync-email-all-orgs": ScheduledJob(
-        name="sync-email-all-orgs",
-        task_name="integrations.sync_email_all_orgs",
-        schedule="*/30 * * * *",
-        max_lag_seconds=60 * 60,
+    "renew-microsoft-graph-subscriptions": ScheduledJob(
+        name="renew-microsoft-graph-subscriptions",
+        task_name="integrations.renew_microsoft_graph_subscriptions_all",
+        schedule="0 */12 * * *",
+        max_lag_seconds=60 * 60 * 18,
     ),
     "sync-hubspot-deal-schema-all-orgs": ScheduledJob(
         name="sync-hubspot-deal-schema-all-orgs",

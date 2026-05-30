@@ -74,11 +74,13 @@ def _render_all_manifests() -> list[dict]:
 def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
     """Assert integrations CronJob keeps strict production restart and deadline settings."""
     cronjobs = _render_worker_cronjobs()
-    calendar = next(
-        doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-sync-calendar-events"
+    deal_messages = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-sync-deal-messages-all-orgs"
     )
 
-    spec = calendar["spec"]
+    spec = deal_messages["spec"]
     job_spec = spec["jobTemplate"]["spec"]
 
     assert spec["timeZone"] == "Etc/UTC"
@@ -88,6 +90,37 @@ def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
     assert job_spec["backoffLimit"] == 1
     assert job_spec["activeDeadlineSeconds"] == 300
     assert job_spec["ttlSecondsAfterFinished"] == 900
+
+
+def test_calendar_and_email_polling_cronjobs_are_not_rendered() -> None:
+    """Outlook calendar/email sync is webhook-driven; scheduled polling stays disabled."""
+    cronjobs = _render_worker_cronjobs()
+    cronjob_names = {doc["metadata"]["name"] for doc in cronjobs}
+
+    assert "copilot-backend-sync-calendar-events" not in cronjob_names
+    assert "copilot-backend-sync-email-all-orgs" not in cronjob_names
+
+
+def test_microsoft_graph_subscription_renewal_cronjob_renders_dispatch_contract() -> None:
+    """Assert webhook renewal keeps running after Outlook polling CronJobs are removed."""
+    cronjobs = _render_worker_cronjobs()
+    renewal = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-renew-microsoft-graph-subscriptions"
+    )
+
+    container = renewal["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+
+    assert renewal["spec"]["schedule"] == "0 */12 * * *"
+    assert renewal["spec"]["concurrencyPolicy"] == "Forbid"
+    assert container["command"] == [
+        "python",
+        "-m",
+        "src.workers.integrations_worker.cron_dispatch",
+        "--job",
+        "renew-microsoft-graph-subscriptions",
+    ]
 
 
 def test_hubspot_core_incremental_cronjob_renders_dispatch_contract() -> None:

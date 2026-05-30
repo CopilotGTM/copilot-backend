@@ -14,6 +14,7 @@ from .copilot_oauth_routes import router as copilot_oauth_router
 from .deal_integration_routes import router as deal_integration_router
 from .hubspot_webhook_routes import router as hubspot_webhook_router
 from .integration_routes import router as integration_router
+from .microsoft_webhook_routes import router as microsoft_webhook_router
 
 # Main router that combines all integration routes
 integrations_router = APIRouter(tags=["integrations"])
@@ -24,6 +25,7 @@ integrations_router.include_router(bot_integration_router)
 integrations_router.include_router(integration_router)
 integrations_router.include_router(deal_integration_router)
 integrations_router.include_router(hubspot_webhook_router)
+integrations_router.include_router(microsoft_webhook_router)
 
 __all__ = [
     "integrations_router",
@@ -31,4 +33,5 @@ __all__ = [
     "bot_integration_router",
     "integration_router",
     "hubspot_webhook_router",
+    "microsoft_webhook_router",
 ]

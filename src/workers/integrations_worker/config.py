@@ -105,6 +105,17 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.ensure_microsoft_graph_subscription": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 3,
+        "retry_delay": 60,
+    },
+    "integrations.renew_microsoft_graph_subscriptions_all": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
     "integrations.sync_hubspot_deal_schema": {
         "soft": 900,
         "hard": 960,
@@ -317,6 +328,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.refresh_token": {
                 "queue": "integrations_priority",  # Priority queue for single refresh
                 "routing_key": "integrations_priority",
+            },
+            "integrations.ensure_microsoft_graph_subscription": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.renew_microsoft_graph_subscriptions_all": {
+                "queue": "integrations",
+                "routing_key": "integrations",
             },
             # Generic data sync task (used by three-tier tasks)
             "integrations.sync_integration": {

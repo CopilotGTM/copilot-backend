@@ -7,13 +7,13 @@ from src.workers.integrations_worker.cron_dispatch import dispatch_scheduled_job
 from src.workers.integrations_worker.scheduled_jobs import get_scheduled_job
 
 
-def test_get_scheduled_job_returns_calendar_schedule_definition() -> None:
-    """Regression test for get scheduled job returns calendar schedule definition."""
+def test_get_scheduled_job_returns_deal_messages_schedule_definition() -> None:
+    """Regression test for get scheduled job returns deal messages schedule definition."""
 
-    job = get_scheduled_job("sync-calendar-events")
+    job = get_scheduled_job("sync-deal-messages-all-orgs")
 
-    assert job.name == "sync-calendar-events"
-    assert job.task_name == "integrations.sync_calendar_all_orgs"
+    assert job.name == "sync-deal-messages-all-orgs"
+    assert job.task_name == "integrations.sync_deal_messages_all_orgs"
     assert job.queue == "integrations"
     assert job.kwargs == {}
 
@@ -62,11 +62,11 @@ def test_dispatch_scheduled_job_enqueues_and_records_heartbeat(mocker) -> None:
         "src.workers.integrations_worker.cron_dispatch.record_scheduler_dispatch"
     )
 
-    task_id = dispatch_scheduled_job("sync-calendar-events")
+    task_id = dispatch_scheduled_job("sync-deal-messages-all-orgs")
 
     assert task_id == "task-123"
     send_task.assert_called_once_with(
-        task_name="integrations.sync_calendar_all_orgs",
+        task_name="integrations.sync_deal_messages_all_orgs",
         kwargs={},
         queue="integrations",
         routing_key="integrations",
@@ -86,6 +86,6 @@ def test_dispatch_scheduled_job_records_failure_before_raising(mocker) -> None:
     )
 
     with pytest.raises(RuntimeError, match="broker down"):
-        dispatch_scheduled_job("sync-calendar-events")
+        dispatch_scheduled_job("sync-deal-messages-all-orgs")
 
     record_failure.assert_called_once()
