@@ -349,7 +349,7 @@ integrations-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "integrations"
-    additionalQueues: ["integrations_priority"]
+    additionalQueues: ["integrations_priority", "integrations_streaming"]
     concurrency: 8  # Reduced from 20 to prevent OOM
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:

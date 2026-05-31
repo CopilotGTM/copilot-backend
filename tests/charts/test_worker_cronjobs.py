@@ -247,3 +247,16 @@ def test_api_secret_renders_sentry_settings_for_dev() -> None:
         == "https://d47183944100e4f69572365fd1634d16@o4511017432186880.ingest.us.sentry.io/4511017435070464"
     )
     assert base64.b64decode(secret["data"]["SENTRY_TRACES_SAMPLE_RATE"]).decode() == "0.2"
+
+
+def test_integrations_worker_values_consume_salesforce_streaming_queue() -> None:
+    """Assert Salesforce CDC tasks are routed to a queue the integrations worker consumes."""
+    values = yaml.safe_load(
+        (REPO_ROOT / "charts" / "application" / "values.yaml").read_text(encoding="utf-8")
+    )
+
+    worker_config = values["integrations-worker"]["config"]
+
+    assert worker_config["queueName"] == "integrations"
+    assert "integrations_priority" in worker_config["additionalQueues"]
+    assert "integrations_streaming" in worker_config["additionalQueues"]

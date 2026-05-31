@@ -206,6 +206,9 @@ class CopilotCallbackService:
             metadata[self._TOKEN_TYPE_METADATA_KEY] = token_type
         if integration_type == IntegrationType.HUBSPOT and provider_user_info:
             self._apply_hubspot_user_info_metadata(metadata, provider_user_info)
+        if integration_type == IntegrationType.SALESFORCE and provider_user_info:
+            self._apply_salesforce_user_info_metadata(metadata, provider_user_info)
+            self._apply_salesforce_cdc_metadata(metadata)
         if integration_type == IntegrationType.SALESFORCE and oauth_base_url:
             metadata["oauth_base_url"] = oauth_base_url
         integration.connection_metadata = metadata
@@ -226,6 +229,34 @@ class CopilotCallbackService:
         hubspot_user_id = provider_user_info.get("hubspot_user_id")
         if hubspot_user_id is not None:
             metadata[self._HUBSPOT_USER_ID_METADATA_KEY] = str(hubspot_user_id)
+
+    def _apply_salesforce_user_info_metadata(
+        self,
+        metadata: dict[str, Any],
+        provider_user_info: dict[str, Any],
+    ) -> None:
+        for source_key, metadata_key in (
+            ("salesforce_user_id", "salesforce_user_id"),
+            ("salesforce_organization_id", "salesforce_organization_id"),
+            ("salesforce_instance_url", "salesforce_instance_url"),
+            ("salesforce_username", "salesforce_username"),
+        ):
+            value = str(provider_user_info.get(source_key) or "").strip()
+            if value:
+                metadata[metadata_key] = (
+                    value.rstrip("/") if metadata_key.endswith("_url") else value
+                )
+
+    def _apply_salesforce_cdc_metadata(self, metadata: dict[str, Any]) -> None:
+        cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
+        cdc_metadata.setdefault(
+            "opportunity",
+            {
+                "enabled": True,
+                "channel": "/data/OpportunityChangeEvent",
+            },
+        )
+        metadata["salesforce_cdc"] = cdc_metadata
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, Any]:
         """Process the provider's OAuth callback and persist the integration.

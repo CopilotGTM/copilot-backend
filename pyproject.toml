@@ -179,6 +179,9 @@ integrations = [
 
     # HTML Parsing (for Slack message processing)
     "beautifulsoup4>=4.12.0",
+    # Salesforce Pub/Sub API
+    "grpcio>=1.76.0",
+    "fastavro>=1.12.1",
 ]
 
 # =============================================================================
@@ -231,6 +234,8 @@ full = [
     "aiohttp==3.9.1",
     "fsspec~=2025.7.0",
     "beautifulsoup4>=4.12.0",
+    "grpcio>=1.76.0",
+    "fastavro>=1.12.1",
 ]
 
 # =============================================================================

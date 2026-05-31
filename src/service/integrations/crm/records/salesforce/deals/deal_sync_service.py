@@ -327,6 +327,56 @@ class SalesforceDealRecordSyncService:
             "Could not acquire org session for Salesforce deals record sync write"
         )
 
+    async def persist_single_opportunity(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_opportunity: dict[str, Any],
+        instance_url: str,
+    ) -> dict[str, Any]:
+        normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
+            [raw_opportunity],
+            instance_url=instance_url,
+            primary_contact_by_deal={},
+            current_stage_entered_at_by_deal={},
+            contact_count_by_deal={},
+        )
+        (
+            write_result,
+            stage_history_result,
+            participant_result,
+            association_result,
+            backfill_payload,
+        ) = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            opportunities=normalized_opportunities,
+            transitions=[],
+            participant_extraction=DealParticipantExtraction(),
+        )
+        return {
+            "fetched_opportunities": 1,
+            "deals_created": write_result.deals_created,
+            "deals_updated": write_result.deals_updated,
+            "unresolved_pipeline_link": write_result.unresolved_pipeline_link,
+            "unresolved_stage_link": write_result.unresolved_stage_link,
+            "unresolved_owner_link": write_result.unresolved_owner_link,
+            "unresolved_company_link": write_result.unresolved_company_link,
+            "unresolved_contact_link": write_result.unresolved_contact_link,
+            "unresolved_created_by_link": write_result.unresolved_created_by_link,
+            "unresolved_updated_by_link": write_result.unresolved_updated_by_link,
+            "skipped_malformed_opportunities": skipped_malformed_opportunities,
+            "stage_history_created": stage_history_result.stage_history_created,
+            "stage_history_updated": stage_history_result.stage_history_updated,
+            "participants_created": participant_result.participants_created,
+            "participants_updated": participant_result.participants_updated,
+            "associations_created": association_result.associations_created,
+            "associations_updated": association_result.associations_updated,
+            "deal_backfill_rows_updated": backfill_payload["rows_updated"],
+            "deal_backfill_per_op": backfill_payload["per_op"],
+        }
+
     async def _backfill_deals(
         self,
         *,
