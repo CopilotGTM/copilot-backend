@@ -1,4 +1,4 @@
-# Salesforce Account, Contact, and Opportunity CDC Sync
+# Salesforce CRM CDC Sync
 
 Salesforce does not use a HubSpot-style public HTTP webhook for realtime CRM sync.
 The backend runs bounded integrations-worker subscribers against Salesforce Pub/Sub
@@ -7,6 +7,9 @@ API single-entity topics:
 - `/data/OpportunityChangeEvent`
 - `/data/AccountChangeEvent`
 - `/data/ContactChangeEvent`
+- `/data/TaskChangeEvent`
+- `/data/ContentNoteChangeEvent`
+- `/data/ContentDocumentLinkChangeEvent`
 
 Each event is decoded from Avro, fanned out across every
 `ChangeEventHeader.recordIds` entry, refreshed from Salesforce REST, and persisted
@@ -14,16 +17,21 @@ through the same normalizers and writers used by full Salesforce sync.
 
 ## Scope
 
-This v1 covers standard Opportunity, Account, and Contact CDC channels.
+This v1 covers standard Opportunity, Account, Contact, Task, and current
+Salesforce Lightning Notes CDC channels. Lightning Notes require both
+`ContentNote` and `ContentDocumentLink`: `ContentNote` carries note content
+updates, while `ContentDocumentLink` carries relationship changes to Account,
+Contact, and Opportunity.
 
 - In scope: per-object replay cursor storage, subscriber leasing, keepalive replay
   advancement, single-record fetch, record upsert, Account deactivation, and
-  Opportunity/Contact soft-delete for Salesforce delete events.
+  Opportunity/Contact/Task/Note soft-delete for Salesforce delete events.
 - Out of scope: `/data/ChangeEvents`, OpportunityContactRole fanout, durable local
   event handoff, event fingerprints, and separate subscriber task names.
 
-Salesforce setup prerequisite: Account, Contact, and Opportunity must be selected
-for Change Data Capture in Salesforce Setup for all three channels to publish.
+Salesforce setup prerequisite: Account, Contact, Opportunity, Task, ContentNote,
+and ContentDocumentLink must be selected for Change Data Capture in Salesforce
+Setup where those entities are available in the org.
 
 ## Runtime Flow
 
@@ -39,6 +47,9 @@ for each recordId in ChangeEventHeader.recordIds:
     Opportunity DELETE -> CRMDeal.is_deleted = true
     Account DELETE     -> CRMCompany.is_active = false
     Contact DELETE     -> CRMContact.is_deleted = true
+    Task DELETE        -> CRMActivity task/todo is_deleted = true
+    ContentNote DELETE -> CRMActivity note is_deleted = true
+    ContentDocumentLink DELETE -> rehydrate remaining note links or soft-delete note
     other              -> fetch one record -> persist_single_*()
         |
         v
@@ -67,6 +78,9 @@ cursor and queues the matching full repair sync:
 - Opportunity -> `integrations.sync_salesforce_deals`
 - Account -> `integrations.sync_salesforce_companies`
 - Contact -> `integrations.sync_salesforce_contacts`
+- Task -> `integrations.sync_salesforce_tasks`
+- ContentNote -> `integrations.sync_salesforce_notes`
+- ContentDocumentLink -> `integrations.sync_salesforce_notes`
 
 The repair sync restarts the same CDC channel after it completes successfully.
 
@@ -74,7 +88,8 @@ The repair sync restarts the same CDC channel after it completes successfully.
 
 Each Salesforce integration stores its CDC checkpoint and lease state in
 `knowledge_integrations.connection_metadata.salesforce_cdc.<object>`, where
-`<object>` is `opportunity`, `account`, or `contact`.
+`<object>` is `opportunity`, `account`, `contact`, `task`, `content_note`, or
+`content_document_link`.
 
 Each channel has an independent replay cursor and lease. No separate CDC
 subscription table or CDC event table exists in v1.
@@ -120,13 +135,29 @@ CDC discovery expects:
       "enabled": true,
       "channel": "/data/ContactChangeEvent",
       "last_replay_id": "opaque-base64-replay-id"
+    },
+    "task": {
+      "enabled": true,
+      "channel": "/data/TaskChangeEvent",
+      "last_replay_id": "opaque-base64-replay-id"
+    },
+    "content_note": {
+      "enabled": true,
+      "channel": "/data/ContentNoteChangeEvent",
+      "last_replay_id": "opaque-base64-replay-id"
+    },
+    "content_document_link": {
+      "enabled": true,
+      "channel": "/data/ContentDocumentLinkChangeEvent",
+      "last_replay_id": "opaque-base64-replay-id"
     }
   }
 }
 ```
 
 Existing integrations with only the `opportunity` entry remain Opportunity-only.
-New reconnects receive Account, Contact, and Opportunity entries by default.
+New reconnects receive Account, Contact, Opportunity, Task, ContentNote, and
+ContentDocumentLink entries by default.
 
 The default Pub/Sub endpoint is `api.pubsub.salesforce.com:443`; the global
 Salesforce Pub/Sub host is accepted on ports `443` and `7443`.

@@ -27,6 +27,7 @@ from src.service.integrations.scope_validation import (
     is_microsoft_integration,
     parse_granted_scopes_from_token_payload,
 )
+from src.service.integrations.webhooks.salesforce.metadata import SALESFORCE_CDC_OBJECTS
 
 logger = get_logger(__name__)
 
@@ -249,27 +250,14 @@ class CopilotCallbackService:
 
     def _apply_salesforce_cdc_metadata(self, metadata: dict[str, Any]) -> None:
         cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-        cdc_metadata.setdefault(
-            "opportunity",
-            {
-                "enabled": True,
-                "channel": "/data/OpportunityChangeEvent",
-            },
-        )
-        cdc_metadata.setdefault(
-            "account",
-            {
-                "enabled": True,
-                "channel": "/data/AccountChangeEvent",
-            },
-        )
-        cdc_metadata.setdefault(
-            "contact",
-            {
-                "enabled": True,
-                "channel": "/data/ContactChangeEvent",
-            },
-        )
+        for object_key, config in SALESFORCE_CDC_OBJECTS.items():
+            cdc_metadata.setdefault(
+                object_key,
+                {
+                    "enabled": True,
+                    "channel": config["channel"],
+                },
+            )
         metadata["salesforce_cdc"] = cdc_metadata
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, Any]:

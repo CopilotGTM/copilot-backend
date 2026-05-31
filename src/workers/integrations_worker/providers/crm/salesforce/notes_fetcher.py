@@ -1,7 +1,5 @@
 """Salesforce fetcher for CRM note record sync."""
 
-# ruff: noqa: S608
-
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -43,8 +41,8 @@ class SalesforceNotesFetcher:
         for batch in _chunked(scoped_ids, _LINK_BATCH_SIZE):
             # IDs come from our own synced CRM dimension tables, not from user input.
             soql = (
-                "SELECT ContentDocumentId, LinkedEntityId "
-                f"FROM ContentDocumentLink WHERE LinkedEntityId IN ({_quoted_csv(batch)})"  # nosec B608
+                "SELECT Id, ContentDocumentId, LinkedEntityId "  # noqa: S608  # nosec B608
+                f"FROM ContentDocumentLink WHERE LinkedEntityId IN ({_quoted_csv(batch)})"
             )
             link_rows.extend(await self._query_all(soql, error_label="notes link"))
 
@@ -72,8 +70,8 @@ class SalesforceNotesFetcher:
         for batch in _chunked(document_ids, _NOTE_BATCH_SIZE):
             # ContentDocumentIds also come from the provider-scoped link query above.
             soql = (
-                "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "
-                f"FROM ContentNote WHERE Id IN ({_quoted_csv(batch)})"  # nosec B608
+                "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "  # noqa: S608  # nosec B608
+                f"FROM ContentNote WHERE Id IN ({_quoted_csv(batch)})"
             )
             for row in await self._query_all(soql, error_label="notes hydrate"):
                 note_id = row.get("Id")
@@ -88,7 +86,7 @@ class SalesforceNotesFetcher:
             note_row = note_rows_by_id.get(document_id)
             if note_row is None:
                 continue
-            merged_rows.append({**link_row, **note_row})
+            merged_rows.append(_merge_link_and_note(link_row, note_row))
 
         logger.info(
             "Fetched Salesforce notes",
@@ -102,8 +100,84 @@ class SalesforceNotesFetcher:
         )
         return merged_rows
 
-    async def _query_all(self, soql: str, *, error_label: str) -> list[dict[str, Any]]:
-        url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
+    async def fetch_one_by_note_id(
+        self,
+        content_note_id: str,
+        *,
+        linked_entity_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        scoped_ids = [entity_id for entity_id in linked_entity_ids if entity_id]
+        if not scoped_ids:
+            return []
+
+        link_rows: list[dict[str, Any]] = []
+        for batch in _chunked(scoped_ids, _LINK_BATCH_SIZE):
+            soql = (
+                "SELECT Id, ContentDocumentId, LinkedEntityId "  # noqa: S608  # nosec B608
+                "FROM ContentDocumentLink "
+                f"WHERE ContentDocumentId = '{_escape_soql_literal(content_note_id)}' "
+                f"AND LinkedEntityId IN ({_quoted_csv(batch)})"
+            )
+            link_rows.extend(await self._query_all(soql, error_label="notes single link"))
+        if not link_rows:
+            return []
+
+        soql = (
+            "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "  # noqa: S608  # nosec B608
+            f"FROM ContentNote WHERE Id = '{_escape_soql_literal(content_note_id)}' LIMIT 1"
+        )
+        note_rows = await self._query_all(soql, error_label="notes single hydrate")
+        if not note_rows:
+            return []
+        note_row = note_rows[0]
+        return [_merge_link_and_note(link_row, note_row) for link_row in link_rows]
+
+    async def fetch_one_by_link_id(
+        self,
+        content_document_link_id: str,
+        *,
+        linked_entity_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        scoped_ids = {entity_id for entity_id in linked_entity_ids if entity_id}
+        if not scoped_ids:
+            return []
+
+        link_row = await self.fetch_link_by_id(content_document_link_id)
+        if link_row is None:
+            return []
+        document_id = link_row.get("ContentDocumentId")
+        linked_entity_id = link_row.get("LinkedEntityId")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(linked_entity_id, str)
+            or linked_entity_id not in scoped_ids
+        ):
+            return []
+        return await self.fetch_one_by_note_id(document_id, linked_entity_ids=linked_entity_ids)
+
+    async def fetch_link_by_id(self, content_document_link_id: str) -> dict[str, Any] | None:
+        soql = (
+            "SELECT Id, ContentDocumentId, LinkedEntityId, IsDeleted "  # noqa: S608  # nosec B608
+            "FROM ContentDocumentLink "
+            f"WHERE Id = '{_escape_soql_literal(content_document_link_id)}' LIMIT 1"
+        )
+        link_rows = await self._query_all(
+            soql,
+            error_label="notes link by id",
+            use_query_all=True,
+        )
+        return link_rows[0] if link_rows else None
+
+    async def _query_all(
+        self,
+        soql: str,
+        *,
+        error_label: str,
+        use_query_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        resource = "queryAll" if use_query_all else "query"
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/{resource}"
         records: list[dict[str, Any]] = []
         next_url: str | None = None
         page_count = 0
@@ -173,4 +247,16 @@ def _chunked(values: Iterable[str], size: int) -> Iterable[list[str]]:
 
 
 def _quoted_csv(values: list[str]) -> str:
-    return ", ".join("'" + value.replace("'", "\\'") + "'" for value in values)
+    return ", ".join("'" + _escape_soql_literal(value) + "'" for value in values)
+
+
+def _escape_soql_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _merge_link_and_note(link_row: dict[str, Any], note_row: dict[str, Any]) -> dict[str, Any]:
+    merged = {**link_row, **note_row}
+    link_id = link_row.get("Id")
+    if isinstance(link_id, str) and link_id:
+        merged["ContentDocumentLinkId"] = link_id
+    return merged

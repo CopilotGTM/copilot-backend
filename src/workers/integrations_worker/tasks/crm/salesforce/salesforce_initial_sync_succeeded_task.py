@@ -16,9 +16,7 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.service.integrations.webhooks.salesforce.metadata import (
-    ACCOUNT_CDC_CHANNEL,
-    CONTACT_CDC_CHANNEL,
-    OPPORTUNITY_CDC_CHANNEL,
+    SALESFORCE_CDC_OBJECTS,
 )
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.client import send_integrations_task_async
@@ -105,14 +103,10 @@ def mark_salesforce_initial_sync_succeeded_task(
 def _enabled_salesforce_cdc_channels(metadata: dict[str, Any]) -> list[str]:
     cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
     channels: list[str] = []
-    for object_key, default_channel in (
-        ("opportunity", OPPORTUNITY_CDC_CHANNEL),
-        ("account", ACCOUNT_CDC_CHANNEL),
-        ("contact", CONTACT_CDC_CHANNEL),
-    ):
+    for object_key, config in SALESFORCE_CDC_OBJECTS.items():
         object_metadata = dict(cdc_metadata.get(object_key) or {})
         if object_metadata.get("enabled") is True:
-            channels.append(str(object_metadata.get("channel") or default_channel))
+            channels.append(str(object_metadata.get("channel") or config["channel"]))
     return channels
 
 

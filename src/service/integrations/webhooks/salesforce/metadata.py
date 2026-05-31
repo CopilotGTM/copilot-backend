@@ -8,6 +8,9 @@ from src.domain.models.organisation_tables.sync import IntegrationType, Knowledg
 OPPORTUNITY_CDC_CHANNEL = "/data/OpportunityChangeEvent"
 ACCOUNT_CDC_CHANNEL = "/data/AccountChangeEvent"
 CONTACT_CDC_CHANNEL = "/data/ContactChangeEvent"
+TASK_CDC_CHANNEL = "/data/TaskChangeEvent"
+CONTENT_NOTE_CDC_CHANNEL = "/data/ContentNoteChangeEvent"
+CONTENT_DOCUMENT_LINK_CDC_CHANNEL = "/data/ContentDocumentLinkChangeEvent"
 _DEFAULT_PUBSUB_ENDPOINT = "api.pubsub.salesforce.com:443"
 
 SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
@@ -18,6 +21,17 @@ SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
     },
     "account": {"channel": ACCOUNT_CDC_CHANNEL, "object_name": "Account", "id_prefix": "001"},
     "contact": {"channel": CONTACT_CDC_CHANNEL, "object_name": "Contact", "id_prefix": "003"},
+    "task": {"channel": TASK_CDC_CHANNEL, "object_name": "Task", "id_prefix": "00T"},
+    "content_note": {
+        "channel": CONTENT_NOTE_CDC_CHANNEL,
+        "object_name": "ContentNote",
+        "id_prefix": "069",
+    },
+    "content_document_link": {
+        "channel": CONTENT_DOCUMENT_LINK_CDC_CHANNEL,
+        "object_name": "ContentDocumentLink",
+        "id_prefix": "06A",
+    },
 }
 
 

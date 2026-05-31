@@ -180,6 +180,303 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
     assert operations == ["clear", "release", "enqueue"]
 
 
+@pytest.mark.asyncio
+async def test_content_document_link_delete_soft_deletes_note_by_document_id_when_no_links_remain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    deleted: list[str] = []
+
+    class FakeNotesFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            pass
+
+        async def fetch_one_by_link_id(self, link_id: str, *, linked_entity_ids):
+            assert link_id == "06Axx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA"]
+            return []
+
+        async def fetch_link_by_id(self, link_id: str):
+            assert link_id == "06Axx0000000001AAA"
+            return {
+                "Id": link_id,
+                "ContentDocumentId": "069xx0000000001AAA",
+                "LinkedEntityId": "006xx0000000001AAA",
+            }
+
+    class FakeNoteService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def _load_linked_entity_ids(self, organisation_id, integration_id):  # noqa: ANN001
+            return ["006xx0000000001AAA"]
+
+    async def fake_soft_delete_note(**kwargs):
+        deleted.append(kwargs["external_id"])
+
+    async def fail_soft_delete_by_link_id(**_kwargs):
+        raise AssertionError("document ID delete path should be preferred")
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceNotesFetcher", FakeNotesFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceNoteRecordSyncService",
+        FakeNoteService,
+    )
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_soft_delete_note", fake_soft_delete_note)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "_soft_delete_note_by_content_document_link_id",
+        fail_soft_delete_by_link_id,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="06Axx0000000001AAA",
+        change_type="DELETE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/ContentDocumentLinkChangeEvent",
+    )
+
+    assert deleted == ["069xx0000000001AAA"]
+
+
+@pytest.mark.asyncio
+async def test_content_document_link_delete_ignores_out_of_scope_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+
+    class FakeNotesFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            pass
+
+        async def fetch_one_by_link_id(self, link_id: str, *, linked_entity_ids):
+            assert link_id == "06Axx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA"]
+            return []
+
+        async def fetch_link_by_id(self, link_id: str):
+            assert link_id == "06Axx0000000001AAA"
+            return {
+                "Id": link_id,
+                "ContentDocumentId": "069xx0000000001AAA",
+                "LinkedEntityId": "500xx0000000001AAA",
+            }
+
+    class FakeNoteService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def _load_linked_entity_ids(self, organisation_id, integration_id):  # noqa: ANN001
+            return ["006xx0000000001AAA"]
+
+    async def fail_delete(**_kwargs):
+        raise AssertionError("out-of-scope links must not delete local notes")
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceNotesFetcher", FakeNotesFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceNoteRecordSyncService",
+        FakeNoteService,
+    )
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_soft_delete_note", fail_delete)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "_soft_delete_note_by_content_document_link_id",
+        fail_delete,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="06Axx0000000001AAA",
+        change_type="DELETE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/ContentDocumentLinkChangeEvent",
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_document_link_create_fetch_miss_does_not_soft_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+
+    class FakeNotesFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            pass
+
+        async def fetch_one_by_link_id(self, link_id: str, *, linked_entity_ids):
+            assert link_id == "06Axx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA"]
+            return []
+
+        async def fetch_link_by_id(self, link_id: str):
+            raise AssertionError("create fetch misses should not run delete fallback")
+
+    class FakeNoteService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def _load_linked_entity_ids(self, organisation_id, integration_id):  # noqa: ANN001
+            return ["006xx0000000001AAA"]
+
+    async def fail_delete(**_kwargs):
+        raise AssertionError("create fetch misses must not delete local notes")
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceNotesFetcher", FakeNotesFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceNoteRecordSyncService",
+        FakeNoteService,
+    )
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_soft_delete_note", fail_delete)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "_soft_delete_note_by_content_document_link_id",
+        fail_delete,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="06Axx0000000001AAA",
+        change_type="CREATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/ContentDocumentLinkChangeEvent",
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_task_record_change_fetches_and_persists_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    calls: list[dict[str, object]] = []
+
+    class FakeTaskFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            calls.append({"fetcher_instance_url": instance_url, "token_info": token_info})
+
+        async def fetch_one(self, task_id: str):
+            calls.append({"fetch_one": task_id})
+            return {"Id": task_id, "Subject": "Follow up"}
+
+    class FakeTaskService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            calls.append({"load_context": (organisation_id, integration_id)})
+            return SimpleNamespace(token_info="token-info")
+
+        async def persist_single_task(self, **kwargs):
+            calls.append({"persist": kwargs})
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceTasksFetcher", FakeTaskFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceTaskRecordSyncService",
+        FakeTaskService,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="00Txx0000000001AAA",
+        change_type="UPDATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/TaskChangeEvent",
+    )
+
+    assert calls[-1]["persist"]["raw_task"]["Id"] == "00Txx0000000001AAA"
+
+
+@pytest.mark.asyncio
+async def test_process_content_note_record_change_fetches_and_persists_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    calls: list[dict[str, object]] = []
+
+    class FakeNotesFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            calls.append({"fetcher_instance_url": instance_url, "token_info": token_info})
+
+        async def fetch_one_by_note_id(self, note_id: str, *, linked_entity_ids):
+            calls.append({"fetch_one_by_note_id": note_id, "linked_entity_ids": linked_entity_ids})
+            return [{"Id": note_id, "LinkedEntityId": "006xx0000000001AAA"}]
+
+    class FakeNoteService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            calls.append({"load_context": (organisation_id, integration_id)})
+            return SimpleNamespace(token_info="token-info")
+
+        async def _load_linked_entity_ids(self, organisation_id, integration_id):  # noqa: ANN001
+            return ["006xx0000000001AAA"]
+
+        async def persist_single_note(self, **kwargs):
+            calls.append({"persist": kwargs})
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceNotesFetcher", FakeNotesFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceNoteRecordSyncService",
+        FakeNoteService,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="069xx0000000001AAA",
+        change_type="UPDATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/ContentNoteChangeEvent",
+    )
+
+    assert calls[-1]["persist"]["raw_notes"][0]["Id"] == "069xx0000000001AAA"
+
+
+@pytest.mark.asyncio
+async def test_replay_repair_routes_task_and_note_channels_to_matching_full_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    queued: list[dict[str, object]] = []
+
+    async def fake_send(*args, **kwargs):
+        queued.append({"task_name": args[0], **kwargs})
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "send_integrations_task_async", fake_send)
+
+    for channel in (
+        "/data/TaskChangeEvent",
+        "/data/ContentNoteChangeEvent",
+        "/data/ContentDocumentLinkChangeEvent",
+    ):
+        await salesforce_cdc_subscriber_task._enqueue_repair_sync(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            channel=channel,
+        )
+
+    assert [entry["task_name"] for entry in queued] == [
+        "integrations.sync_salesforce_tasks",
+        "integrations.sync_salesforce_notes",
+        "integrations.sync_salesforce_notes",
+    ]
+    assert [entry["kwargs"]["cdc_channel"] for entry in queued] == [
+        "/data/TaskChangeEvent",
+        "/data/ContentNoteChangeEvent",
+        "/data/ContentDocumentLinkChangeEvent",
+    ]
+
+
 class _BaseStateService:
     async def acquire_lease(self, **_kwargs):
         return SimpleNamespace(acquired=True, subscription=SimpleNamespace(last_replay_id=None))

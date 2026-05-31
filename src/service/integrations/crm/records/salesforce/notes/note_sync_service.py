@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -106,6 +107,23 @@ class SalesforceNoteRecordSyncService:
         )
         return result
 
+    async def persist_single_note(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_notes: list[dict[str, Any]],
+    ):
+        normalized, _skipped_malformed = normalize_notes(raw_notes)
+        scoped = [note for note in normalized if self._is_in_scope(note)]
+        return await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=scoped,
+            all_external_ids=[note.external_id for note in scoped],
+            deactivate_missing=False,
+        )
+
     def _is_in_scope(self, note) -> bool:
         return (
             note.deal_external_id is not None
@@ -199,6 +217,7 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
         normalized,
         all_external_ids,
+        deactivate_missing: bool = True,
     ):
         async for session in acquire_org_async_session(organisation_id):
             writer = SalesforceNoteWriter(
@@ -213,6 +232,7 @@ class SalesforceNoteRecordSyncService:
                 deal_map=await self._load_deal_map(session, organisation_id, integration_id),
                 contact_map=await self._load_contact_map(session, organisation_id, integration_id),
                 company_map=await self._load_company_map(session, organisation_id, integration_id),
+                deactivate_missing=deactivate_missing,
             )
             await session.commit()
             return write_result

@@ -72,6 +72,78 @@ async def test_fetcher_paginates_salesforce_tasks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_one_escapes_task_id_and_returns_first_record() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": [{"Id": "00Txx0000000001AAA", "Subject": "Follow up"}]},
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        row = await SalesforceTasksFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_one("00Txx0000000001AAA' OR Name LIKE '%")
+
+    assert row == {"Id": "00Txx0000000001AAA", "Subject": "Follow up"}
+    assert (
+        "WHERE Id = '00Txx0000000001AAA\\' OR Name LIKE \\'%' LIMIT 1"
+        in (client.get.call_args.kwargs["params"]["q"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_one_returns_none_when_task_is_missing() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": []},
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        row = await SalesforceTasksFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_one("00Txx0000000001AAA")
+
+    assert row is None
+
+
+@pytest.mark.asyncio
 async def test_fetcher_raises_when_salesforce_query_returns_non_list_records() -> None:
     response = httpx.Response(
         200,

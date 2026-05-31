@@ -84,6 +84,36 @@ def test_decode_salesforce_change_event_accepts_contact_ids() -> None:
     assert event.record_ids == ("003xx0000000001AAA",)
 
 
+@pytest.mark.parametrize(
+    ("object_name", "id_prefix", "record_id"),
+    [
+        ("Task", "00T", "00Txx0000000001AAA"),
+        ("ContentNote", "069", "069xx0000000001AAA"),
+        ("ContentDocumentLink", "06A", "06Axx0000000001AAA"),
+    ],
+)
+def test_decode_salesforce_change_event_accepts_task_and_note_ids(
+    object_name: str,
+    id_prefix: str,
+    record_id: str,
+) -> None:
+    event = decode_salesforce_change_event(
+        replay_id=b"\x00\x01",
+        schema_id="schema-1",
+        payload={
+            "ChangeEventHeader": {
+                "entityName": object_name,
+                "recordIds": [record_id],
+                "changeType": "UPDATE",
+            }
+        },
+        object_name=object_name,
+        id_prefix=id_prefix,
+    )
+
+    assert event.record_ids == (record_id,)
+
+
 def test_decode_salesforce_change_event_rejects_wrong_prefix() -> None:
     with pytest.raises(ValueError, match="invalid record ID"):
         decode_salesforce_change_event(
