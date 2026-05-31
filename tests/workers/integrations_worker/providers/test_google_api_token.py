@@ -12,13 +12,16 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.workers.integrations_worker.providers._google_api import (
     IntegrationTokenInfo,
     _request_with_rate_limit_retry,
+    calendar_api_post_json,
     call_with_token_retry,
     get_access_token,
+    gmail_api_post_json,
 )
 
 
 @pytest.fixture
 def valid_token_info():
+    """Return token info that should not require refresh."""
     return IntegrationTokenInfo(
         access_token="valid-access-token-123",
         refresh_token="refresh-token-456",
@@ -31,6 +34,7 @@ def valid_token_info():
 
 @pytest.fixture
 def expired_token_info():
+    """Return token info that should force the refresh path."""
     return IntegrationTokenInfo(
         access_token="expired-access-token",
         refresh_token="refresh-token-456",
@@ -103,6 +107,7 @@ async def test_call_with_token_retry_refreshes_on_401(valid_token_info):
     call_count = 0
 
     async def mock_fn(token: str):
+        """Fail once with 401, then prove the refreshed token path retries."""
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -160,6 +165,7 @@ async def test_rate_limit_retry_recovers_on_429():
     call_count = 0
 
     async def flaky_fn():
+        """Raise one 429 so the retry path can recover."""
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -182,6 +188,7 @@ async def test_rate_limit_retry_respects_retry_after_header():
     call_count = 0
 
     async def flaky_fn():
+        """Raise one Retry-After 429 so the sleep duration is observable."""
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -205,6 +212,7 @@ async def test_rate_limit_retry_exhausts_retries():
     """Raises after max retries are exhausted."""
 
     async def always_429():
+        """Keep returning 429 so retry exhaustion is deterministic."""
         raise _make_429_error()
 
     with (
@@ -229,6 +237,7 @@ async def test_rate_limit_retry_does_not_retry_non_429():
     error_500 = httpx.HTTPStatusError("500", request=response_500.request, response=response_500)
 
     async def server_error():
+        """Raise a non-rate-limit provider error."""
         raise error_500
 
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -243,6 +252,7 @@ async def test_rate_limit_retry_exponential_backoff():
     call_count = 0
 
     async def always_429():
+        """Raise 429 on every attempt so all backoff steps run."""
         nonlocal call_count
         call_count += 1
         raise _make_429_error()
@@ -250,6 +260,7 @@ async def test_rate_limit_retry_exponential_backoff():
     sleep_values: list[float] = []
 
     async def capture_sleep(duration):
+        """Record backoff durations without slowing the test."""
         sleep_values.append(duration)
 
     with (
@@ -270,3 +281,45 @@ async def test_rate_limit_retry_exponential_backoff():
     assert sleep_values[0] == 1.0
     assert sleep_values[1] == 2.0
     assert sleep_values[2] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_gmail_api_post_json_posts_to_gmail_base_url() -> None:
+    """Gmail watch POSTs must use the Gmail API host."""
+    seen_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Capture the outgoing Gmail URL from the mock transport."""
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, json={"historyId": "123"}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await gmail_api_post_json(
+            client,
+            "/gmail/v1/users/me/watch",
+            json_body={"topicName": "projects/proj/topics/gmail"},
+        )
+
+    assert result == {"historyId": "123"}
+    assert seen_urls == ["https://gmail.googleapis.com/gmail/v1/users/me/watch"]
+
+
+@pytest.mark.asyncio
+async def test_calendar_api_post_json_posts_to_calendar_base_url() -> None:
+    """Calendar watch POSTs must use the Calendar API host."""
+    seen_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Capture the outgoing Calendar URL from the mock transport."""
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, json={"resourceId": "resource-1"}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await calendar_api_post_json(
+            client,
+            "/calendar/v3/calendars/primary/events/watch",
+            json_body={"id": "channel-1"},
+        )
+
+    assert result == {"resourceId": "resource-1"}
+    assert seen_urls == ["https://www.googleapis.com/calendar/v3/calendars/primary/events/watch"]

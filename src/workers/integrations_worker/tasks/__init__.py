@@ -45,6 +45,10 @@ from .email import (
     sync_email_integration_task,
     sync_email_org_task,
 )
+from .google_subscription_tasks import (
+    ensure_google_subscription_task,
+    renew_google_subscriptions_all_task,
+)
 
 # Messaging channels sync tasks (three-tier architecture)
 from .messaging import (
@@ -88,6 +92,9 @@ __all__ = [
     "sync_email_all_orgs_task",
     "sync_email_org_task",
     "sync_email_integration_task",
+    # Google webhook subscription management
+    "ensure_google_subscription_task",
+    "renew_google_subscriptions_all_task",
     # Microsoft Graph webhook subscription management
     "ensure_microsoft_graph_subscription_task",
     "renew_microsoft_graph_subscriptions_all_task",

@@ -120,6 +120,12 @@ api:
     # Set these in your environment-specific pipeline/secret source.
     RECALL_API_KEY: ""
     RECALL_WEBHOOK_SECRET: ""
+    # Google webhook setup. The Pub/Sub push endpoint must include
+    # ?kind=gmail&token=<GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN>.
+    GOOGLE_WEBHOOK_BASE_URL: ""
+    GOOGLE_GMAIL_PUBSUB_TOPIC: ""
+    GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION: ""
+    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN: ""
 
 # Knowledge Workers Configuration
 knowledge-extract-worker:
@@ -389,6 +395,8 @@ integrationsCronJobs:
       schedule: "*/30 * * * *"
     - name: renew-microsoft-graph-subscriptions
       schedule: "0 */12 * * *"
+    - name: renew-google-subscriptions
+      schedule: "0 2 * * *"
     - name: sync-hubspot-core-incremental-all-orgs
       resourceName: sync-hubspot-core-incremental
       schedule: "*/10 * * * *"

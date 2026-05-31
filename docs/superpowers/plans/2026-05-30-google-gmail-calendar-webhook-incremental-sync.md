@@ -37,26 +37,23 @@ Keep existing sync tasks as the only writer path:
 
 ## Production Decisions
 
-1. Gmail and Calendar use separate subscription mechanics.
+1. Gmail and Calendar use separate subscription mechanics behind one backend endpoint.
    - Gmail does not call our webhook directly from Gmail. Gmail publishes to Cloud Pub/Sub; Pub/Sub push calls our webhook.
    - Calendar calls our webhook directly with `X-Goog-*` headers.
+   - Both route through `POST /users/integrations/google/webhook` with explicit `kind=gmail|calendar`.
 2. Webhook payloads never write emails or events.
    - They only wake the existing incremental sync task.
-3. Provider routing must be tenant-scoped.
-   - Every integration lookup filters by both `organisation_id` and `integration_id`.
-   - Gmail additionally validates decoded `emailAddress` against `KnowledgeIntegration.integration_email` if the field exists, otherwise against existing connection metadata email if present.
-4. Gmail Pub/Sub push authentication is mandatory.
-   - Configure the Pub/Sub push subscription with an OIDC token.
-   - Validate the `Authorization: Bearer ...` token before trusting query params, `message.data`, or decoded Gmail `emailAddress`.
-   - Enforce expected audience and expected Pub/Sub push service account email. Gmail `emailAddress` is an ownership check, not request authentication.
-   - If OIDC cannot be configured in an environment, use a stored signed secret per push subscription instead; do not deploy a public Gmail webhook that is protected only by route/query params.
-5. Calendar channel token is a verification and routing secret, not a bearer credential.
+3. Provider routing must be tenant-scoped after provider-specific resolution.
+   - Gmail Pub/Sub push calls a static endpoint, so Gmail first resolves active Gmail integrations by decoded `emailAddress` matched to `KnowledgeIntegration.integration_email`.
+   - Calendar channel callbacks include `organisation_id` and `integration_id` in the watch address because Calendar callback URLs are per subscription.
+   - Every sync enqueue still targets an org-owned active integration.
+4. Calendar channel token is a verification and routing secret, not a bearer credential.
    - Generate an opaque token or signed value and store it in metadata.
    - Do not put OAuth tokens or sensitive provider credentials in the Calendar channel token.
-6. Scheduled polling/backfill remains available.
+5. Scheduled polling/backfill remains available.
    - Gmail docs explicitly warn notifications can be delayed or dropped.
    - Calendar docs say notifications are not 100% reliable.
-7. The implementation mirrors the completed Microsoft structure.
+6. The implementation mirrors the completed Microsoft structure.
    - Thin FastAPI route.
    - Request service for HTTP parsing and guardrails.
    - Ingestion service for metadata validation, dedupe, debounce, and sync enqueue.
@@ -72,7 +69,6 @@ Create:
 - `src/service/integrations/webhooks/google/__init__.py`
 - `src/service/integrations/webhooks/google/metadata.py`
 - `src/service/integrations/webhooks/google/types.py`
-- `src/service/integrations/webhooks/google/pubsub_auth.py`
 - `src/service/integrations/webhooks/google/request_service.py`
 - `src/service/integrations/webhooks/google/ingestion_service.py`
 - `src/service/integrations/webhooks/google/subscription_service.py`
@@ -81,7 +77,6 @@ Create:
 - `tests/api/routers/integrations/test_google_webhook_routes.py`
 - `tests/service/integrations/webhooks/google/test_metadata.py`
 - `tests/service/integrations/webhooks/google/test_request_service.py`
-- `tests/service/integrations/webhooks/google/test_pubsub_auth.py`
 - `tests/service/integrations/webhooks/google/test_ingestion_service.py`
 - `tests/service/integrations/webhooks/google/test_subscription_service.py`
 - `tests/service/integrations/webhooks/google/test_subscription_task_service.py`
@@ -121,7 +116,7 @@ GOOGLE_WEBHOOK_SUBSCRIPTIONS_KEY = "google_webhook_subscriptions"
             "resource_id": "google-resource-id",
             "resource_uri": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
             "channel_token": "opaque-secret",
-            "address": "https://api.example.com/users/integrations/google/calendar/webhook?organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222",
+            "address": "https://api.example.com/users/integrations/google/webhook?kind=calendar&organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222",
             "expires_at": "2026-06-06T12:00:00+00:00",
             "created_at": "2026-05-30T12:00:00+00:00",
             "updated_at": "2026-05-30T12:00:00+00:00"
@@ -145,14 +140,13 @@ Google connect
 
 Gmail mailbox update
   -> Gmail publishes to Cloud Pub/Sub topic
-  -> Pub/Sub push calls /users/integrations/google/gmail/webhook
-  -> Google Pub/Sub OIDC token is validated
+  -> Pub/Sub push calls /users/integrations/google/webhook?kind=gmail
   -> GoogleWebhookRequestService.handle_gmail_pubsub
   -> GoogleWebhookIngestionService.ingest_gmail
   -> integrations.sync_email_integration
 
 Google Calendar event update
-  -> Calendar API calls /users/integrations/google/calendar/webhook
+  -> Calendar API calls /users/integrations/google/webhook?kind=calendar
   -> GoogleWebhookRequestService.handle_calendar_channel
   -> GoogleWebhookIngestionService.ingest_calendar
   -> integrations.sync_calendar_integration
@@ -214,7 +208,7 @@ def test_set_and_get_calendar_subscription_metadata_preserves_channel_fields() -
         resource_id="resource-1",
         resource_uri="https://www.googleapis.com/calendar/v3/calendars/primary/events",
         channel_token="secret-token",
-        address="https://api.example.test/users/integrations/google/calendar/webhook",
+        address="https://api.example.test/users/integrations/google/webhook?kind=calendar",
         expires_at=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
     )
 
@@ -599,11 +593,8 @@ git commit -m "feat: parse google webhook notifications"
 **Files:**
 - Create: `src/api/routers/integrations/google_webhook_routes.py`
 - Modify: `src/api/routers/integrations/__init__.py`
-- Create: `src/service/integrations/webhooks/google/ingestion_service.py` with a minimal import-safe result/service stub; Task 4 replaces the stub with real ingestion behavior.
-- Create: `src/service/integrations/webhooks/google/pubsub_auth.py`
 - Create: `src/service/integrations/webhooks/google/request_service.py`
 - Test: `tests/api/routers/integrations/test_google_webhook_routes.py`
-- Test: `tests/service/integrations/webhooks/google/test_pubsub_auth.py`
 - Test: `tests/service/integrations/webhooks/google/test_request_service.py`
 
 - [ ] **Step 1: Write failing route tests**
@@ -628,7 +619,7 @@ def test_gmail_webhook_delegates_to_request_service() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/users/integrations/google/gmail/webhook"
+        "/users/integrations/google/webhook"
         "?organisation_id=11111111-1111-1111-1111-111111111111"
         "&integration_id=22222222-2222-2222-2222-222222222222",
         json={"message": {"messageId": "1", "data": "e30="}},
@@ -645,7 +636,7 @@ def test_calendar_webhook_delegates_to_request_service() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/users/integrations/google/calendar/webhook"
+        "/users/integrations/google/webhook"
         "?organisation_id=11111111-1111-1111-1111-111111111111"
         "&integration_id=22222222-2222-2222-2222-222222222222",
         headers={
@@ -661,26 +652,15 @@ def test_calendar_webhook_delegates_to_request_service() -> None:
     service.handle_calendar_channel.assert_awaited_once()
 ```
 
-Extend `tests/service/integrations/webhooks/google/test_request_service.py` with
-Gmail auth guardrails:
-
-- `test_gmail_pubsub_requires_valid_oidc_before_ingestion`: pass a fake
-  `pubsub_auth_validator` whose `validate` returns `True`, a fake ingestion
-  service, and assert Gmail parsing reaches `ingest_gmail`.
-- `test_gmail_pubsub_rejects_invalid_oidc_before_payload_trust`: pass a fake
-  validator whose `validate` returns `False`, send an otherwise well-shaped
-  Pub/Sub body, assert `HTTPException.status_code == 401`, and assert the
-  ingestion service was not called.
-
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run:
 
 ```bash
-uv run pytest tests/api/routers/integrations/test_google_webhook_routes.py tests/service/integrations/webhooks/google/test_pubsub_auth.py -v
+uv run pytest tests/api/routers/integrations/test_google_webhook_routes.py -v
 ```
 
-Expected: FAIL with missing `google_webhook_routes` or `pubsub_auth`.
+Expected: FAIL with missing `google_webhook_routes`.
 
 - [ ] **Step 3: Implement thin route**
 
@@ -705,7 +685,7 @@ async def get_google_webhook_request_service() -> GoogleWebhookRequestService:
     return GoogleWebhookRequestService()
 
 
-@router.post("/gmail/webhook")
+@router.post("/webhook")
 async def handle_google_gmail_webhook(
     request: Request,
     organisation_id: UUID | None = Query(default=None),
@@ -720,7 +700,7 @@ async def handle_google_gmail_webhook(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/calendar/webhook")
+@router.post("/webhook")
 async def handle_google_calendar_webhook(
     request: Request,
     organisation_id: UUID | None = Query(default=None),
@@ -762,133 +742,12 @@ __all__ = [
 
 - [ ] **Step 4: Implement request service**
 
-Create a minimal `src/service/integrations/webhooks/google/ingestion_service.py` before
-`request_service.py` imports it. Task 4 expands this file with the real DB,
-Redis, dedupe, and enqueue behavior:
-
-```python
-from __future__ import annotations
-
-from dataclasses import dataclass
-from uuid import UUID
-
-from src.service.integrations.webhooks.google.types import (
-    GoogleCalendarChannelNotification,
-    GoogleGmailPubSubNotification,
-)
-
-
-@dataclass(slots=True, frozen=True)
-class GoogleWebhookIngestionResult:
-    valid_count: int
-    queued_count: int
-    duplicate_count: int
-    pending_count: int
-    invalid_count: int
-
-
-class GoogleWebhookIngestionService:
-    async def ingest_gmail(
-        self,
-        *,
-        organisation_id: UUID,
-        integration_id: UUID,
-        notification: GoogleGmailPubSubNotification,
-    ) -> GoogleWebhookIngestionResult:
-        raise NotImplementedError("Google Gmail webhook ingestion is implemented in Task 4")
-
-    async def ingest_calendar(
-        self,
-        *,
-        organisation_id: UUID,
-        integration_id: UUID,
-        notification: GoogleCalendarChannelNotification,
-    ) -> GoogleWebhookIngestionResult:
-        raise NotImplementedError("Google Calendar webhook ingestion is implemented in Task 4")
-```
-
-Create `tests/service/integrations/webhooks/google/test_pubsub_auth.py`:
-
-```python
-import pytest
-
-from src.service.integrations.webhooks.google.pubsub_auth import (
-    GooglePubSubPushAuthValidator,
-)
-
-
-@pytest.mark.asyncio
-async def test_pubsub_auth_rejects_missing_bearer_token() -> None:
-    validator = GooglePubSubPushAuthValidator(
-        audience="https://api.example.com/users/integrations/google/gmail/webhook",
-        expected_service_account_email="gmail-push@project.iam.gserviceaccount.com",
-    )
-
-    result = await validator.validate({})
-
-    assert result is False
-```
-
-Create `src/service/integrations/webhooks/google/pubsub_auth.py`:
-
-```python
-from __future__ import annotations
-
-import asyncio
-from collections.abc import Mapping
-from typing import Any, cast
-
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
-
-from src.infra.utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-
-class GooglePubSubPushAuthValidator:
-    def __init__(
-        self,
-        *,
-        audience: str,
-        expected_service_account_email: str,
-    ) -> None:
-        self._audience = audience
-        self._expected_service_account_email = expected_service_account_email
-
-    async def validate(self, headers: Mapping[str, str]) -> bool:
-        authorization = headers.get("Authorization") or headers.get("authorization") or ""
-        if not authorization.startswith("Bearer "):
-            return False
-        token = authorization.removeprefix("Bearer ").strip()
-        if not token or not self._audience or not self._expected_service_account_email:
-            return False
-
-        try:
-            payload = await asyncio.to_thread(self._verify_token, token)
-        except Exception:
-            logger.warning("Google Pub/Sub push token verification failed", exc_info=True)
-            return False
-
-        return payload.get("email") == self._expected_service_account_email
-
-    def _verify_token(self, token: str) -> dict[str, Any]:
-        request = google_requests.Request()
-        return dict(
-            cast(
-                "Mapping[str, Any]",
-                id_token.verify_oauth2_token(token, request, self._audience),
-            )
-        )
-```
-
 Create `src/service/integrations/webhooks/google/request_service.py`:
 
 ```python
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 from uuid import UUID
 
@@ -898,7 +757,6 @@ from src.service.integrations.webhooks.google.ingestion_service import (
     GoogleWebhookIngestionResult,
     GoogleWebhookIngestionService,
 )
-from src.service.integrations.webhooks.google.pubsub_auth import GooglePubSubPushAuthValidator
 from src.service.integrations.webhooks.google.types import (
     GoogleCalendarChannelNotification,
     GoogleGmailPubSubNotification,
@@ -908,19 +766,8 @@ GOOGLE_WEBHOOK_MAX_BODY_BYTES = 256 * 1024
 
 
 class GoogleWebhookRequestService:
-    def __init__(
-        self,
-        ingestion_service: GoogleWebhookIngestionService | None = None,
-        pubsub_auth_validator: GooglePubSubPushAuthValidator | None = None,
-    ) -> None:
+    def __init__(self, ingestion_service: GoogleWebhookIngestionService | None = None) -> None:
         self._ingestion_service = ingestion_service or GoogleWebhookIngestionService()
-        self._pubsub_auth_validator = pubsub_auth_validator or GooglePubSubPushAuthValidator(
-            audience=os.environ.get("GOOGLE_PUBSUB_PUSH_AUDIENCE", ""),
-            expected_service_account_email=os.environ.get(
-                "GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL",
-                "",
-            ),
-        )
 
     async def handle_gmail_pubsub(
         self,
@@ -929,7 +776,6 @@ class GoogleWebhookRequestService:
         organisation_id: UUID | None,
         integration_id: UUID | None,
     ) -> GoogleWebhookIngestionResult:
-        await self._validate_pubsub_push_auth(request)
         org_id, int_id = self._require_routing_params(
             organisation_id=organisation_id,
             integration_id=integration_id,
@@ -968,14 +814,6 @@ class GoogleWebhookRequestService:
             organisation_id=org_id,
             integration_id=int_id,
             notification=notification,
-        )
-
-    async def _validate_pubsub_push_auth(self, request: Request) -> None:
-        if await self._pubsub_auth_validator.validate(request.headers):
-            return
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Gmail Pub/Sub push authentication",
         )
 
     async def _read_body(self, request: Request) -> bytes:
@@ -1027,7 +865,7 @@ class GoogleWebhookRequestService:
 Run:
 
 ```bash
-uv run pytest tests/api/routers/integrations/test_google_webhook_routes.py tests/service/integrations/webhooks/google/test_pubsub_auth.py tests/service/integrations/webhooks/google/test_request_service.py -v
+uv run pytest tests/api/routers/integrations/test_google_webhook_routes.py tests/service/integrations/webhooks/google/test_request_service.py -v
 ```
 
 Expected: PASS.
@@ -1035,14 +873,14 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/api/routers/integrations src/service/integrations/webhooks/google/ingestion_service.py src/service/integrations/webhooks/google/pubsub_auth.py src/service/integrations/webhooks/google/request_service.py tests/api/routers/integrations/test_google_webhook_routes.py tests/service/integrations/webhooks/google/test_pubsub_auth.py tests/service/integrations/webhooks/google/test_request_service.py
+git add src/api/routers/integrations src/service/integrations/webhooks/google/request_service.py tests/api/routers/integrations/test_google_webhook_routes.py tests/service/integrations/webhooks/google/test_request_service.py
 git commit -m "feat: add google webhook routes"
 ```
 
 ## Task 4: Add Google Webhook Ingestion Service
 
 **Files:**
-- Modify: `src/service/integrations/webhooks/google/ingestion_service.py`
+- Create: `src/service/integrations/webhooks/google/ingestion_service.py`
 - Test: `tests/service/integrations/webhooks/google/test_ingestion_service.py`
 
 - [ ] **Step 1: Write failing ingestion tests**
@@ -1064,11 +902,11 @@ Run:
 uv run pytest tests/service/integrations/webhooks/google/test_ingestion_service.py -v
 ```
 
-Expected: FAIL because the Task 3 stub raises `NotImplementedError`.
+Expected: FAIL with missing `GoogleWebhookIngestionService`.
 
 - [ ] **Step 3: Implement ingestion service**
 
-Replace the Task 3 import-safe stub in `src/service/integrations/webhooks/google/ingestion_service.py`:
+Create `src/service/integrations/webhooks/google/ingestion_service.py`:
 
 ```python
 from __future__ import annotations
@@ -1413,7 +1251,7 @@ Create `tests/service/integrations/webhooks/google/test_subscription_service.py`
 - `test_gmail_subscription_uses_users_watch_and_stores_expiration`: monkeypatch `GOOGLE_GMAIL_PUBSUB_TOPIC`, `get_access_token`, and `gmail_api_post_json`; assert the returned metadata contains `watch_history_id` and an UTC `expires_at`.
 - `test_calendar_subscription_uses_events_watch_and_stores_resource_id`: monkeypatch `GOOGLE_WEBHOOK_BASE_URL`, `get_access_token`, and `calendar_api_post_json`; assert returned metadata contains `channel_id`, `resource_id`, `resource_uri`, `channel_token`, and callback `address`.
 - `test_existing_unexpired_subscription_is_reused`: seed metadata with `expires_at` more than two days in the future and assert neither Google API helper is called.
-- `test_calendar_payload_uses_public_base_url_and_routing_params`: assert the payload address contains `/users/integrations/google/calendar/webhook`, `organisation_id=11111111-1111-1111-1111-111111111111`, and `integration_id=22222222-2222-2222-2222-222222222222`.
+- `test_calendar_payload_uses_public_base_url_and_routing_params`: assert the payload address contains `/users/integrations/google/webhook`, `kind=calendar`, `organisation_id=11111111-1111-1111-1111-111111111111`, and `integration_id=22222222-2222-2222-2222-222222222222`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1588,7 +1426,7 @@ class GoogleSubscriptionService:
                 "integration_id": str(integration_id),
             }
         )
-        return f"{raw_base_url.rstrip('/')}/users/integrations/google/calendar/webhook?{query}"
+        return f"{raw_base_url.rstrip('/')}/users/integrations/google/webhook?{query}"
 
     def _validate_kind(
         self,
@@ -1889,7 +1727,6 @@ Create `tests/workers/integrations_worker/test_google_subscription_tasks.py` cov
 
 - `test_ensure_google_subscription_task_returns_success`: monkeypatch `GoogleSubscriptionTaskService.ensure_subscription` to return `{"status": "success"}` and assert task output preserves that status.
 - `test_renew_google_subscriptions_all_dispatches_priority_ensure`: monkeypatch `GoogleSubscriptionTaskService.dispatch_all_subscription_ensures`, call the dispatcher callback with one org/integration id pair, and assert `ensure_google_subscription_task.apply_async` uses `queue="integrations_priority"`.
-- `test_google_subscription_renewal_is_registered_as_scheduled_job`: import `get_scheduled_job("renew-google-subscriptions")` and assert it returns a `ScheduledJob` with `task_name == "integrations.renew_google_subscriptions_all"` and a nonzero `max_lag_seconds`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2076,17 +1913,14 @@ Add to task routes:
 Modify `src/workers/integrations_worker/scheduled_jobs.py` to schedule daily renewal:
 
 ```python
-"renew-google-subscriptions": ScheduledJob(
-    name="renew-google-subscriptions",
-    task_name="integrations.renew_google_subscriptions_all",
-    schedule="0 2 * * *",
-    max_lag_seconds=60 * 60 * 30,
-),
+{
+    "name": "renew-google-subscriptions",
+    "task_name": "integrations.renew_google_subscriptions_all",
+    "schedule": "0 2 * * *",
+}
 ```
 
-Use the existing `ScheduledJob(...)` shape in that file. `cron_dispatch` reads
-attributes such as `job.task_name`, `job.queue`, and `job.kwargs`, so do not add
-this as a raw dict.
+Use the existing schedule shape in that file.
 
 - [ ] **Step 7: Run tests**
 
@@ -2241,19 +2075,18 @@ verification, the backend schedules the existing incremental sync task.
 Gmail publishes mailbox updates to Cloud Pub/Sub. Pub/Sub push calls:
 
 ```text
-/users/integrations/google/gmail/webhook?organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222
+/users/integrations/google/webhook?kind=gmail
 ```
 
-The handler first validates the Pub/Sub push OIDC bearer token, then decodes
-`message.data`, validates the org-scoped integration, dedupes `messageId`, and
-enqueues `integrations.sync_email_integration`.
+The handler decodes `message.data`, validates the org-scoped integration, dedupes
+`messageId`, and enqueues `integrations.sync_email_integration`.
 
 ## Google Calendar
 
 Calendar event channels call:
 
 ```text
-/users/integrations/google/calendar/webhook?organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222
+/users/integrations/google/webhook?kind=calendar&organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222
 ```
 
 The handler verifies `X-Goog-Channel-ID`, `X-Goog-Resource-ID`, and
@@ -2336,34 +2169,19 @@ Required runtime env:
 ```bash
 GOOGLE_WEBHOOK_BASE_URL=https://<public-api-host>
 GOOGLE_GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/<topic-name>
-GOOGLE_PUBSUB_PUSH_AUDIENCE=https://<public-api-host>/users/integrations/google/gmail/webhook
-GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL=<pubsub-push-service-account>@<project-id>.iam.gserviceaccount.com
 ```
 
 Required Google Cloud setup:
 
 - Create a Pub/Sub topic for Gmail notifications.
 - Grant `gmail-api-push@system.gserviceaccount.com` publish permission on that topic.
-- Create a dedicated service account for Pub/Sub push authentication, grant it
-  only the permissions required by Pub/Sub to mint push OIDC tokens, and set it
-  as the push subscription's OIDC service account.
 - Create a Pub/Sub push subscription pointing to:
 
 ```text
-https://<public-api-host>/users/integrations/google/gmail/webhook?organisation_id=11111111-1111-1111-1111-111111111111&integration_id=22222222-2222-2222-2222-222222222222
+https://<public-api-host>/users/integrations/google/webhook?kind=gmail
 ```
 
-The push subscription must send an OIDC token whose audience matches
-`GOOGLE_PUBSUB_PUSH_AUDIENCE`. The API must reject missing or invalid bearer
-tokens before decoding `message.data` or using `organisation_id`,
-`integration_id`, or Gmail `emailAddress`.
-
-Important: one static Pub/Sub push subscription cannot include per-user `organisation_id` and `integration_id` if all Gmail watches publish to the same topic. Therefore v1 must choose one of these two production-safe options before implementation:
-
-1. **Recommended v1:** one Pub/Sub push subscription per Gmail integration, each with the routing query params in the push endpoint.
-2. Shared topic/subscription plus server-side lookup by decoded `emailAddress`, with strict uniqueness checks per active organisation integration.
-
-Use option 1 unless Google Cloud Pub/Sub subscription count/cost limits make it unacceptable for our expected tenant volume. If using option 2, update Task 3 and Task 4 to make Gmail `organisation_id` and `integration_id` optional on the route and resolve the integration by decoded `emailAddress` plus active Gmail integration ownership.
+Important: one static Pub/Sub push subscription cannot include per-user `organisation_id` and `integration_id` if all Gmail watches publish to the same topic. The implemented v1 uses a shared Gmail Pub/Sub push endpoint and server-side lookup by decoded `emailAddress`, matched against active Gmail integrations' `integration_email`.
 
 ## Rollout Checks
 
@@ -2396,3 +2214,4 @@ Type consistency:
 - `GoogleSubscriptionKind.GMAIL` maps to `IntegrationType.GMAIL`.
 - `GoogleSubscriptionKind.CALENDAR` maps to `IntegrationType.GOOGLE_CALENDAR`.
 - Both sync enqueue paths pass `organisation_id` and `integration_id` to existing Tier 3 sync tasks.
+
