@@ -31,6 +31,7 @@ def test_salesforce_initial_sync_success_enqueues_all_enabled_cdc_subscribers(
                 "opportunity": {"enabled": True, "channel": "/data/OpportunityChangeEvent"},
                 "account": {"enabled": True, "channel": "/data/AccountChangeEvent"},
                 "contact": {"enabled": True, "channel": "/data/ContactChangeEvent"},
+                "user": {"enabled": True, "channel": "/data/UserChangeEvent"},
                 "task": {"enabled": True, "channel": "/data/TaskChangeEvent"},
                 "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
                 "content_document_link": {
@@ -81,6 +82,7 @@ def test_salesforce_initial_sync_success_enqueues_all_enabled_cdc_subscribers(
         "/data/OpportunityChangeEvent",
         "/data/AccountChangeEvent",
         "/data/ContactChangeEvent",
+        "/data/UserChangeEvent",
         "/data/TaskChangeEvent",
         "/data/ContentNoteChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",

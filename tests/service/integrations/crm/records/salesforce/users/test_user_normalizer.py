@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from src.service.integrations.crm.records.salesforce.users import user_normalizer
 from src.service.integrations.crm.records.salesforce.users.user_normalizer import (
     normalize_email,
     normalize_users,
@@ -54,3 +55,26 @@ def test_resolve_matches_reuses_public_user_id_when_email_matches() -> None:
 
     assert results[0].matched_app_user_id == app_user_id
     assert normalize_email(" Owner@Acme.com ") == "owner@acme.com"
+
+
+def test_build_owner_backfill_mapping_uses_crm_user_as_canonical_owner() -> None:
+    normalized, _ = normalize_users(
+        [
+            {
+                "Id": "005A",
+                "Email": "owner@acme.com",
+                "Name": "Alex Morgan",
+                "IsActive": True,
+            }
+        ]
+    )
+    crm_user_id = uuid4()
+
+    assert hasattr(user_normalizer, "build_owner_backfill_mapping")
+    owner_mapping, fk_only_mapping = user_normalizer.build_owner_backfill_mapping(
+        users=normalized,
+        user_pk_map={"005A": crm_user_id},
+    )
+
+    assert owner_mapping == {"005A": (crm_user_id, "Alex Morgan", None, "owner@acme.com")}
+    assert fk_only_mapping == {"005A": (crm_user_id, None, None, None)}

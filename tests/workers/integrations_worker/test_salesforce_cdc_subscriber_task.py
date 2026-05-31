@@ -396,6 +396,78 @@ async def test_process_task_record_change_fetches_and_persists_task(
 
 
 @pytest.mark.asyncio
+async def test_process_user_record_change_fetches_and_persists_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    calls: list[dict[str, object]] = []
+
+    class FakeUserFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            calls.append({"fetcher_instance_url": instance_url, "token_info": token_info})
+
+        async def fetch_one(self, user_id: str):
+            calls.append({"fetch_one": user_id})
+            return {"Id": user_id, "Name": "Alex Morgan", "IsActive": True}
+
+    class FakeUserService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            calls.append({"load_context": (organisation_id, integration_id)})
+            return SimpleNamespace(token_info="token-info")
+
+        async def persist_single_user(self, **kwargs):
+            calls.append({"persist": kwargs})
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceUsersFetcher", FakeUserFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceUserRecordSyncService",
+        FakeUserService,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="005xx0000000001AAA",
+        change_type="UPDATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/UserChangeEvent",
+    )
+
+    assert calls[-1]["persist"]["raw_user"]["Id"] == "005xx0000000001AAA"
+
+
+@pytest.mark.asyncio
+async def test_process_user_delete_deactivates_crm_user_without_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    deactivated: list[str] = []
+
+    async def fake_deactivate_user(**kwargs):
+        deactivated.append(kwargs["external_id"])
+
+    def fail_fetcher(*_args, **_kwargs):
+        raise AssertionError("delete should not fetch User")
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_deactivate_user", fake_deactivate_user)
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceUsersFetcher", fail_fetcher)
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="005xx0000000001AAA",
+        change_type="DELETE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/UserChangeEvent",
+    )
+
+    assert deactivated == ["005xx0000000001AAA"]
+
+
+@pytest.mark.asyncio
 async def test_process_content_note_record_change_fetches_and_persists_note(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -475,6 +547,29 @@ async def test_replay_repair_routes_task_and_note_channels_to_matching_full_sync
         "/data/ContentNoteChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ]
+
+
+@pytest.mark.asyncio
+async def test_replay_repair_routes_user_channel_to_user_full_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    queued: list[dict[str, object]] = []
+
+    async def fake_send(*args, **kwargs):
+        queued.append({"task_name": args[0], **kwargs})
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "send_integrations_task_async", fake_send)
+
+    await salesforce_cdc_subscriber_task._enqueue_repair_sync(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/UserChangeEvent",
+    )
+
+    assert queued[0]["task_name"] == "integrations.sync_salesforce_users"
+    assert queued[0]["kwargs"]["cdc_channel"] == "/data/UserChangeEvent"
 
 
 class _BaseStateService:

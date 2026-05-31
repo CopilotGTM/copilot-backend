@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActiv
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import (
     acquire_org_async_session,
@@ -35,6 +36,9 @@ from src.service.integrations.crm.records.salesforce.notes.note_sync_service imp
 from src.service.integrations.crm.records.salesforce.tasks.task_sync_service import (
     SalesforceTaskRecordSyncService,
 )
+from src.service.integrations.crm.records.salesforce.users.user_sync_service import (
+    SalesforceUserRecordSyncService,
+)
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     get_access_token,
@@ -48,6 +52,7 @@ from src.service.integrations.webhooks.salesforce.metadata import (
     CONTENT_NOTE_CDC_CHANNEL,
     OPPORTUNITY_CDC_CHANNEL,
     TASK_CDC_CHANNEL,
+    USER_CDC_CHANNEL,
     SalesforceCdcMetadataError,
     get_salesforce_cdc_metadata_for_channel,
     get_salesforce_opportunity_cdc_metadata,
@@ -79,6 +84,9 @@ from src.workers.integrations_worker.providers.crm.salesforce.single_opportunity
 from src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher import (
     SalesforceTasksFetcher,
 )
+from src.workers.integrations_worker.providers.crm.salesforce.users_fetcher import (
+    SalesforceUsersFetcher,
+)
 
 _TASK_NAME = "integrations.run_salesforce_cdc_subscriber"
 _L = TASK_LIMITS[_TASK_NAME]
@@ -90,6 +98,7 @@ _REPAIR_TASK_BY_CHANNEL = {
     OPPORTUNITY_CDC_CHANNEL: "integrations.sync_salesforce_deals",
     ACCOUNT_CDC_CHANNEL: "integrations.sync_salesforce_companies",
     CONTACT_CDC_CHANNEL: "integrations.sync_salesforce_contacts",
+    USER_CDC_CHANNEL: "integrations.sync_salesforce_users",
     TASK_CDC_CHANNEL: "integrations.sync_salesforce_tasks",
     CONTENT_NOTE_CDC_CHANNEL: "integrations.sync_salesforce_notes",
     CONTENT_DOCUMENT_LINK_CDC_CHANNEL: "integrations.sync_salesforce_notes",
@@ -403,6 +412,15 @@ async def _process_record_change(
             instance_url=instance_url,
         )
         return
+    if channel == USER_CDC_CHANNEL:
+        await _process_user_record_change(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            record_id=record_id,
+            change_type=change_type,
+            instance_url=instance_url,
+        )
+        return
     if channel == TASK_CDC_CHANNEL:
         await _process_task_record_change(
             organisation_id=organisation_id,
@@ -576,6 +594,42 @@ async def _process_task_record_change(
         organisation_id=organisation_id,
         integration_id=integration_id,
         raw_task=record,
+    )
+
+
+async def _process_user_record_change(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    record_id: str,
+    change_type: str,
+    instance_url: str,
+) -> None:
+    if change_type.upper() in _DELETE_CHANGE_TYPES:
+        await _deactivate_user(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+
+    service = SalesforceUserRecordSyncService()
+    context = await service._load_context(organisation_id, integration_id)
+    record = await SalesforceUsersFetcher(
+        token_info=context.token_info,
+        instance_url=instance_url,
+    ).fetch_one(record_id)
+    if record is None:
+        await _deactivate_user(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+    await service.persist_single_user(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        raw_user=record,
     )
 
 
@@ -759,6 +813,29 @@ async def _soft_delete_task(
         activity.is_deleted = True
         activity.last_seen_at = datetime.now(UTC)
         session.add(activity)
+        await session.commit()
+        return
+
+
+async def _deactivate_user(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    external_id: str,
+) -> None:
+    async for session in acquire_org_async_session(organisation_id):
+        stmt = select(CRMUser).where(
+            col(CRMUser.organisation_id) == organisation_id,
+            col(CRMUser.integration_id) == integration_id,
+            col(CRMUser.external_id) == external_id,
+            col(CRMUser.is_deleted) == False,  # noqa: E712
+        )
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if user is None:
+            return
+        user.is_active = False
+        user.last_seen_at = datetime.now(UTC)
+        session.add(user)
         await session.commit()
         return
 

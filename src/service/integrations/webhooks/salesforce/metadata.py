@@ -8,6 +8,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType, Knowledg
 OPPORTUNITY_CDC_CHANNEL = "/data/OpportunityChangeEvent"
 ACCOUNT_CDC_CHANNEL = "/data/AccountChangeEvent"
 CONTACT_CDC_CHANNEL = "/data/ContactChangeEvent"
+USER_CDC_CHANNEL = "/data/UserChangeEvent"
 TASK_CDC_CHANNEL = "/data/TaskChangeEvent"
 CONTENT_NOTE_CDC_CHANNEL = "/data/ContentNoteChangeEvent"
 CONTENT_DOCUMENT_LINK_CDC_CHANNEL = "/data/ContentDocumentLinkChangeEvent"
@@ -21,6 +22,7 @@ SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
     },
     "account": {"channel": ACCOUNT_CDC_CHANNEL, "object_name": "Account", "id_prefix": "001"},
     "contact": {"channel": CONTACT_CDC_CHANNEL, "object_name": "Contact", "id_prefix": "003"},
+    "user": {"channel": USER_CDC_CHANNEL, "object_name": "User", "id_prefix": "005"},
     "task": {"channel": TASK_CDC_CHANNEL, "object_name": "Task", "id_prefix": "00T"},
     "content_note": {
         "channel": CONTENT_NOTE_CDC_CHANNEL,

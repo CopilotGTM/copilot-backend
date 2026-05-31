@@ -84,6 +84,24 @@ def test_decode_salesforce_change_event_accepts_contact_ids() -> None:
     assert event.record_ids == ("003xx0000000001AAA",)
 
 
+def test_decode_salesforce_change_event_accepts_user_ids() -> None:
+    event = decode_salesforce_change_event(
+        replay_id=b"\x00\x01",
+        schema_id="schema-1",
+        payload={
+            "ChangeEventHeader": {
+                "entityName": "User",
+                "recordIds": ["005xx0000000001AAA"],
+                "changeType": "UPDATE",
+            }
+        },
+        object_name="User",
+        id_prefix="005",
+    )
+
+    assert event.record_ids == ("005xx0000000001AAA",)
+
+
 @pytest.mark.parametrize(
     ("object_name", "id_prefix", "record_id"),
     [

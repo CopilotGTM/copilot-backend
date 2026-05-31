@@ -50,6 +50,7 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
                 "opportunity": {"enabled": True, "channel": "/data/OpportunityChangeEvent"},
                 "account": {"enabled": True, "channel": "/data/AccountChangeEvent"},
                 "contact": {"enabled": True, "channel": "/data/ContactChangeEvent"},
+                "user": {"enabled": True, "channel": "/data/UserChangeEvent"},
                 "task": {"enabled": True, "channel": "/data/TaskChangeEvent"},
                 "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
                 "content_document_link": {
@@ -66,6 +67,7 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
         "opportunity",
         "account",
         "contact",
+        "user",
         "task",
         "content_note",
         "content_document_link",
@@ -74,6 +76,7 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
         "/data/OpportunityChangeEvent",
         "/data/AccountChangeEvent",
         "/data/ContactChangeEvent",
+        "/data/UserChangeEvent",
         "/data/TaskChangeEvent",
         "/data/ContentNoteChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
@@ -127,6 +130,33 @@ def test_salesforce_cdc_metadata_resolves_task_and_note_channels() -> None:
         "content_document_link",
         "ContentDocumentLink",
         "06A",
+    )
+
+
+def test_salesforce_cdc_metadata_resolves_user_channel() -> None:
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_type=IntegrationType.SALESFORCE,
+        name="Salesforce",
+        credentials={"instance_url": "https://acme.my.salesforce.com"},
+        connection_metadata={
+            "salesforce_organization_id": "00Dxx0000000001",
+            "salesforce_cdc": {
+                "user": {"enabled": True, "channel": "/data/UserChangeEvent"},
+            },
+        },
+    )
+
+    metadata = get_salesforce_cdc_metadata_for_channel(
+        integration,
+        channel="/data/UserChangeEvent",
+    )
+
+    assert (metadata.object_key, metadata.object_name, metadata.id_prefix) == (
+        "user",
+        "User",
+        "005",
     )
 
 

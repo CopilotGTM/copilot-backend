@@ -120,3 +120,118 @@ async def test_fetcher_raises_when_salesforce_query_returns_non_list_records() -
         )
         with pytest.raises(ValueError, match="non-list records"):
             await fetcher.fetch_all()
+
+
+@pytest.mark.asyncio
+async def test_fetch_all_rejects_absolute_next_records_url_outside_instance() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={
+            "records": [
+                {
+                    "Id": "005A",
+                    "Email": "owner@acme.com",
+                    "Name": "Active Owner",
+                    "IsActive": True,
+                }
+            ],
+            "nextRecordsUrl": "https://attacker.example/services/data/v61.0/query/01gNEXT",
+        },
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        fetcher = SalesforceUsersFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        )
+        with pytest.raises(ValueError, match="unsupported nextRecordsUrl"):
+            await fetcher.fetch_all()
+
+
+@pytest.mark.asyncio
+async def test_fetch_one_escapes_salesforce_user_id_and_returns_single_record() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": [{"Id": "005xx0000000001AAA", "Name": "Active Owner"}]},
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        row = await SalesforceUsersFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_one("005xx0000000001AAA' OR Name LIKE '%")
+
+    assert row == {"Id": "005xx0000000001AAA", "Name": "Active Owner"}
+    soql = client.get.call_args.kwargs["params"]["q"]
+    assert "WHERE Id = '005xx0000000001AAA\\' OR Name LIKE \\'%'" in soql
+    assert soql.endswith(" LIMIT 1")
+
+
+@pytest.mark.asyncio
+async def test_fetch_one_returns_none_when_salesforce_returns_no_user() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": []},
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.users_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        row = await SalesforceUsersFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_one("005xx0000000001AAA")
+
+    assert row is None
