@@ -35,6 +35,9 @@ Architecture:
     Timeline Backfill → Task 4 (timeline sync)
 """
 
+from src.workers.deal_worker.tasks.deal_mappers.calendar_contact_account_discovery_tasks import (
+    discover_calendar_contacts_accounts_task,
+)
 from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
     match_calendar_to_deals_all_orgs_task,
     match_calendar_to_deals_org_task,
@@ -60,6 +63,7 @@ __all__ = [
     "sync_deal_stakeholders_task",
     "sync_all_deals_stakeholders_org_task",
     # Task 2: Calendar Matching
+    "discover_calendar_contacts_accounts_task",
     "match_calendar_to_deals_all_orgs_task",
     "match_calendar_to_deals_org_task",
     "match_calendar_to_deals_task",

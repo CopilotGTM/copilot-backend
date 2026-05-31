@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from celery import chain
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.orchestration.hubspot_initial_sync_chain import (
@@ -23,7 +24,10 @@ from src.service.integrations.crm.orchestration.hubspot_initial_sync_chain impor
 from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain import (
     build_salesforce_initial_sync_chain,
 )
-from src.workers.integrations_worker.client import send_integrations_task
+from src.workers.integrations_worker.client import (
+    get_integrations_celery_client,
+    send_integrations_task,
+)
 
 logger = get_logger(__name__)
 
@@ -219,10 +223,22 @@ class InitialSyncService:
 
     def _trigger_calendar_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger calendar initial sync."""
-        send_integrations_task(
-            task_name="integrations.sync_calendar_integration",
+        client = get_integrations_celery_client()
+        sync_signature = client.signature(
+            "integrations.sync_calendar_integration",
             kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+            immutable=True,
         )
+        discovery_signature = client.signature(
+            "deal.discover_calendar_contacts_accounts",
+            kwargs={
+                "organisation_id": org_id_str,
+                "source_integration_id": int_id_str,
+            },
+            queue="deal",
+            routing_key="deal",
+        )
+        chain(sync_signature, discovery_signature).apply_async()
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
 
     def _trigger_email_sync(self, org_id_str: str, int_id_str: str) -> None:
