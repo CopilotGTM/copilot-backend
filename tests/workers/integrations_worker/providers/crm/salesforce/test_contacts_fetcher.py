@@ -99,6 +99,48 @@ async def test_fetcher_describes_selectable_contact_fields_and_paginates() -> No
 
 
 @pytest.mark.asyncio
+async def test_fetcher_fetch_one_returns_none_for_empty_result() -> None:
+    responses = [
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET",
+                "https://acme.my.salesforce.com/services/data/v61.0/sobjects/Contact/describe",
+            ),
+            json={"fields": [{"name": "Id", "type": "id"}, {"name": "Email", "type": "email"}]},
+        ),
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET", "https://acme.my.salesforce.com/services/data/v61.0/query"
+            ),
+            json={"records": []},
+        ),
+    ]
+    client = _mock_client_with_responses(responses)
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        record = await SalesforceContactsFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_one("003xx0000000001AAA")
+
+    assert record is None
+    query_soql = client.get.call_args_list[1].kwargs["params"]["q"]
+    assert "WHERE Id = '003xx0000000001AAA'" in query_soql
+    assert "LIMIT 1" in query_soql
+
+
+@pytest.mark.asyncio
 async def test_fetcher_raises_when_salesforce_contact_describe_returns_non_list_fields() -> None:
     response = httpx.Response(
         200,

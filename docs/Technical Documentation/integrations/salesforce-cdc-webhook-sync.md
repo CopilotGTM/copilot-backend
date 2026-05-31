@@ -1,34 +1,45 @@
-# Salesforce Opportunity CDC Sync
+# Salesforce Account, Contact, and Opportunity CDC Sync
 
-Salesforce does not use a HubSpot-style public HTTP webhook for the first realtime
-Opportunity sync slice. The backend runs a bounded integrations-worker subscriber
-against Salesforce Pub/Sub API topic `/data/OpportunityChangeEvent`, decodes Avro
-payloads, fetches the changed Opportunity snapshot, and reuses the existing
-Salesforce deal persistence path.
+Salesforce does not use a HubSpot-style public HTTP webhook for realtime CRM sync.
+The backend runs bounded integrations-worker subscribers against Salesforce Pub/Sub
+API single-entity topics:
+
+- `/data/OpportunityChangeEvent`
+- `/data/AccountChangeEvent`
+- `/data/ContactChangeEvent`
+
+Each event is decoded from Avro, fanned out across every
+`ChangeEventHeader.recordIds` entry, refreshed from Salesforce REST, and persisted
+through the same normalizers and writers used by full Salesforce sync.
 
 ## Scope
 
-This v1 is intentionally Opportunity-only.
+This v1 covers standard Opportunity, Account, and Contact CDC channels.
 
-- In scope: `OpportunityChangeEvent`, replay cursor storage, subscriber leasing,
-  keepalive replay advancement, full Opportunity fetch, deal upsert, and idempotent
-  local soft-delete for Salesforce delete events.
-- Out of scope: Accounts, Contacts, OpportunityContactRole fanout, durable local
-  event handoff, event fingerprints, separate dispatchers, and separate refresh
-  tasks.
+- In scope: per-object replay cursor storage, subscriber leasing, keepalive replay
+  advancement, single-record fetch, record upsert, Account deactivation, and
+  Opportunity/Contact soft-delete for Salesforce delete events.
+- Out of scope: `/data/ChangeEvents`, OpportunityContactRole fanout, durable local
+  event handoff, event fingerprints, and separate subscriber task names.
+
+Salesforce setup prerequisite: Account, Contact, and Opportunity must be selected
+for Change Data Capture in Salesforce Setup for all three channels to publish.
 
 ## Runtime Flow
 
 ```text
 Salesforce initial sync success dispatches integrations.run_salesforce_cdc_subscriber
+for each enabled CDC channel
         |
         v
-subscriber opens /data/OpportunityChangeEvent for the requested integration
+subscriber opens the requested /data/*ChangeEvent channel
         |
         v
 for each recordId in ChangeEventHeader.recordIds:
-    DELETE -> soft-delete matching CRMDeal
-    other  -> fetch full Opportunity -> persist_single_opportunity()
+    Opportunity DELETE -> CRMDeal.is_deleted = true
+    Account DELETE     -> CRMCompany.is_active = false
+    Contact DELETE     -> CRMContact.is_deleted = true
+    other              -> fetch one record -> persist_single_*()
         |
         v
 after every record ID in the event succeeds, store replay ID
@@ -39,8 +50,9 @@ bounded subscriber run requeues the next subscriber run
 
 Replay state advances only after the event's record IDs are processed. If fetch or
 persistence fails first, the previous replay ID remains in place and Salesforce can
-redeliver the event on the next subscription attempt. Duplicate delivery is acceptable
-because the deal writer is upsert-oriented and soft-delete is idempotent.
+redeliver the event on the next subscription attempt. Duplicate delivery is
+acceptable because the writers are upsert-oriented and delete/deactivate handling is
+idempotent.
 
 The first subscriber run starts from Salesforce's latest replay position when no
 local cursor exists. The initial sync is the source of truth for pre-subscription
@@ -49,16 +61,23 @@ new connections.
 
 Transient token, Pub/Sub, fetch, or persistence failures mark the CDC state as
 errored and enqueue a delayed subscriber retry without advancing replay. If
-Salesforce rejects the stored replay ID, the subscriber clears the local cursor,
-queues a full Salesforce deal repair sync, and the repair sync restarts CDC after
-it completes successfully.
+Salesforce rejects the stored replay ID, the subscriber clears that channel's local
+cursor and queues the matching full repair sync:
+
+- Opportunity -> `integrations.sync_salesforce_deals`
+- Account -> `integrations.sync_salesforce_companies`
+- Contact -> `integrations.sync_salesforce_contacts`
+
+The repair sync restarts the same CDC channel after it completes successfully.
 
 ## State
 
 Each Salesforce integration stores its CDC checkpoint and lease state in
-`knowledge_integrations.connection_metadata.salesforce_cdc.opportunity`.
+`knowledge_integrations.connection_metadata.salesforce_cdc.<object>`, where
+`<object>` is `opportunity`, `account`, or `contact`.
 
-No separate CDC subscription table or CDC event table exists in v1.
+Each channel has an independent replay cursor and lease. No separate CDC
+subscription table or CDC event table exists in v1.
 
 ## Task Contract
 
@@ -78,7 +97,7 @@ integration/channel.
 
 ## Required Integration Metadata
 
-Opportunity CDC discovery expects:
+CDC discovery expects:
 
 ```json
 {
@@ -91,11 +110,23 @@ Opportunity CDC discovery expects:
       "last_replay_id": "opaque-base64-replay-id",
       "lease_owner": "worker-id",
       "lease_expires_at": "2026-05-31T03:30:00+00:00"
+    },
+    "account": {
+      "enabled": true,
+      "channel": "/data/AccountChangeEvent",
+      "last_replay_id": "opaque-base64-replay-id"
+    },
+    "contact": {
+      "enabled": true,
+      "channel": "/data/ContactChangeEvent",
+      "last_replay_id": "opaque-base64-replay-id"
     }
   }
 }
 ```
 
-`channel` defaults to `/data/OpportunityChangeEvent` when omitted. The default Pub/Sub
-endpoint is `api.pubsub.salesforce.com:443`; the global Salesforce Pub/Sub host is
-accepted on ports `443` and `7443`.
+Existing integrations with only the `opportunity` entry remain Opportunity-only.
+New reconnects receive Account, Contact, and Opportunity entries by default.
+
+The default Pub/Sub endpoint is `api.pubsub.salesforce.com:443`; the global
+Salesforce Pub/Sub host is accepted on ports `443` and `7443`.

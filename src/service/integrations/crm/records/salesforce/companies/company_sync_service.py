@@ -72,6 +72,7 @@ class SalesforceCompanyRecordSyncService:
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=normalized,
+            deactivate_missing=True,
         )
 
         completed_at = datetime.now(UTC)
@@ -92,6 +93,31 @@ class SalesforceCompanyRecordSyncService:
             deal_backfill_rows_updated=backfill_result["rows_updated"],
             deal_backfill_per_op=backfill_result["per_op"],
         )
+
+    async def persist_single_account(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_account: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized, skipped_malformed = normalize_accounts([raw_account])
+        write_result, backfill_result = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=normalized,
+            deactivate_missing=False,
+        )
+        return {
+            "companies_created": write_result.companies_created,
+            "companies_updated": write_result.companies_updated,
+            "companies_reactivated": write_result.companies_reactivated,
+            "companies_deactivated": write_result.companies_deactivated,
+            "unresolved_owner_link": write_result.unresolved_owner_link,
+            "skipped_malformed": skipped_malformed,
+            "deal_backfill_rows_updated": backfill_result["rows_updated"],
+            "deal_backfill_per_op": backfill_result["per_op"],
+        }
 
     async def _load_context(
         self,
@@ -140,6 +166,7 @@ class SalesforceCompanyRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
         normalized: list[NormalizedSalesforceCompany],
+        deactivate_missing: bool = True,
     ) -> tuple[Any, dict[str, Any]]:
         all_external_ids = [company.external_id for company in normalized]
         async for session in acquire_org_async_session(organisation_id):
@@ -158,6 +185,7 @@ class SalesforceCompanyRecordSyncService:
                 normalized=normalized,
                 all_external_ids=all_external_ids,
                 owner_map=owner_map,
+                deactivate_missing=deactivate_missing,
             )
 
             company_map = await self._load_external_to_pk(

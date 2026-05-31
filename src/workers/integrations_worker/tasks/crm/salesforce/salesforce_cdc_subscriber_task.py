@@ -1,4 +1,4 @@
-"""Salesforce Opportunity CDC subscriber task."""
+"""Salesforce CDC subscriber task."""
 
 from __future__ import annotations
 
@@ -11,12 +11,20 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import (
     acquire_org_async_session,
 )
 from src.infra.utils.async_runner import run_async
+from src.service.integrations.crm.records.salesforce.companies.company_sync_service import (
+    SalesforceCompanyRecordSyncService,
+)
+from src.service.integrations.crm.records.salesforce.contacts.contact_sync_service import (
+    SalesforceContactRecordSyncService,
+)
 from src.service.integrations.crm.records.salesforce.deals.deal_sync_service import (
     SalesforceDealRecordSyncService,
 )
@@ -25,8 +33,13 @@ from src.service.integrations.providers.token_resolution import (
     get_access_token,
 )
 from src.service.integrations.sync_history_manager import SyncHistoryManager
-from src.service.integrations.webhooks.salesforce.decoder import decode_opportunity_change_event
+from src.service.integrations.webhooks.salesforce.decoder import decode_salesforce_change_event
 from src.service.integrations.webhooks.salesforce.metadata import (
+    ACCOUNT_CDC_CHANNEL,
+    CONTACT_CDC_CHANNEL,
+    OPPORTUNITY_CDC_CHANNEL,
+    SalesforceCdcMetadataError,
+    get_salesforce_cdc_metadata_for_channel,
     get_salesforce_opportunity_cdc_metadata,
 )
 from src.service.integrations.webhooks.salesforce.replay import decode_replay_id, encode_replay_id
@@ -36,6 +49,12 @@ from src.service.integrations.webhooks.salesforce.subscription_state import (
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.client import send_integrations_task_async
 from src.workers.integrations_worker.config import TASK_LIMITS
+from src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher import (
+    SalesforceAccountsFetcher,
+)
+from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher import (
+    SalesforceContactsFetcher,
+)
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_client import (
     SalesforcePubSubClient,
     SalesforcePubSubKeepalive,
@@ -51,6 +70,11 @@ _LEASE_SECONDS = 300
 _MAX_RUNTIME_SECONDS = 3300
 _FAILURE_REQUEUE_DELAY_SECONDS = 60
 _DELETE_CHANGE_TYPES = {"DELETE"}
+_REPAIR_TASK_BY_CHANNEL = {
+    OPPORTUNITY_CDC_CHANNEL: "integrations.sync_salesforce_deals",
+    ACCOUNT_CDC_CHANNEL: "integrations.sync_salesforce_companies",
+    CONTACT_CDC_CHANNEL: "integrations.sync_salesforce_contacts",
+}
 
 
 @app.task(
@@ -67,7 +91,7 @@ def run_salesforce_cdc_subscriber_task(
     integration_id: str | None = None,
     channel: str | None = None,
 ) -> dict[str, Any]:
-    """Run one explicit Salesforce Opportunity CDC stream."""
+    """Run one explicit Salesforce CDC stream."""
 
     _ = self
 
@@ -77,7 +101,7 @@ def run_salesforce_cdc_subscriber_task(
 
         org_id = UUID(organisation_id)
         int_id = UUID(integration_id)
-        cdc_channel = channel or "/data/OpportunityChangeEvent"
+        cdc_channel = channel or OPPORTUNITY_CDC_CHANNEL
         sync_id: UUID | None = None
         async for session in acquire_org_async_session(org_id):
             sync_id = await SyncHistoryManager.start_fresh(session, int_id)
@@ -135,7 +159,21 @@ async def _run_subscriber(
             organisation_id=organisation_id,
             integration_id=integration_id,
         )
-        metadata = get_salesforce_opportunity_cdc_metadata(integration)
+        try:
+            metadata = (
+                get_salesforce_opportunity_cdc_metadata(integration)
+                if channel == OPPORTUNITY_CDC_CHANNEL
+                else get_salesforce_cdc_metadata_for_channel(integration, channel=channel)
+            )
+        except SalesforceCdcMetadataError as exc:
+            try:
+                enabled_metadata = get_salesforce_opportunity_cdc_metadata(integration)
+            except SalesforceCdcMetadataError:
+                raise exc from None
+            raise ValueError(
+                f"Requested channel {channel} does not match enabled Salesforce CDC channel "
+                f"{enabled_metadata.channel}"
+            ) from exc
         if channel != metadata.channel:
             raise ValueError(
                 f"Requested channel {channel} does not match enabled Salesforce CDC channel "
@@ -185,18 +223,21 @@ async def _run_subscriber(
                 )
                 continue
 
-            change_event = decode_opportunity_change_event(
+            change_event = decode_salesforce_change_event(
                 replay_id=event.replay_id,
                 schema_id=event.schema_id,
                 payload=event.payload,
+                object_name=getattr(metadata, "object_name", "Opportunity"),
+                id_prefix=getattr(metadata, "id_prefix", "006"),
             )
             for record_id in change_event.record_ids:
-                await _process_opportunity_record_change(
+                await _process_record_change(
                     organisation_id=organisation_id,
                     integration_id=integration_id,
                     record_id=record_id,
                     change_type=change_event.change_type,
                     instance_url=instance_url,
+                    channel=channel,
                 )
                 records_processed += 1
 
@@ -233,15 +274,10 @@ async def _run_subscriber(
             channel=channel,
             lease_owner=lease_owner,
         )
-        await send_integrations_task_async(
-            "integrations.sync_salesforce_deals",
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-                "start_cdc_after_success": True,
-                "cdc_channel": channel,
-            },
-            queue="integrations_priority",
+        await _enqueue_repair_sync(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            channel=channel,
         )
         return {
             "status": "replay_expired_repair_queued",
@@ -293,6 +329,64 @@ async def _run_subscriber(
     }
 
 
+async def _enqueue_repair_sync(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    channel: str,
+) -> None:
+    task_name = _REPAIR_TASK_BY_CHANNEL[channel]
+    await send_integrations_task_async(
+        task_name,
+        kwargs={
+            "organisation_id": str(organisation_id),
+            "integration_id": str(integration_id),
+            "start_cdc_after_success": True,
+            "cdc_channel": channel,
+        },
+        queue="integrations_priority",
+    )
+
+
+async def _process_record_change(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    record_id: str,
+    change_type: str,
+    instance_url: str,
+    channel: str,
+) -> None:
+    if channel == OPPORTUNITY_CDC_CHANNEL:
+        await _process_opportunity_record_change(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            record_id=record_id,
+            change_type=change_type,
+            instance_url=instance_url,
+        )
+        return
+    if channel == ACCOUNT_CDC_CHANNEL:
+        await _process_account_record_change(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            record_id=record_id,
+            change_type=change_type,
+            instance_url=instance_url,
+        )
+        return
+    if channel == CONTACT_CDC_CHANNEL:
+        await _process_contact_record_change(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            record_id=record_id,
+            change_type=change_type,
+            instance_url=instance_url,
+        )
+        return
+    raise ValueError(f"Unsupported Salesforce CDC channel: {channel}")
+
+
 async def _process_opportunity_record_change(
     *,
     organisation_id: UUID,
@@ -331,6 +425,78 @@ async def _process_opportunity_record_change(
     )
 
 
+async def _process_account_record_change(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    record_id: str,
+    change_type: str,
+    instance_url: str,
+) -> None:
+    if change_type.upper() in _DELETE_CHANGE_TYPES:
+        await _deactivate_company(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+
+    service = SalesforceCompanyRecordSyncService()
+    context = await service._load_context(organisation_id, integration_id)
+    record = await SalesforceAccountsFetcher(
+        token_info=context.token_info,
+        instance_url=instance_url,
+    ).fetch_one(record_id)
+    if record is None:
+        await _deactivate_company(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+    await service.persist_single_account(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        raw_account=record,
+    )
+
+
+async def _process_contact_record_change(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    record_id: str,
+    change_type: str,
+    instance_url: str,
+) -> None:
+    if change_type.upper() in _DELETE_CHANGE_TYPES:
+        await _soft_delete_contact(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+
+    service = SalesforceContactRecordSyncService()
+    context = await service._load_context(organisation_id, integration_id)
+    record = await SalesforceContactsFetcher(
+        token_info=context.token_info,
+        instance_url=instance_url,
+    ).fetch_one(record_id)
+    if record is None:
+        await _soft_delete_contact(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=record_id,
+        )
+        return
+    await service.persist_single_contact(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        raw_contact=record,
+    )
+
+
 async def _soft_delete_deal(
     *,
     organisation_id: UUID,
@@ -350,6 +516,52 @@ async def _soft_delete_deal(
         deal.is_deleted = True
         deal.last_seen_at = datetime.now(UTC)
         session.add(deal)
+        await session.commit()
+        return
+
+
+async def _deactivate_company(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    external_id: str,
+) -> None:
+    async for session in acquire_org_async_session(organisation_id):
+        stmt = select(CRMCompany).where(
+            col(CRMCompany.organisation_id) == organisation_id,
+            col(CRMCompany.integration_id) == integration_id,
+            col(CRMCompany.external_id) == external_id,
+            col(CRMCompany.is_deleted) == False,  # noqa: E712
+        )
+        company = (await session.execute(stmt)).scalar_one_or_none()
+        if company is None:
+            return
+        company.is_active = False
+        company.last_seen_at = datetime.now(UTC)
+        session.add(company)
+        await session.commit()
+        return
+
+
+async def _soft_delete_contact(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+    external_id: str,
+) -> None:
+    async for session in acquire_org_async_session(organisation_id):
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == organisation_id,
+            col(CRMContact.integration_id) == integration_id,
+            col(CRMContact.external_id) == external_id,
+            col(CRMContact.is_deleted) == False,  # noqa: E712
+        )
+        contact = (await session.execute(stmt)).scalar_one_or_none()
+        if contact is None:
+            return
+        contact.is_deleted = True
+        contact.last_seen_at = datetime.now(UTC)
+        session.add(contact)
         await session.commit()
         return
 

@@ -37,6 +37,7 @@ class SalesforceCompanyWriter:
         normalized: list[NormalizedSalesforceCompany],
         all_external_ids: Iterable[str],
         owner_map: dict[str, UUID],
+        deactivate_missing: bool = True,
     ) -> CompanyWriteResult:
         result = CompanyWriteResult()
         now = datetime.now(UTC)
@@ -58,13 +59,14 @@ class SalesforceCompanyWriter:
                     existing.is_active = True
                     result.companies_reactivated += 1
 
-        snapshot_external_ids = set(all_external_ids)
-        for external_id, row in existing_by_external.items():
-            if external_id in snapshot_external_ids:
-                continue
-            if row.is_active:
-                row.is_active = False
-                result.companies_deactivated += 1
+        if deactivate_missing:
+            snapshot_external_ids = set(all_external_ids)
+            for external_id, row in existing_by_external.items():
+                if external_id in snapshot_external_ids:
+                    continue
+                if row.is_active:
+                    row.is_active = False
+                    result.companies_deactivated += 1
 
         await self.session.flush()
         logger.info(

@@ -4,6 +4,7 @@ import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.service.integrations.webhooks.salesforce.metadata import (
     SalesforceCdcMetadataError,
+    get_enabled_salesforce_cdc_metadata,
     get_salesforce_opportunity_cdc_metadata,
 )
 
@@ -33,6 +34,33 @@ def test_salesforce_cdc_metadata_reads_opportunity_channel() -> None:
     assert metadata.instance_url == "https://acme.my.salesforce.com"
     assert metadata.channel == "/data/OpportunityChangeEvent"
     assert metadata.pubsub_endpoint == "api.pubsub.salesforce.com:443"
+
+
+def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_type=IntegrationType.SALESFORCE,
+        name="Salesforce",
+        credentials={"instance_url": "https://acme.my.salesforce.com"},
+        connection_metadata={
+            "salesforce_organization_id": "00Dxx0000000001",
+            "salesforce_cdc": {
+                "opportunity": {"enabled": True, "channel": "/data/OpportunityChangeEvent"},
+                "account": {"enabled": True, "channel": "/data/AccountChangeEvent"},
+                "contact": {"enabled": True, "channel": "/data/ContactChangeEvent"},
+            },
+        },
+    )
+
+    metadata = get_enabled_salesforce_cdc_metadata(integration)
+
+    assert [entry.object_key for entry in metadata] == ["opportunity", "account", "contact"]
+    assert [entry.channel for entry in metadata] == [
+        "/data/OpportunityChangeEvent",
+        "/data/AccountChangeEvent",
+        "/data/ContactChangeEvent",
+    ]
 
 
 def test_salesforce_cdc_metadata_rejects_disabled_opportunity_channel() -> None:

@@ -6,7 +6,19 @@ from urllib.parse import urlparse
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 
 OPPORTUNITY_CDC_CHANNEL = "/data/OpportunityChangeEvent"
+ACCOUNT_CDC_CHANNEL = "/data/AccountChangeEvent"
+CONTACT_CDC_CHANNEL = "/data/ContactChangeEvent"
 _DEFAULT_PUBSUB_ENDPOINT = "api.pubsub.salesforce.com:443"
+
+SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
+    "opportunity": {
+        "channel": OPPORTUNITY_CDC_CHANNEL,
+        "object_name": "Opportunity",
+        "id_prefix": "006",
+    },
+    "account": {"channel": ACCOUNT_CDC_CHANNEL, "object_name": "Account", "id_prefix": "001"},
+    "contact": {"channel": CONTACT_CDC_CHANNEL, "object_name": "Contact", "id_prefix": "003"},
+}
 
 
 class SalesforceCdcMetadataError(ValueError):
@@ -15,6 +27,9 @@ class SalesforceCdcMetadataError(ValueError):
 
 @dataclass(slots=True, frozen=True)
 class SalesforceOpportunityCdcMetadata:
+    object_key: str
+    object_name: str
+    id_prefix: str
     salesforce_organization_id: str
     instance_url: str
     channel: str
@@ -24,17 +39,37 @@ class SalesforceOpportunityCdcMetadata:
 def get_salesforce_opportunity_cdc_metadata(
     integration: KnowledgeIntegration,
 ) -> SalesforceOpportunityCdcMetadata:
+    return get_salesforce_cdc_metadata(integration, object_key="opportunity")
+
+
+def get_enabled_salesforce_cdc_metadata(
+    integration: KnowledgeIntegration,
+) -> list[SalesforceOpportunityCdcMetadata]:
+    return [
+        get_salesforce_cdc_metadata(integration, object_key=object_key)
+        for object_key in SALESFORCE_CDC_OBJECTS
+        if _object_metadata(integration, object_key).get("enabled") is True
+    ]
+
+
+def get_salesforce_cdc_metadata(
+    integration: KnowledgeIntegration,
+    *,
+    object_key: str,
+) -> SalesforceOpportunityCdcMetadata:
     integration_type = integration.integration_type
     if isinstance(integration_type, str):
         integration_type = IntegrationType(integration_type)
     if integration_type != IntegrationType.SALESFORCE:
         raise SalesforceCdcMetadataError("Integration is not Salesforce")
+    config = SALESFORCE_CDC_OBJECTS.get(object_key)
+    if config is None:
+        raise SalesforceCdcMetadataError(f"Unsupported Salesforce CDC object: {object_key}")
 
     metadata = dict(integration.connection_metadata or {})
-    cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-    opportunity_metadata = dict(cdc_metadata.get("opportunity") or {})
-    if opportunity_metadata.get("enabled") is not True:
-        raise SalesforceCdcMetadataError("Opportunity CDC is not enabled")
+    object_metadata = _object_metadata(integration, object_key)
+    if object_metadata.get("enabled") is not True:
+        raise SalesforceCdcMetadataError(f"{config['object_name']} CDC is not enabled")
 
     salesforce_organization_id = str(metadata.get("salesforce_organization_id") or "").strip()
     if not salesforce_organization_id:
@@ -46,23 +81,53 @@ def get_salesforce_opportunity_cdc_metadata(
     ).rstrip("/")
     instance_url = _validate_instance_url(instance_url)
 
-    channel = str(opportunity_metadata.get("channel") or OPPORTUNITY_CDC_CHANNEL)
-    if channel != OPPORTUNITY_CDC_CHANNEL:
+    channel = str(object_metadata.get("channel") or config["channel"])
+    if channel != config["channel"]:
         raise SalesforceCdcMetadataError(f"Unsupported Salesforce CDC channel: {channel}")
 
     pubsub_endpoint = str(
-        opportunity_metadata.get("pubsub_endpoint")
+        object_metadata.get("pubsub_endpoint")
         or metadata.get("salesforce_pubsub_endpoint")
         or _DEFAULT_PUBSUB_ENDPOINT
     ).strip()
     pubsub_endpoint = _validate_pubsub_endpoint(pubsub_endpoint)
 
     return SalesforceOpportunityCdcMetadata(
+        object_key=object_key,
+        object_name=config["object_name"],
+        id_prefix=config["id_prefix"],
         salesforce_organization_id=salesforce_organization_id,
         instance_url=instance_url,
         channel=channel,
         pubsub_endpoint=pubsub_endpoint,
     )
+
+
+def get_salesforce_cdc_metadata_for_channel(
+    integration: KnowledgeIntegration,
+    *,
+    channel: str,
+) -> SalesforceOpportunityCdcMetadata:
+    for object_key, config in SALESFORCE_CDC_OBJECTS.items():
+        if channel == config["channel"]:
+            return get_salesforce_cdc_metadata(integration, object_key=object_key)
+    raise SalesforceCdcMetadataError(f"Unsupported Salesforce CDC channel: {channel}")
+
+
+def channel_metadata_key(channel: str) -> str:
+    for object_key, config in SALESFORCE_CDC_OBJECTS.items():
+        if channel == config["channel"]:
+            return object_key
+    raise ValueError(f"Unsupported Salesforce CDC channel: {channel}")
+
+
+def _object_metadata(
+    integration: KnowledgeIntegration,
+    object_key: str,
+) -> dict[str, object]:
+    metadata = dict(integration.connection_metadata or {})
+    cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
+    return dict(cdc_metadata.get(object_key) or {})
 
 
 def _validate_pubsub_endpoint(pubsub_endpoint: str) -> str:

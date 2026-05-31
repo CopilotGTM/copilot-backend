@@ -15,6 +15,11 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.sync_history_manager import datetime_now_naive
+from src.service.integrations.webhooks.salesforce.metadata import (
+    ACCOUNT_CDC_CHANNEL,
+    CONTACT_CDC_CHANNEL,
+    OPPORTUNITY_CDC_CHANNEL,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.client import send_integrations_task_async
 from src.workers.integrations_worker.config import TASK_LIMITS
@@ -43,7 +48,7 @@ def mark_salesforce_initial_sync_succeeded_task(
     int_id = UUID(integration_id)
 
     async def _run() -> dict[str, Any]:
-        should_start_cdc = False
+        cdc_channels: list[str] = []
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == org_id,
@@ -64,44 +69,61 @@ def mark_salesforce_initial_sync_succeeded_task(
             metadata.pop("initial_sync_placeholder", None)
             integration.connection_metadata = metadata
             integration.last_synced_at = datetime_now_naive()
-            should_start_cdc = _should_start_salesforce_opportunity_cdc(
+            if _has_salesforce_cdc_identity(
                 metadata=metadata,
                 credentials=dict(getattr(integration, "credentials", None) or {}),
-            )
+            ):
+                cdc_channels = _enabled_salesforce_cdc_channels(metadata)
             session.add(integration)
             await session.commit()
 
-        task_id = None
-        if should_start_cdc:
+        task_ids: list[str] = []
+        for cdc_channel in cdc_channels:
             task_id = await send_integrations_task_async(
                 task_name="integrations.run_salesforce_cdc_subscriber",
                 kwargs={
                     "organisation_id": organisation_id,
                     "integration_id": integration_id,
+                    "channel": cdc_channel,
                 },
                 queue="integrations_streaming",
                 routing_key="integrations_streaming",
             )
+            task_ids.append(task_id)
 
         return {
             "status": "success",
             "organisation_id": organisation_id,
             "integration_id": integration_id,
-            "salesforce_cdc_task_id": task_id,
+            "salesforce_cdc_task_id": task_ids[0] if task_ids else None,
+            "salesforce_cdc_task_ids": task_ids,
         }
 
     return run_async(_run())
 
 
-def _should_start_salesforce_opportunity_cdc(
+def _enabled_salesforce_cdc_channels(metadata: dict[str, Any]) -> list[str]:
+    cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
+    channels: list[str] = []
+    for object_key, default_channel in (
+        ("opportunity", OPPORTUNITY_CDC_CHANNEL),
+        ("account", ACCOUNT_CDC_CHANNEL),
+        ("contact", CONTACT_CDC_CHANNEL),
+    ):
+        object_metadata = dict(cdc_metadata.get(object_key) or {})
+        if object_metadata.get("enabled") is True:
+            channels.append(str(object_metadata.get("channel") or default_channel))
+    return channels
+
+
+def _has_salesforce_cdc_identity(
     *,
     metadata: dict[str, Any],
     credentials: dict[str, Any],
 ) -> bool:
     cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-    opportunity_metadata = dict(cdc_metadata.get("opportunity") or {})
     return (
-        opportunity_metadata.get("enabled") is True
+        any(dict(entry or {}).get("enabled") is True for entry in cdc_metadata.values())
         and bool(str(metadata.get("salesforce_organization_id") or "").strip())
         and bool(
             str(

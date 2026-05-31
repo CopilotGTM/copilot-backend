@@ -8,8 +8,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.service.integrations.webhooks.salesforce.metadata import (
+    channel_metadata_key,
+)
 
-_OPPORTUNITY_CHANNEL = "/data/OpportunityChangeEvent"
 _DEFAULT_PUBSUB_ENDPOINT = "api.pubsub.salesforce.com:443"
 
 
@@ -312,7 +314,7 @@ class SalesforceCdcSubscriptionStateService:
     ) -> dict[str, Any]:
         metadata = dict(integration.connection_metadata or {})
         cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-        key = _channel_metadata_key(channel)
+        key = channel_metadata_key(channel)
         return dict(cdc_metadata.get(key) or {})
 
     def _get_mutable_cdc_state(
@@ -322,7 +324,7 @@ class SalesforceCdcSubscriptionStateService:
     ) -> dict[str, Any]:
         metadata = dict(integration.connection_metadata or {})
         cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-        key = _channel_metadata_key(channel)
+        key = channel_metadata_key(channel)
         cdc_state = dict(cdc_metadata.get(key) or {})
         cdc_state.setdefault("enabled", True)
         cdc_state.setdefault("channel", channel)
@@ -334,12 +336,6 @@ class SalesforceCdcSubscriptionStateService:
     async def _save_metadata(self, session, integration: KnowledgeIntegration) -> None:
         session.add(integration)
         await session.commit()
-
-
-def _channel_metadata_key(channel: str) -> str:
-    if channel != _OPPORTUNITY_CHANNEL:
-        raise ValueError(f"Unsupported Salesforce CDC channel: {channel}")
-    return "opportunity"
 
 
 def _optional_str(value: Any) -> str | None:

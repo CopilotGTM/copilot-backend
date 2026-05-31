@@ -256,6 +256,20 @@ class CopilotCallbackService:
                 "channel": "/data/OpportunityChangeEvent",
             },
         )
+        cdc_metadata.setdefault(
+            "account",
+            {
+                "enabled": True,
+                "channel": "/data/AccountChangeEvent",
+            },
+        )
+        cdc_metadata.setdefault(
+            "contact",
+            {
+                "enabled": True,
+                "channel": "/data/ContactChangeEvent",
+            },
+        )
         metadata["salesforce_cdc"] = cdc_metadata
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict[str, Any]:

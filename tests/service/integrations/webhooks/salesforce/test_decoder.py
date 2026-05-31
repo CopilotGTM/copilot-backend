@@ -1,7 +1,10 @@
 from datetime import UTC, datetime
 
 import pytest
-from src.service.integrations.webhooks.salesforce.decoder import decode_opportunity_change_event
+from src.service.integrations.webhooks.salesforce.decoder import (
+    decode_opportunity_change_event,
+    decode_salesforce_change_event,
+)
 
 
 def test_decode_opportunity_change_event_fans_out_record_ids() -> None:
@@ -41,4 +44,58 @@ def test_decode_opportunity_change_event_rejects_invalid_record_id() -> None:
                     "changeType": "UPDATE",
                 }
             },
+        )
+
+
+def test_decode_salesforce_change_event_accepts_account_ids() -> None:
+    event = decode_salesforce_change_event(
+        replay_id=b"\x00\x01",
+        schema_id="schema-1",
+        payload={
+            "ChangeEventHeader": {
+                "entityName": "Account",
+                "recordIds": ["001xx0000000001AAA"],
+                "changeType": "UPDATE",
+            }
+        },
+        object_name="Account",
+        id_prefix="001",
+    )
+
+    assert event.record_ids == ("001xx0000000001AAA",)
+    assert event.change_type == "UPDATE"
+
+
+def test_decode_salesforce_change_event_accepts_contact_ids() -> None:
+    event = decode_salesforce_change_event(
+        replay_id=b"\x00\x01",
+        schema_id="schema-1",
+        payload={
+            "ChangeEventHeader": {
+                "entityName": "Contact",
+                "recordIds": ["003xx0000000001AAA"],
+                "changeType": "UPDATE",
+            }
+        },
+        object_name="Contact",
+        id_prefix="003",
+    )
+
+    assert event.record_ids == ("003xx0000000001AAA",)
+
+
+def test_decode_salesforce_change_event_rejects_wrong_prefix() -> None:
+    with pytest.raises(ValueError, match="invalid record ID"):
+        decode_salesforce_change_event(
+            replay_id=b"\x00\x01",
+            schema_id="schema-1",
+            payload={
+                "ChangeEventHeader": {
+                    "entityName": "Account",
+                    "recordIds": ["003xx0000000001AAA"],
+                    "changeType": "UPDATE",
+                }
+            },
+            object_name="Account",
+            id_prefix="001",
         )
