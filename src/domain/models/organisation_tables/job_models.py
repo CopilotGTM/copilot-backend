@@ -206,6 +206,9 @@ class DealJobType(StrEnum):
     # Deal memory
     DEAL_MEMORY_BUILD = "deal_memory_build"  # Build or update deal memory document
     DEAL_TASK_SYNC = "deal_task_sync"  # Create/complete deal tasks from meeting insights
+    CALENDAR_CONTACT_ACCOUNT_DISCOVERY = (
+        "calendar_contact_account_discovery"  # Internal CRM discovery after calendar sync
+    )
 
     # Stakeholder research
     STAKEHOLDER_RESEARCH = "stakeholder_research"
