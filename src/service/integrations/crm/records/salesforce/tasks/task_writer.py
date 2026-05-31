@@ -41,6 +41,7 @@ class SalesforceTaskWriter:
         deal_map: dict[str, ActivityDimensionHit],
         contact_map: dict[str, ActivityDimensionHit],
         company_map: dict[str, ActivityDimensionHit],
+        deactivate_missing: bool = True,
     ) -> TaskWriteResult:
         result = TaskWriteResult()
         now = datetime.now(UTC)
@@ -98,13 +99,14 @@ class SalesforceTaskWriter:
             else:
                 result.tasks_updated += 1
 
-        snapshot_external_ids = set(all_external_ids)
-        for external_id, row in existing_by_external.items():
-            if external_id in snapshot_external_ids:
-                continue
-            if not row.is_deleted:
-                row.is_deleted = True
-                result.tasks_deactivated += 1
+        if deactivate_missing:
+            snapshot_external_ids = set(all_external_ids)
+            for external_id, row in existing_by_external.items():
+                if external_id in snapshot_external_ids:
+                    continue
+                if not row.is_deleted:
+                    row.is_deleted = True
+                    result.tasks_deactivated += 1
 
         await self.session.flush()
         logger.info(

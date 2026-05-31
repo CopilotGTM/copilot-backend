@@ -6,7 +6,7 @@ from typing import Any
 
 
 @dataclass(slots=True, frozen=True)
-class SalesforceOpportunityChangeEvent:
+class SalesforceChangeEvent:
     replay_id: bytes
     schema_id: str
     record_ids: tuple[str, ...]
@@ -16,3 +16,6 @@ class SalesforceOpportunityChangeEvent:
     transaction_key: str | None
     sequence_number: int | None
     payload: dict[str, Any]
+
+
+SalesforceOpportunityChangeEvent = SalesforceChangeEvent

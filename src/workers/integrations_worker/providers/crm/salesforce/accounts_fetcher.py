@@ -80,6 +80,24 @@ class SalesforceAccountsFetcher:
         )
         return records
 
+    async def fetch_one(self, account_id: str) -> dict[str, Any] | None:
+        field_names = await self._fetch_field_names()
+        soql = (
+            f"SELECT {', '.join(field_names)} FROM Account "  # noqa: S608  # nosec B608
+            f"WHERE Id = '{_escape_soql_literal(account_id)}' LIMIT 1"
+        )
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
+        payload = await self._get_json(url, params={"q": soql})
+        raw_records = payload.get("records")
+        if not isinstance(raw_records, list):
+            raise ValueError("Salesforce single Account query API returned non-list records")
+        if not raw_records:
+            return None
+        record = raw_records[0]
+        if not isinstance(record, dict):
+            raise ValueError("Salesforce single Account query API returned non-dict record")
+        return record
+
     async def _fetch_field_names(self) -> list[str]:
         url = f"{self.instance_url}/services/data/{_API_VERSION}/sobjects/Account/describe"
         payload = await self._get_json(url)
@@ -134,6 +152,10 @@ def _extract_field_name(field: dict[str, Any]) -> str | None:
     if isinstance(field_type, str) and field_type.lower() in _EXCLUDED_FIELD_TYPES:
         return None
     return name
+
+
+def _escape_soql_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _raise_for_status_with_salesforce_body(response: httpx.Response) -> None:

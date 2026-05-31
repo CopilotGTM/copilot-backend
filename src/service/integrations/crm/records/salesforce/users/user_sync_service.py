@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, select, text
 from sqlmodel import col
 from src.domain.models.master_tables.user_models import User
 from src.domain.models.organisation_tables.sync import (
@@ -25,6 +25,7 @@ from src.service.integrations.crm.records.common.backfill import (
     backfill_crm_deals,
 )
 from src.service.integrations.crm.records.salesforce.users.user_normalizer import (
+    build_owner_backfill_mapping,
     normalize_email,
     normalize_users,
     resolve_matches,
@@ -207,45 +208,20 @@ class SalesforceUserRecordSyncService:
                 integration_id=integration_id,
             )
 
-            owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]] = {}
-            fk_only_mapping: dict[str, tuple[UUID, None, None, None]] = {}
-            for match in matches:
-                user = match.user
-                pk = user_pk_map.get(user.external_id)
-                if pk is None:
-                    continue
-                owner_mapping[user.external_id] = (pk, user.full_name, None, user.email)
-                fk_only_mapping[user.external_id] = (pk, None, None, None)
+            owner_mapping, fk_only_mapping = build_owner_backfill_mapping(
+                users=[match.user for match in matches],
+                user_pk_map=user_pk_map,
+            )
 
             backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
             if owner_mapping:
-                ops = [
-                    DealFkBackfillOp(
-                        external_col="owner_external_id",
-                        fk_col="owner_id",
-                        name_col="owner_name",
-                        email_col="owner_email",
-                        mapping=owner_mapping,
-                    ),
-                    DealFkBackfillOp(
-                        external_col="created_by_user_external_id",
-                        fk_col="created_by_user_id",
-                        mapping=fk_only_mapping,
-                    ),
-                    DealFkBackfillOp(
-                        external_col="updated_by_user_external_id",
-                        fk_col="updated_by_user_id",
-                        mapping=fk_only_mapping,
-                    ),
-                ]
-                backfill_result = await backfill_crm_deals(
-                    session,
+                backfill_payload = await self._backfill_owner_references(
+                    session=session,
                     organisation_id=organisation_id,
                     integration_id=integration_id,
-                    ops=ops,
+                    owner_mapping=owner_mapping,
+                    fk_only_mapping=fk_only_mapping,
                 )
-                backfill_payload["rows_updated"] = backfill_result.rows_updated
-                backfill_payload["per_op"] = dict(backfill_result.per_op)
 
             await session.commit()
             return write_result, backfill_payload
@@ -253,6 +229,136 @@ class SalesforceUserRecordSyncService:
         raise SalesforceUserSyncConfigurationError(
             "Could not acquire org session for Salesforce users record sync write"
         )
+
+    async def persist_single_user(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_user: dict[str, Any],
+    ) -> UserSyncResult:
+        started_at = datetime.now(UTC)
+        email_index = await self._load_app_user_email_index(organisation_id)
+        normalized, skipped_malformed = normalize_users([raw_user])
+        match_results = resolve_matches(normalized, email_index)
+
+        write_result, backfill_result = await self._persist_single(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            matches=match_results,
+        )
+
+        completed_at = datetime.now(UTC)
+        return UserSyncResult(
+            provider=self.PROVIDER,
+            object_type=self.OBJECT_TYPE,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            fetched_users=1,
+            users_created=write_result.users_created,
+            users_updated=write_result.users_updated,
+            users_reactivated=write_result.users_reactivated,
+            users_deactivated=write_result.users_deactivated,
+            users_matched_public=write_result.users_matched_public,
+            users_minted_uuid=write_result.users_minted_uuid,
+            skipped_malformed=skipped_malformed,
+            skipped_dup_email=write_result.skipped_dup_email,
+            app_user_index_size=len(email_index),
+            deal_backfill_rows_updated=backfill_result["rows_updated"],
+            deal_backfill_per_op=backfill_result["per_op"],
+        )
+
+    async def _persist_single(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        matches: list[UserMatchResult],
+    ) -> tuple[Any, dict[str, Any]]:
+        async for session in acquire_org_async_session(organisation_id):
+            writer = SalesforceUserWriter(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            write_result = await writer.apply(
+                matches=matches,
+                all_external_ids=[match.user.external_id for match in matches],
+                deactivate_missing=False,
+            )
+            user_pk_map = await self._load_user_pk_map(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            )
+            owner_mapping, fk_only_mapping = build_owner_backfill_mapping(
+                users=[match.user for match in matches],
+                user_pk_map=user_pk_map,
+            )
+            backfill_payload = {"rows_updated": 0, "per_op": {}}
+            if owner_mapping:
+                backfill_payload = await self._backfill_owner_references(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    owner_mapping=owner_mapping,
+                    fk_only_mapping=fk_only_mapping,
+                )
+            await session.commit()
+            return write_result, backfill_payload
+
+        raise SalesforceUserSyncConfigurationError(
+            "Could not acquire org session for Salesforce single user write"
+        )
+
+    async def _backfill_owner_references(
+        self,
+        *,
+        session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]],
+        fk_only_mapping: dict[str, tuple[UUID, None, None, None]],
+    ) -> dict[str, Any]:
+        ops = [
+            DealFkBackfillOp(
+                external_col="owner_external_id",
+                fk_col="owner_id",
+                name_col="owner_name",
+                email_col="owner_email",
+                mapping=owner_mapping,
+            ),
+            DealFkBackfillOp(
+                external_col="created_by_user_external_id",
+                fk_col="created_by_user_id",
+                mapping=fk_only_mapping,
+            ),
+            DealFkBackfillOp(
+                external_col="updated_by_user_external_id",
+                fk_col="updated_by_user_id",
+                mapping=fk_only_mapping,
+            ),
+        ]
+        deal_result = await backfill_crm_deals(
+            session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            ops=ops,
+        )
+        owner_rows = await _backfill_owner_tables(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            owner_mapping=owner_mapping,
+        )
+        per_op = dict(deal_result.per_op)
+        per_op.update(owner_rows)
+        return {
+            "rows_updated": deal_result.rows_updated + sum(owner_rows.values()),
+            "per_op": per_op,
+        }
 
     async def _load_user_pk_map(
         self,
@@ -270,3 +376,59 @@ class SalesforceUserRecordSyncService:
         )
         rows = (await session.execute(stmt)).scalars().all()
         return {row.external_id: row.user_id for row in rows if row.external_id is not None}
+
+
+_OWNER_BACKFILL_TABLES = (
+    "crm_companies",
+    "crm_contacts",
+    "crm_activities",
+)
+_SALESFORCE_OWNER_ACTIVITY_TYPES = ("TASK", "TODO", "NOTE")
+
+
+async def _backfill_owner_tables(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]],
+) -> dict[str, int]:
+    per_table: dict[str, int] = {}
+    for table_name in _OWNER_BACKFILL_TABLES:
+        total = 0
+        for external_id, (owner_id, owner_name, _label, owner_email) in owner_mapping.items():
+            activity_scope = (
+                "AND activity_type IN :activity_types " if table_name == "crm_activities" else ""
+            )
+            sql = text(
+                f"UPDATE {table_name} SET "  # noqa: S608  # nosec B608 - table name allowlisted
+                "owner_id = :owner_id, owner_name = :owner_name, owner_email = :owner_email "
+                "WHERE organisation_id = :org "
+                "AND integration_id = :integration "
+                "AND is_deleted = false "
+                "AND owner_external_id = :external_id "
+                f"{activity_scope}"
+                "AND (owner_id IS NULL "
+                "OR owner_name IS DISTINCT FROM :owner_name "
+                "OR owner_email IS DISTINCT FROM :owner_email)"
+            ).bindparams(
+                bindparam("org"),
+                bindparam("integration"),
+                bindparam("owner_id"),
+            )
+            if table_name == "crm_activities":
+                sql = sql.bindparams(bindparam("activity_types", expanding=True))
+            params: dict[str, object] = {
+                "org": organisation_id,
+                "integration": integration_id,
+                "owner_id": owner_id,
+                "owner_name": owner_name,
+                "owner_email": owner_email,
+                "external_id": external_id,
+            }
+            if table_name == "crm_activities":
+                params["activity_types"] = _SALESFORCE_OWNER_ACTIVITY_TYPES
+            exec_result = await session.execute(sql, params)
+            total += getattr(exec_result, "rowcount", 0) or 0
+        per_table[f"{table_name}.owner_id"] = total
+    return per_table

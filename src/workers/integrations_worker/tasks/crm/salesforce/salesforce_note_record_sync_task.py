@@ -25,6 +25,7 @@ from src.service.integrations.sync_history_manager import (
     datetime_now_naive,
 )
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.client import send_integrations_task_async
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.tasks.crm.failure_handling import (
     record_crm_task_failure,
@@ -47,6 +48,8 @@ def sync_salesforce_notes_task(
     self: Task,
     organisation_id: str,
     integration_id: str,
+    start_cdc_after_success: bool = False,
+    cdc_channel: str = "/data/ContentNoteChangeEvent",
 ) -> dict[str, Any]:
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
@@ -105,6 +108,19 @@ def sync_salesforce_notes_task(
                 error_message=None,
             )
 
+        cdc_task_id = None
+        if start_cdc_after_success:
+            cdc_task_id = await send_integrations_task_async(
+                task_name="integrations.run_salesforce_cdc_subscriber",
+                kwargs={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "channel": cdc_channel,
+                },
+                queue="integrations_streaming",
+                routing_key="integrations_streaming",
+            )
+
         completed_at = datetime.now(UTC).isoformat()
         return {
             "status": "success",
@@ -112,6 +128,7 @@ def sync_salesforce_notes_task(
             "integration_id": integration_id,
             "started_at": started_at,
             "completed_at": completed_at,
+            "salesforce_cdc_task_id": cdc_task_id,
             **result.to_metadata(),
         }
 

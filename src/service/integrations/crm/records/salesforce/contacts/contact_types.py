@@ -48,6 +48,7 @@ class NormalizedSalesforceContact:
 class ContactWriteResult:
     contacts_created: int = 0
     contacts_updated: int = 0
+    contacts_reactivated: int = 0
     unresolved_company_link: int = 0
     unresolved_owner_link: int = 0
 
@@ -57,6 +58,7 @@ class ContactSyncResult(RecordSyncResult):
     fetched_contacts: int = 0
     contacts_created: int = 0
     contacts_updated: int = 0
+    contacts_reactivated: int = 0
     unresolved_company_link: int = 0
     unresolved_owner_link: int = 0
     skipped_malformed: int = 0
@@ -72,6 +74,7 @@ class ContactSyncResult(RecordSyncResult):
                 "fetched_contacts": self.fetched_contacts,
                 "contacts_created": self.contacts_created,
                 "contacts_updated": self.contacts_updated,
+                "contacts_reactivated": self.contacts_reactivated,
                 "unresolved_company_link": self.unresolved_company_link,
                 "unresolved_owner_link": self.unresolved_owner_link,
                 "skipped_malformed": self.skipped_malformed,

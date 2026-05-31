@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.salesforce.users.user_types import (
@@ -38,6 +39,24 @@ def resolve_matches(
         matched = email_index.get(user.email) if user.email is not None else None
         results.append(UserMatchResult(user=user, matched_app_user_id=matched))
     return results
+
+
+def build_owner_backfill_mapping(
+    *,
+    users: Iterable[NormalizedSalesforceUser],
+    user_pk_map: dict[str, UUID],
+) -> tuple[
+    dict[str, tuple[UUID, str | None, None, str | None]], dict[str, tuple[UUID, None, None, None]]
+]:
+    owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]] = {}
+    fk_only_mapping: dict[str, tuple[UUID, None, None, None]] = {}
+    for user in users:
+        pk = user_pk_map.get(user.external_id)
+        if pk is None:
+            continue
+        owner_mapping[user.external_id] = (pk, user.full_name, None, user.email)
+        fk_only_mapping[user.external_id] = (pk, None, None, None)
+    return owner_mapping, fk_only_mapping
 
 
 def normalize_email(raw: Any) -> str | None:

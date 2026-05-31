@@ -90,6 +90,104 @@ async def test_acquire_lease_blocks_duplicate_owner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_subscription_state_keeps_replay_cursors_per_channel() -> None:
+    service = SalesforceCdcSubscriptionStateService()
+    org_id = uuid4()
+    integration_id = uuid4()
+    session = _FakeSession(
+        _integration(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            metadata={
+                "salesforce_cdc": {
+                    "opportunity": {"enabled": True, "channel": "/data/OpportunityChangeEvent"},
+                    "account": {"enabled": True, "channel": "/data/AccountChangeEvent"},
+                    "contact": {"enabled": True, "channel": "/data/ContactChangeEvent"},
+                }
+            },
+        )
+    )
+
+    await service.acquire_lease(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/OpportunityChangeEvent",
+        salesforce_organization_id="00Dxx0000000001",
+        lease_owner="worker-a",
+        lease_seconds=120,
+    )
+    await service.acquire_lease(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/AccountChangeEvent",
+        salesforce_organization_id="00Dxx0000000001",
+        lease_owner="worker-b",
+        lease_seconds=120,
+    )
+    await service.acquire_lease(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/ContactChangeEvent",
+        salesforce_organization_id="00Dxx0000000001",
+        lease_owner="worker-c",
+        lease_seconds=120,
+    )
+    await service.store_replay_after_commit(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/OpportunityChangeEvent",
+        replay_id="opportunity-replay",
+        lease_owner="worker-a",
+    )
+    await service.store_replay_after_commit(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/AccountChangeEvent",
+        replay_id="account-replay",
+        lease_owner="worker-b",
+    )
+    await service.store_replay_after_commit(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/ContactChangeEvent",
+        replay_id="contact-replay",
+        lease_owner="worker-c",
+    )
+
+    opportunity = await service.get_subscription_state(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/OpportunityChangeEvent",
+    )
+    account = await service.get_subscription_state(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/AccountChangeEvent",
+    )
+    contact = await service.get_subscription_state(
+        session=session,
+        organisation_id=org_id,
+        integration_id=integration_id,
+        channel="/data/ContactChangeEvent",
+    )
+
+    assert opportunity is not None
+    assert account is not None
+    assert contact is not None
+    assert opportunity.last_replay_id == "opportunity-replay"
+    assert account.last_replay_id == "account-replay"
+    assert contact.last_replay_id == "contact-replay"
+
+
+@pytest.mark.asyncio
 async def test_replay_write_requires_current_lease_owner() -> None:
     service = SalesforceCdcSubscriptionStateService()
     org_id = uuid4()

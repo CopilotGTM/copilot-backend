@@ -86,12 +86,37 @@ class SalesforceContactRecordSyncService:
             fetched_contacts=len(raw_contacts),
             contacts_created=write_result.contacts_created,
             contacts_updated=write_result.contacts_updated,
+            contacts_reactivated=write_result.contacts_reactivated,
             unresolved_company_link=write_result.unresolved_company_link,
             unresolved_owner_link=write_result.unresolved_owner_link,
             skipped_malformed=skipped_malformed,
             deal_backfill_rows_updated=backfill_result["rows_updated"],
             deal_backfill_per_op=backfill_result["per_op"],
         )
+
+    async def persist_single_contact(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_contact: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized, skipped_malformed = normalize_contacts([raw_contact])
+        write_result, backfill_result = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=normalized,
+        )
+        return {
+            "contacts_created": write_result.contacts_created,
+            "contacts_updated": write_result.contacts_updated,
+            "contacts_reactivated": write_result.contacts_reactivated,
+            "unresolved_company_link": write_result.unresolved_company_link,
+            "unresolved_owner_link": write_result.unresolved_owner_link,
+            "skipped_malformed": skipped_malformed,
+            "deal_backfill_rows_updated": backfill_result["rows_updated"],
+            "deal_backfill_per_op": backfill_result["per_op"],
+        }
 
     async def _load_context(
         self,

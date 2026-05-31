@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -105,6 +106,23 @@ class SalesforceTaskRecordSyncService:
         )
         return result
 
+    async def persist_single_task(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_task: dict[str, Any],
+    ):
+        normalized, _skipped_malformed = normalize_tasks([raw_task])
+        scoped = [task for task in normalized if self._is_in_scope(task)]
+        return await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=scoped,
+            all_external_ids=[task.external_id for task in scoped],
+            deactivate_missing=False,
+        )
+
     def _is_in_scope(self, task) -> bool:
         return (
             task.deal_external_id is not None
@@ -159,6 +177,7 @@ class SalesforceTaskRecordSyncService:
         integration_id: UUID,
         normalized,
         all_external_ids,
+        deactivate_missing: bool = True,
     ):
         async for session in acquire_org_async_session(organisation_id):
             writer = SalesforceTaskWriter(
@@ -173,6 +192,7 @@ class SalesforceTaskRecordSyncService:
                 deal_map=await self._load_deal_map(session, organisation_id, integration_id),
                 contact_map=await self._load_contact_map(session, organisation_id, integration_id),
                 company_map=await self._load_company_map(session, organisation_id, integration_id),
+                deactivate_missing=deactivate_missing,
             )
             await session.commit()
             return write_result

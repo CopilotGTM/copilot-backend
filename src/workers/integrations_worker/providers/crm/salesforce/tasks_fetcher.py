@@ -78,6 +78,52 @@ class SalesforceTasksFetcher:
         )
         return records
 
+    async def fetch_one(self, task_id: str) -> dict[str, Any] | None:
+        soql = (
+            "SELECT Id, Subject, Description, Status, Priority, ActivityDate, "  # noqa: S608  # nosec B608
+            "CompletedDateTime, OwnerId, WhoId, WhatId, AccountId, CreatedDate, "
+            "LastModifiedDate, IsDeleted "
+            f"FROM Task WHERE Id = '{_escape_soql_literal(task_id)}' LIMIT 1"
+        )
+        rows = await self._query_all(soql, error_label="tasks single")
+        return rows[0] if rows else None
+
+    async def _query_all(self, soql: str, *, error_label: str) -> list[dict[str, Any]]:
+        url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
+        records: list[dict[str, Any]] = []
+        next_url: str | None = None
+        page_count = 0
+
+        while page_count < _MAX_PAGES:
+            payload = await self._get_json(
+                next_url or url, params=None if next_url else {"q": soql}
+            )
+            raw_records = payload.get("records")
+            if not isinstance(raw_records, list):
+                raise ValueError(f"Salesforce {error_label} query API returned non-list records")
+            records.extend(row for row in raw_records if isinstance(row, dict))
+
+            page_count += 1
+            next_records_url = payload.get("nextRecordsUrl")
+            if not isinstance(next_records_url, str) or not next_records_url:
+                break
+            next_url = (
+                next_records_url
+                if next_records_url.startswith("http")
+                else f"{self.instance_url}{next_records_url}"
+            )
+        else:
+            logger.warning(
+                "Salesforce %s query hit max page ceiling",
+                error_label,
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "max_pages": _MAX_PAGES,
+                },
+            )
+
+        return records
+
     async def _get_json(
         self,
         url: str,
@@ -99,3 +145,7 @@ class SalesforceTasksFetcher:
         if not isinstance(payload, dict):
             raise ValueError("Salesforce tasks API returned non-dict payload")
         return payload
+
+
+def _escape_soql_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")

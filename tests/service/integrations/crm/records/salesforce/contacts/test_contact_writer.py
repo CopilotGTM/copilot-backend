@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -107,3 +108,83 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
     assert created_rows[0].external_id == "003B"
     assert created_rows[0].company_id == company_id
     assert created_rows[0].owner_id == owner_id
+
+
+@pytest.mark.asyncio
+async def test_writer_reactivates_soft_deleted_contact_without_inserting_duplicate() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    contact_id = uuid4()
+
+    existing = CRMContact(
+        contact_id=contact_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="003A",
+        email="old@example.com",
+        full_name="Old Name",
+        is_deleted=True,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceContactWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"003A": existing})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[
+            _normalized_contact(
+                external_id="003A",
+                company_external_id=None,
+                owner_external_id=None,
+            ),
+        ],
+        company_map={},
+        owner_map={},
+    )
+
+    assert result.contacts_created == 0
+    assert result.contacts_updated == 0
+    assert result.contacts_reactivated == 1
+    assert existing.contact_id == contact_id
+    assert existing.is_deleted is False
+    assert existing.full_name == "Alex Morgan"
+    assert existing.email == "003a@example.com"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_includes_soft_deleted_contacts() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMContact(
+        contact_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="003A",
+        is_deleted=True,
+    )
+
+    scalars = MagicMock()
+    scalars.all.return_value = [existing]
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=SimpleNamespace(scalars=lambda: scalars))
+
+    writer = SalesforceContactWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+
+    rows = await writer._load_existing_rows()
+
+    statement = session.execute.call_args.args[0]
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "crm_contacts.is_deleted = false" not in compiled
+    assert rows == {"003A": existing}

@@ -39,6 +39,7 @@ class SalesforceUserWriter:
         *,
         matches: list[UserMatchResult],
         all_external_ids: Iterable[str],
+        deactivate_missing: bool = True,
     ) -> UserWriteResult:
         result = UserWriteResult()
         now = datetime.now(UTC)
@@ -83,13 +84,14 @@ class SalesforceUserWriter:
             else:
                 result.users_minted_uuid += 1
 
-        snapshot_external_ids = set(all_external_ids)
-        for external_id, row in existing_by_external.items():
-            if external_id in snapshot_external_ids:
-                continue
-            if row.is_active:
-                row.is_active = False
-                result.users_deactivated += 1
+        if deactivate_missing:
+            snapshot_external_ids = set(all_external_ids)
+            for external_id, row in existing_by_external.items():
+                if external_id in snapshot_external_ids:
+                    continue
+                if row.is_active:
+                    row.is_active = False
+                    result.users_deactivated += 1
 
         await self.session.flush()
         logger.info(

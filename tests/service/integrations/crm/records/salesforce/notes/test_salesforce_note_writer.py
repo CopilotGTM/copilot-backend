@@ -103,3 +103,41 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
     assert stale.is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_writer_single_record_mode_does_not_soft_delete_unrelated_rows() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    active = CRMActivity(
+        activity_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="069OLD",
+        activity_type=CRMActivityType.NOTE.value,
+        is_deleted=False,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"069OLD": active})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[],
+        all_external_ids=[],
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=False,
+    )
+
+    assert result.notes_deactivated == 0
+    assert active.is_deleted is False
