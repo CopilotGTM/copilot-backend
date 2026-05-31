@@ -16,6 +16,7 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.client import send_integrations_task_async
 from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
@@ -42,6 +43,7 @@ def mark_salesforce_initial_sync_succeeded_task(
     int_id = UUID(integration_id)
 
     async def _run() -> dict[str, Any]:
+        should_start_cdc = False
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == org_id,
@@ -62,13 +64,48 @@ def mark_salesforce_initial_sync_succeeded_task(
             metadata.pop("initial_sync_placeholder", None)
             integration.connection_metadata = metadata
             integration.last_synced_at = datetime_now_naive()
+            should_start_cdc = _should_start_salesforce_opportunity_cdc(
+                metadata=metadata,
+                credentials=dict(getattr(integration, "credentials", None) or {}),
+            )
             session.add(integration)
             await session.commit()
+
+        task_id = None
+        if should_start_cdc:
+            task_id = await send_integrations_task_async(
+                task_name="integrations.run_salesforce_cdc_subscriber",
+                kwargs={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                },
+                queue="integrations_streaming",
+                routing_key="integrations_streaming",
+            )
 
         return {
             "status": "success",
             "organisation_id": organisation_id,
             "integration_id": integration_id,
+            "salesforce_cdc_task_id": task_id,
         }
 
     return run_async(_run())
+
+
+def _should_start_salesforce_opportunity_cdc(
+    *,
+    metadata: dict[str, Any],
+    credentials: dict[str, Any],
+) -> bool:
+    cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
+    opportunity_metadata = dict(cdc_metadata.get("opportunity") or {})
+    return (
+        opportunity_metadata.get("enabled") is True
+        and bool(str(metadata.get("salesforce_organization_id") or "").strip())
+        and bool(
+            str(
+                credentials.get("instance_url") or metadata.get("salesforce_instance_url") or ""
+            ).strip()
+        )
+    )

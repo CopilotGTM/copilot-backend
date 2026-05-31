@@ -216,6 +216,11 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 3,
         "retry_delay": 60,
     },
+    "integrations.run_salesforce_cdc_subscriber": {
+        "soft": 3300,
+        "hard": 3600,
+        "retries": 0,
+    },
     "integrations.sync_salesforce_tasks": {
         "soft": 300,
         "hard": 360,
@@ -312,6 +317,11 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "integrations_priority",
                 exchange=integrations_exchange,
                 routing_key="integrations_priority",
+            ),
+            Queue(
+                "integrations_streaming",
+                exchange=integrations_exchange,
+                routing_key="integrations_streaming",
             ),
         )
 
@@ -469,6 +479,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.sync_salesforce_deals": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
+            },
+            "integrations.run_salesforce_cdc_subscriber": {
+                "queue": "integrations_streaming",
+                "routing_key": "integrations_streaming",
             },
             "integrations.sync_salesforce_tasks": {
                 "queue": "integrations_priority",

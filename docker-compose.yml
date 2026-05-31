@@ -420,7 +420,7 @@ services:
       - 8.8.4.4
     command: >
       celery -A src.workers.integrations_worker.celery_app worker
-      --queues=integrations,integrations_priority
+      --queues=integrations,integrations_priority,integrations_streaming
       --concurrency=8
       --loglevel=info
       --hostname=integrations@%h
