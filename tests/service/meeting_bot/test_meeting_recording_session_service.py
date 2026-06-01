@@ -126,6 +126,40 @@ class TestGetOrCreatePendingSession:
         session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_cancelled_session_is_not_refreshed_for_resend(self, monkeypatch) -> None:
+        """A cancelled row is a durable user opt-out, not a retry candidate."""
+        service = _make_service()
+        original_join_at = datetime.now(UTC) + timedelta(minutes=1)
+        existing = MeetingRecordingSession(
+            organisation_id=service.organisation_id,
+            calendar_event_id=uuid4(),
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="old-key",
+            meeting_url="https://old.example/join",
+            join_at=original_join_at,
+            status=MeetingRecordingStatus.CANCELLED,
+            transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
+        )
+        session, fake_gen = _fake_session_gen_with_scalar(existing)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        result = await service.get_or_create_pending_session(
+            calendar_event_id=existing.calendar_event_id,
+            meeting_url="https://new.example/join",
+            join_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+
+        assert result is existing
+        assert result.meeting_url == "https://old.example/join"
+        assert result.join_at == original_join_at
+        assert result.status == MeetingRecordingStatus.CANCELLED
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_does_not_refresh_existing_sent_session_before_reschedule_decision(
         self, monkeypatch
     ) -> None:

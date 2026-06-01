@@ -1353,6 +1353,11 @@ class DealMeetingMatcher:
         actual reset/cancel/send sequence after the transaction commits.
         """
         existing_join_at = getattr(session, "join_at", None)
+        existing_status = getattr(session, "status", None)
+        if existing_status is not None and hasattr(existing_status, "value"):
+            existing_status = existing_status.value
+        if str(existing_status) == MeetingRecordingStatus.CANCELLED.value:
+            return False
         if existing_join_at is None:
             return False
         return (
