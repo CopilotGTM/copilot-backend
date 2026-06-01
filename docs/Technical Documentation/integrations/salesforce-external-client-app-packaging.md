@@ -51,13 +51,16 @@ committed.
 | CopilotGTM environment | Salesforce app | Package | Package ID | Version | Subscriber Package Version ID | Production install URL |
 | --- | --- | --- | --- | --- | --- | --- |
 | Dev | `CopilotGTMDev` | `CopilotGTMDevECA` | `0HodM0000003f6fSAA` | `0.1.0.1` | `04tdM000000U44bQAC` | `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC` |
-| Prod | `CopilotGTMProd` | `CopilotGTMProdECA` | `0HodM0000003f8HSAQ` | `0.1.0.1` | `04tdM000000U4B3QAK` | `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U4B3QAK` |
+| Prod | `CopilotGTMProd` | `CopilotGTMProdECA` | `0HodM0000003f8HSAQ` | `0.1.0.2` | `04tdM000000UHMnQAO` | `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000UHMnQAO` |
+
+Prod uses build `0.1.0.2` because build `0.1.0.1` was created without stored
+code coverage and Salesforce would not promote it for production installs.
 
 For sandbox installs, use the same package version IDs with the sandbox host:
 
 ```text
 https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC
-https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U4B3QAK
+https://test.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000UHMnQAO
 ```
 
 ## What Was Packaged
@@ -118,7 +121,7 @@ SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packag
 
 # charts/application/values-prod.yaml
 SALESFORCE_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
-SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U4B3QAK"
+SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000UHMnQAO"
 ```
 
 `SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL` should be surfaced through the

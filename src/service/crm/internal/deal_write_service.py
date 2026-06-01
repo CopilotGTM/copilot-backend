@@ -1143,17 +1143,10 @@ class DealWriteService:
             if not isinstance(explicit_company_id, UUID):
                 raise DealWriteServiceError("Invalid account company_id", status_code=400)
 
-            stmt = select(CRMCompany).where(
-                col(CRMCompany.organisation_id) == self.organisation_id,
-                col(CRMCompany.integration_id) == integration_id,
-                col(CRMCompany.company_id) == explicit_company_id,
-                col(CRMCompany.is_deleted).is_(False),
-            )
-            result = await self.session.execute(stmt)
-            company = result.scalars().first()
-            if company is None:
-                raise DealWriteServiceError("Account not found", status_code=404)
-            return company, None
+            company = await self._load_org_company(explicit_company_id)
+            return await self._ensure_internal_company_from_source(
+                company, integration_id, now
+            ), None
 
         website_provided = "website" in account_payload
         linkedin_provided = "linkedin_url" in account_payload
@@ -1295,6 +1288,84 @@ class DealWriteService:
         self.session.add(company)
         await self.session.flush()
         return company, None
+
+    async def _load_org_company(self, company_id: UUID) -> CRMCompany:
+        company = await self.session.get(CRMCompany, company_id)
+        if company is None or company.organisation_id != self.organisation_id or company.is_deleted:
+            raise DealWriteServiceError("Account not found", status_code=404)
+        return company
+
+    async def _ensure_internal_company_from_source(
+        self,
+        source_company: CRMCompany,
+        integration_id: UUID,
+        now: datetime,
+    ) -> CRMCompany:
+        if source_company.integration_id == integration_id:
+            return source_company
+
+        domain = self._normalize_domain(source_company.domain or source_company.website)
+        if domain:
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == integration_id,
+                col(CRMCompany.is_deleted).is_(False),
+                func.lower(CRMCompany.domain) == domain.lower(),
+            )
+            result = await self.session.execute(stmt)
+            matched_company = result.scalars().first()
+            if matched_company:
+                return matched_company
+
+        normalized_name = self._normalize_company_name(source_company.name)
+        if normalized_name:
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == integration_id,
+                col(CRMCompany.is_deleted).is_(False),
+                func.lower(func.trim(CRMCompany.name)) == normalized_name,
+            )
+            result = await self.session.execute(stmt)
+            name_matches = list(result.scalars().all())
+            if len(name_matches) == 1:
+                return name_matches[0]
+
+        company_id = uuid4()
+        company = CRMCompany(
+            company_id=company_id,
+            organisation_id=self.organisation_id,
+            integration_id=integration_id,
+            external_id=str(company_id),
+            name=source_company.name,
+            domain=domain,
+            website=source_company.website,
+            description=source_company.description,
+            industry=source_company.industry,
+            company_type=source_company.company_type,
+            lifecycle_stage=source_company.lifecycle_stage,
+            phone=source_company.phone,
+            city=source_company.city,
+            state=source_company.state,
+            country=source_company.country,
+            address=source_company.address,
+            postal_code=source_company.postal_code,
+            timezone=source_company.timezone,
+            linkedin_url=source_company.linkedin_url,
+            source_created_at=now,
+            source_modified_at=now,
+            synced_at=now,
+            last_seen_at=now,
+            properties={
+                "source": "internal_crm",
+                "created_via": "deal_create",
+                "copied_from_company_id": str(source_company.company_id),
+                "copied_from_integration_id": str(source_company.integration_id),
+                "copied_from_external_id": source_company.external_id,
+            },
+        )
+        self.session.add(company)
+        await self.session.flush()
+        return company
 
     async def _add_company_participant(
         self,
@@ -1504,16 +1575,33 @@ class DealWriteService:
             return
 
         payloads: list[dict[str, Any]] = []
+        current_company: CRMCompany | None = None
+        current_company_loaded = False
+        now = datetime.now(UTC)
         for participant in contact_participants:
             contact_id = participant.get("contact_id")
             if not isinstance(contact_id, UUID):
                 raise DealWriteServiceError(
                     "Invalid contact participant contact_id", status_code=400
                 )
+            source_contact = await self._load_org_contact(contact_id)
+            if source_contact.integration_id != deal.integration_id and not current_company_loaded:
+                current_company = await self._get_current_company(
+                    deal.company_id,
+                    deal.company_external_id,
+                    deal.integration_id,
+                )
+                current_company_loaded = True
+            contact = await self._ensure_internal_contact_from_source(
+                source_contact,
+                deal.integration_id,
+                current_company,
+                now,
+            )
             payloads.append(
                 {
                     "participant_type": "contact",
-                    "related_id": contact_id,
+                    "related_id": contact.contact_id,
                     "relationship_role": None,
                 }
             )
@@ -1522,6 +1610,75 @@ class DealWriteService:
             self.session, self.organisation_id, self.actor_user_id, self.master_session
         )
         await participant_service.add_participants(deal.deal_id, payloads)
+
+    async def _load_org_contact(self, contact_id: UUID) -> CRMContact:
+        contact = await self.session.get(CRMContact, contact_id)
+        if contact is None or contact.organisation_id != self.organisation_id or contact.is_deleted:
+            raise DealWriteServiceError("Contact not found", status_code=404)
+        return contact
+
+    async def _ensure_internal_contact_from_source(
+        self,
+        source_contact: CRMContact,
+        integration_id: UUID,
+        company: CRMCompany | None,
+        now: datetime,
+    ) -> CRMContact:
+        if source_contact.integration_id == integration_id:
+            return source_contact
+
+        email = self._normalize_email(source_contact.email)
+        if email:
+            stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.integration_id) == integration_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(CRMContact.email) == email,
+            )
+            result = await self.session.execute(stmt)
+            matched_contact = result.scalars().first()
+            if matched_contact:
+                return matched_contact
+
+        contact_id = uuid4()
+        company_name = company.name if company else source_contact.company_name
+        contact = CRMContact(
+            contact_id=contact_id,
+            organisation_id=self.organisation_id,
+            integration_id=integration_id,
+            external_id=str(contact_id),
+            first_name=source_contact.first_name,
+            last_name=source_contact.last_name,
+            full_name=self._build_contact_display_name(source_contact),
+            job_title=source_contact.job_title,
+            company_name=company_name,
+            company_id=company.company_id if company else None,
+            company_external_id=company.external_id if company else None,
+            email=email,
+            additional_emails=list(source_contact.additional_emails or []),
+            phone=source_contact.phone,
+            mobile_phone=source_contact.mobile_phone,
+            website=source_contact.website,
+            city=source_contact.city,
+            state=source_contact.state,
+            postal_code=source_contact.postal_code,
+            country=source_contact.country,
+            timezone=source_contact.timezone,
+            source_created_at=now,
+            source_modified_at=now,
+            synced_at=now,
+            last_seen_at=now,
+            properties={
+                "source": "internal_crm",
+                "created_via": "deal_create",
+                "copied_from_contact_id": str(source_contact.contact_id),
+                "copied_from_integration_id": str(source_contact.integration_id),
+                "copied_from_external_id": source_contact.external_id,
+            },
+        )
+        self.session.add(contact)
+        await self.session.flush()
+        return contact
 
     async def _add_contact_participant(
         self,
@@ -1592,6 +1749,13 @@ class DealWriteService:
         cleaned = _CONTACT_NAME_NON_ALNUM_RE.sub(" ", cleaned)
         cleaned = " ".join(cleaned.split())
         return cleaned or None
+
+    @staticmethod
+    def _build_contact_display_name(contact: CRMContact) -> str | None:
+        if contact.full_name:
+            return contact.full_name
+        parts = [part for part in (contact.first_name, contact.last_name) if part]
+        return " ".join(parts) or None
 
     @staticmethod
     def _normalize_email(value: str | None) -> str | None:
