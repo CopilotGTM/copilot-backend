@@ -16,6 +16,8 @@ from src.service.crm.discovery.calendar_contact_account_discovery import (
 )
 from src.service.crm.discovery.calendar_contact_account_discovery_jobs import (
     CALENDAR_DISCOVERY_METADATA_KEY,
+    CALENDAR_DISCOVERY_TRIGGER_CONNECTION,
+    CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC,
     _parse_uuid,
     _write_discovery_metadata,
     build_discovery_result_payload,
@@ -48,6 +50,8 @@ def discover_calendar_contacts_accounts_task(
     organisation_id: str | None = None,
     source_integration_id: str | None = None,
     job_id: str | None = None,
+    trigger: str = CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC,
+    trigger_id: str | None = None,
 ) -> dict[str, Any]:
     """Derive internal CRM accounts/contacts from persisted calendar events."""
     started_at = datetime.now(UTC)
@@ -61,6 +65,8 @@ def discover_calendar_contacts_accounts_task(
             job_id=job_id,
             source_integration_id=source_integration_id,
             sync_result=sync_result,
+            trigger=trigger,
+            trigger_id=trigger_id,
         )
         if job_uuid is None:
             return {
@@ -210,12 +216,16 @@ async def _resolve_or_create_job(
     job_id: str | None,
     source_integration_id: str | None,
     sync_result: dict[str, Any] | None,
+    trigger: str,
+    trigger_id: str | None,
 ) -> UUID | None:
     if job_id:
         return UUID(job_id)
 
     records_synced = int((sync_result or {}).get("events_synced") or 0)
-    if (sync_result or {}).get("status") != "success" or records_synced <= 0:
+    if (sync_result or {}).get("status") != "success":
+        return None
+    if trigger != CALENDAR_DISCOVERY_TRIGGER_CONNECTION and records_synced <= 0:
         return None
     if source_integration_id is None:
         raise RuntimeError("Calendar discovery requires source_integration_id")
@@ -228,6 +238,8 @@ async def _resolve_or_create_job(
             source_integration_id=integration_uuid,
             is_initial=True,
             records_synced=records_synced,
+            trigger=trigger,
+            trigger_id=trigger_id,
         )
         await org_session.commit()
         return dispatch.job_id if dispatch is not None else None

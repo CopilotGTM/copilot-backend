@@ -152,7 +152,11 @@ class InitialSyncService:
         try:
             # Calendar
             if integration_type in self.CALENDAR_INTEGRATION_TYPES:
-                self._trigger_calendar_sync(org_id_str, int_id_str)
+                self._trigger_calendar_sync(
+                    org_id_str,
+                    int_id_str,
+                    str(integration.connection_id or integration.integration_id),
+                )
                 if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
                     # Initial sync establishes the first delta cursor; the
                     # subscription ensures future changes wake that same sync.
@@ -221,7 +225,12 @@ class InitialSyncService:
                 exc_info=True,
             )
 
-    def _trigger_calendar_sync(self, org_id_str: str, int_id_str: str) -> None:
+    def _trigger_calendar_sync(
+        self,
+        org_id_str: str,
+        int_id_str: str,
+        connection_id: str,
+    ) -> None:
         """Trigger calendar initial sync."""
         client = get_integrations_celery_client()
         sync_signature = client.signature(
@@ -234,6 +243,8 @@ class InitialSyncService:
             kwargs={
                 "organisation_id": org_id_str,
                 "source_integration_id": int_id_str,
+                "trigger": "calendar_connection",
+                "trigger_id": connection_id,
             },
             queue="deal",
             routing_key="deal",

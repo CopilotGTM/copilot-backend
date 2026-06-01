@@ -16,6 +16,8 @@ AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 CALENDAR_DISCOVERY_METADATA_KEY = "calendar_contact_account_discovery_v1"
 CALENDAR_DISCOVERY_RUN_VERSION = "calendar_contact_account_discovery_v1"
 CALENDAR_DISCOVERY_DEDUPE_KEY_PREFIX = CALENDAR_DISCOVERY_RUN_VERSION
+CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC = "calendar_initial_sync"
+CALENDAR_DISCOVERY_TRIGGER_CONNECTION = "calendar_connection"
 
 _CALENDAR_INTEGRATION_TYPES = {
     IntegrationType.GOOGLE_CALENDAR,
@@ -34,15 +36,25 @@ def calendar_discovery_should_enqueue(
     metadata: dict[str, Any] | None,
     is_initial: bool,
     records_synced: int,
+    trigger: str = CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC,
+    trigger_id: str | None = None,
 ) -> bool:
-    if not is_initial or records_synced <= 0:
+    is_connection_trigger = trigger == CALENDAR_DISCOVERY_TRIGGER_CONNECTION
+    if is_connection_trigger and not trigger_id:
+        return False
+    if not is_connection_trigger and (not is_initial or records_synced <= 0):
         return False
 
     state = dict((metadata or {}).get(CALENDAR_DISCOVERY_METADATA_KEY) or {})
     status = state.get("status")
+    same_trigger = state.get("trigger") == trigger and (
+        not is_connection_trigger or state.get("trigger_id") == trigger_id
+    )
     if status == "success":
+        return is_connection_trigger and not same_trigger
+    if not is_connection_trigger and status in {"pending", "in_progress"} and state.get("job_id"):
         return False
-    return not (status in {"pending", "in_progress"} and bool(state.get("job_id")))
+    return not (status in {"pending", "in_progress"} and bool(state.get("job_id")) and same_trigger)
 
 
 def should_run_calendar_discovery(
@@ -50,11 +62,15 @@ def should_run_calendar_discovery(
     integration: KnowledgeIntegration,
     is_initial: bool,
     records_synced: int,
+    trigger: str = CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC,
+    trigger_id: str | None = None,
 ) -> bool:
     return calendar_discovery_should_enqueue(
         metadata=integration.connection_metadata,
         is_initial=is_initial,
         records_synced=records_synced,
+        trigger=trigger,
+        trigger_id=trigger_id,
     )
 
 
@@ -65,8 +81,13 @@ async def prepare_calendar_discovery_job(
     source_integration_id: UUID,
     is_initial: bool,
     records_synced: int,
+    trigger: str = CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC,
+    trigger_id: str | None = None,
 ) -> CalendarDiscoveryJobDispatch | None:
-    if not is_initial or records_synced <= 0:
+    is_connection_trigger = trigger == CALENDAR_DISCOVERY_TRIGGER_CONNECTION
+    if is_connection_trigger and not trigger_id:
+        return None
+    if not is_connection_trigger and (not is_initial or records_synced <= 0):
         return None
 
     stmt = (
@@ -91,6 +112,8 @@ async def prepare_calendar_discovery_job(
         metadata=metadata,
         is_initial=is_initial,
         records_synced=records_synced,
+        trigger=trigger,
+        trigger_id=trigger_id,
     ):
         return None
 
@@ -109,12 +132,17 @@ async def prepare_calendar_discovery_job(
         status=JobStatus.PENDING,
         job_metadata={
             "source": "automated_pipeline",
-            "trigger": "calendar_initial_sync",
+            "trigger": trigger,
+            "trigger_id": trigger_id,
             "run_version": CALENDAR_DISCOVERY_RUN_VERSION,
             "source_integration_id": str(source_integration_id),
             "integration_type": integration_type.value,
             "records_synced": records_synced,
-            "dedupe_key": f"{CALENDAR_DISCOVERY_DEDUPE_KEY_PREFIX}:{source_integration_id}",
+            "dedupe_key": _build_dedupe_key(
+                source_integration_id=source_integration_id,
+                trigger=trigger,
+                trigger_id=trigger_id,
+            ),
             "previous_success_job_id": previous_success_job_id,
             "previous_event_user_state_updated_at": previous_watermark,
         },
@@ -127,6 +155,8 @@ async def prepare_calendar_discovery_job(
         "status": "pending",
         "job_id": str(job.job_id),
         "triggered_at": now,
+        "trigger": trigger,
+        "trigger_id": trigger_id,
         "last_success_job_id": previous_success_job_id,
         "last_processed_event_user_state_updated_at": previous_watermark,
         "records_synced": records_synced,
@@ -219,6 +249,18 @@ def _parse_uuid(value: Any) -> UUID | None:
         return UUID(value)
     except ValueError:
         return None
+
+
+def _build_dedupe_key(
+    *,
+    source_integration_id: UUID,
+    trigger: str,
+    trigger_id: str | None,
+) -> str:
+    key = f"{CALENDAR_DISCOVERY_DEDUPE_KEY_PREFIX}:{source_integration_id}"
+    if trigger == CALENDAR_DISCOVERY_TRIGGER_CONNECTION and trigger_id:
+        return f"{key}:{trigger}:{trigger_id}"
+    return key
 
 
 def _datetime_to_iso(value: datetime | None) -> str | None:

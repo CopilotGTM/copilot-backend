@@ -87,6 +87,8 @@ def test_outlook_calendar_connect_triggers_sync_and_subscription(monkeypatch) ->
         kwargs={
             "organisation_id": str(integration.organisation_id),
             "source_integration_id": str(integration.integration_id),
+            "trigger": "calendar_connection",
+            "trigger_id": "conn",
         },
         queue="deal",
         routing_key="deal",
@@ -233,6 +235,8 @@ def test_google_calendar_connect_triggers_sync_and_subscription(monkeypatch) -> 
         kwargs={
             "organisation_id": str(integration.organisation_id),
             "source_integration_id": str(integration.integration_id),
+            "trigger": "calendar_connection",
+            "trigger_id": "conn",
         },
         queue="deal",
         routing_key="deal",
