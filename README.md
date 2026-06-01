@@ -224,6 +224,51 @@ docker logs copilot-redis
 
 ## 📝 Helper Commands Reference
 
+### Grafana Loki live logs
+
+Install `logcli` and configure the Loki environment variables in PowerShell:
+
+```powershell
+$env:LOKI_ADDR="https://logs-prod-021.grafana.net"
+$env:LOKI_USERNAME="1510920"
+$env:LOKI_PASSWORD="<grafana-cloud-token-with-logs-read>"
+```
+
+Discover available Loki labels and backend services:
+
+```powershell
+logcli labels --since=1h
+logcli labels service_name --since=1h
+```
+
+Tail all backend logs for the dev environment:
+
+```powershell
+logcli query '{deployment_environment="dev", service_name=~"copilotgtm-backend-.*"}' --tail --since=5m
+```
+
+Tail all backend logs for the prod environment:
+
+```powershell
+logcli query '{deployment_environment="prod", service_name=~"copilotgtm-backend-.*"}' --tail --since=5m
+```
+
+Tail a specific service:
+
+```powershell
+logcli query '{deployment_environment="dev", service_name="copilotgtm-backend-api"}' --tail --since=5m
+logcli query '{deployment_environment="prod", service_name="copilotgtm-backend-integrations_worker"}' --tail --since=5m
+```
+
+Tail errors only:
+
+```powershell
+logcli query '{deployment_environment="dev", service_name=~"copilotgtm-backend-.*", detected_level="error"}' --tail --since=1h
+logcli query '{deployment_environment="prod", service_name=~"copilotgtm-backend-.*", detected_level="error"}' --tail --since=1h
+```
+
+Stop live tailing with `Ctrl+C`.
+
 ---
 
 ## 📄 License
