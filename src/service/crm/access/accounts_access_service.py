@@ -376,10 +376,7 @@ class AccountsAccessService:
         if limit is not None:
             stmt = stmt.limit(limit)
         res = await self.org_session.execute(stmt)
-        return [
-            {"contact": row[0], "deal_count": row[1] or 0}
-            for row in res.all()
-        ]
+        return [{"contact": row[0], "deal_count": row[1] or 0} for row in res.all()]
 
     async def get_account_deals(self, company_id: UUID) -> list[CRMDeal]:
         """Return deals linked to the account by company_id, with external fallback."""

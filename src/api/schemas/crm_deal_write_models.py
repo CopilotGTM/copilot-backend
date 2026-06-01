@@ -160,10 +160,7 @@ class DealCreateRequest(BaseModel):
             self.account = None
         if self.team_members is not None and len(self.team_members) == 0:
             self.team_members = None
-        if (
-            self.contact_participants is not None
-            and len(self.contact_participants) == 0
-        ):
+        if self.contact_participants is not None and len(self.contact_participants) == 0:
             self.contact_participants = None
         return self
 
