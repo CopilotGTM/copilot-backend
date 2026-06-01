@@ -620,6 +620,7 @@ dependencies = [
     { name = "sentry-sdk", extra = ["celery", "fastapi"] },
     { name = "sqlalchemy" },
     { name = "sqlmodel" },
+    { name = "tldextract" },
 ]
 
 [package.optional-dependencies]
@@ -890,6 +891,7 @@ requires-dist = [
     { name = "supabase", marker = "extra == 'api'", specifier = ">=2.27.1" },
     { name = "supabase", marker = "extra == 'full'", specifier = ">=2.27.1" },
     { name = "supabase", marker = "extra == 'workers-light'", specifier = ">=2.27.1" },
+    { name = "tldextract", specifier = "==5.3.1" },
     { name = "torch", marker = "extra == 'full'", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "extra == 'knowledge'", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "extra == 'full'", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cpu" },

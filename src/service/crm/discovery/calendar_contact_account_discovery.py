@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
+import tldextract
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
@@ -61,6 +62,34 @@ _ROLE_MAILBOX_LOCAL_PARTS = {
     "support",
     "webinar",
 }
+_TLDEXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+_ACADEMIC_SUFFIXES = {
+    "ac.in",
+    "ac.jp",
+    "ac.nz",
+    "ac.uk",
+    "edu",
+    "edu.au",
+    "edu.cn",
+    "edu.in",
+    "edu.sg",
+    "res.in",
+    "school.in",
+}
+_GOVERNMENT_SUFFIXES = {
+    "gov",
+    "gov.in",
+    "mil",
+    "nic.in",
+}
+_DISPOSABLE_EMAIL_DOMAINS = {
+    "10minutemail.com",
+    "guerrillamail.com",
+    "mailinator.com",
+    "tempmail.com",
+    "trashmail.com",
+    "yopmail.com",
+}
 
 
 class SkipReason(str, Enum):
@@ -72,6 +101,9 @@ class SkipReason(str, Enum):
     MALFORMED_EMAIL = "malformed_email"
     ROLE_MAILBOX = "role_mailbox"
     FREE_EMAIL_DOMAIN = "free_email_domain"
+    DISPOSABLE_EMAIL_DOMAIN = "disposable_email_domain"
+    ACADEMIC_DOMAIN = "academic_domain"
+    GOVERNMENT_DOMAIN = "government_domain"
     INTERNAL_EMAIL = "internal_email"
     INTERNAL_DOMAIN = "internal_domain"
     DECLINED = "declined"
@@ -170,6 +202,14 @@ def _domain_labels_are_valid(domain: str) -> bool:
     return all(label and not label.startswith("-") and not label.endswith("-") for label in labels)
 
 
+def _domain_matches_suffix(domain: str, suffixes: set[str]) -> bool:
+    extracted = _TLDEXTRACT(domain)
+    suffix = extracted.suffix.lower()
+    return any(
+        domain == suffix_value or domain.endswith(f".{suffix_value}") for suffix_value in suffixes
+    ) or (suffix in suffixes)
+
+
 def _is_role_mailbox(email: str) -> bool:
     local_part = email.rsplit("@", 1)[0]
     compact = re.sub(r"[^a-z0-9]", "", local_part)
@@ -255,10 +295,16 @@ def _candidate_skip_reason(
         return SkipReason.ROLE_MAILBOX
     if domain in FREE_EMAIL_DOMAINS:
         return SkipReason.FREE_EMAIL_DOMAIN
+    if domain in _DISPOSABLE_EMAIL_DOMAINS:
+        return SkipReason.DISPOSABLE_EMAIL_DOMAIN
     if email in context.internal_emails:
         return SkipReason.INTERNAL_EMAIL
     if domain in context.internal_domains:
         return SkipReason.INTERNAL_DOMAIN
+    if _domain_matches_suffix(domain, _ACADEMIC_SUFFIXES):
+        return SkipReason.ACADEMIC_DOMAIN
+    if _domain_matches_suffix(domain, _GOVERNMENT_SUFFIXES):
+        return SkipReason.GOVERNMENT_DOMAIN
     if not (_usable_display_name(attendee.display_name) or _derive_name_from_email(email)):
         return SkipReason.MISSING_NAME
     return None
@@ -472,11 +518,11 @@ class CalendarContactAccountDiscoveryService:
             col(KnowledgeIntegration.integration_email).is_not(None),
         )
         integration_result = await self.org_session.execute(integration_stmt)
-        for email in integration_result.scalars().all():
-            normalized = _normalize_email(str(email))
-            if normalized:
-                internal_emails.add(normalized)
-                internal_domains.add(_email_domain(normalized))
+        for integration_email in integration_result.scalars().all():
+            normalized_integration_email = _normalize_email(str(integration_email))
+            if normalized_integration_email:
+                internal_emails.add(normalized_integration_email)
+                internal_domains.add(_email_domain(normalized_integration_email))
 
         internal_domains = {
             domain for domain in internal_domains if domain not in FREE_EMAIL_DOMAINS
@@ -515,15 +561,18 @@ class CalendarContactAccountDiscoveryService:
     async def _load_source_calendar_events(self) -> list[CalendarDiscoveryEvent]:
         stmt = (
             select(CalendarEvent, CalendarEventUserState, CalendarAttendee)
-            .join(CalendarEventUserState, CalendarEventUserState.event_id == CalendarEvent.event_id)
-            .join(CalendarAttendee, CalendarAttendee.event_id == CalendarEvent.event_id)
+            .join(
+                CalendarEventUserState,
+                col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
+            )
+            .join(CalendarAttendee, col(CalendarAttendee.event_id) == col(CalendarEvent.event_id))
             .where(
                 col(CalendarEvent.organisation_id) == self.organisation_id,
                 col(CalendarEvent.is_deleted).is_(False),
                 col(CalendarEventUserState.integration_id) == self.source_integration_id,
                 col(CalendarEventUserState.is_deleted).is_(False),
             )
-            .order_by(CalendarEvent.start_at.asc())
+            .order_by(col(CalendarEvent.start_at).asc())
         )
         if self.event_user_state_updated_after is not None:
             stmt = stmt.where(
