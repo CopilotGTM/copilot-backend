@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class DealAccountInput(BaseModel):
     """Optional account details supplied during deal creation."""
 
+    company_id: UUID | None = None
     name: str | None = None
     domain: str | None = None
     website: str | None = None
@@ -45,6 +46,12 @@ class DealTeamMemberInput(BaseModel):
             return None
         value = v.strip()
         return value or None
+
+
+class DealContactParticipantInput(BaseModel):
+    """External CRM contact added as a deal participant during deal creation."""
+
+    contact_id: UUID
 
 
 class DealCreateRequest(BaseModel):
@@ -117,6 +124,10 @@ class DealCreateRequest(BaseModel):
         default=None,
         description="Internal team members to attach as deal participants (e.g. SE, CSM).",
     )
+    contact_participants: list[DealContactParticipantInput] | None = Field(
+        default=None,
+        description="External CRM contacts to attach as deal participants/stakeholders.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -138,6 +149,7 @@ class DealCreateRequest(BaseModel):
         if self.account and not any(
             [
                 self.account.name,
+                self.account.company_id,
                 self.account.domain,
                 self.account.website,
                 self.account.linkedin_url,
@@ -148,6 +160,11 @@ class DealCreateRequest(BaseModel):
             self.account = None
         if self.team_members is not None and len(self.team_members) == 0:
             self.team_members = None
+        if (
+            self.contact_participants is not None
+            and len(self.contact_participants) == 0
+        ):
+            self.contact_participants = None
         return self
 
 

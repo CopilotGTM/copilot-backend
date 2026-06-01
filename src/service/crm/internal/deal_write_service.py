@@ -234,14 +234,16 @@ class DealWriteService:
         # Optional: account + team members supplied during deal creation
         account_payload = payload.get("account")
         team_members = payload.get("team_members")
+        contact_participants = payload.get("contact_participants")
         primary_contact_name = payload.get("primary_contact_name")
         primary_contact_email = payload.get("primary_contact_email")
-        if account_payload or team_members:
+        if account_payload or team_members or contact_participants:
             await self._apply_account_and_team(
                 deal=deal,
                 integration_id=integration_id,
                 account_payload=account_payload,
                 team_members=team_members,
+                contact_participants=contact_participants,
                 primary_contact_name=primary_contact_name,
                 primary_contact_email=primary_contact_email,
                 now=now,
@@ -964,6 +966,7 @@ class DealWriteService:
         integration_id: UUID,
         account_payload: dict[str, Any] | None,
         team_members: list[dict[str, Any]] | None,
+        contact_participants: list[dict[str, Any]] | None,
         primary_contact_name: str | None,
         primary_contact_email: str | None,
         now: datetime,
@@ -1002,6 +1005,9 @@ class DealWriteService:
 
             if team_members:
                 await self._add_team_participants(deal, team_members)
+
+            if contact_participants:
+                await self._add_contact_participants(deal, contact_participants)
         except DealParticipantServiceError as exc:
             raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
@@ -1132,6 +1138,23 @@ class DealWriteService:
         integration_id: UUID,
         now: datetime,
     ) -> tuple[CRMCompany | None, str | None]:
+        explicit_company_id = account_payload.get("company_id")
+        if explicit_company_id:
+            if not isinstance(explicit_company_id, UUID):
+                raise DealWriteServiceError("Invalid account company_id", status_code=400)
+
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == integration_id,
+                col(CRMCompany.company_id) == explicit_company_id,
+                col(CRMCompany.is_deleted).is_(False),
+            )
+            result = await self.session.execute(stmt)
+            company = result.scalars().first()
+            if company is None:
+                raise DealWriteServiceError("Account not found", status_code=404)
+            return company, None
+
         website_provided = "website" in account_payload
         linkedin_provided = "linkedin_url" in account_payload
         industry_provided = "industry" in account_payload
@@ -1462,6 +1485,36 @@ class DealWriteService:
                     "participant_type": "user",
                     "related_id": user_id,
                     "relationship_role": self._clean_string(member.get("role")),
+                }
+            )
+
+        participant_service = DealParticipantService(
+            self.session, self.organisation_id, self.actor_user_id, self.master_session
+        )
+        await participant_service.add_participants(deal.deal_id, payloads)
+
+    async def _add_contact_participants(
+        self,
+        deal: CRMDeal,
+        contact_participants: list[dict[str, Any]],
+    ) -> None:
+        from src.service.crm.internal.deal_participant_service import DealParticipantService
+
+        if not contact_participants:
+            return
+
+        payloads: list[dict[str, Any]] = []
+        for participant in contact_participants:
+            contact_id = participant.get("contact_id")
+            if not isinstance(contact_id, UUID):
+                raise DealWriteServiceError(
+                    "Invalid contact participant contact_id", status_code=400
+                )
+            payloads.append(
+                {
+                    "participant_type": "contact",
+                    "related_id": contact_id,
+                    "relationship_role": None,
                 }
             )
 

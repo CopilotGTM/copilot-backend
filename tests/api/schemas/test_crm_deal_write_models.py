@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -92,6 +93,31 @@ def test_create_request_accepts_source_created_at_iso_string() -> None:
     )
     assert request.source_created_at is not None
     assert request.source_created_at.day == 15
+
+
+def test_create_request_accepts_account_company_id() -> None:
+    company_id = UUID("11111111-1111-1111-1111-111111111111")
+
+    request = DealCreateRequest(
+        name="Acme Deal",
+        account={"company_id": str(company_id), "name": "Acme Corp"},
+    )
+
+    assert request.account is not None
+    assert request.account.company_id == company_id
+    assert request.account.name == "Acme Corp"
+
+
+def test_create_request_accepts_contact_participants() -> None:
+    contact_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    request = DealCreateRequest(
+        name="Acme Deal",
+        contact_participants=[{"contact_id": str(contact_id)}],
+    )
+
+    assert request.contact_participants is not None
+    assert request.contact_participants[0].contact_id == contact_id
 
 
 # ---------------------------------------------------------------------------
