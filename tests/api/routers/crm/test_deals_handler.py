@@ -51,9 +51,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         create_deal=AsyncMock(return_value=deal),
     )
     stakeholder_service = SimpleNamespace(
-        add_contacts_as_stakeholders=AsyncMock(
-            return_value=SimpleNamespace(total_added=1)
-        ),
+        add_contacts_as_stakeholders=AsyncMock(return_value=SimpleNamespace(total_added=1)),
         trigger_deal_mapping_if_ready=AsyncMock(),
     )
 
@@ -64,9 +62,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
             assert actor_user_id == write_service.actor_user_id
 
         async def add_contacts_as_stakeholders(self, deal_id, contact_ids):
-            return await stakeholder_service.add_contacts_as_stakeholders(
-                deal_id, contact_ids
-            )
+            return await stakeholder_service.add_contacts_as_stakeholders(deal_id, contact_ids)
 
         async def trigger_deal_mapping_if_ready(self, deal_id):
             return await stakeholder_service.trigger_deal_mapping_if_ready(deal_id)
@@ -93,12 +89,11 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         deal.deal_id,
         [contact_id],
     )
-    stakeholder_service.trigger_deal_mapping_if_ready.assert_awaited_once_with(
-        deal.deal_id
-    )
+    stakeholder_service.trigger_deal_mapping_if_ready.assert_awaited_once_with(deal.deal_id)
     session.commit.assert_awaited_once()
     session.refresh.assert_awaited_once_with(deal)
     assert response.status == "SUCCESS"
+
 
 # =============================================================================
 # Deal list endpoint tests
