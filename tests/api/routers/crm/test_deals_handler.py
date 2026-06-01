@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+from fastapi import Response as FastAPIResponse
 from fastapi.testclient import TestClient
+from src.api.routers.crm import deals_handler as deals_handler_module
+from src.api.schemas.crm_deal_write_models import DealCreateRequest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 
 from tests.api.routers.crm.conftest import (
@@ -15,6 +19,86 @@ from tests.api.routers.crm.conftest import (
     FakeDealJob,
     create_deal,
 )
+
+
+@pytest.mark.asyncio
+async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
+    monkeypatch,
+) -> None:
+    contact_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        deal_status="open",
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    session = SimpleNamespace(
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    write_service = SimpleNamespace(
+        session=session,
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+        create_deal=AsyncMock(return_value=deal),
+    )
+    stakeholder_service = SimpleNamespace(
+        add_contacts_as_stakeholders=AsyncMock(
+            return_value=SimpleNamespace(total_added=1)
+        ),
+        trigger_deal_mapping_if_ready=AsyncMock(),
+    )
+
+    class FakeStakeholdersService:
+        def __init__(self, session_arg, organisation_id, actor_user_id):
+            assert session_arg is session
+            assert organisation_id == write_service.organisation_id
+            assert actor_user_id == write_service.actor_user_id
+
+        async def add_contacts_as_stakeholders(self, deal_id, contact_ids):
+            return await stakeholder_service.add_contacts_as_stakeholders(
+                deal_id, contact_ids
+            )
+
+        async def trigger_deal_mapping_if_ready(self, deal_id):
+            return await stakeholder_service.trigger_deal_mapping_if_ready(deal_id)
+
+    monkeypatch.setattr(
+        deals_handler_module,
+        "StakeholdersService",
+        FakeStakeholdersService,
+    )
+
+    response = await deals_handler_module.create_deal(
+        request=DealCreateRequest(
+            name="Acme Deal",
+            contact_participants=[{"contact_id": str(contact_id)}],
+        ),
+        response=FastAPIResponse(),
+        service=write_service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    write_service.create_deal.assert_awaited_once()
+    stakeholder_service.add_contacts_as_stakeholders.assert_awaited_once_with(
+        deal.deal_id,
+        [contact_id],
+    )
+    stakeholder_service.trigger_deal_mapping_if_ready.assert_awaited_once_with(
+        deal.deal_id
+    )
+    session.commit.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(deal)
+    assert response.status == "SUCCESS"
 
 # =============================================================================
 # Deal list endpoint tests

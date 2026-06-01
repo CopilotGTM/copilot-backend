@@ -261,20 +261,21 @@ async def update_account(
 async def get_account_contacts(
     company_id: UUID,
     response: FastAPIResponse,
+    limit: int = Query(25, ge=1, le=100, description="Maximum contacts to return"),
     service: AccountsAccessService = Depends(get_accounts_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[list[AccountContactItem]]:
     """Return contacts whose email domain matches the account's domain."""
     try:
-        contacts = await service.get_account_contacts(company_id)
+        contacts = await service.list_account_contacts(company_id, limit=limit)
 
         items = [
             AccountContactItem(
-                contact_id=ct.contact_id,
-                full_name=ct.full_name,
-                email=ct.email,
-                job_title=ct.job_title,
-                deal_count=0,
+                contact_id=ct["contact_id"],
+                full_name=ct.get("full_name"),
+                email=ct.get("email"),
+                job_title=ct.get("job_title"),
+                deal_count=ct.get("deal_count", 0),
             )
             for ct in contacts
         ]

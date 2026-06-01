@@ -9,13 +9,13 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStatus,
+    CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationScope,
@@ -285,37 +285,16 @@ class AccountsAccessService:
         if not company:
             raise AccountsAccessServiceError("Account not found", status_code=404)
 
-        contacts = await self.get_account_contacts(company_id)
+        contacts = await self.list_account_contacts(company_id)
         deals = await self.get_account_deals(company_id)
-
-        # Batch-query deal counts per contact — only approved stakeholders
-        contact_ids = [c.contact_id for c in contacts]
-        deal_counts: dict[UUID, int] = {}
-        if contact_ids:
-            count_stmt = (
-                select(col(DealStakeholder.contact_id), func.count())
-                .where(
-                    col(DealStakeholder.contact_id).in_(contact_ids),
-                    col(DealStakeholder.organisation_id) == self.organisation_id,
-                    col(DealStakeholder.is_deleted).is_(False),
-                    col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED.value,
-                )
-                .group_by(col(DealStakeholder.contact_id))
-            )
-            count_res = await self.org_session.execute(count_stmt)
-            for row in count_res.all():
-                contact_id = row[0]
-                if contact_id is None:
-                    continue
-                deal_counts[contact_id] = row[1]
 
         contact_dicts = [
             {
-                "contact_id": c.contact_id,
-                "full_name": c.full_name,
-                "email": c.email,
-                "job_title": c.job_title,
-                "deal_count": deal_counts.get(c.contact_id, 0),
+                "contact_id": c["contact_id"],
+                "full_name": c.get("full_name"),
+                "email": c.get("email"),
+                "job_title": c.get("job_title"),
+                "deal_count": c.get("deal_count", 0),
             }
             for c in contacts
         ]
@@ -331,7 +310,25 @@ class AccountsAccessService:
         )
         return detail
 
-    async def get_account_contacts(self, company_id: UUID) -> list[CRMContact]:
+    async def list_account_contacts(
+        self, company_id: UUID, *, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        """Return account contacts annotated and sorted for deal participant suggestions."""
+        contacts = await self.get_account_contacts(company_id, limit=limit)
+        return [
+            {
+                "contact_id": row["contact"].contact_id,
+                "full_name": row["contact"].full_name,
+                "email": row["contact"].email,
+                "job_title": row["contact"].job_title,
+                "deal_count": row["deal_count"],
+            }
+            for row in contacts
+        ]
+
+    async def get_account_contacts(
+        self, company_id: UUID, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Return contacts linked to the account by explicit FK or email domain match."""
         # Resolve company first to get its domain and verify org ownership
         c = cast(Any, CRMCompany).__table__.c
@@ -346,22 +343,43 @@ class AccountsAccessService:
             return []
 
         co = cast(Any, CRMContact).__table__.c
+        dp = cast(Any, CRMDealParticipant).__table__.c
+        deal_count_expr = (
+            select(func.count(func.distinct(dp.deal_id)))
+            .where(
+                dp.organisation_id == self.organisation_id,
+                dp.is_deleted.is_(False),
+                dp.participant_type == CRMParticipantType.CONTACT.value,
+                dp.related_local_id == co.contact_id,
+            )
+            .correlate(cast(Any, CRMContact).__table__)
+            .scalar_subquery()
+        )
         # Explicit FK match OR domain match (deduplicated by DISTINCT)
         conditions = [co.company_id == company_id]
         if company.domain:
             conditions.append(co.email.ilike(f"%@{company.domain}"))
 
         stmt = (
-            select(CRMContact)
+            select(CRMContact, deal_count_expr.label("deal_count"))
             .where(
                 co.organisation_id == self.organisation_id,
                 co.is_deleted.is_(False),
                 or_(*conditions),
             )
-            .distinct()
+            .order_by(
+                deal_count_expr.desc(),
+                func.lower(func.coalesce(co.full_name, co.email, "")).asc(),
+                co.contact_id.asc(),
+            )
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         res = await self.org_session.execute(stmt)
-        return list(res.scalars().all())
+        return [
+            {"contact": row[0], "deal_count": row[1] or 0}
+            for row in res.all()
+        ]
 
     async def get_account_deals(self, company_id: UUID) -> list[CRMDeal]:
         """Return deals linked to the account by company_id, with external fallback."""

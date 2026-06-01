@@ -65,6 +65,7 @@ from src.service.crm.access.deals_access_service import (
     extract_deal_health,
     extract_deal_health_reason,
 )
+from src.service.crm.insights.stakeholders_service import StakeholdersService
 from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
@@ -916,6 +917,18 @@ async def create_deal(
     """Create a new internal CRM deal."""
     try:
         deal = await service.create_deal(request.model_dump())
+        if request.contact_participants:
+            stakeholder_service = StakeholdersService(
+                service.session,
+                service.organisation_id,
+                service.actor_user_id,
+            )
+            stakeholder_result = await stakeholder_service.add_contacts_as_stakeholders(
+                deal.deal_id,
+                [participant.contact_id for participant in request.contact_participants],
+            )
+            if stakeholder_result.total_added > 0:
+                await stakeholder_service.trigger_deal_mapping_if_ready(deal.deal_id)
         await service.session.commit()
         await service.session.refresh(deal)
         payload = _map_deal_write_response(deal)
