@@ -60,6 +60,8 @@ class MeetingRecordingSessionService:
         async for session in acquire_org_async_session(self.organisation_id):
             existing = await self._get_by_event(session, calendar_event_id, provider)
             if existing:
+                if self._is_cancelled_status(existing.status):
+                    return existing
                 if existing.sent_to_provider_at is None:
                     # Matcher reruns should refresh pending rows with the latest
                     # join time/link, but once a provider send succeeded we keep
@@ -94,6 +96,8 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if not record:
                 return None
+            if self._is_cancelled_status(record.status):
+                return record
             record.status = MeetingRecordingStatus.SEND_QUEUED
             session.add(record)
             await session.commit()
@@ -113,6 +117,8 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if not record:
                 return None
+            if self._is_cancelled_status(record.status):
+                return record
             now = datetime.now(UTC)
             record.status = MeetingRecordingStatus.SENT
             record.transcript_status = MeetingTranscriptStatus.PENDING
@@ -146,6 +152,8 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if not record:
                 return None
+            if self._is_cancelled_status(record.status):
+                return record
             now = datetime.now(UTC)
             record.meeting_url = meeting_url
             record.join_at = join_at
@@ -173,6 +181,8 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if not record:
                 return None
+            if self._is_cancelled_status(record.status):
+                return record
             record.status = MeetingRecordingStatus.FAILED
             record.status_message = status_message
             if provider_payload is not None:
@@ -202,6 +212,8 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if not record:
                 return None
+            if self._is_cancelled_status(record.status):
+                return record
             # Refresh only the durable meeting target here. The previous provider id has
             # already been used for best-effort cancellation by the dispatch service.
             record.meeting_url = meeting_url
@@ -314,6 +326,36 @@ class MeetingRecordingSessionService:
             result = await session.execute(stmt)
             return list(result.scalars().all())
         return []
+
+    async def mark_cancelled(
+        self,
+        session_id: UUID,
+        *,
+        status_message: str = "Recording bot cancelled by user",
+        provider_payload: dict[str, Any] | None = None,
+    ) -> MeetingRecordingSession | None:
+        """Mark a recording session as a durable user cancellation."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            record = await self._get_by_session_id(session, session_id)
+            if not record:
+                return None
+            record.status = MeetingRecordingStatus.CANCELLED
+            record.status_message = status_message
+            if provider_payload is not None:
+                merged_payload = dict(record.provider_payload or {})
+                merged_payload.update(provider_payload)
+                record.provider_payload = merged_payload
+            session.add(record)
+            await session.commit()
+            return record
+        return None
+
+    @staticmethod
+    def _is_cancelled_status(value: Any) -> bool:
+        """Handle enum and string-backed status values from different DB drivers."""
+        if hasattr(value, "value"):
+            value = value.value
+        return str(value) == MeetingRecordingStatus.CANCELLED.value
 
     async def _get_by_event(
         self,

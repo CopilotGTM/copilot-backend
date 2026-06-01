@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
+    MeetingRecordingStatus,
 )
 from src.infra.config.configs import recall_config
 from src.infra.database.sessions import acquire_org_async_session
@@ -95,9 +96,9 @@ class MeetingRecordingDispatchService:
         if join_at <= datetime.now(UTC):
             existing_session = await self._session_service.get_by_event(calendar_event_id)
             if existing_session and existing_session.sent_to_provider_at is not None:
-                provider = await self._build_provider()
+                existing_provider = await self._build_provider()
                 if await self._provider_session_matches(
-                    provider=provider,
+                    provider=existing_provider,
                     provider_session_id=existing_session.provider_session_id,
                     meeting_url=meeting_url,
                     join_at=join_at,
@@ -124,6 +125,12 @@ class MeetingRecordingDispatchService:
             meeting_url=meeting_url,
             join_at=join_at,
         )
+        if self._is_cancelled_recording_status(getattr(session_record, "status", None)):
+            return {
+                "status": "skipped",
+                "reason": "recording_cancelled",
+                "calendar_event_id": str(calendar_event_id),
+            }
         dispatch_status = "sent"
         attempt_adopt_before_create = False
         provider: RecallMeetingRecordingProvider | None = None
@@ -203,7 +210,19 @@ class MeetingRecordingDispatchService:
 
         # Mark queued before the provider call so operators can distinguish
         # "not considered yet" from "send is in flight".
-        await self._session_service.mark_send_queued(session_record.session_id)
+        queued_record = await self._session_service.mark_send_queued(session_record.session_id)
+        if queued_record is None:
+            return {
+                "status": "skipped",
+                "reason": "recording_session_missing",
+                "calendar_event_id": str(calendar_event_id),
+            }
+        if self._is_cancelled_recording_status(getattr(queued_record, "status", None)):
+            return {
+                "status": "skipped",
+                "reason": "recording_cancelled",
+                "calendar_event_id": str(calendar_event_id),
+            }
 
         if provider is None:
             provider = await self._build_provider()
@@ -223,12 +242,36 @@ class MeetingRecordingDispatchService:
         if not provider_session_id:
             raise RuntimeError("Recall create bot response missing id")
 
-        await self._session_service.mark_sent(
+        sent_record = await self._session_service.mark_sent(
             session_record.session_id,
             provider_session_id=provider_session_id,
             provider_status=bot_payload.get("status"),
             provider_payload=bot_payload,
         )
+        if sent_record is None:
+            await self._cancel_created_provider_session_after_local_cancel(
+                provider=provider,
+                session_id=session_record.session_id,
+                calendar_event_id=calendar_event_id,
+                provider_session_id=str(provider_session_id),
+            )
+            return {
+                "status": "skipped",
+                "reason": "recording_session_missing",
+                "calendar_event_id": str(calendar_event_id),
+            }
+        if self._is_cancelled_recording_status(getattr(sent_record, "status", None)):
+            await self._cancel_created_provider_session_after_local_cancel(
+                provider=provider,
+                session_id=session_record.session_id,
+                calendar_event_id=calendar_event_id,
+                provider_session_id=str(provider_session_id),
+            )
+            return {
+                "status": "skipped",
+                "reason": "recording_cancelled",
+                "calendar_event_id": str(calendar_event_id),
+            }
 
         return {
             "status": dispatch_status,
@@ -662,6 +705,11 @@ class MeetingRecordingDispatchService:
                     # session is stale and needs a resync attempt.
                     or_(
                         col(MeetingRecordingSession.calendar_event_id).is_(None),
+                        col(MeetingRecordingSession.status)
+                        != MeetingRecordingStatus.CANCELLED.value,
+                    ),
+                    or_(
+                        col(MeetingRecordingSession.calendar_event_id).is_(None),
                         col(MeetingRecordingSession.sent_to_provider_at).is_(None),
                         col(MeetingRecordingSession.join_at) != col(CalendarEvent.start_at),
                         col(MeetingRecordingSession.meeting_url)
@@ -703,6 +751,68 @@ class MeetingRecordingDispatchService:
             or existing_meeting_url != meeting_url
         )
 
+    async def _cancel_created_provider_session_after_local_cancel(
+        self,
+        *,
+        provider: RecallMeetingRecordingProvider,
+        session_id: UUID,
+        calendar_event_id: UUID,
+        provider_session_id: str,
+    ) -> None:
+        """Delete a provider bot created after a local cancellation won the race."""
+        try:
+            await provider.cancel_session(provider_session_id)
+        except RecallProviderError as exc:
+            if exc.status_code != 404:
+                await self._session_service.mark_cancelled(
+                    session_id,
+                    status_message=f"Recall cancel after local cancellation failed: {exc}",
+                    provider_payload={
+                        "last_cancel_error": {
+                            "operation": "cancel_after_local_cancel",
+                            "detail": str(exc),
+                        },
+                        "orphaned_provider_session_id": provider_session_id,
+                    },
+                )
+                raise
+        except Exception as exc:
+            await self._session_service.mark_cancelled(
+                session_id,
+                status_message=f"Recall cancel after local cancellation failed: {exc}",
+                provider_payload={
+                    "last_cancel_error": {
+                        "operation": "cancel_after_local_cancel",
+                        "detail": str(exc),
+                    },
+                    "orphaned_provider_session_id": provider_session_id,
+                },
+            )
+            raise
+        await self._session_service.mark_cancelled(
+            session_id,
+            provider_payload={
+                "last_cancel_error": None,
+                "cancelled_provider_session_id": provider_session_id,
+            },
+        )
+        logger.info(
+            "Meeting recording provider session cancelled after local cancellation",
+            extra={
+                "event": "meeting_recording_cancelled_after_local_cancel",
+                "organisation_id": str(self.organisation_id),
+                "calendar_event_id": str(calendar_event_id),
+                "provider_session_id": provider_session_id,
+            },
+        )
+
+    @staticmethod
+    def _is_cancelled_recording_status(value: Any) -> bool:
+        """Return true for enum or string-backed cancelled session values."""
+        if hasattr(value, "value"):
+            value = value.value
+        return str(value) == MeetingRecordingStatus.CANCELLED.value
+
     @classmethod
     def _bot_matches(
         cls,
@@ -736,13 +846,11 @@ class MeetingRecordingDispatchService:
     @staticmethod
     def _is_update_fallback_error(error: RecallProviderError) -> bool:
         """Identify Recall update failures that require replacement scheduling."""
+        detail = error.detail or ""
         return error.code == "update_bot_failed" or (
             error.status_code == 400
-            and bool(error.detail)
-            and (
-                "not enough time" in error.detail.lower()
-                or "non-dispatched bots" in error.detail.lower()
-            )
+            and bool(detail)
+            and ("not enough time" in detail.lower() or "non-dispatched bots" in detail.lower())
         )
 
     @staticmethod

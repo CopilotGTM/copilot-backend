@@ -43,6 +43,7 @@ from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.crm import (
     accounts_router,
     contacts_router,
+    crm_meetings_router,
     crm_users_router,
     custom_fields_router,
     deal_assets_router,
@@ -279,6 +280,7 @@ def create_fastapi_app():
     fastapp.include_router(sales_dashboard_router, prefix="/users/dashboard", tags=["dashboard"])
 
     # CRM routers
+    fastapp.include_router(crm_meetings_router, prefix="/users/crm", tags=["crm-meetings"])
     fastapp.include_router(crm_users_router, prefix="/users/crm", tags=["crm-users"])
     fastapp.include_router(settings_router, prefix="/users/crm", tags=["crm-settings"])
     fastapp.include_router(custom_fields_router, prefix="/users/crm", tags=["crm-custom-fields"])

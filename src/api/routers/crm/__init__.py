@@ -6,6 +6,7 @@ route groups can be mounted consistently from the shared application factory.
 
 from .accounts_handler import accounts_router
 from .contacts_handler import contacts_router
+from .crm_meetings_handler import crm_meetings_router
 from .custom_fields_handler import custom_fields_router
 from .deal_assets_handler import deal_assets_router
 from .deal_import_handler import deal_import_router
@@ -32,6 +33,7 @@ from .users_handler import crm_users_router
 __all__ = [
     "accounts_router",
     "contacts_router",
+    "crm_meetings_router",
     "deal_assets_router",
     "deal_memory_router",
     "deal_notes_router",
