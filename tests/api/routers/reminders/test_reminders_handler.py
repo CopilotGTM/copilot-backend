@@ -1,8 +1,25 @@
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+import pytest
+from fastapi import Response as FastAPIResponse
+from pydantic import ValidationError
+from src.api.routers.reminders import reminders_handler
 from src.api.routers.reminders.reminders_handler import (
     _delivery_context_is_ready,
     _normalize_delivery_context,
     _provider_name,
+    create_reminder,
+    get_reminder,
+    list_reminders,
 )
+from src.contracts.reminders import StaticReminderCreateRequest
+from src.domain.models.organisation_tables.reminder_models import (
+    ReminderRecurrence,
+    ReminderStatus,
+    ReminderType,
+)
+from src.service.reminders.reminder_service import ReminderNotFoundError
 
 
 def test_normalize_delivery_context_adds_slack_team_id_from_external_tenant() -> None:
@@ -50,3 +67,107 @@ def test_delivery_context_is_ready_requires_complete_whatsapp_context() -> None:
 
 def test_provider_name_accepts_enum_and_string() -> None:
     assert _provider_name("slack") == "slack"
+
+
+def _future_trigger() -> datetime:
+    return datetime.now(UTC) + timedelta(days=1)
+
+
+class _FakeReminderService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(("create", kwargs))
+        return None
+
+    async def list_reminders(self, **kwargs):
+        self.calls.append(("list_reminders", kwargs))
+        return [], 0
+
+    async def get(self, reminder_id, **kwargs):
+        self.calls.append(("get", {"reminder_id": reminder_id, **kwargs}))
+        if kwargs.get("reminder_type") != ReminderType.STATIC:
+            raise ReminderNotFoundError(reminder_id)
+        return None
+
+
+def test_static_reminder_create_request_rejects_agent_fields() -> None:
+    with pytest.raises(ValidationError):
+        StaticReminderCreateRequest.model_validate(
+            {
+                "title": "Follow up",
+                "message_content": "Follow up with Acme",
+                "agent_prompt": "Analyze this deal",
+                "deal_id": str(uuid4()),
+                "trigger_time": _future_trigger(),
+                "timezone": "UTC",
+                "recurrence": ReminderRecurrence.NONE,
+                "delivery_channel": "teams",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_reminder_always_creates_static_reminder(monkeypatch: pytest.MonkeyPatch):
+    service = _FakeReminderService()
+
+    async def fake_resolve_delivery_context(*args, **kwargs):
+        return {"service_url": "https://service", "conversation_id": "conv-123"}
+
+    monkeypatch.setattr(
+        reminders_handler,
+        "_resolve_delivery_context",
+        fake_resolve_delivery_context,
+    )
+
+    body = StaticReminderCreateRequest(
+        title="Follow up",
+        message_content="Follow up with Acme",
+        trigger_time=_future_trigger(),
+        timezone="UTC",
+        recurrence=ReminderRecurrence.NONE,
+        delivery_channel="teams",
+    )
+
+    await create_reminder(
+        body=body,
+        response=FastAPIResponse(),
+        user=type("User", (), {"organisation_id": uuid4(), "user_id": uuid4()})(),
+        master_session=object(),
+        service=service,
+    )
+
+    assert service.calls[0][1]["reminder_type"] == ReminderType.STATIC
+    assert service.calls[0][1]["agent_prompt"] is None
+    assert service.calls[0][1]["deal_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_reminders_applies_static_type_filter() -> None:
+    service = _FakeReminderService()
+
+    await list_reminders(
+        response=FastAPIResponse(),
+        service=service,
+        query=reminders_handler.ReminderListQueryParams(status=ReminderStatus.ACTIVE.value),
+    )
+
+    assert service.calls[0][1]["reminder_type"] == ReminderType.STATIC
+
+
+@pytest.mark.asyncio
+async def test_get_reminder_uses_static_type_boundary() -> None:
+    service = _FakeReminderService()
+    reminder_id = uuid4()
+
+    await get_reminder(
+        reminder_id=reminder_id,
+        response=FastAPIResponse(),
+        service=service,
+    )
+
+    assert service.calls[0] == (
+        "get",
+        {"reminder_id": reminder_id, "reminder_type": ReminderType.STATIC},
+    )

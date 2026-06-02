@@ -10,7 +10,11 @@ from src.domain.models.organisation_tables.reminder_models import (
     UserReminder,
     UserReminderRun,
 )
-from src.service.reminders.reminder_service import ReminderService, ReminderServiceError
+from src.service.reminders.reminder_service import (
+    ReminderNotFoundError,
+    ReminderService,
+    ReminderServiceError,
+)
 
 
 def _build_reminder(
@@ -114,3 +118,33 @@ def test_ensure_not_running_raises_conflict_for_triggered_reminder() -> None:
 
     assert exc_info.value.status_code == 409
     assert str(exc_info.value) == "Cannot cancel a reminder while execution is in progress"
+
+
+class _EmptyResult:
+    def scalar_one_or_none(self):
+        return None
+
+
+class _CapturingSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _EmptyResult()
+
+
+@pytest.mark.asyncio
+async def test_get_with_expected_type_filters_lookup_by_reminder_type() -> None:
+    session = _CapturingSession()
+    service = ReminderService(
+        session=session,
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+
+    with pytest.raises(ReminderNotFoundError):
+        await service.get(uuid4(), reminder_type=ReminderType.AGENTIC)
+
+    assert session.statement is not None
+    assert "user_reminders.reminder_type" in str(session.statement)

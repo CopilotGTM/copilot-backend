@@ -76,7 +76,7 @@ from src.api.routers.knowledge_base.upload_handler import (
 )
 from src.api.routers.meeting_bot import meeting_bot_router
 from src.api.routers.private import private_lead_ingestion_router
-from src.api.routers.reminders import reminders_router
+from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
 from src.infra.config.configs import app_config, security_secrets_config
@@ -272,6 +272,7 @@ def create_fastapi_app():
 
     # Reminders
     fastapp.include_router(reminders_router, prefix="/users/reminders", tags=["reminders"])
+    fastapp.include_router(agents_router, prefix="/users/agents", tags=["agents"])
 
     # Integration routers
     fastapp.include_router(integrations_router, prefix="/users/integrations", tags=["integrations"])

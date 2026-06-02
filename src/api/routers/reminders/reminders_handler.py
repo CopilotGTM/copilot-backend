@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -19,20 +21,20 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.reminder_models import (
     AvailableChannelsResponse,
     DeliveryChannelInfo,
-    ReminderCreateRequest,
     ReminderDetail,
     ReminderHistoryQueryParams,
     ReminderHistoryResponse,
     ReminderListQueryParams,
     ReminderListResponse,
-    ReminderUpdateRequest,
+    StaticReminderCreateRequest,
+    StaticReminderUpdateRequest,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProvider,
 )
-from src.domain.models.organisation_tables.reminder_models import ReminderStatus
+from src.domain.models.organisation_tables.reminder_models import ReminderStatus, ReminderType
 from src.infra.utils.logger import get_logger
 from src.service.reminders.reminder_service import (
     InvalidStatusTransitionError,
@@ -59,6 +61,15 @@ _REQUIRED_DELIVERY_CONTEXT_KEYS = {
     "slack": ("team_id", "channel_id"),
     "whatsapp": ("phone_number_id", "recipient_wa_id"),
 }
+
+
+class _ProviderChannelInfo(TypedDict):
+    mapping_id: UUID | None
+    available: bool
+
+
+def _empty_provider_channel_info() -> _ProviderChannelInfo:
+    return {"mapping_id": None, "available": False}
 
 
 def _provider_name(provider: ExternalIdentityProvider | str) -> str:
@@ -108,15 +119,13 @@ async def _resolve_delivery_context(
         return None
 
     stmt = select(
-        ExternalIdentityMapping.conversation_context,
-        ExternalIdentityMapping.external_tenant_id,
+        col(ExternalIdentityMapping.conversation_context),
+        col(ExternalIdentityMapping.external_tenant_id),
     ).where(
-        and_(
-            ExternalIdentityMapping.organisation_id == organisation_id,
-            ExternalIdentityMapping.user_id == user_id,
-            ExternalIdentityMapping.provider == provider,
-            ExternalIdentityMapping.is_active == True,  # noqa: E712
-        )
+        col(ExternalIdentityMapping.organisation_id) == organisation_id,
+        col(ExternalIdentityMapping.user_id) == user_id,
+        col(ExternalIdentityMapping.provider) == provider,
+        col(ExternalIdentityMapping.is_active).is_(True),
     )
     result = await master_session.execute(stmt)
     row = result.first()
@@ -154,7 +163,9 @@ async def get_reminder_service(
     "/channels",
     response_model=GenericResponse[AvailableChannelsResponse],
     summary="Get available delivery channels",
-    description="Returns which delivery channels the current user has set up and can receive reminders on.",
+    description=(
+        "Returns which delivery channels the current user has set up and can receive reminders on."
+    ),
     dependencies=[Depends(rate_limit_user_read)],
 )
 async def get_available_channels(
@@ -164,30 +175,28 @@ async def get_available_channels(
 ) -> GenericResponse[AvailableChannelsResponse]:
     try:
         stmt = select(
-            ExternalIdentityMapping.provider,
-            ExternalIdentityMapping.mapping_id,
-            ExternalIdentityMapping.conversation_context,
-            ExternalIdentityMapping.external_tenant_id,
+            col(ExternalIdentityMapping.provider),
+            col(ExternalIdentityMapping.mapping_id),
+            col(ExternalIdentityMapping.conversation_context),
+            col(ExternalIdentityMapping.external_tenant_id),
         ).where(
-            and_(
-                ExternalIdentityMapping.user_id == user.user_id,
-                ExternalIdentityMapping.organisation_id == user.organisation_id,
-                ExternalIdentityMapping.is_active == True,  # noqa: E712
-            )
+            col(ExternalIdentityMapping.user_id) == user.user_id,
+            col(ExternalIdentityMapping.organisation_id) == user.organisation_id,
+            col(ExternalIdentityMapping.is_active).is_(True),
         )
         result = await master_session.execute(stmt)
         rows = result.all()
 
-        provider_map: dict[str, dict[str, UUID | bool | str | None]] = {
-            "teams": {"mapping_id": None, "available": False},
-            "slack": {"mapping_id": None, "available": False},
-            "whatsapp": {"mapping_id": None, "available": False},
+        provider_map: dict[str, _ProviderChannelInfo] = {
+            "teams": _empty_provider_channel_info(),
+            "slack": _empty_provider_channel_info(),
+            "whatsapp": _empty_provider_channel_info(),
         }
         for row in rows:
             provider = _provider_name(row.provider)
             provider_info = provider_map.setdefault(
                 provider,
-                {"mapping_id": None, "available": False},
+                _empty_provider_channel_info(),
             )
             if provider_info["mapping_id"] is None:
                 provider_info["mapping_id"] = row.mapping_id
@@ -235,12 +244,12 @@ async def get_available_channels(
 @reminders_router.post(
     "",
     response_model=GenericResponse[ReminderDetail],
-    summary="Create a reminder",
-    description="Create a new reminder or scheduled alert. Goes directly to ACTIVE status.",
+    summary="Create a static reminder",
+    description="Create a new static reminder. Goes directly to ACTIVE status.",
     dependencies=[Depends(rate_limit_user_write)],
 )
 async def create_reminder(
-    body: ReminderCreateRequest,
+    body: StaticReminderCreateRequest,
     response: FastAPIResponse,
     user: UserIDs = Depends(get_current_user),
     master_session: AsyncSession = Depends(get_master_async_session),
@@ -264,10 +273,10 @@ async def create_reminder(
 
         item = await service.create(
             title=body.title,
-            reminder_type=body.reminder_type,
+            reminder_type=ReminderType.STATIC,
             message_content=body.message_content,
-            agent_prompt=body.agent_prompt,
-            deal_id=body.deal_id,
+            agent_prompt=None,
+            deal_id=None,
             trigger_time=body.trigger_time,
             timezone=body.timezone,
             recurrence=body.recurrence,
@@ -307,7 +316,7 @@ async def list_reminders(
     query: ReminderListQueryParams = Depends(),
 ) -> GenericResponse[ReminderListResponse]:
     try:
-        parsed_statuses = None
+        parsed_statuses: list[ReminderStatus] | None = None
         if query.status:
             status_strs = [s.strip().lower() for s in query.status.split(",")]
             parsed_statuses = []
@@ -323,7 +332,7 @@ async def list_reminders(
             limit=query.limit,
             page=query.page,
             statuses=parsed_statuses,
-            reminder_type=query.reminder_type,
+            reminder_type=ReminderType.STATIC,
             sort_order=query.sort,
         )
 
@@ -370,6 +379,7 @@ async def get_reminder_history(
             reminder_id,
             limit=query.limit,
             page=query.page,
+            reminder_type=ReminderType.STATIC,
         )
 
         total_pages = (total_count + query.limit - 1) // query.limit if query.limit else 0
@@ -414,7 +424,7 @@ async def get_reminder(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
-        item = await service.get(reminder_id)
+        item = await service.get(reminder_id, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder retrieved successfully",
@@ -441,7 +451,7 @@ async def get_reminder(
 )
 async def update_reminder(
     reminder_id: UUID,
-    body: ReminderUpdateRequest,
+    body: StaticReminderUpdateRequest,
     response: FastAPIResponse,
     user: UserIDs = Depends(get_current_user),
     master_session: AsyncSession = Depends(get_master_async_session),
@@ -473,7 +483,7 @@ async def update_reminder(
                 )
             updates["delivery_context"] = delivery_context
 
-        item = await service.update(reminder_id, updates)
+        item = await service.update(reminder_id, updates, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder updated successfully",
@@ -509,7 +519,7 @@ async def pause_reminder(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
-        item = await service.pause(reminder_id)
+        item = await service.pause(reminder_id, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder paused successfully",
@@ -547,7 +557,7 @@ async def resume_reminder(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
-        item = await service.resume(reminder_id)
+        item = await service.resume(reminder_id, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder resumed successfully",
@@ -585,7 +595,7 @@ async def cancel_reminder(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
-        item = await service.cancel(reminder_id)
+        item = await service.cancel(reminder_id, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder cancelled successfully",
@@ -614,7 +624,9 @@ async def cancel_reminder(
     "/{reminder_id}",
     response_model=GenericResponse[None],
     summary="Delete a reminder",
-    description="Permanently delete a reminder. Consider using cancel instead to preserve history.",
+    description=(
+        "Permanently delete a reminder. Consider using cancel instead to preserve history."
+    ),
     dependencies=[Depends(rate_limit_user_write)],
 )
 async def delete_reminder(
@@ -623,7 +635,7 @@ async def delete_reminder(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[None]:
     try:
-        await service.delete(reminder_id)
+        await service.delete(reminder_id, reminder_type=ReminderType.STATIC)
 
         return Response.success_response(
             message="Reminder deleted successfully",
