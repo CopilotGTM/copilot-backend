@@ -8,6 +8,8 @@ from fastapi import Query
 from pydantic import BaseModel, Field
 from src.contracts.reminders import (
     VALID_DELIVERY_CHANNELS,
+    AgentCreateRequest,
+    AgentUpdateRequest,
     ReminderCreateRequest,
     ReminderDetail,
     ReminderHistoryResponse,
@@ -15,8 +17,9 @@ from src.contracts.reminders import (
     ReminderListResponse,
     ReminderRunListItem,
     ReminderUpdateRequest,
+    StaticReminderCreateRequest,
+    StaticReminderUpdateRequest,
 )
-from src.domain.models.organisation_tables.reminder_models import ReminderType
 
 
 class ReminderListQueryParams(BaseModel):
@@ -27,7 +30,6 @@ class ReminderListQueryParams(BaseModel):
     status: str | None = Query(
         None, description="Comma-separated status filter (active,paused,completed)"
     )
-    reminder_type: ReminderType | None = Query(None, description="Filter by static or agentic")
     sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort by next_trigger_at")
 
 
@@ -57,6 +59,8 @@ class AvailableChannelsResponse(BaseModel):
 
 
 __all__ = [
+    "AgentCreateRequest",
+    "AgentUpdateRequest",
     "AvailableChannelsResponse",
     "DeliveryChannelInfo",
     "ReminderCreateRequest",
@@ -68,5 +72,7 @@ __all__ = [
     "ReminderListResponse",
     "ReminderRunListItem",
     "ReminderUpdateRequest",
+    "StaticReminderCreateRequest",
+    "StaticReminderUpdateRequest",
     "VALID_DELIVERY_CHANNELS",
 ]

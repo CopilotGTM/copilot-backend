@@ -180,9 +180,14 @@ class ReminderService:
 
     # ── GET ─────────────────────────────────────────────────────────────
 
-    async def get(self, reminder_id: UUID) -> ReminderDetail:
+    async def get(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> ReminderDetail:
         """Get a single reminder by ID. Verifies ownership."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
         return self._to_detail(reminder)
 
     async def list_history(
@@ -191,9 +196,10 @@ class ReminderService:
         *,
         limit: int = 20,
         page: int = 1,
+        reminder_type: ReminderType | None = None,
     ) -> tuple[list[ReminderRunListItem], int]:
         """Return paginated execution history for a reminder owned by the user."""
-        await self._fetch_owned(reminder_id)
+        await self._fetch_owned(reminder_id, reminder_type=reminder_type)
 
         base = select(UserReminderRun).where(
             col(UserReminderRun.organisation_id) == self.organisation_id,
@@ -219,9 +225,11 @@ class ReminderService:
         self,
         reminder_id: UUID,
         updates: dict,
+        *,
+        reminder_type: ReminderType | None = None,
     ) -> ReminderDetail:
         """Update editable fields. Re-schedules in Redis if time/recurrence changed."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
 
         if reminder.status not in _EDITABLE_STATES:
             raise ReminderServiceError(
@@ -290,9 +298,14 @@ class ReminderService:
 
     # ── STATE TRANSITIONS ───────────────────────────────────────────────
 
-    async def pause(self, reminder_id: UUID) -> ReminderDetail:
+    async def pause(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> ReminderDetail:
         """Pause an ACTIVE reminder. Removes it from the Redis schedule."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
 
         if reminder.status != ReminderStatus.ACTIVE:
             raise InvalidStatusTransitionError(reminder.status, ReminderStatus.PAUSED.value)
@@ -305,9 +318,14 @@ class ReminderService:
 
         return self._to_detail(reminder)
 
-    async def resume(self, reminder_id: UUID) -> ReminderDetail:
+    async def resume(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> ReminderDetail:
         """Resume a PAUSED reminder. Re-adds it to the Redis schedule."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
 
         if reminder.status != ReminderStatus.PAUSED:
             raise InvalidStatusTransitionError(reminder.status, ReminderStatus.ACTIVE.value)
@@ -325,9 +343,14 @@ class ReminderService:
 
         return self._to_detail(reminder)
 
-    async def cancel(self, reminder_id: UUID) -> ReminderDetail:
+    async def cancel(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> ReminderDetail:
         """Cancel a reminder. Terminal state — cannot be undone."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
 
         self._ensure_not_running(reminder, action="cancel")
 
@@ -344,9 +367,14 @@ class ReminderService:
 
     # ── DELETE ──────────────────────────────────────────────────────────
 
-    async def delete(self, reminder_id: UUID) -> None:
+    async def delete(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> None:
         """Hard-delete a reminder and remove from Redis."""
-        reminder = await self._fetch_owned(reminder_id)
+        reminder = await self._fetch_owned(reminder_id, reminder_type=reminder_type)
         self._ensure_not_running(reminder, action="delete")
         rid = reminder.reminder_id
 
@@ -373,13 +401,21 @@ class ReminderService:
                 "Failed to unschedule reminder %s from Redis", reminder_id, exc_info=True
             )
 
-    async def _fetch_owned(self, reminder_id: UUID) -> UserReminder:
+    async def _fetch_owned(
+        self,
+        reminder_id: UUID,
+        *,
+        reminder_type: ReminderType | None = None,
+    ) -> UserReminder:
         """Fetch a reminder ensuring org + user ownership."""
         stmt = select(UserReminder).where(
             col(UserReminder.reminder_id) == reminder_id,
             col(UserReminder.organisation_id) == self.organisation_id,
             col(UserReminder.user_id) == self.user_id,
         )
+        if reminder_type:
+            stmt = stmt.where(col(UserReminder.reminder_type) == reminder_type.value)
+
         result = await self.session.execute(stmt)
         reminder = result.scalar_one_or_none()
 
