@@ -50,6 +50,7 @@ async def test_fetcher_describes_selectable_account_fields_and_paginates() -> No
                     {"name": "Website", "type": "url"},
                     {"name": "BillingStreet", "type": "string"},
                     {"name": "BillingAddress", "type": "address"},
+                    {"name": "Unused__c", "type": "string"},
                     {"name": "Deleted_Field__c", "type": "string", "deprecatedAndHidden": True},
                     {"name": "Secret__c", "queryable": False, "type": "string"},
                 ]
@@ -98,6 +99,7 @@ async def test_fetcher_describes_selectable_account_fields_and_paginates() -> No
     assert "Website" in query_soql
     assert "BillingStreet" in query_soql
     assert "BillingAddress" not in query_soql
+    assert "Unused__c" in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
 
