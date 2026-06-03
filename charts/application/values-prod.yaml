@@ -70,6 +70,8 @@ knowledge-beat:
 chat-worker:
   config:
     concurrency: 3
+    maxTasksPerChild: 25
+    maxMemoryPerChildKb: 700000
   resources:
     requests:
       cpu: "500m"

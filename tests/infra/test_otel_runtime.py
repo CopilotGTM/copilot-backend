@@ -566,6 +566,16 @@ def test_create_celery_app_sets_resilient_redis_transport_options():
     }
 
 
+def test_create_celery_app_accepts_explicit_task_module_list():
+    app = celery_base.create_celery_app(
+        "unit_worker",
+        _DummyWorkerConfig(),
+        ["tests.fake_tasks", "tests.other_tasks"],
+    )
+
+    assert list(app.conf.include) == ["tests.fake_tasks", "tests.other_tasks"]
+
+
 def test_create_celery_app_applies_worker_default_routing_settings():
     class _RoutingWorkerConfig(_DummyWorkerConfig):
         task_default_queue = "attachments"

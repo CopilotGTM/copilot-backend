@@ -1,20 +1,5 @@
-# Import all task modules to ensure they are registered
-from . import (
-    bot_message_processing,
-    message_processing,
-    post_upload,
-    reminder_tasks,
-    stale_job_cleanup_tasks,
-    test_tasks,
-    voice_realtime,
-)
+"""Chat worker Celery task package.
 
-__all__ = [
-    "bot_message_processing",
-    "message_processing",
-    "post_upload",
-    "reminder_tasks",
-    "stale_job_cleanup_tasks",
-    "test_tasks",
-    "voice_realtime",
-]
+Task registration is owned by ``src.workers.chat_worker.celery_app`` so this
+package can stay lightweight when imported by diagnostics or tooling.
+"""

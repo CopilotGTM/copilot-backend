@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
-from src.workers.chat_worker.services import PostUploadService
+from src.workers.chat_worker.services.post_upload_service import PostUploadService
 
 logger = get_logger("attachments_post_upload_task")
 

@@ -21,6 +21,8 @@ config:
   # Optional Celery execution tuning
   concurrency: null
   pool: null
+  maxTasksPerChild: null
+  maxMemoryPerChildKb: null
   # Time (seconds) Celery will wait for running tasks to finish after SIGTERM before cold shutdown.
   # Set lower than shutdown.gracefulPeriodSeconds (leave null to use Celery default ~10s -> may be too short for long tasks)
   gracefulTimeout: 540

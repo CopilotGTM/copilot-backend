@@ -263,12 +263,13 @@ def _register_observability_signals() -> None:
 def create_celery_app(worker_name, config, tasks_module):
     """Factory function to create a Celery app for a specific worker."""
     _register_observability_signals()
+    task_includes = [tasks_module] if isinstance(tasks_module, str) else list(tasks_module)
 
     celery_app = Celery(
         worker_name,
         broker=config.broker_url,
         backend=config.backend_url,
-        include=[tasks_module],
+        include=task_includes,
     )
 
     # Reduce noisy success logs that include "errors" fields and trip dashboards.
