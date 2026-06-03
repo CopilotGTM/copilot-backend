@@ -100,6 +100,7 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
     GOOGLE_SCOPE_GMAIL_READONLY: frozenset(
         {
             GOOGLE_SCOPE_GMAIL_READONLY,
+            "https://www.googleapis.com/auth/gmail.modify",
             "https://mail.google.com/",
         }
     ),
@@ -245,6 +246,11 @@ def get_missing_required_scopes(
             missing_scopes.add(required_scope)
 
     return missing_scopes
+
+
+def is_required_scope_satisfied(required_scope: str, granted_scopes: list[str] | None) -> bool:
+    satisfying_scopes = _SATISFYING_SCOPES.get(required_scope, frozenset({required_scope}))
+    return not set(granted_scopes or []).isdisjoint(satisfying_scopes)
 
 
 def get_missing_required_token_fields(

@@ -18,6 +18,48 @@ from src.service.integrations.email_delta_sync_service import (
 
 
 @pytest.mark.asyncio
+async def test_gmail_sync_skips_when_read_scope_is_missing() -> None:
+    service = EmailDeltaSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    sync_data = IntegrationSyncData(
+        integration_id=integration_id,
+        integration_type=IntegrationType.GMAIL,
+        integration_type_value=IntegrationType.GMAIL.value,
+        connection_id="conn-1",
+        provider="gmail",
+        provider_key="gmail",
+        last_synced_at=None,
+        connection_metadata={},
+        credentials={"access_token": "token"},
+        access_token_expires_at=None,
+        scopes=["https://www.googleapis.com/auth/gmail.send"],
+    )
+
+    with patch(
+        "src.service.integrations.email_delta_sync_service._fetch_folders_for_provider",
+        AsyncMock(),
+    ) as fetch_folders:
+        result = await service._sync_integration_fresh_session(
+            org_id=organisation_id,
+            sync_data=sync_data,
+        )
+
+    assert result == {
+        "status": "success",
+        "organisation_id": str(organisation_id),
+        "integration_id": str(integration_id),
+        "integration_type": IntegrationType.GMAIL.value,
+        "folders_synced": 0,
+        "messages_synced": 0,
+        "folder_results": [],
+        "skipped": True,
+        "skip_reason": "gmail_read_scope_missing",
+    }
+    fetch_folders.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_sync_integration_reraises_auth_failures() -> None:
     service = EmailDeltaSyncService()
     organisation_id = uuid4()

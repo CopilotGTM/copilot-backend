@@ -42,6 +42,7 @@ CRM_WRITE_SCOPES = {
     "tasks:delete",
 }
 DEFAULT_INTERNAL_CRM_WRITE_SCOPES = sorted(CRM_WRITE_SCOPES)
+GOOGLE_GMAIL_READ_ENABLED_KEY = "gmail_read_enabled"
 
 
 def normalize_crm_provider(provider: str | None) -> str:
@@ -126,11 +127,15 @@ def _clean_enabled_channels(sources: Iterable[Any] | None) -> list[str]:
 def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize app-owned preference namespaces while preserving unrelated keys."""
     root = dict(preferences or {})
-    crm = root.get("crm") if isinstance(root.get("crm"), dict) else {}
-    channels = root.get("channels") if isinstance(root.get("channels"), dict) else {}
-    integrations = root.get("integrations") if isinstance(root.get("integrations"), dict) else {}
+    raw_crm = root.get("crm")
+    raw_channels = root.get("channels")
+    raw_integrations = root.get("integrations")
+    crm: dict[str, Any] = raw_crm if isinstance(raw_crm, dict) else {}
+    channels: dict[str, Any] = raw_channels if isinstance(raw_channels, dict) else {}
+    integrations: dict[str, Any] = raw_integrations if isinstance(raw_integrations, dict) else {}
     provider = crm.get("provider") or crm.get("source")
-    write_policy = crm.get("write_policy") if isinstance(crm.get("write_policy"), dict) else {}
+    raw_write_policy = crm.get("write_policy")
+    write_policy: dict[str, Any] = raw_write_policy if isinstance(raw_write_policy, dict) else {}
     raw_allowed_scopes = write_policy.get("allowed_scopes")
     enabled_channels = channels.get("enabled")
     if enabled_channels is None:
@@ -147,11 +152,22 @@ def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> di
     return root
 
 
+def has_google_gmail_read_scope_enabled(preferences: dict[str, Any] | None) -> bool:
+    """Return whether this organisation explicitly opts into the Gmail read OAuth scope."""
+    root = preferences if isinstance(preferences, dict) else {}
+    raw_integrations = root.get("integrations")
+    integrations: dict[str, Any] = raw_integrations if isinstance(raw_integrations, dict) else {}
+    raw_google = integrations.get("google")
+    google: dict[str, Any] = raw_google if isinstance(raw_google, dict) else {}
+    return google.get(GOOGLE_GMAIL_READ_ENABLED_KEY) is True
+
+
 def merge_organisation_app_settings(
     preferences: dict[str, Any] | None,
     *,
     crm_provider: str | None = None,
     enabled_channel_sources: Iterable[Any] | None = None,
+    google_gmail_read_enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Merge admin-controlled app settings without replacing unrelated preferences."""
     root = normalize_organisation_preferences(preferences)
@@ -160,6 +176,12 @@ def merge_organisation_app_settings(
         root["capabilities"] = derive_capabilities(root["crm"])
     if enabled_channel_sources is not None:
         root["channels"] = {"enabled": _clean_enabled_channels(enabled_channel_sources)}
+    if google_gmail_read_enabled is not None:
+        integrations = dict(root.get("integrations") or {})
+        google = dict(integrations.get("google") or {})
+        google[GOOGLE_GMAIL_READ_ENABLED_KEY] = google_gmail_read_enabled
+        integrations["google"] = google
+        root["integrations"] = integrations
     return root
 
 

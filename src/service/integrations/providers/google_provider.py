@@ -69,9 +69,14 @@ class GoogleProvider(BaseIntegrationProvider):
     def provider_key(self) -> str:
         return "google"
 
-    def _get_scopes(self) -> list[str]:
+    def _get_scopes(self, *, include_gmail_read_scope: bool = True) -> list[str]:
         """Determine required scopes based on IntegrationType"""
-        return list(get_google_integration_scopes(self.integration_type))
+        return list(
+            get_google_integration_scopes(
+                self.integration_type,
+                include_gmail_read_scope=include_gmail_read_scope,
+            )
+        )
 
     async def _request_with_retry(
         self,
@@ -126,9 +131,14 @@ class GoogleProvider(BaseIntegrationProvider):
         # Satisfies type checker.
         raise RuntimeError("Exhausted retries without response")
 
-    async def get_authorization_url(self, state: str) -> str:
+    async def get_authorization_url(
+        self,
+        state: str,
+        *,
+        include_gmail_read_scope: bool = True,
+    ) -> str:
         await self._ensure_credentials()
-        scopes = self._get_scopes()
+        scopes = self._get_scopes(include_gmail_read_scope=include_gmail_read_scope)
         params = {
             "client_id": self._client_id,
             "redirect_uri": self.redirect_uri,
@@ -136,7 +146,11 @@ class GoogleProvider(BaseIntegrationProvider):
             "scope": " ".join(scopes),
             "access_type": "offline",
             "prompt": "consent",  # Force consent to ensure we get a refresh token
-            "include_granted_scopes": "true",
+            "include_granted_scopes": (
+                "false"
+                if self.integration_type == IntegrationType.GMAIL and not include_gmail_read_scope
+                else "true"
+            ),
             "state": state,
         }
         url = f"{self.AUTHORIZATION_BASE_URL}?{urllib.parse.urlencode(params)}"

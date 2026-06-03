@@ -30,9 +30,23 @@ def _integration(integration_type: IntegrationType = IntegrationType.GMAIL) -> K
         name=integration_type.value,
         credentials={},
         connection_id="conn",
+        scopes=(
+            [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+            ]
+            if integration_type == IntegrationType.GMAIL
+            else []
+        ),
         is_active=True,
         connection_metadata={},
     )
+
+
+def _gmail_send_only_integration() -> KnowledgeIntegration:
+    integration = _integration(IntegrationType.GMAIL)
+    integration.scopes = ["https://www.googleapis.com/auth/gmail.send"]
+    return integration
 
 
 class FakeGoogleSubscriptionService:
@@ -121,6 +135,35 @@ class FakeOrgSession:
     async def commit(self) -> None:
         """Record that the service committed the refreshed metadata."""
         self.committed = True
+
+
+@pytest.mark.asyncio
+async def test_ensure_subscription_skips_gmail_without_read_scope(monkeypatch) -> None:
+    """Send-only Gmail connections must not try to create a Gmail watch."""
+    organisation_id = UUID("11111111-1111-1111-1111-111111111111")
+    integration_id = UUID("22222222-2222-2222-2222-222222222222")
+    subscription_service = FakeGoogleSubscriptionService()
+    task_service = GoogleSubscriptionTaskService(subscription_service=subscription_service)
+
+    monkeypatch.setattr(
+        task_service,
+        "_load_integration_snapshot",
+        AsyncMock(return_value=_gmail_send_only_integration()),
+    )
+
+    result = await task_service.ensure_subscription(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+
+    assert result == {
+        "status": "skipped",
+        "reason": "gmail_read_scope_missing",
+        "organisation_id": str(organisation_id),
+        "integration_id": str(integration_id),
+        "kind": "gmail",
+    }
+    assert subscription_service.calls == []
 
 
 @pytest.mark.asyncio

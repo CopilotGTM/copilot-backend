@@ -17,6 +17,18 @@ def test_validate_required_scopes_allows_granted_gmail_scope() -> None:
     )
 
 
+def test_validate_required_scopes_allows_send_only_gmail_scope() -> None:
+    CopilotCallbackService()._validate_required_scopes(
+        IntegrationType.GMAIL,
+        {
+            "scope": "https://www.googleapis.com/auth/userinfo.email "
+            "https://www.googleapis.com/auth/userinfo.profile "
+            "https://www.googleapis.com/auth/gmail.send",
+            "refresh_token": "refresh-token",
+        },
+    )
+
+
 def test_validate_required_scopes_rejects_missing_gmail_scope() -> None:
     with pytest.raises(ValueError, match="Gmail permission was not granted"):
         CopilotCallbackService()._validate_required_scopes(

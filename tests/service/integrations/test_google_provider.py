@@ -18,6 +18,16 @@ def test_google_provider_gmail_scopes_include_send() -> None:
     ]
 
 
+def test_google_provider_gmail_scopes_exclude_read_scope_when_disabled() -> None:
+    provider = GoogleProvider(IntegrationType.GMAIL)
+
+    assert provider._get_scopes(include_gmail_read_scope=False) == [
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/gmail.send",
+    ]
+
+
 def test_google_provider_calendar_scopes_include_google_meet() -> None:
     provider = GoogleProvider(IntegrationType.GOOGLE_CALENDAR)
 

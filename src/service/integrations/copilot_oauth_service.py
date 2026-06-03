@@ -26,6 +26,9 @@ from src.service.integrations.providers.salesforce_provider import (
     normalize_salesforce_oauth_base_url,
 )
 from src.service.integrations.scope_validation import is_microsoft_integration
+from src.service.orgnisation.organisation_preferences import (
+    has_google_gmail_read_scope_enabled,
+)
 
 logger = get_logger(__name__)
 _MICROSOFT_ADMIN_CONSENT_PURPOSE = "microsoft_admin_consent"
@@ -140,6 +143,17 @@ class CopilotOAuthService:
             return dict(decoded)
         return {}
 
+    async def _should_request_google_gmail_read_scope(
+        self,
+        organisation_id: UUID,
+    ) -> bool:
+        async for master_session in acquire_master_async_session():
+            organisation = await master_session.get(Organisation, organisation_id)
+            return has_google_gmail_read_scope_enabled(
+                organisation.preferences if organisation else None
+            )
+        return False
+
     async def initiate_oauth_flow(
         self,
         *,
@@ -181,6 +195,14 @@ class CopilotOAuthService:
             auth_url = await cast(Any, provider).get_authorization_url(
                 state_token,
                 oauth_base_url=validated_oauth_base_url,
+            )
+        elif integration_type == IntegrationType.GMAIL:
+            include_read_scope = await self._should_request_google_gmail_read_scope(
+                user_ids.organisation_id
+            )
+            auth_url = await cast(Any, provider).get_authorization_url(
+                state_token,
+                include_gmail_read_scope=include_read_scope,
             )
         else:
             auth_url = await provider.get_authorization_url(state_token)

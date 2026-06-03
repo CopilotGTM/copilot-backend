@@ -335,6 +335,13 @@ class AdminOrganisationService:
             organization.preferences,
             crm_provider=settings.crm.provider if settings.crm else None,
             enabled_channel_sources=settings.channels.enabled if settings.channels else None,
+            google_gmail_read_enabled=(
+                settings.integrations.google.gmail_read_enabled
+                if settings.integrations
+                and settings.integrations.google
+                and settings.integrations.google.gmail_read_enabled is not None
+                else None
+            ),
         )
         current_preferences = normalize_organisation_preferences(organization.preferences)
         current_provider = current_preferences.get("crm", {}).get("provider")
@@ -351,7 +358,7 @@ class AdminOrganisationService:
 
         changed_keys = [
             key
-            for key in ("crm", "channels", "capabilities")
+            for key in ("crm", "channels", "capabilities", "integrations")
             if current_preferences.get(key) != next_preferences.get(key)
         ]
         organization.preferences = next_preferences
@@ -381,7 +388,7 @@ class AdminOrganisationService:
         """Return whether the tenant has ever created or synced a deal row."""
         async for org_session in acquire_org_async_session(organisation_id):
             result = await org_session.execute(
-                select(CRMDeal.deal_id)
+                select(col(CRMDeal.deal_id))
                 .where(col(CRMDeal.organisation_id) == organisation_id)
                 .limit(1)
             )
