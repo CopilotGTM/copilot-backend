@@ -1,5 +1,7 @@
 from src.service.orgnisation.organisation_preferences import (
     has_crm_write_scope,
+    has_google_gmail_read_scope_enabled,
+    merge_organisation_app_settings,
     normalize_organisation_preferences,
 )
 
@@ -91,3 +93,33 @@ def test_write_scope_is_allowed_only_when_scope_is_in_policy():
         )
         is False
     )
+
+
+def test_missing_google_gmail_preference_disables_read_scope():
+    assert has_google_gmail_read_scope_enabled(None) is False
+    assert has_google_gmail_read_scope_enabled({"integrations": {"google": {}}}) is False
+    assert (
+        has_google_gmail_read_scope_enabled(
+            {"integrations": {"google": {"gmail_read_enabled": False}}}
+        )
+        is False
+    )
+
+
+def test_explicit_google_gmail_preference_enables_read_scope():
+    assert (
+        has_google_gmail_read_scope_enabled(
+            {"integrations": {"google": {"gmail_read_enabled": True}}}
+        )
+        is True
+    )
+
+
+def test_merge_organisation_app_settings_preserves_google_scope_preferences():
+    preferences = merge_organisation_app_settings(
+        {"integrations": {"microsoft": {"admin_consent": {"granted": True}}}},
+        google_gmail_read_enabled=True,
+    )
+
+    assert preferences["integrations"]["google"] == {"gmail_read_enabled": True}
+    assert preferences["integrations"]["microsoft"] == {"admin_consent": {"granted": True}}

@@ -16,7 +16,9 @@ from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.infra.config.google_integration_scopes import GOOGLE_SCOPE_GMAIL_READONLY
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.service.integrations.scope_validation import is_required_scope_satisfied
 from src.service.integrations.webhooks.google.metadata import (
     GOOGLE_WEBHOOK_SUBSCRIPTIONS_KEY,
     GoogleSubscriptionKind,
@@ -78,6 +80,15 @@ class GoogleSubscriptionTaskService:
                 "reason": "unsupported_integration_type",
                 "organisation_id": str(organisation_id),
                 "integration_id": str(integration_id),
+            }
+
+        if not self._can_ensure_subscription(integration_snapshot, kind):
+            return {
+                "status": "skipped",
+                "reason": "gmail_read_scope_missing",
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "kind": kind.value,
             }
 
         # Provider calls happen after `_load_integration_snapshot` has returned
@@ -249,6 +260,18 @@ class GoogleSubscriptionTaskService:
             else integration.integration_type
         )
         return kind_for_integration_type(integration_type)
+
+    def _can_ensure_subscription(
+        self,
+        integration: KnowledgeIntegration,
+        kind: GoogleSubscriptionKind,
+    ) -> bool:
+        if kind != GoogleSubscriptionKind.GMAIL:
+            return True
+        return is_required_scope_satisfied(
+            GOOGLE_SCOPE_GMAIL_READONLY,
+            list(integration.scopes or []),
+        )
 
     def _snapshot_integration(self, integration: KnowledgeIntegration) -> KnowledgeIntegration:
         """Copy the integration row for provider calls outside the DB session.

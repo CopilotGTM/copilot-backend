@@ -849,6 +849,9 @@ OAuth scopes are managed server-side based on integration requirements; the fron
 
 - HubSpot: `oauth`, `automation`, `conversations.read`, `sales-email-read`, `crm.objects.companies.read`, `crm.objects.companies.write`, `crm.objects.contacts.read`, `crm.objects.contacts.write`, `crm.objects.deals.read`, `crm.objects.deals.write`, `crm.objects.leads.read`, `crm.objects.leads.write`, `crm.objects.line_items.read`, `crm.objects.line_items.write`, `crm.objects.products.read`, `crm.objects.products.write`, `crm.objects.owners.read`, `crm.objects.users.read`, `crm.schemas.companies.read`, `crm.schemas.contacts.read`, `crm.schemas.deals.read`
 - Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
+- Gmail: by default requests Google identity scopes and `gmail.send`. The Gmail
+  read scope (`gmail.readonly`) is requested only when the organisation has
+  `public.organisations.preferences.integrations.google.gmail_read_enabled = true`.
 
 ### Initiate OAuth Flow Pydantic Models (Backend)
 

@@ -66,9 +66,12 @@ class OrganisationChannelSettings(BaseModel):
     enabled: list[OrganisationChannelSource] = Field(default_factory=list)
 
 
-class OrganisationAppSettings(BaseModel):
-    crm: OrganisationCrmSettings = Field(default_factory=OrganisationCrmSettings)
-    channels: OrganisationChannelSettings = Field(default_factory=OrganisationChannelSettings)
+class UpdateOrganisationGoogleIntegrationSettings(BaseModel):
+    gmail_read_enabled: bool | None = None
+
+
+class UpdateOrganisationIntegrationSettings(BaseModel):
+    google: UpdateOrganisationGoogleIntegrationSettings | None = None
 
 
 class UpdateOrganisationCrmSettingsRequest(BaseModel):
@@ -78,6 +81,7 @@ class UpdateOrganisationCrmSettingsRequest(BaseModel):
 class UpdateOrganisationAppSettingsRequest(BaseModel):
     crm: UpdateOrganisationCrmSettingsRequest | None = None
     channels: OrganisationChannelSettings | None = None
+    integrations: UpdateOrganisationIntegrationSettings | None = None
 
 
 class ActiveJobInfo(BaseModel):

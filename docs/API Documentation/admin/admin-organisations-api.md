@@ -400,7 +400,57 @@ Errors: `400` if no fields are provided; `403` if role is insufficient; `404` if
 
 ---
 
-## 5) Update Organisation Status
+## 5) Update Organisation App Settings
+
+### Endpoint — Update Organisation App Settings
+
+```http
+PATCH /{organisation_id}/app-settings
+```
+
+#### Role — Update Organisation App Settings
+
+`super_admin` or `admin`
+
+#### Body — Update Organisation App Settings
+
+All fields are optional. Omitted fields are preserved.
+
+```json
+{
+  "crm": {
+    "provider": "salesforce"
+  },
+  "channels": {
+    "enabled": ["whatsapp", "google_chat"]
+  },
+  "integrations": {
+    "google": {
+      "gmail_read_enabled": true
+    }
+  }
+}
+```
+
+`integrations.google.gmail_read_enabled` controls whether new Gmail OAuth flows
+request the Gmail read scope. Missing or `false` means new Gmail connects request
+Google identity scopes plus Gmail send only.
+
+#### Success — Update Organisation App Settings
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Organization app settings updated successfully",
+  "data": { "...organisation fields..." }
+}
+```
+
+Errors: `400` if the CRM source is locked by existing deals; `403` if role is insufficient; `404` if not found.
+
+---
+
+## 6) Update Organisation Status
 
 ### Endpoint — Update Organisation Status
 
@@ -437,7 +487,7 @@ PUT /{organisation_id}/status
 
 ---
 
-## 6) All Organisations History (paginated)
+## 7) All Organisations History (paginated)
 
 ### Endpoint — All Organisations History
 
@@ -478,7 +528,7 @@ Each `action` is one of `OrganisationEventType`. Treat `cursor` as opaque.
 
 ---
 
-## 7) Organisation History by ID (paginated)
+## 8) Organisation History by ID (paginated)
 
 ### Endpoint — Organisation History by ID
 
@@ -494,7 +544,7 @@ Same response shape as "All Organisations History", filtered to a single organis
 
 ---
 
-## 8) List Allowed Countries
+## 9) List Allowed Countries
 
 Returns the allowed countries list used by the admin console when selecting an organisation's country.
 

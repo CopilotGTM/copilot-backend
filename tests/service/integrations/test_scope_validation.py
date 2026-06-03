@@ -4,6 +4,7 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.scope_validation import (
     get_missing_required_scopes,
     get_missing_required_token_fields,
+    is_required_scope_satisfied,
     parse_granted_scopes,
     parse_granted_scopes_from_token_payload,
 )
@@ -79,14 +80,14 @@ def test_get_missing_required_scopes_accepts_broader_gmail_scopes() -> None:
     )
 
 
-def test_get_missing_required_scopes_rejects_gmail_modify_for_readonly_integration() -> None:
-    """Reject send-only Gmail scopes that do not satisfy readonly sync."""
+def test_get_missing_required_scopes_rejects_missing_gmail_send_scope() -> None:
+    """Gmail connection requires send permission; read is checked by sync/watch paths."""
     assert get_missing_required_scopes(
         IntegrationType.GMAIL,
         [
-            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/userinfo.email",
         ],
-    ) == {"https://www.googleapis.com/auth/gmail.readonly"}
+    ) == {"https://www.googleapis.com/auth/gmail.send"}
 
 
 def test_get_missing_required_scopes_accepts_gmail_send_equivalent_scopes() -> None:
@@ -107,6 +108,31 @@ def test_get_missing_required_scopes_accepts_gmail_send_equivalent_scopes() -> N
             )
             == set()
         )
+
+
+def test_individual_scope_satisfaction_detects_missing_gmail_read_scope() -> None:
+    """Gmail send permission alone must not satisfy read sync prerequisites."""
+    assert (
+        is_required_scope_satisfied(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            ["https://www.googleapis.com/auth/gmail.send"],
+        )
+        is False
+    )
+    assert (
+        is_required_scope_satisfied(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            ["https://mail.google.com/"],
+        )
+        is True
+    )
+    assert (
+        is_required_scope_satisfied(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            ["https://www.googleapis.com/auth/gmail.modify"],
+        )
+        is True
+    )
 
 
 def test_get_missing_required_scopes_accepts_broader_google_calendar_scope() -> None:

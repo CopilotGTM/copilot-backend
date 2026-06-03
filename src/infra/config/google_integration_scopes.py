@@ -12,16 +12,23 @@ GOOGLE_SCOPE_CALENDAR_READONLY = "https://www.googleapis.com/auth/calendar.reado
 GOOGLE_SCOPE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
 GOOGLE_SCOPE_MEETINGS_SPACE_READONLY = "https://www.googleapis.com/auth/meetings.space.readonly"
 
+GOOGLE_IDENTITY_SCOPES = (
+    GOOGLE_SCOPE_USERINFO_EMAIL,
+    GOOGLE_SCOPE_USERINFO_PROFILE,
+)
+GOOGLE_GMAIL_SCOPES_WITHOUT_READ = (
+    *GOOGLE_IDENTITY_SCOPES,
+    GOOGLE_SCOPE_GMAIL_SEND,
+)
+
 GOOGLE_INTEGRATION_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
     IntegrationType.GMAIL: (
-        GOOGLE_SCOPE_USERINFO_EMAIL,
-        GOOGLE_SCOPE_USERINFO_PROFILE,
+        *GOOGLE_IDENTITY_SCOPES,
         GOOGLE_SCOPE_GMAIL_READONLY,
         GOOGLE_SCOPE_GMAIL_SEND,
     ),
     IntegrationType.GOOGLE_CALENDAR: (
-        GOOGLE_SCOPE_USERINFO_EMAIL,
-        GOOGLE_SCOPE_USERINFO_PROFILE,
+        *GOOGLE_IDENTITY_SCOPES,
         GOOGLE_SCOPE_CALENDAR_READONLY,
         GOOGLE_SCOPE_CALENDAR_EVENTS,
         GOOGLE_SCOPE_MEETINGS_SPACE_READONLY,
@@ -29,7 +36,7 @@ GOOGLE_INTEGRATION_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
 }
 
 GOOGLE_REQUIRED_GRANTED_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
-    IntegrationType.GMAIL: (GOOGLE_SCOPE_GMAIL_READONLY, GOOGLE_SCOPE_GMAIL_SEND),
+    IntegrationType.GMAIL: (GOOGLE_SCOPE_GMAIL_SEND,),
     IntegrationType.GOOGLE_CALENDAR: (
         GOOGLE_SCOPE_CALENDAR_READONLY,
         GOOGLE_SCOPE_CALENDAR_EVENTS,
@@ -38,7 +45,13 @@ GOOGLE_REQUIRED_GRANTED_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
 }
 
 
-def get_google_integration_scopes(integration_type: IntegrationType) -> tuple[str, ...]:
+def get_google_integration_scopes(
+    integration_type: IntegrationType,
+    *,
+    include_gmail_read_scope: bool = True,
+) -> tuple[str, ...]:
+    if integration_type == IntegrationType.GMAIL and not include_gmail_read_scope:
+        return GOOGLE_GMAIL_SCOPES_WITHOUT_READ
     return GOOGLE_INTEGRATION_SCOPES.get(integration_type, ())
 
 

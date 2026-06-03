@@ -45,10 +45,12 @@ from sqlalchemy.orm import attributes
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.email_models import EmailFolder
+from src.infra.config.google_integration_scopes import GOOGLE_SCOPE_GMAIL_READONLY
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.integrations.scope_validation import is_required_scope_satisfied
 from src.service.integrations.sync_health import SyncFailureType, classify_sync_error
 from src.workers.integrations_worker.providers.email import gmail_email, outlook_email
 
@@ -112,6 +114,12 @@ _PROVIDER_MAP: dict[IntegrationType, str] = {
 def _get_provider_key(integration_type: IntegrationType) -> str:
     """Get provider key for integration type."""
     return _PROVIDER_MAP.get(integration_type, "outlook")
+
+
+def _can_sync_email_messages(sync_data: IntegrationSyncData) -> bool:
+    if sync_data.integration_type != IntegrationType.GMAIL:
+        return True
+    return is_required_scope_satisfied(GOOGLE_SCOPE_GMAIL_READONLY, sync_data.scopes)
 
 
 def _get_cursor_for_folder(
@@ -514,6 +522,27 @@ class EmailDeltaSyncService:
             },
         )
 
+        if not _can_sync_email_messages(sync_data):
+            logger.info(
+                "Skipping Gmail email sync because the integration is missing read scope",
+                extra={
+                    "event": "gmail_email_sync_skipped_missing_read_scope",
+                    "organisation_id": str(org_id),
+                    "integration_id": str(sync_data.integration_id),
+                },
+            )
+            return {
+                "status": "success",
+                "organisation_id": str(org_id),
+                "integration_id": str(sync_data.integration_id),
+                "integration_type": sync_data.integration_type_value,
+                "folders_synced": 0,
+                "messages_synced": 0,
+                "folder_results": [],
+                "skipped": True,
+                "skip_reason": "gmail_read_scope_missing",
+            }
+
         token_info = IntegrationTokenInfo.from_integration(sync_data, org_id)
 
         # ─────────────────────────────────────────────────────────────────
@@ -564,8 +593,8 @@ class EmailDeltaSyncService:
                 col(EmailFolder.is_deleted).is_(False),
                 col(EmailFolder.is_monitored) == "true",
             )
-            folder_result = await session.execute(folder_stmt)
-            monitored_folders = folder_result.scalars().all()
+            monitored_folder_result = await session.execute(folder_stmt)
+            monitored_folders = monitored_folder_result.scalars().all()
 
             for folder in monitored_folders:
                 cursor = _get_cursor_for_folder(sync_data, folder.external_folder_id)
