@@ -29,4 +29,18 @@ spec:
       authenticationRef:
         name: {{ include "worker.fullname" . }}-redis-auth
       {{- end }}
+    {{- range .Values.config.additionalQueues }}
+    - type: redis
+      metadata:
+        address: "{{ $.Values.global.redis.host }}:{{ $.Values.global.redis.port }}"
+        listName: {{ . | quote }}
+        listLength: {{ $.Values.autoscaling.queueLength | quote }}
+        {{- if $.Values.global.redis.enableTLS }}
+        enableTLS: "true"
+        {{- end }}
+      {{- if $.Values.global.redis.usePassword }}
+      authenticationRef:
+        name: {{ include "worker.fullname" $ }}-redis-auth
+      {{- end }}
+    {{- end }}
 {{- end }}

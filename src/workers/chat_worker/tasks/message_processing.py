@@ -12,7 +12,7 @@ from celery.exceptions import Retry
 
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
-from src.workers.chat_worker.services import MessageProcessingService
+from src.workers.chat_worker.services.message_processing_service import MessageProcessingService
 
 logger = get_logger("chat_message_processing_task")
 

@@ -12,7 +12,9 @@ from uuid import UUID
 
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
-from src.workers.chat_worker.services import BotMessageProcessingService
+from src.workers.chat_worker.services.bot_message_processing_service import (
+    BotMessageProcessingService,
+)
 
 logger = get_logger("bot_message_processing_task")
 

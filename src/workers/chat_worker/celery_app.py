@@ -22,8 +22,17 @@ logger = get_logger("chat_worker")
 # Initialize the configuration for the Chat Worker
 config = ChatWorkerConfig()
 
-# Define the tasks module for auto-discovery
-tasks_module = "src.workers.chat_worker.tasks"
+# Keep task registration explicit so importing the package does not pull in the
+# full chat worker graph during lightweight import checks.
+tasks_module = [
+    "src.workers.chat_worker.tasks.bot_message_processing",
+    "src.workers.chat_worker.tasks.message_processing",
+    "src.workers.chat_worker.tasks.post_upload",
+    "src.workers.chat_worker.tasks.reminder_tasks",
+    "src.workers.chat_worker.tasks.stale_job_cleanup_tasks",
+    "src.workers.chat_worker.tasks.test_tasks",
+    "src.workers.chat_worker.tasks.voice_realtime",
+]
 
 # Create the Celery app for the Chat Worker
 app = create_celery_app("chat_worker", config, tasks_module)

@@ -233,6 +233,45 @@ def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:
     assert "copilot-backend-knowledge-beat" not in deployment_names
 
 
+def test_chat_worker_scaledobject_watches_all_consumed_queues() -> None:
+    """Scale chat workers on user messages, reminders, voice, and attachment work."""
+    manifests = _render_all_manifests()
+    scaled_object = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "ScaledObject"
+        and doc["metadata"]["name"] == "copilot-backend-chat-worker-scaler"
+    )
+
+    trigger_queues = {
+        trigger["metadata"]["listName"] for trigger in scaled_object["spec"]["triggers"]
+    }
+
+    assert trigger_queues == {
+        "attachments",
+        "chat_processing",
+        "chat_messages",
+        "voice_realtime",
+    }
+
+
+def test_dev_chat_worker_renders_memory_guardrails() -> None:
+    """Assert dev chat worker uses the same Celery memory guardrails as prod."""
+    manifests = _render_all_manifests()
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-chat-worker"
+    )
+
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert "--concurrency=3" in container["command"]
+    assert "--max-tasks-per-child=25" in container["command"]
+    assert "--max-memory-per-child=700000" in container["command"]
+
+
 def test_api_secret_renders_sentry_settings_for_dev() -> None:
     """Assert dev Sentry secret values render with expected non-empty defaults."""
     manifests = _render_all_manifests()

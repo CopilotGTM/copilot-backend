@@ -168,7 +168,9 @@ def execute_reminder_task(
     logger.info("Executing reminder org=%s reminder=%s", organisation_id, reminder_id)
 
     try:
-        from src.workers.chat_worker.services import ReminderExecutionService
+        from src.workers.chat_worker.services.reminder_execution_service import (
+            ReminderExecutionService,
+        )
 
         org_uuid = UUID(organisation_id)
         rem_uuid = UUID(reminder_id)

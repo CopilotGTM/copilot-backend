@@ -83,6 +83,12 @@ spec:
             {{- if .Values.config.pool }}
             - "--pool={{ .Values.config.pool }}"
             {{- end }}
+            {{- if .Values.config.maxTasksPerChild }}
+            - "--max-tasks-per-child={{ .Values.config.maxTasksPerChild }}"
+            {{- end }}
+            {{- if .Values.config.maxMemoryPerChildKb }}
+            - "--max-memory-per-child={{ .Values.config.maxMemoryPerChildKb }}"
+            {{- end }}
             - "-Q"
             - "{{ .Values.config.queueName }}{{- if .Values.config.additionalQueues }},{{ join "," .Values.config.additionalQueues }}{{- end }}"
             {{- end }}
