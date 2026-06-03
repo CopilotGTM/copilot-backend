@@ -28,6 +28,7 @@ from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealParticipantExtraction,
     DealResolutionMaps,
     DealSyncResult,
+    DealWriteResult,
     DimensionHit,
     ParticipantWriteResult,
     StageHistoryWriteResult,
@@ -64,6 +65,8 @@ from src.workers.integrations_worker.providers.crm.salesforce.opportunity_histor
 
 logger = get_logger(__name__)
 
+_DEAL_PERSIST_CHUNK_SIZE = 2_000
+
 
 @dataclass(slots=True)
 class SalesforceDealSyncContext:
@@ -88,51 +91,62 @@ class SalesforceDealRecordSyncService:
         started_at = datetime.now(UTC)
         context = await self._load_context(organisation_id, integration_id)
 
-        raw_opportunities, field_names = await SalesforceOpportunitiesFetcher(
+        opportunities_fetcher = SalesforceOpportunitiesFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
-        ).fetch_all()
-        raw_stage_history = await SalesforceOpportunityHistoryFetcher(
-            token_info=context.token_info,
-            instance_url=context.instance_url,
-        ).fetch_all()
-        raw_contact_roles = await SalesforceOpportunityContactRolesFetcher(
-            token_info=context.token_info,
-            instance_url=context.instance_url,
-        ).fetch_all()
-
-        pipeline_external_id_by_deal = {
-            deal_id: (record_type_id or "master")
-            for raw in raw_opportunities
-            if isinstance(raw, dict)
-            for deal_id in [self._coerce_str(raw.get("Id"))]
-            if deal_id is not None
-            for record_type_id in [self._coerce_str(raw.get("RecordTypeId"))]
-        }
-        company_external_id_by_deal = {
-            deal_id: self._coerce_str(raw.get("AccountId"))
-            for raw in raw_opportunities
-            if isinstance(raw, dict)
-            for deal_id in [self._coerce_str(raw.get("Id"))]
-            if deal_id is not None
-        }
-        current_stage_external_id_by_deal = {
-            deal_id: (
-                f"{pipeline_external_id_by_deal.get(deal_id, 'master')}:{stage_name}"
-                if stage_name is not None
-                else None
-            )
-            for raw in raw_opportunities
-            if isinstance(raw, dict)
-            for deal_id in [self._coerce_str(raw.get("Id"))]
-            if deal_id is not None
-            for stage_name in [self._coerce_str(raw.get("StageName"))]
-        }
-
-        participant_extraction = extract_participants(
-            raw_contact_roles,
-            company_external_id_by_deal=company_external_id_by_deal,
         )
+        pending_raw: list[dict[str, Any]] = []
+        fetched_opportunities = 0
+        property_list_size = 0
+        skipped_malformed_opportunities = 0
+        pipeline_external_id_by_deal: dict[str, str] = {}
+        company_external_id_by_deal: dict[str, str | None] = {}
+        current_stage_external_id_by_deal: dict[str, str | None] = {}
+        write_result = DealWriteResult()
+        stage_history_result = StageHistoryWriteResult()
+        participant_result = ParticipantWriteResult()
+        association_result = AssociationWriteResult()
+        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+
+        async for page_records, field_names in opportunities_fetcher.fetch_pages():
+            fetched_opportunities += len(page_records)
+            if field_names:
+                property_list_size = len(field_names)
+            self._capture_opportunity_dimensions(
+                raw_opportunities=page_records,
+                pipeline_external_id_by_deal=pipeline_external_id_by_deal,
+                company_external_id_by_deal=company_external_id_by_deal,
+                current_stage_external_id_by_deal=current_stage_external_id_by_deal,
+            )
+            pending_raw.extend(page_records)
+            if len(pending_raw) < _DEAL_PERSIST_CHUNK_SIZE:
+                continue
+            chunk_result = await self._persist_opportunity_chunk(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                instance_url=context.instance_url,
+                raw_opportunities=pending_raw,
+            )
+            self._merge_deal_write_result(write_result, chunk_result[0])
+            skipped_malformed_opportunities += chunk_result[1]
+            pending_raw = []
+
+        if pending_raw:
+            chunk_result = await self._persist_opportunity_chunk(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                instance_url=context.instance_url,
+                raw_opportunities=pending_raw,
+            )
+            self._merge_deal_write_result(write_result, chunk_result[0])
+            skipped_malformed_opportunities += chunk_result[1]
+
+        raw_stage_history: list[dict[str, Any]] = []
+        async for page_records in SalesforceOpportunityHistoryFetcher(
+            token_info=context.token_info,
+            instance_url=context.instance_url,
+        ).fetch_pages():
+            raw_stage_history.extend(page_records)
         transitions, skipped_malformed_stage_history = normalize_stage_history(
             raw_stage_history,
             pipeline_external_id_by_deal=pipeline_external_id_by_deal,
@@ -141,27 +155,44 @@ class SalesforceDealRecordSyncService:
             transitions,
             current_stage_external_id_by_deal=current_stage_external_id_by_deal,
         )
-        normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
-            raw_opportunities,
+
+        raw_contact_roles: list[dict[str, Any]] = []
+        async for page_records in SalesforceOpportunityContactRolesFetcher(
+            token_info=context.token_info,
             instance_url=context.instance_url,
+        ).fetch_pages():
+            raw_contact_roles.extend(page_records)
+        participant_extraction = extract_participants(
+            raw_contact_roles,
+            company_external_id_by_deal=company_external_id_by_deal,
+        )
+        await self._update_deal_relationship_snapshots(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            stage_entered_at_by_deal=stage_entered_at_map,
             primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
-            current_stage_entered_at_by_deal=stage_entered_at_map,
             contact_count_by_deal=participant_extraction.contact_count_by_deal,
         )
 
-        (
-            write_result,
-            stage_history_result,
-            participant_result,
-            association_result,
-            backfill_payload,
-        ) = await self._persist(
-            organisation_id=organisation_id,
-            integration_id=integration_id,
-            opportunities=normalized_opportunities,
-            transitions=transitions,
-            participant_extraction=participant_extraction,
-        )
+        if (
+            transitions
+            or participant_extraction.participants
+            or participant_extraction.associations
+        ):
+            (
+                side_write_result,
+                stage_history_result,
+                participant_result,
+                association_result,
+                backfill_payload,
+            ) = await self._persist(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                opportunities=[],
+                transitions=transitions,
+                participant_extraction=participant_extraction,
+            )
+            self._merge_deal_write_result(write_result, side_write_result)
 
         completed_at = datetime.now(UTC)
         return DealSyncResult(
@@ -171,8 +202,8 @@ class SalesforceDealRecordSyncService:
             integration_id=integration_id,
             started_at=started_at,
             completed_at=completed_at,
-            fetched_opportunities=len(raw_opportunities),
-            property_list_size=len(field_names),
+            fetched_opportunities=fetched_opportunities,
+            property_list_size=property_list_size,
             fetched_stage_history_rows=len(raw_stage_history),
             fetched_participant_rows=len(raw_contact_roles),
             deals_created=write_result.deals_created,
@@ -241,6 +272,51 @@ class SalesforceDealRecordSyncService:
             "Could not acquire org session for Salesforce deals record sync"
         )
 
+    async def _persist_opportunity_chunk(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        instance_url: str,
+        raw_opportunities: list[dict[str, Any]],
+    ) -> tuple[DealWriteResult, int]:
+        normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
+            raw_opportunities,
+            instance_url=instance_url,
+            primary_contact_by_deal={},
+            current_stage_entered_at_by_deal={},
+            contact_count_by_deal={},
+        )
+        logger.info(
+            "Salesforce deals chunk persist started",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "raw_opportunities": len(raw_opportunities),
+                "normalized_opportunities": len(normalized_opportunities),
+            },
+        )
+        write_result, *_ = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            opportunities=normalized_opportunities,
+            transitions=[],
+            participant_extraction=DealParticipantExtraction(),
+            backfill=False,
+            preserve_relationship_fields=True,
+        )
+        logger.info(
+            "Salesforce deals chunk persist completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "deals_created": write_result.deals_created,
+                "deals_updated": write_result.deals_updated,
+                "skipped_malformed_opportunities": skipped_malformed_opportunities,
+            },
+        )
+        return write_result, skipped_malformed_opportunities
+
     async def _persist(
         self,
         *,
@@ -249,6 +325,8 @@ class SalesforceDealRecordSyncService:
         opportunities: list[Any],
         transitions: list[Any],
         participant_extraction: DealParticipantExtraction,
+        backfill: bool = True,
+        preserve_relationship_fields: bool = False,
     ) -> tuple[
         Any, StageHistoryWriteResult, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]
     ]:
@@ -266,52 +344,70 @@ class SalesforceDealRecordSyncService:
             ).apply(
                 normalized=opportunities,
                 maps=maps,
+                preserve_relationship_fields=preserve_relationship_fields,
             )
 
-            deal_pk_map = await self._load_deal_pk_map(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
+            stage_history_result = StageHistoryWriteResult()
+            participant_result = ParticipantWriteResult()
+            association_result = AssociationWriteResult()
+            has_relationship_rows = bool(
+                transitions
+                or participant_extraction.participants
+                or participant_extraction.associations
             )
+            if has_relationship_rows:
+                deal_pk_map = await self._load_deal_pk_map(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    external_ids=self._relationship_deal_external_ids(
+                        transitions=transitions,
+                        participant_extraction=participant_extraction,
+                    ),
+                )
 
-            stage_history_result = await SalesforceDealStageHistoryWriter(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-            ).apply(
-                transitions=transitions,
-                deal_pk_map=deal_pk_map,
-                stage_map=maps.stage_map,
-            )
+                stage_history_result = await SalesforceDealStageHistoryWriter(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                ).apply(
+                    transitions=transitions,
+                    deal_pk_map=deal_pk_map,
+                    stage_map=maps.stage_map,
+                )
 
-            participant_result = await SalesforceDealParticipantWriter(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-            ).apply(
-                participants=participant_extraction.participants,
-                deal_pk_map=deal_pk_map,
-                contact_map=maps.contact_map,
-                company_map=maps.company_map,
-                user_map=maps.user_map,
-            )
+                participant_result = await SalesforceDealParticipantWriter(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                ).apply(
+                    participants=participant_extraction.participants,
+                    deal_pk_map=deal_pk_map,
+                    contact_map=maps.contact_map,
+                    company_map=maps.company_map,
+                    user_map=maps.user_map,
+                )
 
-            association_result = await SalesforceDealAssociationWriter(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-            ).apply(
-                edges=participant_extraction.associations,
-                deal_pk_map=deal_pk_map,
-                contact_map=maps.contact_map,
-                company_map=maps.company_map,
-            )
+                association_result = await SalesforceDealAssociationWriter(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                ).apply(
+                    edges=participant_extraction.associations,
+                    deal_pk_map=deal_pk_map,
+                    contact_map=maps.contact_map,
+                    company_map=maps.company_map,
+                )
 
-            backfill_payload = await self._backfill_deals(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-                maps=maps,
+            backfill_payload = (
+                await self._backfill_deals(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    maps=maps,
+                )
+                if backfill
+                else {"rows_updated": 0, "per_op": {}}
             )
 
             await session.commit()
@@ -325,6 +421,56 @@ class SalesforceDealRecordSyncService:
 
         raise SalesforceDealSyncConfigurationError(
             "Could not acquire org session for Salesforce deals record sync write"
+        )
+
+    async def _update_deal_relationship_snapshots(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        stage_entered_at_by_deal: dict[str, datetime],
+        primary_contact_by_deal: dict[str, str],
+        contact_count_by_deal: dict[str, int],
+    ) -> None:
+        external_ids = (
+            set(stage_entered_at_by_deal)
+            | set(primary_contact_by_deal)
+            | set(contact_count_by_deal)
+        )
+        if not external_ids:
+            return
+
+        async for session in acquire_org_async_session(organisation_id):
+            stmt = select(CRMDeal).where(
+                col(CRMDeal.organisation_id) == organisation_id,
+                col(CRMDeal.integration_id) == integration_id,
+                col(CRMDeal.is_deleted) == False,  # noqa: E712
+                col(CRMDeal.external_id).in_(external_ids),
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            for row in rows:
+                external_id = row.external_id
+                if external_id is None:
+                    continue
+                if external_id in stage_entered_at_by_deal:
+                    row.stage_entered_at = stage_entered_at_by_deal[external_id]
+                if external_id in primary_contact_by_deal:
+                    row.primary_contact_external_id = primary_contact_by_deal[external_id]
+                if external_id in contact_count_by_deal:
+                    row.associated_contact_count = contact_count_by_deal[external_id]
+            await session.commit()
+            logger.info(
+                "Salesforce deal relationship snapshots updated",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "deals_updated": len(rows),
+                },
+            )
+            return
+
+        raise SalesforceDealSyncConfigurationError(
+            "Could not acquire org session for Salesforce deal relationship snapshot update"
         )
 
     async def persist_single_opportunity(
@@ -465,12 +611,17 @@ class SalesforceDealRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str] | None = None,
     ) -> dict[str, UUID]:
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMDeal.external_id).in_(external_ids))
         rows = (await session.execute(stmt)).scalars().all()
         return {row.external_id: row.deal_id for row in rows if row.external_id is not None}
 
@@ -560,6 +711,61 @@ class SalesforceDealRecordSyncService:
             company_map=company_map,
             contact_map=contact_map,
         )
+
+    def _capture_opportunity_dimensions(
+        self,
+        *,
+        raw_opportunities: list[dict[str, Any]],
+        pipeline_external_id_by_deal: dict[str, str],
+        company_external_id_by_deal: dict[str, str | None],
+        current_stage_external_id_by_deal: dict[str, str | None],
+    ) -> None:
+        for raw in raw_opportunities:
+            deal_id = self._coerce_str(raw.get("Id"))
+            if deal_id is None:
+                continue
+            record_type_id = self._coerce_str(raw.get("RecordTypeId"))
+            pipeline_external_id = record_type_id or "master"
+            pipeline_external_id_by_deal[deal_id] = pipeline_external_id
+            company_external_id_by_deal[deal_id] = self._coerce_str(raw.get("AccountId"))
+            stage_name = self._coerce_str(raw.get("StageName"))
+            current_stage_external_id_by_deal[deal_id] = (
+                f"{pipeline_external_id}:{stage_name}" if stage_name is not None else None
+            )
+
+    @staticmethod
+    def _merge_deal_write_result(target: DealWriteResult, source: DealWriteResult) -> None:
+        target.deals_created += source.deals_created
+        target.deals_updated += source.deals_updated
+        target.unresolved_pipeline_link += source.unresolved_pipeline_link
+        target.unresolved_stage_link += source.unresolved_stage_link
+        target.unresolved_owner_link += source.unresolved_owner_link
+        target.unresolved_company_link += source.unresolved_company_link
+        target.unresolved_contact_link += source.unresolved_contact_link
+        target.unresolved_created_by_link += source.unresolved_created_by_link
+        target.unresolved_updated_by_link += source.unresolved_updated_by_link
+
+    @staticmethod
+    def _relationship_deal_external_ids(
+        *,
+        transitions: list[Any],
+        participant_extraction: DealParticipantExtraction,
+    ) -> set[str]:
+        return {
+            external_id
+            for external_id in (
+                [transition.deal_external_id for transition in transitions]
+                + [
+                    participant.deal_external_id
+                    for participant in participant_extraction.participants
+                ]
+                + [
+                    association.from_external_id
+                    for association in participant_extraction.associations
+                ]
+            )
+            if isinstance(external_id, str) and external_id
+        }
 
     @staticmethod
     def _coerce_str(value: Any) -> str | None:

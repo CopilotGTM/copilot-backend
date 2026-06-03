@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -16,7 +17,8 @@ logger = get_logger(__name__)
 
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
-_MAX_PAGES = 500
+_MAX_PAGES = 1_500_000
+_QUERY_BATCH_SIZE = 2_000
 _MAX_ERROR_BODY_CHARS = 500
 _REQUIRED_FIELDS = {"Id", "CreatedDate", "LastModifiedDate"}
 _EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
@@ -33,14 +35,20 @@ class SalesforceContactsFetcher:
         self.instance_url = instance_url.rstrip("/")
 
     async def fetch_all(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        async for page_records in self.fetch_pages():
+            records.extend(page_records)
+        return records
+
+    async def fetch_pages(self) -> AsyncIterator[list[dict[str, Any]]]:
         field_names = await self._fetch_field_names()
         # The field list comes only from Salesforce describe metadata after
         # filtering out known non-selectable field shapes; no user input reaches this SOQL.
         soql = f"SELECT {', '.join(field_names)} FROM Contact ORDER BY LastName, FirstName"  # noqa: S608  # nosec B608
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
-        records: list[dict[str, Any]] = []
         next_url: str | None = None
         page_count = 0
+        total_records = 0
 
         while page_count < _MAX_PAGES:
             payload = await self._get_json(
@@ -49,10 +57,12 @@ class SalesforceContactsFetcher:
             raw_records = payload.get("records")
             if not isinstance(raw_records, list):
                 raise ValueError("Salesforce contact query API returned non-list records")
-            records.extend(row for row in raw_records if isinstance(row, dict))
+            page_records = [row for row in raw_records if isinstance(row, dict)]
+            total_records += len(page_records)
 
             page_count += 1
             next_records_url = payload.get("nextRecordsUrl")
+            yield page_records
             if not isinstance(next_records_url, str) or not next_records_url:
                 break
             next_url = (
@@ -73,12 +83,11 @@ class SalesforceContactsFetcher:
             "Fetched Salesforce contacts",
             extra={
                 "integration_id": str(self.token_info.integration_id),
-                "count": len(records),
+                "count": total_records,
                 "pages": page_count,
                 "field_count": len(field_names),
             },
         )
-        return records
 
     async def fetch_one(self, contact_id: str) -> dict[str, Any] | None:
         field_names = await self._fetch_field_names()
@@ -127,7 +136,10 @@ class SalesforceContactsFetcher:
             async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
                 response = await client.get(
                     url,
-                    headers={"Authorization": f"Bearer {access_token}"},
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Sforce-Query-Options": f"batchSize={_QUERY_BATCH_SIZE}",
+                    },
                     params=params,
                 )
                 _raise_for_status_with_salesforce_body(response)

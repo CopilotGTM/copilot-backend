@@ -49,7 +49,9 @@ class SalesforceDealAssociationWriter:
             return result
 
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external = await self._load_existing_rows(
+            external_ids={_synthetic_external_id(edge) for edge in edges}
+        )
 
         for edge in edges:
             from_local_id = deal_pk_map.get(edge.from_external_id)
@@ -115,13 +117,20 @@ class SalesforceDealAssociationWriter:
             return hit.internal_id if hit is not None else None
         return None
 
-    async def _load_existing_rows(self) -> dict[str, CRMObjectAssociation]:
+    async def _load_existing_rows(
+        self,
+        external_ids: set[str] | None = None,
+    ) -> dict[str, CRMObjectAssociation]:
         stmt = select(CRMObjectAssociation).where(
             col(CRMObjectAssociation.organisation_id) == self.organisation_id,
             col(CRMObjectAssociation.integration_id) == self.integration_id,
             col(CRMObjectAssociation.is_deleted) == False,  # noqa: E712
             col(CRMObjectAssociation.from_object_type) == CRMObjectType.DEAL,
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMObjectAssociation.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 
