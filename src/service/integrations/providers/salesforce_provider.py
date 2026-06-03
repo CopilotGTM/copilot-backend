@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 _MAX_RETRIES = 3
 _BASE_BACKOFF_SEC = 1.0
 _MAX_BACKOFF_SEC = 30.0
+_DEFAULT_ACCESS_TOKEN_EXPIRES_IN = 3600
 
 _PRODUCTION_OAUTH_BASE_URL = "https://login.salesforce.com"
 _SALESFORCE_OAUTH_PATHS = {
@@ -80,6 +81,18 @@ def resolve_salesforce_oauth_base_url(
 def salesforce_oauth_endpoint(oauth_base_url: str | None, endpoint: str) -> str:
     base_url = normalize_salesforce_oauth_base_url(oauth_base_url)
     return f"{base_url}{_SALESFORCE_OAUTH_PATHS[endpoint]}"
+
+
+def _with_default_token_expiry(payload: dict[str, Any]) -> dict[str, Any]:
+    if (
+        payload.get("access_token")
+        and payload.get("expires_in") is None
+        and payload.get("expires_at") is None
+    ):
+        normalized = dict(payload)
+        normalized["expires_in"] = _DEFAULT_ACCESS_TOKEN_EXPIRES_IN
+        return normalized
+    return payload
 
 
 class SalesforceProvider(BaseIntegrationProvider):
@@ -202,7 +215,7 @@ class SalesforceProvider(BaseIntegrationProvider):
         response.raise_for_status()
         json_response = response.json()
         if isinstance(json_response, dict):
-            return json_response
+            return _with_default_token_expiry(json_response)
         raise ValueError("Salesforce OAuth exchange returned an invalid payload")
 
     async def refresh_token(
@@ -226,7 +239,7 @@ class SalesforceProvider(BaseIntegrationProvider):
         response.raise_for_status()
         json_response = response.json()
         if isinstance(json_response, dict):
-            return json_response
+            return _with_default_token_expiry(json_response)
         raise ValueError("Salesforce token refresh returned an invalid payload")
 
     async def revoke_token(self, token: str, *, oauth_base_url: str | None = None) -> None:
