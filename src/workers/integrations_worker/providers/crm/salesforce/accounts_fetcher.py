@@ -41,8 +41,26 @@ class SalesforceAccountsFetcher:
         records: list[dict[str, Any]] = []
         next_url: str | None = None
         page_count = 0
+        logger.info(
+            "Salesforce Account query started",
+            extra={
+                "integration_id": str(self.token_info.integration_id),
+                "field_count": len(field_names),
+                "max_pages": _MAX_PAGES,
+            },
+        )
 
         while page_count < _MAX_PAGES:
+            next_page = page_count + 1
+            logger.info(
+                "Fetching Salesforce accounts page",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "page": next_page,
+                    "has_next_page": next_url is not None,
+                    "records_so_far": len(records),
+                },
+            )
             payload = await self._get_json(
                 next_url or url, params=None if next_url else {"q": soql}
             )
@@ -53,6 +71,17 @@ class SalesforceAccountsFetcher:
 
             page_count += 1
             next_records_url = payload.get("nextRecordsUrl")
+            has_next_page = isinstance(next_records_url, str) and bool(next_records_url)
+            logger.info(
+                "Fetched Salesforce accounts page",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "page": page_count,
+                    "page_records": len(raw_records),
+                    "total_records": len(records),
+                    "has_next_page": has_next_page,
+                },
+            )
             if not isinstance(next_records_url, str) or not next_records_url:
                 break
             next_url = (
@@ -100,6 +129,10 @@ class SalesforceAccountsFetcher:
 
     async def _fetch_field_names(self) -> list[str]:
         url = f"{self.instance_url}/services/data/{_API_VERSION}/sobjects/Account/describe"
+        logger.info(
+            "Salesforce Account describe started",
+            extra={"integration_id": str(self.token_info.integration_id)},
+        )
         payload = await self._get_json(url)
         raw_fields = payload.get("fields")
         if not isinstance(raw_fields, list):
@@ -115,7 +148,16 @@ class SalesforceAccountsFetcher:
         field_names.update(_REQUIRED_FIELDS)
         if "Id" not in field_names:
             raise ValueError("Salesforce Account describe API did not yield a usable Id field")
-        return sorted(field_names)
+        sorted_field_names = sorted(field_names)
+        logger.info(
+            "Salesforce Account describe completed",
+            extra={
+                "integration_id": str(self.token_info.integration_id),
+                "raw_field_count": len(raw_fields),
+                "field_count": len(sorted_field_names),
+            },
+        )
+        return sorted_field_names
 
     async def _get_json(
         self,

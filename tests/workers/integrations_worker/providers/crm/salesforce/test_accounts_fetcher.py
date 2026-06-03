@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -102,6 +103,90 @@ async def test_fetcher_describes_selectable_account_fields_and_paginates() -> No
     assert "Unused__c" in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
+
+
+@pytest.mark.asyncio
+async def test_fetch_all_logs_account_query_progress(caplog: pytest.LogCaptureFixture) -> None:
+    token_info = _token_info()
+    responses = [
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET",
+                "https://acme.my.salesforce.com/services/data/v61.0/sobjects/Account/describe",
+            ),
+            json={
+                "fields": [
+                    {"name": "Id", "type": "id"},
+                    {"name": "Name", "type": "string"},
+                    {"name": "Custom_Field__c", "type": "string"},
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET", "https://acme.my.salesforce.com/services/data/v61.0/query"
+            ),
+            json={
+                "records": [{"Id": "001A", "Name": "Acme"}],
+                "nextRecordsUrl": "/services/data/v61.0/query/01gNEXT",
+            },
+        ),
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET",
+                "https://acme.my.salesforce.com/services/data/v61.0/query/01gNEXT",
+            ),
+            json={"records": [{"Id": "001B", "Name": "Beta"}]},
+        ),
+    ]
+    client = _mock_client_with_responses(responses)
+
+    with (
+        caplog.at_level(logging.INFO),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        rows = await SalesforceAccountsFetcher(
+            token_info=token_info,
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_all()
+
+    assert [row["Id"] for row in rows] == ["001A", "001B"]
+    account_log_records = [
+        record
+        for record in caplog.records
+        if record.integration_id == str(token_info.integration_id)
+    ]
+    assert [record.message for record in account_log_records] == [
+        "Salesforce Account describe started",
+        "Salesforce Account describe completed",
+        "Salesforce Account query started",
+        "Fetching Salesforce accounts page",
+        "Fetched Salesforce accounts page",
+        "Fetching Salesforce accounts page",
+        "Fetched Salesforce accounts page",
+        "Fetched Salesforce accounts",
+    ]
+    assert account_log_records[1].field_count == 5
+    assert account_log_records[3].page == 1
+    assert account_log_records[3].has_next_page is False
+    assert account_log_records[4].page == 1
+    assert account_log_records[4].page_records == 1
+    assert account_log_records[4].total_records == 1
+    assert account_log_records[4].has_next_page is True
+    assert account_log_records[5].page == 2
+    assert account_log_records[5].has_next_page is True
+    assert account_log_records[6].page == 2
+    assert account_log_records[6].has_next_page is False
 
 
 @pytest.mark.asyncio
