@@ -60,19 +60,65 @@ class SalesforceCompanyRecordSyncService:
         integration_id: UUID,
     ) -> CompanySyncResult:
         started_at = datetime.now(UTC)
+        logger.info(
+            "Salesforce companies sync started",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+            },
+        )
         context = await self._load_context(organisation_id, integration_id)
 
         raw_companies = await SalesforceAccountsFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
         ).fetch_all()
+        logger.info(
+            "Salesforce companies fetch completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "fetched_companies": len(raw_companies),
+            },
+        )
         normalized, skipped_malformed = normalize_accounts(raw_companies)
+        logger.info(
+            "Salesforce companies normalize completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "fetched_companies": len(raw_companies),
+                "normalized_companies": len(normalized),
+                "skipped_malformed": skipped_malformed,
+            },
+        )
 
+        logger.info(
+            "Salesforce companies persist started",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "normalized_companies": len(normalized),
+            },
+        )
         write_result, backfill_result = await self._persist(
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=normalized,
             deactivate_missing=True,
+        )
+        logger.info(
+            "Salesforce companies persist completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "companies_created": write_result.companies_created,
+                "companies_updated": write_result.companies_updated,
+                "companies_reactivated": write_result.companies_reactivated,
+                "companies_deactivated": write_result.companies_deactivated,
+                "unresolved_owner_link": write_result.unresolved_owner_link,
+                "deal_backfill_rows_updated": backfill_result["rows_updated"],
+            },
         )
 
         completed_at = datetime.now(UTC)
