@@ -39,7 +39,9 @@ class SalesforceContactWriter:
     ) -> ContactWriteResult:
         result = ContactWriteResult()
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external = await self._load_existing_rows(
+            external_ids={contact.external_id for contact in normalized}
+        )
 
         for contact in normalized:
             resolved_company_id = self._resolve_company_id(
@@ -109,11 +111,17 @@ class SalesforceContactWriter:
             return None
         return resolved
 
-    async def _load_existing_rows(self) -> dict[str, CRMContact]:
+    async def _load_existing_rows(
+        self, external_ids: set[str] | None = None
+    ) -> dict[str, CRMContact]:
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.integration_id) == self.integration_id,
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMContact.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 

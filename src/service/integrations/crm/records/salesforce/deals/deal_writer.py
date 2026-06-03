@@ -59,10 +59,13 @@ class SalesforceDealWriter:
         *,
         normalized: list[NormalizedSalesforceOpportunity],
         maps: DealResolutionMaps,
+        preserve_relationship_fields: bool = False,
     ) -> DealWriteResult:
         result = DealWriteResult()
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external = await self._load_existing_rows(
+            external_ids={deal.external_id for deal in normalized}
+        )
 
         for deal in normalized:
             resolved = self._resolve_all(deal, maps, result)
@@ -73,7 +76,13 @@ class SalesforceDealWriter:
                 existing_by_external[deal.external_id] = row
                 result.deals_created += 1
             else:
-                self._apply_updates(existing, deal, resolved, now=now)
+                self._apply_updates(
+                    existing,
+                    deal,
+                    resolved,
+                    now=now,
+                    preserve_relationship_fields=preserve_relationship_fields,
+                )
                 result.deals_updated += 1
 
         await self.session.flush()
@@ -155,12 +164,16 @@ class SalesforceDealWriter:
             primary_contact_email=contact_hit.email if contact_hit is not None else None,
         )
 
-    async def _load_existing_rows(self) -> dict[str, CRMDeal]:
+    async def _load_existing_rows(self, external_ids: set[str] | None = None) -> dict[str, CRMDeal]:
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.integration_id) == self.integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMDeal.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 
@@ -241,6 +254,7 @@ class SalesforceDealWriter:
         resolved: _ResolvedFks,
         *,
         now: datetime,
+        preserve_relationship_fields: bool = False,
     ) -> None:
         row.name = deal.name
         row.amount = deal.amount
@@ -279,14 +293,16 @@ class SalesforceDealWriter:
         row.company_id = resolved.company_id
         row.company_name = resolved.company_name
         row.company_domain = resolved.company_domain
-        row.primary_contact_external_id = deal.primary_contact_external_id
-        row.primary_contact_id = resolved.primary_contact_id
-        row.primary_contact_name = resolved.primary_contact_name
-        row.primary_contact_email = resolved.primary_contact_email
+        if not preserve_relationship_fields or deal.primary_contact_external_id is not None:
+            row.primary_contact_external_id = deal.primary_contact_external_id
+            row.primary_contact_id = resolved.primary_contact_id
+            row.primary_contact_name = resolved.primary_contact_name
+            row.primary_contact_email = resolved.primary_contact_email
         row.source_created_at = deal.source_created_at
         row.last_activity_at = deal.last_activity_at
         row.days_to_close = deal.days_to_close
-        row.stage_entered_at = deal.stage_entered_at
+        if not preserve_relationship_fields or deal.stage_entered_at is not None:
+            row.stage_entered_at = deal.stage_entered_at
         row.stage_updated_at = deal.stage_updated_at
         row.synced_at = now
         row.source_modified_at = deal.source_modified_at

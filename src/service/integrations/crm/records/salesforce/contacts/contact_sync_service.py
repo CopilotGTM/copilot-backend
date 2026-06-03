@@ -25,6 +25,7 @@ from src.service.integrations.crm.records.salesforce.contacts.contact_normalizer
 )
 from src.service.integrations.crm.records.salesforce.contacts.contact_types import (
     ContactSyncResult,
+    ContactWriteResult,
     NormalizedSalesforceContact,
 )
 from src.service.integrations.crm.records.salesforce.contacts.contact_writer import (
@@ -38,6 +39,8 @@ from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher i
 )
 
 logger = get_logger(__name__)
+
+_CONTACT_PERSIST_CHUNK_SIZE = 2_000
 
 
 @dataclass(slots=True)
@@ -63,17 +66,40 @@ class SalesforceContactRecordSyncService:
         started_at = datetime.now(UTC)
         context = await self._load_context(organisation_id, integration_id)
 
-        raw_contacts = await SalesforceContactsFetcher(
+        fetcher = SalesforceContactsFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
-        ).fetch_all()
-        normalized, skipped_malformed = normalize_contacts(raw_contacts)
-
-        write_result, backfill_result = await self._persist(
-            organisation_id=organisation_id,
-            integration_id=integration_id,
-            normalized=normalized,
         )
+        pending_raw: list[dict[str, Any]] = []
+        fetched_contacts = 0
+        skipped_malformed = 0
+        write_result = ContactWriteResult()
+        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+
+        async for page_records in fetcher.fetch_pages():
+            fetched_contacts += len(page_records)
+            pending_raw.extend(page_records)
+            if len(pending_raw) < _CONTACT_PERSIST_CHUNK_SIZE:
+                continue
+            chunk_result = await self._persist_raw_chunk(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_contacts=pending_raw,
+            )
+            self._merge_write_result(write_result, chunk_result[0])
+            skipped_malformed += chunk_result[1]
+            self._merge_backfill_payload(backfill_payload, chunk_result[2])
+            pending_raw = []
+
+        if pending_raw:
+            chunk_result = await self._persist_raw_chunk(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_contacts=pending_raw,
+            )
+            self._merge_write_result(write_result, chunk_result[0])
+            skipped_malformed += chunk_result[1]
+            self._merge_backfill_payload(backfill_payload, chunk_result[2])
 
         completed_at = datetime.now(UTC)
         return ContactSyncResult(
@@ -83,15 +109,15 @@ class SalesforceContactRecordSyncService:
             integration_id=integration_id,
             started_at=started_at,
             completed_at=completed_at,
-            fetched_contacts=len(raw_contacts),
+            fetched_contacts=fetched_contacts,
             contacts_created=write_result.contacts_created,
             contacts_updated=write_result.contacts_updated,
             contacts_reactivated=write_result.contacts_reactivated,
             unresolved_company_link=write_result.unresolved_company_link,
             unresolved_owner_link=write_result.unresolved_owner_link,
             skipped_malformed=skipped_malformed,
-            deal_backfill_rows_updated=backfill_result["rows_updated"],
-            deal_backfill_per_op=backfill_result["per_op"],
+            deal_backfill_rows_updated=backfill_payload["rows_updated"],
+            deal_backfill_per_op=backfill_payload["per_op"],
         )
 
     async def persist_single_contact(
@@ -159,6 +185,44 @@ class SalesforceContactRecordSyncService:
             "Could not acquire org session for Salesforce contacts record sync"
         )
 
+    async def _persist_raw_chunk(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_contacts: list[dict[str, Any]],
+    ) -> tuple[ContactWriteResult, int, dict[str, Any]]:
+        normalized, skipped_malformed = normalize_contacts(raw_contacts)
+        logger.info(
+            "Salesforce contacts chunk persist started",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "raw_contacts": len(raw_contacts),
+                "normalized_contacts": len(normalized),
+            },
+        )
+        write_result, backfill_payload = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            normalized=normalized,
+        )
+        logger.info(
+            "Salesforce contacts chunk persist completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "contacts_created": write_result.contacts_created,
+                "contacts_updated": write_result.contacts_updated,
+                "contacts_reactivated": write_result.contacts_reactivated,
+                "unresolved_company_link": write_result.unresolved_company_link,
+                "unresolved_owner_link": write_result.unresolved_owner_link,
+                "skipped_malformed": skipped_malformed,
+                "deal_backfill_rows_updated": backfill_payload["rows_updated"],
+            },
+        )
+        return write_result, skipped_malformed, backfill_payload
+
     async def _persist(
         self,
         *,
@@ -193,6 +257,7 @@ class SalesforceContactRecordSyncService:
                 session=session,
                 organisation_id=organisation_id,
                 integration_id=integration_id,
+                external_ids=[contact.external_id for contact in normalized],
             )
 
             backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
@@ -228,6 +293,21 @@ class SalesforceContactRecordSyncService:
         raise SalesforceContactSyncConfigurationError(
             "Could not acquire org session for Salesforce contacts record sync write"
         )
+
+    @staticmethod
+    def _merge_write_result(target: ContactWriteResult, source: ContactWriteResult) -> None:
+        target.contacts_created += source.contacts_created
+        target.contacts_updated += source.contacts_updated
+        target.contacts_reactivated += source.contacts_reactivated
+        target.unresolved_company_link += source.unresolved_company_link
+        target.unresolved_owner_link += source.unresolved_owner_link
+
+    @staticmethod
+    def _merge_backfill_payload(target: dict[str, Any], source: dict[str, Any]) -> None:
+        target["rows_updated"] += source["rows_updated"]
+        per_op = target["per_op"]
+        for op_name, rows_updated in source["per_op"].items():
+            per_op[op_name] = per_op.get(op_name, 0) + rows_updated
 
     async def _load_company_map(
         self,
@@ -267,6 +347,7 @@ class SalesforceContactRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: list[str] | None = None,
     ) -> dict[str, UUID]:
         from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 
@@ -275,5 +356,9 @@ class SalesforceContactRecordSyncService:
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMContact.external_id).in_(external_ids))
         rows = (await session.execute(stmt)).scalars().all()
         return {row.external_id: row.contact_id for row in rows if row.external_id is not None}

@@ -49,7 +49,9 @@ class SalesforceDealParticipantWriter:
             return result
 
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external = await self._load_existing_rows(
+            external_ids={_synthetic_external_id(participant) for participant in participants}
+        )
 
         for participant in participants:
             deal_id = deal_pk_map.get(participant.deal_external_id)
@@ -127,12 +129,19 @@ class SalesforceDealParticipantWriter:
             return user_map.get(participant.related_external_id)
         return None
 
-    async def _load_existing_rows(self) -> dict[str, CRMDealParticipant]:
+    async def _load_existing_rows(
+        self,
+        external_ids: set[str] | None = None,
+    ) -> dict[str, CRMDealParticipant]:
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.organisation_id) == self.organisation_id,
             col(CRMDealParticipant.integration_id) == self.integration_id,
             col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMDealParticipant.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 

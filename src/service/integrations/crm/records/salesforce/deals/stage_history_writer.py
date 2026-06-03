@@ -44,7 +44,9 @@ class SalesforceDealStageHistoryWriter:
             return result
 
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        existing_by_external = await self._load_existing_rows(
+            external_ids={_synthetic_external_id(transition) for transition in transitions}
+        )
 
         for transition in transitions:
             deal_id = deal_pk_map.get(transition.deal_external_id)
@@ -104,12 +106,19 @@ class SalesforceDealStageHistoryWriter:
         )
         return result
 
-    async def _load_existing_rows(self) -> dict[str, CRMDealStageHistory]:
+    async def _load_existing_rows(
+        self,
+        external_ids: set[str] | None = None,
+    ) -> dict[str, CRMDealStageHistory]:
         stmt = select(CRMDealStageHistory).where(
             col(CRMDealStageHistory.organisation_id) == self.organisation_id,
             col(CRMDealStageHistory.integration_id) == self.integration_id,
             col(CRMDealStageHistory.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMDealStageHistory.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 

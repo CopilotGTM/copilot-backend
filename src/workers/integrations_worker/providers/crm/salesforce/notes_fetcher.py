@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
-_MAX_PAGES = 500
+_MAX_PAGES = 500_000
 _LINK_BATCH_SIZE = 200
 _NOTE_BATCH_SIZE = 200
 

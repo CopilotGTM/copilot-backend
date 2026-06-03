@@ -41,7 +41,10 @@ class SalesforceCompanyWriter:
     ) -> CompanyWriteResult:
         result = CompanyWriteResult()
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        snapshot_external_ids = set(all_external_ids)
+        existing_by_external = await self._load_existing_rows(
+            external_ids=None if deactivate_missing else snapshot_external_ids
+        )
 
         for company in normalized:
             resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
@@ -60,7 +63,6 @@ class SalesforceCompanyWriter:
                     result.companies_reactivated += 1
 
         if deactivate_missing:
-            snapshot_external_ids = set(all_external_ids)
             for external_id, row in existing_by_external.items():
                 if external_id in snapshot_external_ids:
                     continue
@@ -97,12 +99,18 @@ class SalesforceCompanyWriter:
             return None
         return resolved
 
-    async def _load_existing_rows(self) -> dict[str, CRMCompany]:
+    async def _load_existing_rows(
+        self, external_ids: set[str] | None = None
+    ) -> dict[str, CRMCompany]:
         stmt = select(CRMCompany).where(
             col(CRMCompany.organisation_id) == self.organisation_id,
             col(CRMCompany.integration_id) == self.integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
         )
+        if external_ids is not None:
+            if not external_ids:
+                return {}
+            stmt = stmt.where(col(CRMCompany.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 

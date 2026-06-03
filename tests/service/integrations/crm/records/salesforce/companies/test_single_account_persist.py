@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.service.integrations.crm.records.salesforce.companies import company_sync_service
 from src.service.integrations.crm.records.salesforce.companies.company_sync_service import (
     SalesforceCompanyRecordSyncService,
     SalesforceCompanySyncContext,
@@ -75,8 +76,8 @@ async def test_run_logs_company_sync_boundaries(
         def __init__(self, **kwargs) -> None:
             self.kwargs = kwargs
 
-        async def fetch_all(self) -> list[dict[str, str]]:
-            return [
+        async def fetch_pages(self):
+            yield [
                 {"Id": "001A", "Name": "Acme"},
                 {"Name": "Missing Id"},
             ]
@@ -93,8 +94,12 @@ async def test_run_logs_company_sync_boundaries(
             {"rows_updated": 0, "per_op": {}},
         )
 
+    async def fake_deactivate_missing(*, organisation_id, integration_id, seen_external_ids):
+        return CompanyWriteResult()
+
     monkeypatch.setattr(service, "_load_context", fake_load_context)
     monkeypatch.setattr(service, "_persist", fake_persist)
+    monkeypatch.setattr(service, "_deactivate_missing", fake_deactivate_missing)
     monkeypatch.setattr(
         "src.service.integrations.crm.records.salesforce.companies.company_sync_service.SalesforceAccountsFetcher",
         FakeAccountsFetcher,
@@ -114,12 +119,85 @@ async def test_run_logs_company_sync_boundaries(
     ]
     assert [record.message for record in company_log_records] == [
         "Salesforce companies sync started",
-        "Salesforce companies fetch completed",
-        "Salesforce companies normalize completed",
-        "Salesforce companies persist started",
+        "Salesforce companies streaming persist started",
+        "Salesforce companies chunk persist started",
+        "Salesforce companies chunk persist completed",
         "Salesforce companies persist completed",
     ]
-    assert company_log_records[1].fetched_companies == 2
+    assert company_log_records[1].chunk_size == 2000
+    assert company_log_records[2].raw_companies == 2
     assert company_log_records[2].normalized_companies == 1
-    assert company_log_records[2].skipped_malformed == 1
+    assert company_log_records[3].companies_created == 1
+    assert company_log_records[3].skipped_malformed == 1
+    assert company_log_records[4].fetched_companies == 2
     assert company_log_records[4].companies_created == 1
+    assert company_log_records[4].skipped_malformed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_persists_accounts_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SalesforceCompanyRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    token_info = IntegrationTokenInfo(
+        access_token="access-token",
+        refresh_token="refresh-token",
+        integration_type=IntegrationType.SALESFORCE,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    persist_calls: list[list[str]] = []
+    deactivated_seen_ids: set[str] | None = None
+
+    async def fake_load_context(*args, **kwargs):
+        return SalesforceCompanySyncContext(
+            token_info=token_info,
+            instance_url="https://acme.my.salesforce.com",
+        )
+
+    class FakeAccountsFetcher:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        async def fetch_pages(self):
+            yield [{"Id": "001A", "Name": "Acme"}]
+            yield [{"Id": "001B", "Name": "Beta"}]
+            yield [{"Id": "001C", "Name": "Core"}]
+
+    async def fake_persist(
+        *,
+        organisation_id,
+        integration_id,
+        normalized,
+        deactivate_missing,
+    ):
+        assert deactivate_missing is False
+        persist_calls.append([company.external_id for company in normalized])
+        return (
+            CompanyWriteResult(companies_created=len(normalized)),
+            {"rows_updated": 0, "per_op": {}},
+        )
+
+    async def fake_deactivate_missing(*, organisation_id, integration_id, seen_external_ids):
+        nonlocal deactivated_seen_ids
+        deactivated_seen_ids = set(seen_external_ids)
+        return CompanyWriteResult()
+
+    monkeypatch.setattr(service, "_load_context", fake_load_context)
+    monkeypatch.setattr(service, "_persist", fake_persist)
+    monkeypatch.setattr(service, "_deactivate_missing", fake_deactivate_missing)
+    monkeypatch.setattr(company_sync_service, "_COMPANY_PERSIST_CHUNK_SIZE", 2)
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.salesforce.companies.company_sync_service.SalesforceAccountsFetcher",
+        FakeAccountsFetcher,
+    )
+
+    result = await service.run(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+
+    assert persist_calls == [["001A", "001B"], ["001C"]]
+    assert deactivated_seen_ids == {"001A", "001B", "001C"}
+    assert result.fetched_companies == 3
+    assert result.companies_created == 3
