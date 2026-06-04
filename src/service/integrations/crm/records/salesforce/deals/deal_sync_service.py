@@ -10,9 +10,15 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm.associations import CRMObjectType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStage, CRMPipeline
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealStage,
+    CRMParticipantType,
+    CRMPipeline,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
@@ -331,10 +337,20 @@ class SalesforceDealRecordSyncService:
         Any, StageHistoryWriteResult, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]
     ]:
         async for session in acquire_org_async_session(organisation_id):
+            resolution_filters = self._resolution_filters(
+                opportunities=opportunities,
+                transitions=transitions,
+                participant_extraction=participant_extraction,
+            )
             maps = await self._load_resolution_maps(
                 session=session,
                 organisation_id=organisation_id,
                 integration_id=integration_id,
+                pipeline_external_ids=resolution_filters["pipeline_external_ids"],
+                stage_external_ids=resolution_filters["stage_external_ids"],
+                user_external_ids=resolution_filters["user_external_ids"],
+                company_external_ids=resolution_filters["company_external_ids"],
+                contact_external_ids=resolution_filters["contact_external_ids"],
             )
 
             write_result = await SalesforceDealWriter(
@@ -613,7 +629,7 @@ class SalesforceDealRecordSyncService:
         integration_id: UUID,
         external_ids: set[str] | None = None,
     ) -> dict[str, UUID]:
-        stmt = select(CRMDeal).where(
+        stmt = select(CRMDeal.external_id, CRMDeal.deal_id).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
@@ -622,8 +638,8 @@ class SalesforceDealRecordSyncService:
             if not external_ids:
                 return {}
             stmt = stmt.where(col(CRMDeal.external_id).in_(external_ids))
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.deal_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {external_id: deal_id for external_id, deal_id in rows if external_id is not None}
 
     async def _load_resolution_maps(
         self,
@@ -631,6 +647,11 @@ class SalesforceDealRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        pipeline_external_ids: set[str],
+        stage_external_ids: set[str],
+        user_external_ids: set[str],
+        company_external_ids: set[str],
+        contact_external_ids: set[str],
     ) -> DealResolutionMaps:
         pipeline_map: dict[str, DimensionHit] = {}
         stage_map: dict[str, DimensionHit] = {}
@@ -638,71 +659,133 @@ class SalesforceDealRecordSyncService:
         company_map: dict[str, DimensionHit] = {}
         contact_map: dict[str, DimensionHit] = {}
 
-        pipeline_stmt = select(CRMPipeline).where(
-            col(CRMPipeline.organisation_id) == organisation_id,
-            col(CRMPipeline.integration_id) == integration_id,
-            col(CRMPipeline.is_deleted) == False,  # noqa: E712
-        )
-        for pipeline in (await session.execute(pipeline_stmt)).scalars().all():
-            if pipeline.external_id:
-                pipeline_map[pipeline.external_id] = DimensionHit(
-                    internal_id=pipeline.pipeline_id,
-                    name=pipeline.name,
-                    label=pipeline.label,
-                )
+        if pipeline_external_ids:
+            pipeline_stmt = select(
+                CRMPipeline.external_id,
+                CRMPipeline.pipeline_id,
+                CRMPipeline.name,
+                CRMPipeline.label,
+            ).where(
+                col(CRMPipeline.organisation_id) == organisation_id,
+                col(CRMPipeline.integration_id) == integration_id,
+                col(CRMPipeline.is_deleted) == False,  # noqa: E712
+                col(CRMPipeline.external_id).in_(pipeline_external_ids),
+            )
+            for external_id, pipeline_id, name, label in (
+                await session.execute(pipeline_stmt)
+            ).all():
+                if external_id:
+                    pipeline_map[external_id] = DimensionHit(
+                        internal_id=pipeline_id,
+                        name=name,
+                        label=label,
+                    )
 
-        stage_stmt = select(CRMDealStage).where(
-            col(CRMDealStage.organisation_id) == organisation_id,
-            col(CRMDealStage.integration_id) == integration_id,
-            col(CRMDealStage.is_deleted) == False,  # noqa: E712
-        )
-        for stage in (await session.execute(stage_stmt)).scalars().all():
-            if stage.external_id:
-                stage_map[stage.external_id] = DimensionHit(
-                    internal_id=stage.stage_id,
-                    name=stage.name,
-                    label=stage.label,
-                    pipeline_id=stage.pipeline_id,
-                )
+        if stage_external_ids:
+            stage_stmt = select(
+                CRMDealStage.external_id,
+                CRMDealStage.stage_id,
+                CRMDealStage.name,
+                CRMDealStage.label,
+                CRMDealStage.pipeline_id,
+            ).where(
+                col(CRMDealStage.organisation_id) == organisation_id,
+                col(CRMDealStage.integration_id) == integration_id,
+                col(CRMDealStage.is_deleted) == False,  # noqa: E712
+                col(CRMDealStage.external_id).in_(stage_external_ids),
+            )
+            for external_id, stage_id, name, label, pipeline_id in (
+                await session.execute(stage_stmt)
+            ).all():
+                if external_id:
+                    stage_map[external_id] = DimensionHit(
+                        internal_id=stage_id,
+                        name=name,
+                        label=label,
+                        pipeline_id=pipeline_id,
+                    )
 
-        user_stmt = select(CRMUser).where(
-            col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712
-        )
-        for user in (await session.execute(user_stmt)).scalars().all():
-            if user.external_id:
-                user_map[user.external_id] = DimensionHit(
-                    internal_id=user.user_id,
-                    name=user.full_name,
-                    email=user.email,
-                )
+        if user_external_ids:
+            user_stmt = select(
+                CRMUser.external_id,
+                CRMUser.user_id,
+                CRMUser.full_name,
+                CRMUser.email,
+            ).where(
+                col(CRMUser.organisation_id) == organisation_id,
+                col(CRMUser.integration_id) == integration_id,
+                col(CRMUser.is_deleted) == False,  # noqa: E712
+                col(CRMUser.external_id).in_(user_external_ids),
+            )
+            for external_id, user_id, full_name, email in (await session.execute(user_stmt)).all():
+                if external_id:
+                    user_map[external_id] = DimensionHit(
+                        internal_id=user_id,
+                        name=full_name,
+                        email=email,
+                    )
 
-        company_stmt = select(CRMCompany).where(
-            col(CRMCompany.organisation_id) == organisation_id,
-            col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.is_deleted) == False,  # noqa: E712
-        )
-        for company in (await session.execute(company_stmt)).scalars().all():
-            if company.external_id:
-                company_map[company.external_id] = DimensionHit(
-                    internal_id=company.company_id,
-                    name=company.name,
-                    domain=company.domain,
-                )
+        if company_external_ids:
+            company_stmt = select(
+                CRMCompany.external_id,
+                CRMCompany.company_id,
+                CRMCompany.name,
+                CRMCompany.domain,
+            ).where(
+                col(CRMCompany.organisation_id) == organisation_id,
+                col(CRMCompany.integration_id) == integration_id,
+                col(CRMCompany.is_deleted) == False,  # noqa: E712
+                col(CRMCompany.external_id).in_(company_external_ids),
+            )
+            for external_id, company_id, name, domain in (
+                await session.execute(company_stmt)
+            ).all():
+                if external_id:
+                    company_map[external_id] = DimensionHit(
+                        internal_id=company_id,
+                        name=name,
+                        domain=domain,
+                    )
 
-        contact_stmt = select(CRMContact).where(
-            col(CRMContact.organisation_id) == organisation_id,
-            col(CRMContact.integration_id) == integration_id,
-            col(CRMContact.is_deleted) == False,  # noqa: E712
+        if contact_external_ids:
+            contact_stmt = select(
+                CRMContact.external_id,
+                CRMContact.contact_id,
+                CRMContact.full_name,
+                CRMContact.email,
+            ).where(
+                col(CRMContact.organisation_id) == organisation_id,
+                col(CRMContact.integration_id) == integration_id,
+                col(CRMContact.is_deleted) == False,  # noqa: E712
+                col(CRMContact.external_id).in_(contact_external_ids),
+            )
+            for external_id, contact_id, full_name, email in (
+                await session.execute(contact_stmt)
+            ).all():
+                if external_id:
+                    contact_map[external_id] = DimensionHit(
+                        internal_id=contact_id,
+                        name=full_name,
+                        email=email,
+                    )
+
+        logger.info(
+            "Loaded deal resolution maps",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "pipelines": len(pipeline_map),
+                "stages": len(stage_map),
+                "users": len(user_map),
+                "companies": len(company_map),
+                "contacts": len(contact_map),
+                "requested_pipelines": len(pipeline_external_ids),
+                "requested_stages": len(stage_external_ids),
+                "requested_users": len(user_external_ids),
+                "requested_companies": len(company_external_ids),
+                "requested_contacts": len(contact_external_ids),
+            },
         )
-        for contact in (await session.execute(contact_stmt)).scalars().all():
-            if contact.external_id:
-                contact_map[contact.external_id] = DimensionHit(
-                    internal_id=contact.contact_id,
-                    name=contact.full_name,
-                    email=contact.email,
-                )
 
         return DealResolutionMaps(
             pipeline_map=pipeline_map,
@@ -711,6 +794,63 @@ class SalesforceDealRecordSyncService:
             company_map=company_map,
             contact_map=contact_map,
         )
+
+    @staticmethod
+    def _resolution_filters(
+        *,
+        opportunities: list[Any],
+        transitions: list[Any],
+        participant_extraction: DealParticipantExtraction,
+    ) -> dict[str, set[str]]:
+        pipeline_external_ids = _compact_str_set(
+            opportunity.pipeline_external_id for opportunity in opportunities
+        )
+        stage_external_ids = _compact_str_set(
+            opportunity.stage_external_id for opportunity in opportunities
+        )
+        stage_external_ids.update(
+            _compact_str_set(transition.stage_external_id for transition in transitions)
+        )
+        stage_external_ids.update(
+            _compact_str_set(transition.from_stage_external_id for transition in transitions)
+        )
+        user_external_ids = _compact_str_set(
+            user_id
+            for opportunity in opportunities
+            for user_id in (
+                opportunity.owner_external_id,
+                opportunity.created_by_user_external_id,
+                opportunity.updated_by_user_external_id,
+            )
+        )
+        company_external_ids = _compact_str_set(
+            opportunity.primary_company_external_id for opportunity in opportunities
+        )
+        contact_external_ids = _compact_str_set(
+            opportunity.primary_contact_external_id for opportunity in opportunities
+        )
+
+        for participant in participant_extraction.participants:
+            if participant.participant_type == CRMParticipantType.CONTACT.value:
+                contact_external_ids.add(participant.related_external_id)
+            elif participant.participant_type == CRMParticipantType.COMPANY.value:
+                company_external_ids.add(participant.related_external_id)
+            elif participant.participant_type == CRMParticipantType.USER.value:
+                user_external_ids.add(participant.related_external_id)
+
+        for association in participant_extraction.associations:
+            if association.to_object_type == CRMObjectType.CONTACT.value:
+                contact_external_ids.add(association.to_external_id)
+            elif association.to_object_type == CRMObjectType.COMPANY.value:
+                company_external_ids.add(association.to_external_id)
+
+        return {
+            "pipeline_external_ids": pipeline_external_ids,
+            "stage_external_ids": stage_external_ids,
+            "user_external_ids": user_external_ids,
+            "company_external_ids": company_external_ids,
+            "contact_external_ids": contact_external_ids,
+        }
 
     def _capture_opportunity_dimensions(
         self,
@@ -773,3 +913,7 @@ class SalesforceDealRecordSyncService:
             cleaned = value.strip()
             return cleaned or None
         return None
+
+
+def _compact_str_set(values) -> set[str]:
+    return {value for value in values if isinstance(value, str) and value}

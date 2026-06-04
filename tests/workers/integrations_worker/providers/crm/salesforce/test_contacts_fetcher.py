@@ -43,7 +43,7 @@ def _mock_client_with_responses(responses: list[httpx.Response]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_fetcher_describes_selectable_contact_fields_and_paginates() -> None:
+async def test_fetcher_describes_allowed_contact_fields_and_ignores_unused_custom_fields() -> None:
     responses = [
         httpx.Response(
             200,
@@ -54,10 +54,15 @@ async def test_fetcher_describes_selectable_contact_fields_and_paginates() -> No
             json={
                 "fields": [
                     {"name": "Id", "type": "id"},
+                    {"name": "Name", "type": "string"},
                     {"name": "FirstName", "type": "string"},
+                    {"name": "LastName", "type": "string"},
                     {"name": "Email", "type": "email"},
-                    {"name": "MailingStreet", "type": "string"},
+                    {"name": "AccountId", "type": "reference"},
+                    {"name": "OwnerId", "type": "reference"},
+                    {"name": "MailingStreet", "type": "textarea"},
                     {"name": "MailingAddress", "type": "address"},
+                    {"name": "Unused_Custom__c", "type": "string"},
                     {"name": "Deleted_Field__c", "type": "string", "deprecatedAndHidden": True},
                     {"name": "Secret__c", "queryable": False, "type": "string"},
                 ]
@@ -68,10 +73,9 @@ async def test_fetcher_describes_selectable_contact_fields_and_paginates() -> No
             request=httpx.Request(
                 "GET", "https://acme.my.salesforce.com/services/data/v61.0/query"
             ),
-            json={"records": [{"Id": "003A", "FirstName": "Alex"}]},
+            json={"records": [{"Id": "003A", "Email": "a@example.com"}]},
         ),
     ]
-
     client = _mock_client_with_responses(responses)
 
     with (
@@ -89,11 +93,15 @@ async def test_fetcher_describes_selectable_contact_fields_and_paginates() -> No
             instance_url="https://acme.my.salesforce.com",
         ).fetch_all()
 
-    assert [row["Id"] for row in rows] == ["003A"]
+    assert rows == [{"Id": "003A", "Email": "a@example.com"}]
     query_soql = client.get.call_args_list[1].kwargs["params"]["q"]
+    assert "Id" in query_soql
     assert "Email" in query_soql
+    assert "AccountId" in query_soql
+    assert "OwnerId" in query_soql
     assert "MailingStreet" in query_soql
     assert "MailingAddress" not in query_soql
+    assert "Unused_Custom__c" not in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
 

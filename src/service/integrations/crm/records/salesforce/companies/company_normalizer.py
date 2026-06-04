@@ -42,28 +42,57 @@ def _normalize_one(raw: object) -> NormalizedSalesforceCompany | None:
         )
         return None
 
-    website = _coerce_str(raw.get("Website"))
+    website = _first_str(
+        raw.get("Website"),
+        raw.get("company_website_lusha_enriched__c"),
+    )
+    custom_domain = _first_str(raw.get("Domain__c"), raw.get("company_domain_lusha_enriched__c"))
     return NormalizedSalesforceCompany(
         external_id=external_id,
         name=_coerce_str(raw.get("Name")),
-        domain=_extract_domain(website),
+        domain=_extract_domain(website) or _normalize_domain(custom_domain),
         website=website,
-        description=_coerce_str(raw.get("Description")),
-        industry=_coerce_str(raw.get("Industry")),
-        company_type=_coerce_str(raw.get("Type")),
-        lifecycle_stage=None,
+        description=_first_str(
+            raw.get("Description"),
+            raw.get("company_description_lusha_enriched__c"),
+        ),
+        industry=_first_str(
+            raw.get("Industry"),
+            raw.get("Cohort_Industry__c"),
+            raw.get("LinkedIn_Industry__c"),
+            raw.get("Nature_of_Business_Category__c"),
+        ),
+        company_type=_first_str(
+            raw.get("Type"),
+            raw.get("RecordType_name__c"),
+            raw.get("Customer_Type__c"),
+            raw.get("Account_Category__c"),
+        ),
+        lifecycle_stage=_first_str(
+            raw.get("Customer_Stage__c"),
+            raw.get("Account_Status__c"),
+            raw.get("Lead_Status__c"),
+        ),
         owner_external_id=_coerce_str(raw.get("OwnerId")),
-        number_of_employees=_coerce_int(raw.get("NumberOfEmployees")),
-        annual_revenue=_coerce_float(raw.get("AnnualRevenue")),
+        number_of_employees=_first_int(
+            raw.get("NumberOfEmployees"),
+            raw.get("Number_of_Employees__c"),
+            raw.get("LinkedIn_No_of_Employees__c"),
+        ),
+        annual_revenue=_first_float(raw.get("AnnualRevenue"), raw.get("Annual_Revenue__c")),
         phone=_coerce_str(raw.get("Phone")),
         city=_coerce_str(raw.get("BillingCity")) or _coerce_str(raw.get("ShippingCity")),
         state=_coerce_str(raw.get("BillingState")) or _coerce_str(raw.get("ShippingState")),
-        country=_coerce_str(raw.get("BillingCountry")) or _coerce_str(raw.get("ShippingCountry")),
+        country=(
+            _coerce_str(raw.get("BillingCountry"))
+            or _coerce_str(raw.get("ShippingCountry"))
+            or _coerce_str(raw.get("Country__c"))
+        ),
         address=_coerce_str(raw.get("BillingStreet")) or _coerce_str(raw.get("ShippingStreet")),
         postal_code=_coerce_str(raw.get("BillingPostalCode"))
         or _coerce_str(raw.get("ShippingPostalCode")),
         timezone=None,
-        linkedin_url=_coerce_str(raw.get("LinkedIn__c")),
+        linkedin_url=_coerce_str(raw.get("LinkedIn_URL__c")),
         source_created_at=_parse_salesforce_timestamp(raw.get("CreatedDate")),
         source_modified_at=_parse_salesforce_timestamp(raw.get("LastModifiedDate")),
         properties={
@@ -89,6 +118,14 @@ def _coerce_str(value: Any) -> str | None:
     return None
 
 
+def _first_str(*values: Any) -> str | None:
+    for value in values:
+        candidate = _coerce_str(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _coerce_int(value: Any) -> int | None:
     if value is None or value == "" or isinstance(value, bool):
         return None
@@ -104,6 +141,14 @@ def _coerce_int(value: Any) -> int | None:
     return None
 
 
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        candidate = _coerce_int(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _coerce_float(value: Any) -> float | None:
     if value is None or value == "" or isinstance(value, bool):
         return None
@@ -115,6 +160,27 @@ def _coerce_float(value: Any) -> float | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        candidate = _coerce_float(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _normalize_domain(value: str | None) -> str | None:
+    if value is None:
+        return None
+    domain = value.strip().lower()
+    if not domain:
+        return None
+    if domain.startswith("http://") or domain.startswith("https://"):
+        return _extract_domain(domain)
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain or None
 
 
 def _extract_domain(website: str | None) -> str | None:

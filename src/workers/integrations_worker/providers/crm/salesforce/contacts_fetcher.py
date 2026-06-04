@@ -18,10 +18,37 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 1_500_000
-_QUERY_BATCH_SIZE = 2_000
+_QUERY_BATCH_SIZE = 500
 _MAX_ERROR_BODY_CHARS = 500
 _REQUIRED_FIELDS = {"Id", "CreatedDate", "LastModifiedDate"}
 _EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
+_CONTACT_FIELD_ALLOWLIST = (
+    "Id",
+    "Name",
+    "FirstName",
+    "LastName",
+    "Email",
+    "Title",
+    "Department",
+    "AccountId",
+    "OwnerId",
+    "Phone",
+    "MobilePhone",
+    "Fax",
+    "Website",
+    "MailingStreet",
+    "MailingCity",
+    "MailingState",
+    "MailingPostalCode",
+    "MailingCountry",
+    "CreatedDate",
+    "LastModifiedDate",
+    "SystemModstamp",
+    "LastActivityDate",
+    "LeadSource",
+    "Salutation",
+    "IsDeleted",
+)
 
 
 class SalesforceContactsFetcher:
@@ -49,8 +76,27 @@ class SalesforceContactsFetcher:
         next_url: str | None = None
         page_count = 0
         total_records = 0
+        logger.info(
+            "Salesforce Contact query started",
+            extra={
+                "integration_id": str(self.token_info.integration_id),
+                "field_count": len(field_names),
+                "max_pages": _MAX_PAGES,
+                "query_batch_size": _QUERY_BATCH_SIZE,
+            },
+        )
 
         while page_count < _MAX_PAGES:
+            next_page = page_count + 1
+            logger.info(
+                "Fetching Salesforce contacts page",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "page": next_page,
+                    "has_next_page": next_url is not None,
+                    "records_so_far": total_records,
+                },
+            )
             payload = await self._get_json(
                 next_url or url, params=None if next_url else {"q": soql}
             )
@@ -62,6 +108,17 @@ class SalesforceContactsFetcher:
 
             page_count += 1
             next_records_url = payload.get("nextRecordsUrl")
+            has_next_page = isinstance(next_records_url, str) and bool(next_records_url)
+            logger.info(
+                "Fetched Salesforce contacts page",
+                extra={
+                    "integration_id": str(self.token_info.integration_id),
+                    "page": page_count,
+                    "page_records": len(raw_records),
+                    "total_records": total_records,
+                    "has_next_page": has_next_page,
+                },
+            )
             yield page_records
             if not isinstance(next_records_url, str) or not next_records_url:
                 break
@@ -109,22 +166,46 @@ class SalesforceContactsFetcher:
 
     async def _fetch_field_names(self) -> list[str]:
         url = f"{self.instance_url}/services/data/{_API_VERSION}/sobjects/Contact/describe"
+        logger.info(
+            "Salesforce Contact describe started",
+            extra={"integration_id": str(self.token_info.integration_id)},
+        )
         payload = await self._get_json(url)
         raw_fields = payload.get("fields")
         if not isinstance(raw_fields, list):
             raise ValueError("Salesforce Contact describe API returned non-list fields")
 
-        field_names = {
+        queryable_field_names = {
             name
             for field in raw_fields
             if isinstance(field, dict)
             for name in [_extract_field_name(field)]
             if name is not None
         }
-        field_names.update(_REQUIRED_FIELDS)
+        queryable_field_names.update(_REQUIRED_FIELDS)
+        field_names = [
+            field_name
+            for field_name in _CONTACT_FIELD_ALLOWLIST
+            if field_name in queryable_field_names
+        ]
         if "Id" not in field_names:
             raise ValueError("Salesforce Contact describe API did not yield a usable Id field")
-        return sorted(field_names)
+        missing_allowlist_fields = [
+            field_name
+            for field_name in _CONTACT_FIELD_ALLOWLIST
+            if field_name not in queryable_field_names
+        ]
+        logger.info(
+            "Salesforce Contact describe completed",
+            extra={
+                "integration_id": str(self.token_info.integration_id),
+                "raw_field_count": len(raw_fields),
+                "queryable_field_count": len(queryable_field_names),
+                "field_count": len(field_names),
+                "missing_allowlist_field_count": len(missing_allowlist_fields),
+            },
+        )
+        return field_names
 
     async def _get_json(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -280,10 +281,14 @@ class SalesforceCompanyRecordSyncService:
     ) -> tuple[Any, dict[str, Any]]:
         all_external_ids = [company.external_id for company in normalized]
         async for session in acquire_org_async_session(organisation_id):
+            owner_external_ids = _compact_str_set(
+                company.owner_external_id for company in normalized
+            )
             owner_map = await self._load_owner_map(
                 session=session,
                 organisation_id=organisation_id,
                 integration_id=integration_id,
+                external_ids=owner_external_ids,
             )
 
             writer = SalesforceCompanyWriter(
@@ -390,7 +395,7 @@ class SalesforceCompanyRecordSyncService:
     ) -> dict[str, UUID]:
         from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 
-        stmt = select(CRMCompany).where(
+        stmt = select(CRMCompany.external_id, CRMCompany.company_id).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
@@ -399,8 +404,10 @@ class SalesforceCompanyRecordSyncService:
             if not external_ids:
                 return {}
             stmt = stmt.where(col(CRMCompany.external_id).in_(external_ids))
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.company_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {
+            external_id: company_id for external_id, company_id in rows if external_id is not None
+        }
 
     async def _load_owner_map(
         self,
@@ -408,13 +415,21 @@ class SalesforceCompanyRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, UUID]:
         from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 
-        stmt = select(CRMUser).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMUser.external_id, CRMUser.user_id).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.user_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {external_id: user_id for external_id, user_id in rows if external_id is not None}
+
+
+def _compact_str_set(values: Iterable[object]) -> set[str]:
+    return {value for value in values if isinstance(value, str) and value}

@@ -177,34 +177,28 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
     ) -> list[str]:
         async for session in acquire_org_async_session(organisation_id):
-            deal_stmt = select(CRMDeal).where(
+            deal_stmt = select(CRMDeal.external_id).where(
                 col(CRMDeal.organisation_id) == organisation_id,
                 col(CRMDeal.integration_id) == integration_id,
                 col(CRMDeal.is_deleted) == False,  # noqa: E712
             )
-            contact_stmt = select(CRMContact).where(
+            contact_stmt = select(CRMContact.external_id).where(
                 col(CRMContact.organisation_id) == organisation_id,
                 col(CRMContact.integration_id) == integration_id,
                 col(CRMContact.is_deleted) == False,  # noqa: E712
             )
-            company_stmt = select(CRMCompany).where(
+            company_stmt = select(CRMCompany.external_id).where(
                 col(CRMCompany.organisation_id) == organisation_id,
                 col(CRMCompany.integration_id) == integration_id,
                 col(CRMCompany.is_deleted) == False,  # noqa: E712
             )
-            deal_rows = (await session.execute(deal_stmt)).scalars().all()
-            contact_rows = (await session.execute(contact_stmt)).scalars().all()
-            company_rows = (await session.execute(company_stmt)).scalars().all()
+            deal_rows = (await session.execute(deal_stmt)).all()
+            contact_rows = (await session.execute(contact_stmt)).all()
+            company_rows = (await session.execute(company_stmt)).all()
             linked_entity_ids: list[str] = []
-            linked_entity_ids.extend(
-                row.external_id for row in deal_rows if row.external_id is not None
-            )
-            linked_entity_ids.extend(
-                row.external_id for row in contact_rows if row.external_id is not None
-            )
-            linked_entity_ids.extend(
-                row.external_id for row in company_rows if row.external_id is not None
-            )
+            linked_entity_ids.extend(external_id for (external_id,) in deal_rows if external_id)
+            linked_entity_ids.extend(external_id for (external_id,) in contact_rows if external_id)
+            linked_entity_ids.extend(external_id for (external_id,) in company_rows if external_id)
             return linked_entity_ids
         raise SalesforceNoteSyncConfigurationError(
             "Could not acquire org session for Salesforce note sync scope"
@@ -220,6 +214,10 @@ class SalesforceNoteRecordSyncService:
         deactivate_missing: bool = True,
     ):
         async for session in acquire_org_async_session(organisation_id):
+            user_external_ids = _compact_str_set(note.owner_external_id for note in normalized)
+            deal_external_ids = _compact_str_set(note.deal_external_id for note in normalized)
+            contact_external_ids = _compact_str_set(note.contact_external_id for note in normalized)
+            company_external_ids = _compact_str_set(note.company_external_id for note in normalized)
             writer = SalesforceNoteWriter(
                 session=session,
                 organisation_id=organisation_id,
@@ -228,10 +226,18 @@ class SalesforceNoteRecordSyncService:
             write_result = await writer.apply(
                 normalized=normalized,
                 all_external_ids=all_external_ids,
-                user_map=await self._load_user_map(session, organisation_id, integration_id),
-                deal_map=await self._load_deal_map(session, organisation_id, integration_id),
-                contact_map=await self._load_contact_map(session, organisation_id, integration_id),
-                company_map=await self._load_company_map(session, organisation_id, integration_id),
+                user_map=await self._load_user_map(
+                    session, organisation_id, integration_id, user_external_ids
+                ),
+                deal_map=await self._load_deal_map(
+                    session, organisation_id, integration_id, deal_external_ids
+                ),
+                contact_map=await self._load_contact_map(
+                    session, organisation_id, integration_id, contact_external_ids
+                ),
+                company_map=await self._load_company_map(
+                    session, organisation_id, integration_id, company_external_ids
+                ),
                 deactivate_missing=deactivate_missing,
             )
             await session.commit()
@@ -246,21 +252,25 @@ class SalesforceNoteRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMUser).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMUser.external_id, CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(
-                internal_id=row.user_id,
-                name=row.full_name,
-                email=row.email,
+            external_id: ActivityDimensionHit(
+                internal_id=user_id,
+                name=full_name,
+                email=email,
             )
-            for row in rows
-            if row.external_id is not None
+            for external_id, user_id, full_name, email in rows
+            if external_id is not None
         }
 
     async def _load_deal_map(
@@ -268,17 +278,21 @@ class SalesforceNoteRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMDeal).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMDeal.external_id, CRMDeal.deal_id, CRMDeal.name).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
+            col(CRMDeal.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(internal_id=row.deal_id, name=row.name)
-            for row in rows
-            if row.external_id is not None
+            external_id: ActivityDimensionHit(internal_id=deal_id, name=name)
+            for external_id, deal_id, name in rows
+            if external_id is not None
         }
 
     async def _load_contact_map(
@@ -286,21 +300,30 @@ class SalesforceNoteRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMContact).where(
+        if not external_ids:
+            return {}
+        stmt = select(
+            CRMContact.external_id,
+            CRMContact.contact_id,
+            CRMContact.full_name,
+            CRMContact.email,
+        ).where(
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
+            col(CRMContact.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(
-                internal_id=row.contact_id,
-                name=row.full_name,
-                email=row.email,
+            external_id: ActivityDimensionHit(
+                internal_id=contact_id,
+                name=full_name,
+                email=email,
             )
-            for row in rows
-            if row.external_id is not None
+            for external_id, contact_id, full_name, email in rows
+            if external_id is not None
         }
 
     async def _load_company_map(
@@ -308,15 +331,23 @@ class SalesforceNoteRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMCompany).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMCompany.external_id, CRMCompany.company_id, CRMCompany.name).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(internal_id=row.company_id, name=row.name)
-            for row in rows
-            if row.external_id is not None
+            external_id: ActivityDimensionHit(internal_id=company_id, name=name)
+            for external_id, company_id, name in rows
+            if external_id is not None
         }
+
+
+def _compact_str_set(values) -> set[str]:
+    return {value for value in values if isinstance(value, str) and value}

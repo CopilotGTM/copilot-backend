@@ -12,6 +12,7 @@ from src.service.integrations.crm.records.salesforce.companies.company_sync_serv
 )
 from src.service.integrations.crm.records.salesforce.companies.company_types import (
     CompanyWriteResult,
+    NormalizedSalesforceCompany,
 )
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
@@ -201,3 +202,91 @@ async def test_run_persists_accounts_in_chunks(monkeypatch: pytest.MonkeyPatch) 
     assert deactivated_seen_ids == {"001A", "001B", "001C"}
     assert result.fetched_companies == 3
     assert result.companies_created == 3
+
+
+@pytest.mark.asyncio
+async def test_persist_loads_owner_map_for_current_companies_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceCompanyRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    owner_lookup_ids: list[set[str]] = []
+
+    class FakeSession:
+        async def commit(self) -> None:
+            pass
+
+    async def fake_acquire_session(_organisation_id):
+        yield FakeSession()
+
+    async def fake_load_owner_map(**kwargs):
+        owner_lookup_ids.append(set(kwargs["external_ids"]))
+        return {"005A": uuid4()}
+
+    class FakeWriter:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def apply(self, *, normalized, all_external_ids, owner_map, deactivate_missing):
+            assert all_external_ids == ["001A", "001B", "001C"]
+            assert set(owner_map) == {"005A"}
+            assert deactivate_missing is False
+            return CompanyWriteResult(companies_created=len(normalized))
+
+    async def fake_load_external_to_pk(**_kwargs):
+        return {}
+
+    monkeypatch.setattr(company_sync_service, "acquire_org_async_session", fake_acquire_session)
+    monkeypatch.setattr(company_sync_service, "SalesforceCompanyWriter", FakeWriter)
+    monkeypatch.setattr(service, "_load_owner_map", fake_load_owner_map)
+    monkeypatch.setattr(service, "_load_external_to_pk", fake_load_external_to_pk)
+
+    normalized = [
+        _normalized_company("001A", owner_external_id="005A"),
+        _normalized_company("001B", owner_external_id="005A"),
+        _normalized_company("001C", owner_external_id=None),
+    ]
+
+    write_result, backfill_payload = await service._persist(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        normalized=normalized,
+        deactivate_missing=False,
+    )
+
+    assert write_result.companies_created == 3
+    assert backfill_payload == {"rows_updated": 0, "per_op": {}}
+    assert owner_lookup_ids == [{"005A"}]
+
+
+def _normalized_company(
+    external_id: str,
+    *,
+    owner_external_id: str | None,
+) -> NormalizedSalesforceCompany:
+    return NormalizedSalesforceCompany(
+        external_id=external_id,
+        name=external_id,
+        domain=None,
+        website=None,
+        description=None,
+        industry=None,
+        company_type=None,
+        lifecycle_stage=None,
+        owner_external_id=owner_external_id,
+        number_of_employees=None,
+        annual_revenue=None,
+        phone=None,
+        address=None,
+        city=None,
+        state=None,
+        postal_code=None,
+        country=None,
+        timezone=None,
+        linkedin_url=None,
+        source_created_at=None,
+        source_modified_at=None,
+        properties={},
+        data_payload={},
+    )
