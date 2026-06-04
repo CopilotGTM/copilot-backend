@@ -175,3 +175,47 @@ async def test_fetcher_raises_when_salesforce_query_returns_non_list_records() -
         )
         with pytest.raises(ValueError, match="non-list records"):
             await fetcher.fetch_all()
+
+
+@pytest.mark.asyncio
+async def test_fetcher_retries_transient_salesforce_timeout() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": [{"Id": "00T1", "Subject": "Follow up"}]},
+    )
+    attempts = 0
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.TimeoutException("Salesforce query timed out")
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.asyncio.sleep",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        rows = await SalesforceTasksFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_all()
+
+    assert [row["Id"] for row in rows] == ["00T1"]
+    assert attempts == 2

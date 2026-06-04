@@ -6,11 +6,13 @@ import pytest
 from src.service.integrations.crm.records.salesforce.tasks import task_sync_service
 from src.service.integrations.crm.records.salesforce.tasks.task_sync_service import (
     SalesforceTaskRecordSyncService,
+    SalesforceTaskSyncContext,
 )
 from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     NormalizedSalesforceTask,
     TaskWriteResult,
 )
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
 
 def _normalized_task(
@@ -41,6 +43,68 @@ def _normalized_task(
         properties={},
         data_payload={},
     )
+
+
+@pytest.mark.asyncio
+async def test_run_persists_tasks_page_by_page_before_final_deactivation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    first_task = _normalized_task(external_id="00T1", deal_external_id="006A")
+    second_task = _normalized_task(external_id="00T2", deal_external_id="006B")
+    persist_calls: list[dict[str, object]] = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def iter_batches(self):
+            yield [{"Id": "00T1"}]
+            yield [{"Id": "00T2"}]
+
+    async def fake_load_context(self, organisation_id, integration_id):
+        return SalesforceTaskSyncContext(
+            token_info=IntegrationTokenInfo(
+                access_token="token",
+                refresh_token="refresh",
+                integration_type="salesforce",
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            ),
+            instance_url="https://acme.my.salesforce.com",
+        )
+
+    def fake_normalize_tasks(raw_tasks):
+        mapping = {"00T1": first_task, "00T2": second_task}
+        return [mapping[row["Id"]] for row in raw_tasks], 0
+
+    async def fake_persist(self, **kwargs):
+        persist_calls.append(kwargs)
+        return TaskWriteResult(tasks_created=len(kwargs["normalized"]))
+
+    monkeypatch.setattr(task_sync_service, "SalesforceTasksFetcher", FakeFetcher)
+    monkeypatch.setattr(SalesforceTaskRecordSyncService, "_load_context", fake_load_context)
+    monkeypatch.setattr(task_sync_service, "normalize_tasks", fake_normalize_tasks)
+    monkeypatch.setattr(SalesforceTaskRecordSyncService, "_persist", fake_persist)
+
+    result = await SalesforceTaskRecordSyncService().run(
+        organisation_id=org_id,
+        integration_id=integration_id,
+    )
+
+    assert result.fetched_tasks == 2
+    assert result.tasks_created == 2
+    assert len(persist_calls) == 3
+    assert persist_calls[0]["normalized"] == [first_task]
+    assert persist_calls[0]["all_external_ids"] == ["00T1"]
+    assert persist_calls[0]["deactivate_missing"] is False
+    assert persist_calls[1]["normalized"] == [second_task]
+    assert persist_calls[1]["all_external_ids"] == ["00T2"]
+    assert persist_calls[1]["deactivate_missing"] is False
+    assert persist_calls[2]["normalized"] == []
+    assert persist_calls[2]["all_external_ids"] == {"00T1", "00T2"}
+    assert persist_calls[2]["deactivate_missing"] is True
 
 
 @pytest.mark.asyncio

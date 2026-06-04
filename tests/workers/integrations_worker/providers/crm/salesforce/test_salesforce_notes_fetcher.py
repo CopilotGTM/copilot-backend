@@ -239,3 +239,75 @@ async def test_fetcher_raises_when_salesforce_query_returns_non_list_records() -
         )
         with pytest.raises(ValueError, match="non-list records"):
             await fetcher.fetch_all(linked_entity_ids=["006OPPTY"])
+
+
+@pytest.mark.asyncio
+async def test_fetcher_retries_transient_salesforce_network_error() -> None:
+    responses = [
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET", "https://acme.my.salesforce.com/services/data/v61.0/query"
+            ),
+            json={
+                "records": [
+                    {
+                        "ContentDocumentId": "069NOTE",
+                        "LinkedEntityId": "006OPPTY",
+                    }
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "GET", "https://acme.my.salesforce.com/services/data/v61.0/query"
+            ),
+            json={
+                "records": [
+                    {
+                        "Id": "069NOTE",
+                        "Title": "QBR summary",
+                        "Content": "Talked about renewal.",
+                        "OwnerId": "005OWNER",
+                    }
+                ]
+            },
+        ),
+    ]
+    attempts = 0
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.NetworkError("Salesforce connection reset")
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=responses)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.notes_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.notes_fetcher.asyncio.sleep",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.notes_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        rows = await SalesforceNotesFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_all(linked_entity_ids=["006OPPTY"])
+
+    assert len(rows) == 1
+    assert rows[0]["Id"] == "069NOTE"
+    assert attempts == 3

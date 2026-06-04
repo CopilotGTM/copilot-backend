@@ -141,3 +141,33 @@ async def test_writer_single_record_mode_does_not_soft_delete_unrelated_rows() -
 
     assert result.notes_deactivated == 0
     assert active.is_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[_normalized_note(external_id="069NOTE", deal_external_id="006OPPTY")],
+        all_external_ids=["069NOTE"],
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=False,
+    )
+
+    assert result.notes_created == 1
+    writer._load_existing_rows.assert_awaited_once_with(external_ids={"069NOTE"})

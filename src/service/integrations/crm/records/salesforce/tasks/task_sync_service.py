@@ -20,6 +20,7 @@ from src.service.integrations.crm.records.salesforce.tasks.task_normalizer impor
 from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
     TaskSyncResult,
+    TaskWriteResult,
 )
 from src.service.integrations.crm.records.salesforce.tasks.task_writer import SalesforceTaskWriter
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -53,20 +54,40 @@ class SalesforceTaskRecordSyncService:
         started_at = datetime.now(UTC)
 
         context = await self._load_context(organisation_id, integration_id)
-        raw_tasks = await SalesforceTasksFetcher(
+        fetcher = SalesforceTasksFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
-        ).fetch_all()
-        normalized, skipped_malformed = normalize_tasks(raw_tasks)
-        scoped = [task for task in normalized if self._is_in_scope(task)]
-        all_external_ids = [task.external_id for task in scoped]
+        )
+        fetched_tasks = 0
+        skipped_malformed = 0
+        all_external_ids: set[str] = set()
+        write_result = TaskWriteResult()
 
-        write_result = await self._persist(
+        async for raw_batch in fetcher.iter_batches():
+            fetched_tasks += len(raw_batch)
+            normalized, batch_skipped = normalize_tasks(raw_batch)
+            skipped_malformed += batch_skipped
+            scoped = [task for task in normalized if self._is_in_scope(task)]
+            all_external_ids.update(task.external_id for task in scoped)
+            if not scoped:
+                continue
+            batch_result = await self._persist(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                normalized=scoped,
+                all_external_ids=[task.external_id for task in scoped],
+                deactivate_missing=False,
+            )
+            _add_write_result(write_result, batch_result)
+
+        final_result = await self._persist(
             organisation_id=organisation_id,
             integration_id=integration_id,
-            normalized=scoped,
+            normalized=[],
             all_external_ids=all_external_ids,
+            deactivate_missing=True,
         )
+        _add_write_result(write_result, final_result)
 
         completed_at = datetime.now(UTC)
         result = TaskSyncResult(
@@ -76,7 +97,7 @@ class SalesforceTaskRecordSyncService:
             integration_id=integration_id,
             started_at=started_at,
             completed_at=completed_at,
-            fetched_tasks=len(raw_tasks),
+            fetched_tasks=fetched_tasks,
             tasks_created=write_result.tasks_created,
             tasks_updated=write_result.tasks_updated,
             tasks_reactivated=write_result.tasks_reactivated,
@@ -317,3 +338,14 @@ class SalesforceTaskRecordSyncService:
 
 def _compact_str_set(values) -> set[str]:
     return {value for value in values if isinstance(value, str) and value}
+
+
+def _add_write_result(target: TaskWriteResult, source: TaskWriteResult) -> None:
+    target.tasks_created += source.tasks_created
+    target.tasks_updated += source.tasks_updated
+    target.tasks_reactivated += source.tasks_reactivated
+    target.tasks_deactivated += source.tasks_deactivated
+    target.unresolved_owner_link += source.unresolved_owner_link
+    target.unresolved_deal_link += source.unresolved_deal_link
+    target.unresolved_contact_link += source.unresolved_contact_link
+    target.unresolved_company_link += source.unresolved_company_link
