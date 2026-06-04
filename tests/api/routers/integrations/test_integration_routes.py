@@ -5,6 +5,7 @@ Tests for integration listing routes in the integrations API.
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 # These endpoint tests focus on /users/integrations/available because listing logic
@@ -649,6 +650,51 @@ def test_disconnect_active_integration_revokes_and_clears_reauth(
     assert integration.sync_states[0].last_sync_status == "disconnected"
     assert integration_service.db._committed is True
     assert integration_service.revoked_integrations == [integration_id]
+
+
+@pytest.mark.asyncio
+async def test_disable_capability_states_uses_explicit_query_before_attached_relationship() -> None:
+    """Async SQLAlchemy relationships must not lazy-load during disconnect cleanup."""
+    from src.api.routers.integrations.copilot_oauth_routes import _disable_capability_states
+
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    queried_state = SimpleNamespace(enabled=True, last_sync_status="success", last_sync_error=None)
+
+    class LazyLoadedIntegration:
+        @property
+        def sync_states(self):
+            raise AssertionError("sync_states relationship should not be touched")
+
+    class FakeScalarResult:
+        def all(self):
+            return [queried_state]
+
+    class FakeResult:
+        def scalars(self):
+            return FakeScalarResult()
+
+    class ExecutableDB:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, stmt):
+            return FakeResult()
+
+        def add(self, obj):
+            self.added.append(obj)
+
+    service = SimpleNamespace(
+        db=ExecutableDB(),
+        user_ids=SimpleNamespace(organisation_id=organisation_id),
+    )
+
+    await _disable_capability_states(service, integration_id, LazyLoadedIntegration())
+
+    assert queried_state.enabled is False
+    assert queried_state.last_sync_status == "disconnected"
+    assert queried_state.last_sync_error == "Integration disconnected by user"
+    assert service.db.added == [queried_state]
 
 
 def test_refresh_channels_accepts_slack(
