@@ -6,11 +6,13 @@ import pytest
 from src.service.integrations.crm.records.salesforce.notes import note_sync_service
 from src.service.integrations.crm.records.salesforce.notes.note_sync_service import (
     SalesforceNoteRecordSyncService,
+    SalesforceNoteSyncContext,
 )
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     NormalizedSalesforceNote,
     NoteWriteResult,
 )
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
 
 def _normalized_note(
@@ -37,6 +39,77 @@ def _normalized_note(
         properties={},
         data_payload={},
     )
+
+
+@pytest.mark.asyncio
+async def test_run_persists_notes_batch_by_batch_before_final_deactivation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    first_note = _normalized_note(external_id="069A", deal_external_id="006A")
+    second_note = _normalized_note(external_id="069B", deal_external_id="006B")
+    persist_calls: list[dict[str, object]] = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def iter_batches(self, *, linked_entity_ids):
+            assert linked_entity_ids == ["006A", "006B"]
+            yield [{"Id": "069A"}]
+            yield [{"Id": "069B"}]
+
+    async def fake_load_context(self, organisation_id, integration_id):
+        return SalesforceNoteSyncContext(
+            token_info=IntegrationTokenInfo(
+                access_token="token",
+                refresh_token="refresh",
+                integration_type="salesforce",
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            ),
+            instance_url="https://acme.my.salesforce.com",
+        )
+
+    async def fake_load_linked_entity_ids(self, organisation_id, integration_id):
+        return ["006A", "006B"]
+
+    def fake_normalize_notes(raw_notes):
+        mapping = {"069A": first_note, "069B": second_note}
+        return [mapping[row["Id"]] for row in raw_notes], 0
+
+    async def fake_persist(self, **kwargs):
+        persist_calls.append(kwargs)
+        return NoteWriteResult(notes_created=len(kwargs["normalized"]))
+
+    monkeypatch.setattr(note_sync_service, "SalesforceNotesFetcher", FakeFetcher)
+    monkeypatch.setattr(SalesforceNoteRecordSyncService, "_load_context", fake_load_context)
+    monkeypatch.setattr(
+        SalesforceNoteRecordSyncService,
+        "_load_linked_entity_ids",
+        fake_load_linked_entity_ids,
+    )
+    monkeypatch.setattr(note_sync_service, "normalize_notes", fake_normalize_notes)
+    monkeypatch.setattr(SalesforceNoteRecordSyncService, "_persist", fake_persist)
+
+    result = await SalesforceNoteRecordSyncService().run(
+        organisation_id=org_id,
+        integration_id=integration_id,
+    )
+
+    assert result.fetched_notes == 2
+    assert result.notes_created == 2
+    assert len(persist_calls) == 3
+    assert persist_calls[0]["normalized"] == [first_note]
+    assert persist_calls[0]["all_external_ids"] == ["069A"]
+    assert persist_calls[0]["deactivate_missing"] is False
+    assert persist_calls[1]["normalized"] == [second_note]
+    assert persist_calls[1]["all_external_ids"] == ["069B"]
+    assert persist_calls[1]["deactivate_missing"] is False
+    assert persist_calls[2]["normalized"] == []
+    assert persist_calls[2]["all_external_ids"] == {"069A", "069B"}
+    assert persist_calls[2]["deactivate_missing"] is True
 
 
 @pytest.mark.asyncio

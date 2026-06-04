@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Set
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -45,7 +45,10 @@ class SalesforceNoteWriter:
     ) -> NoteWriteResult:
         result = NoteWriteResult()
         now = datetime.now(UTC)
-        existing_by_external = await self._load_existing_rows()
+        batch_external_ids = {note.external_id for note in normalized}
+        existing_by_external = await self._load_existing_rows(
+            external_ids=None if deactivate_missing else batch_external_ids
+        )
 
         for note in normalized:
             owner_hit = self._resolve_hit(
@@ -165,12 +168,20 @@ class SalesforceNoteWriter:
             return company_hit.internal_id, company_hit.name
         return None, None
 
-    async def _load_existing_rows(self) -> dict[str, CRMActivity]:
+    async def _load_existing_rows(
+        self,
+        *,
+        external_ids: Set[str] | None = None,
+    ) -> dict[str, CRMActivity]:
+        if external_ids is not None and not external_ids:
+            return {}
         stmt = select(CRMActivity).where(
             col(CRMActivity.organisation_id) == self.organisation_id,
             col(CRMActivity.integration_id) == self.integration_id,
             col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
         )
+        if external_ids is not None:
+            stmt = stmt.where(col(CRMActivity.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.external_id: row for row in rows if row.external_id is not None}
 

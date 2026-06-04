@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -17,6 +18,8 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 500_000
+_MAX_REQUEST_ATTEMPTS = 3
+_REQUEST_RETRY_DELAYS = (1.0, 3.0)
 
 
 class SalesforceTasksFetcher:
@@ -30,6 +33,12 @@ class SalesforceTasksFetcher:
         self.instance_url = instance_url.rstrip("/")
 
     async def fetch_all(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        async for batch in self.iter_batches():
+            records.extend(batch)
+        return records
+
+    async def iter_batches(self):
         soql = (
             "SELECT Id, Subject, Description, Status, Priority, ActivityDate, "
             "CompletedDateTime, OwnerId, WhoId, WhatId, AccountId, CreatedDate, "
@@ -37,9 +46,9 @@ class SalesforceTasksFetcher:
             "FROM Task WHERE IsDeleted = false ORDER BY LastModifiedDate, Id"
         )
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
-        records: list[dict[str, Any]] = []
         next_url: str | None = None
         page_count = 0
+        total_records = 0
 
         while page_count < _MAX_PAGES:
             payload = await self._get_json(
@@ -48,7 +57,10 @@ class SalesforceTasksFetcher:
             raw_records = payload.get("records")
             if not isinstance(raw_records, list):
                 raise ValueError("Salesforce tasks query API returned non-list records")
-            records.extend(row for row in raw_records if isinstance(row, dict))
+            batch = [row for row in raw_records if isinstance(row, dict)]
+            total_records += len(batch)
+            if batch:
+                yield batch
 
             page_count += 1
             next_records_url = payload.get("nextRecordsUrl")
@@ -72,11 +84,10 @@ class SalesforceTasksFetcher:
             "Fetched Salesforce tasks",
             extra={
                 "integration_id": str(self.token_info.integration_id),
-                "count": len(records),
+                "count": total_records,
                 "pages": page_count,
             },
         )
-        return records
 
     async def fetch_one(self, task_id: str) -> dict[str, Any] | None:
         soql = (
@@ -140,11 +151,34 @@ class SalesforceTasksFetcher:
                 response.raise_for_status()
                 return response
 
-        response = await call_with_token_retry(self.token_info, _request)
+        response = await _call_with_transient_retry(self.token_info, _request)
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Salesforce tasks API returned non-dict payload")
         return payload
+
+
+async def _call_with_transient_retry(
+    token_info: IntegrationTokenInfo,
+    request_fn,
+) -> httpx.Response:
+    last_error: Exception | None = None
+    for attempt in range(_MAX_REQUEST_ATTEMPTS):
+        try:
+            return await call_with_token_retry(token_info, request_fn)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_error = exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in {429, 500, 502, 503, 504}:
+                raise
+            last_error = exc
+
+        if attempt < len(_REQUEST_RETRY_DELAYS):
+            await asyncio.sleep(_REQUEST_RETRY_DELAYS[attempt])
+
+    if last_error is None:
+        raise RuntimeError("Salesforce task request retry failed without an error")
+    raise last_error
 
 
 def _escape_soql_literal(value: str) -> str:

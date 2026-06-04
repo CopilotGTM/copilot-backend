@@ -20,6 +20,7 @@ from src.service.integrations.crm.records.salesforce.notes.note_normalizer impor
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
     NoteSyncResult,
+    NoteWriteResult,
 )
 from src.service.integrations.crm.records.salesforce.notes.note_writer import SalesforceNoteWriter
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -54,20 +55,40 @@ class SalesforceNoteRecordSyncService:
 
         context = await self._load_context(organisation_id, integration_id)
         linked_entity_ids = await self._load_linked_entity_ids(organisation_id, integration_id)
-        raw_notes = await SalesforceNotesFetcher(
+        fetcher = SalesforceNotesFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
-        ).fetch_all(linked_entity_ids=linked_entity_ids)
-        normalized, skipped_malformed = normalize_notes(raw_notes)
-        scoped = [note for note in normalized if self._is_in_scope(note)]
-        all_external_ids = [note.external_id for note in scoped]
+        )
+        fetched_notes = 0
+        skipped_malformed = 0
+        all_external_ids: set[str] = set()
+        write_result = NoteWriteResult()
 
-        write_result = await self._persist(
+        async for raw_batch in fetcher.iter_batches(linked_entity_ids=linked_entity_ids):
+            fetched_notes += len(raw_batch)
+            normalized, batch_skipped = normalize_notes(raw_batch)
+            skipped_malformed += batch_skipped
+            scoped = [note for note in normalized if self._is_in_scope(note)]
+            all_external_ids.update(note.external_id for note in scoped)
+            if not scoped:
+                continue
+            batch_result = await self._persist(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                normalized=scoped,
+                all_external_ids=[note.external_id for note in scoped],
+                deactivate_missing=False,
+            )
+            _add_write_result(write_result, batch_result)
+
+        final_result = await self._persist(
             organisation_id=organisation_id,
             integration_id=integration_id,
-            normalized=scoped,
+            normalized=[],
             all_external_ids=all_external_ids,
+            deactivate_missing=True,
         )
+        _add_write_result(write_result, final_result)
 
         completed_at = datetime.now(UTC)
         result = NoteSyncResult(
@@ -77,7 +98,7 @@ class SalesforceNoteRecordSyncService:
             integration_id=integration_id,
             started_at=started_at,
             completed_at=completed_at,
-            fetched_notes=len(raw_notes),
+            fetched_notes=fetched_notes,
             notes_created=write_result.notes_created,
             notes_updated=write_result.notes_updated,
             notes_reactivated=write_result.notes_reactivated,
@@ -351,3 +372,14 @@ class SalesforceNoteRecordSyncService:
 
 def _compact_str_set(values) -> set[str]:
     return {value for value in values if isinstance(value, str) and value}
+
+
+def _add_write_result(target: NoteWriteResult, source: NoteWriteResult) -> None:
+    target.notes_created += source.notes_created
+    target.notes_updated += source.notes_updated
+    target.notes_reactivated += source.notes_reactivated
+    target.notes_deactivated += source.notes_deactivated
+    target.unresolved_owner_link += source.unresolved_owner_link
+    target.unresolved_deal_link += source.unresolved_deal_link
+    target.unresolved_contact_link += source.unresolved_contact_link
+    target.unresolved_company_link += source.unresolved_company_link

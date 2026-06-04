@@ -233,14 +233,14 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 0,
     },
     "integrations.sync_salesforce_tasks": {
-        "soft": 1500,
-        "hard": 1560,
+        "soft": 1800,
+        "hard": 1860,
         "retries": 3,
         "retry_delay": 60,
     },
     "integrations.sync_salesforce_notes": {
-        "soft": 1500,
-        "hard": 1560,
+        "soft": 1800,
+        "hard": 1860,
         "retries": 3,
         "retry_delay": 60,
     },

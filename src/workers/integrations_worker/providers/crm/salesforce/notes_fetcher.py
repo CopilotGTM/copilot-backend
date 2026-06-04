@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
@@ -18,6 +19,8 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 500_000
+_MAX_REQUEST_ATTEMPTS = 3
+_REQUEST_RETRY_DELAYS = (1.0, 3.0)
 _LINK_BATCH_SIZE = 200
 _NOTE_BATCH_SIZE = 200
 
@@ -33,72 +36,72 @@ class SalesforceNotesFetcher:
         self.instance_url = instance_url.rstrip("/")
 
     async def fetch_all(self, *, linked_entity_ids: list[str]) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        async for batch in self.iter_batches(linked_entity_ids=linked_entity_ids):
+            records.extend(batch)
+        return records
+
+    async def iter_batches(self, *, linked_entity_ids: list[str]):
         scoped_ids = [entity_id for entity_id in linked_entity_ids if entity_id]
         if not scoped_ids:
-            return []
+            return
 
-        link_rows: list[dict[str, Any]] = []
+        link_rows_by_document_id: dict[str, list[dict[str, Any]]] = {}
+        link_count = 0
         for batch in _chunked(scoped_ids, _LINK_BATCH_SIZE):
             # IDs come from our own synced CRM dimension tables, not from user input.
             soql = (
                 "SELECT Id, ContentDocumentId, LinkedEntityId "  # noqa: S608  # nosec B608
                 f"FROM ContentDocumentLink WHERE LinkedEntityId IN ({_quoted_csv(batch)})"
             )
-            link_rows.extend(await self._query_all(soql, error_label="notes link"))
+            for link_row in await self._query_all(soql, error_label="notes link"):
+                document_id = link_row.get("ContentDocumentId")
+                if not isinstance(document_id, str) or not document_id:
+                    continue
+                link_rows_by_document_id.setdefault(document_id, []).append(link_row)
+                link_count += 1
 
-        document_ids = sorted(
-            {
-                document_id
-                for row in link_rows
-                if isinstance(row, dict)
-                for document_id in [row.get("ContentDocumentId")]
-                if isinstance(document_id, str) and document_id
-            }
-        )
+        document_ids = sorted(link_rows_by_document_id)
         if not document_ids:
             logger.info(
                 "Fetched Salesforce note links but found no ContentDocumentIds",
                 extra={
                     "integration_id": str(self.token_info.integration_id),
                     "linked_entity_count": len(scoped_ids),
-                    "link_count": len(link_rows),
+                    "link_count": link_count,
                 },
             )
-            return []
+            return
 
-        note_rows_by_id: dict[str, dict[str, Any]] = {}
+        hydrated_note_count = 0
+        merged_row_count = 0
         for batch in _chunked(document_ids, _NOTE_BATCH_SIZE):
             # ContentDocumentIds also come from the provider-scoped link query above.
             soql = (
                 "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "  # noqa: S608  # nosec B608
                 f"FROM ContentNote WHERE Id IN ({_quoted_csv(batch)})"
             )
+            merged_rows: list[dict[str, Any]] = []
             for row in await self._query_all(soql, error_label="notes hydrate"):
                 note_id = row.get("Id")
                 if isinstance(note_id, str) and note_id:
-                    note_rows_by_id[note_id] = row
-
-        merged_rows: list[dict[str, Any]] = []
-        for link_row in link_rows:
-            document_id = link_row.get("ContentDocumentId")
-            if not isinstance(document_id, str) or not document_id:
-                continue
-            note_row = note_rows_by_id.get(document_id)
-            if note_row is None:
-                continue
-            merged_rows.append(_merge_link_and_note(link_row, note_row))
+                    hydrated_note_count += 1
+                    for link_row in link_rows_by_document_id.get(note_id, []):
+                        merged_rows.append(_merge_link_and_note(link_row, row))
+            if merged_rows:
+                merged_row_count += len(merged_rows)
+                yield merged_rows
 
         logger.info(
             "Fetched Salesforce notes",
             extra={
                 "integration_id": str(self.token_info.integration_id),
                 "linked_entity_count": len(scoped_ids),
-                "link_count": len(link_rows),
-                "hydrated_note_count": len(note_rows_by_id),
-                "merged_row_count": len(merged_rows),
+                "link_count": link_count,
+                "hydrated_note_count": hydrated_note_count,
+                "merged_row_count": merged_row_count,
             },
         )
-        return merged_rows
 
     async def fetch_one_by_note_id(
         self,
@@ -228,11 +231,34 @@ class SalesforceNotesFetcher:
                 response.raise_for_status()
                 return response
 
-        response = await call_with_token_retry(self.token_info, _request)
+        response = await _call_with_transient_retry(self.token_info, _request)
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Salesforce notes API returned non-dict payload")
         return payload
+
+
+async def _call_with_transient_retry(
+    token_info: IntegrationTokenInfo,
+    request_fn,
+) -> httpx.Response:
+    last_error: Exception | None = None
+    for attempt in range(_MAX_REQUEST_ATTEMPTS):
+        try:
+            return await call_with_token_retry(token_info, request_fn)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_error = exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in {429, 500, 502, 503, 504}:
+                raise
+            last_error = exc
+
+        if attempt < len(_REQUEST_RETRY_DELAYS):
+            await asyncio.sleep(_REQUEST_RETRY_DELAYS[attempt])
+
+    if last_error is None:
+        raise RuntimeError("Salesforce notes request retry failed without an error")
+    raise last_error
 
 
 def _chunked(values: Iterable[str], size: int) -> Iterable[list[str]]:
