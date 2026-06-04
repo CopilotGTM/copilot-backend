@@ -72,6 +72,7 @@ from src.workers.integrations_worker.providers.crm.salesforce.opportunity_histor
 logger = get_logger(__name__)
 
 _DEAL_PERSIST_CHUNK_SIZE = 2_000
+_DEAL_RELATIONSHIP_CHUNK_SIZE = 2_000
 
 
 @dataclass(slots=True)
@@ -113,6 +114,8 @@ class SalesforceDealRecordSyncService:
         participant_result = ParticipantWriteResult()
         association_result = AssociationWriteResult()
         backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+        fetched_stage_history_rows = 0
+        fetched_participant_rows = 0
 
         async for page_records, field_names in opportunities_fetcher.fetch_pages():
             fetched_opportunities += len(page_records)
@@ -147,58 +150,49 @@ class SalesforceDealRecordSyncService:
             self._merge_deal_write_result(write_result, chunk_result[0])
             skipped_malformed_opportunities += chunk_result[1]
 
-        raw_stage_history: list[dict[str, Any]] = []
-        async for page_records in SalesforceOpportunityHistoryFetcher(
-            token_info=context.token_info,
-            instance_url=context.instance_url,
-        ).fetch_pages():
-            raw_stage_history.extend(page_records)
-        transitions, skipped_malformed_stage_history = normalize_stage_history(
-            raw_stage_history,
-            pipeline_external_id_by_deal=pipeline_external_id_by_deal,
-        )
-        stage_entered_at_map = current_stage_entered_at_by_deal(
-            transitions,
-            current_stage_external_id_by_deal=current_stage_external_id_by_deal,
-        )
-
-        raw_contact_roles: list[dict[str, Any]] = []
-        async for page_records in SalesforceOpportunityContactRolesFetcher(
-            token_info=context.token_info,
-            instance_url=context.instance_url,
-        ).fetch_pages():
-            raw_contact_roles.extend(page_records)
-        participant_extraction = extract_participants(
-            raw_contact_roles,
-            company_external_id_by_deal=company_external_id_by_deal,
-        )
-        await self._update_deal_relationship_snapshots(
+        (
+            fetched_stage_history_rows,
+            skipped_malformed_stage_history,
+            stage_history_result,
+            stage_backfill_payload,
+        ) = await self._sync_stage_history_relationships(
             organisation_id=organisation_id,
             integration_id=integration_id,
-            stage_entered_at_by_deal=stage_entered_at_map,
-            primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
-            contact_count_by_deal=participant_extraction.contact_count_by_deal,
+            token_info=context.token_info,
+            instance_url=context.instance_url,
+            pipeline_external_id_by_deal=pipeline_external_id_by_deal,
+            current_stage_external_id_by_deal=current_stage_external_id_by_deal,
         )
+        self._merge_backfill_payload(backfill_payload, stage_backfill_payload)
 
-        if (
-            transitions
-            or participant_extraction.participants
-            or participant_extraction.associations
-        ):
-            (
-                side_write_result,
-                stage_history_result,
-                participant_result,
-                association_result,
-                backfill_payload,
-            ) = await self._persist(
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-                opportunities=[],
-                transitions=transitions,
-                participant_extraction=participant_extraction,
-            )
-            self._merge_deal_write_result(write_result, side_write_result)
+        (
+            fetched_participant_rows,
+            skipped_malformed_participants,
+            role_participant_result,
+            role_association_result,
+            role_backfill_payload,
+        ) = await self._sync_contact_role_relationships(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            token_info=context.token_info,
+            instance_url=context.instance_url,
+        )
+        self._merge_participant_result(participant_result, role_participant_result)
+        self._merge_association_result(association_result, role_association_result)
+        self._merge_backfill_payload(backfill_payload, role_backfill_payload)
+
+        (
+            company_participant_result,
+            company_association_result,
+            company_backfill_payload,
+        ) = await self._sync_company_relationships(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            company_external_id_by_deal=company_external_id_by_deal,
+        )
+        self._merge_participant_result(participant_result, company_participant_result)
+        self._merge_association_result(association_result, company_association_result)
+        self._merge_backfill_payload(backfill_payload, company_backfill_payload)
 
         completed_at = datetime.now(UTC)
         return DealSyncResult(
@@ -210,8 +204,8 @@ class SalesforceDealRecordSyncService:
             completed_at=completed_at,
             fetched_opportunities=fetched_opportunities,
             property_list_size=property_list_size,
-            fetched_stage_history_rows=len(raw_stage_history),
-            fetched_participant_rows=len(raw_contact_roles),
+            fetched_stage_history_rows=fetched_stage_history_rows,
+            fetched_participant_rows=fetched_participant_rows,
             deals_created=write_result.deals_created,
             deals_updated=write_result.deals_updated,
             unresolved_pipeline_link=write_result.unresolved_pipeline_link,
@@ -223,7 +217,7 @@ class SalesforceDealRecordSyncService:
             unresolved_updated_by_link=write_result.unresolved_updated_by_link,
             skipped_malformed_opportunities=skipped_malformed_opportunities,
             skipped_malformed_stage_history=skipped_malformed_stage_history,
-            skipped_malformed_participants=participant_extraction.skipped_malformed,
+            skipped_malformed_participants=skipped_malformed_participants,
             stage_history_created=stage_history_result.stage_history_created,
             stage_history_updated=stage_history_result.stage_history_updated,
             stage_history_unresolved_stage=stage_history_result.unresolved_stage,
@@ -488,6 +482,216 @@ class SalesforceDealRecordSyncService:
         raise SalesforceDealSyncConfigurationError(
             "Could not acquire org session for Salesforce deal relationship snapshot update"
         )
+
+    async def _sync_stage_history_relationships(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        token_info: IntegrationTokenInfo,
+        instance_url: str,
+        pipeline_external_id_by_deal: dict[str, str],
+        current_stage_external_id_by_deal: dict[str, str | None],
+    ) -> tuple[int, int, StageHistoryWriteResult, dict[str, Any]]:
+        fetched_rows = 0
+        skipped_malformed = 0
+        result = StageHistoryWriteResult()
+        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+        carry: list[dict[str, Any]] = []
+
+        async for page_records in SalesforceOpportunityHistoryFetcher(
+            token_info=token_info,
+            instance_url=instance_url,
+        ).fetch_pages():
+            fetched_rows += len(page_records)
+            completed_rows, carry = self._split_ordered_rows_by_opportunity(carry + page_records)
+            if not completed_rows:
+                continue
+            chunk_result, chunk_skipped, chunk_backfill = await self._persist_stage_history_rows(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_stage_history=completed_rows,
+                pipeline_external_id_by_deal=pipeline_external_id_by_deal,
+                current_stage_external_id_by_deal=current_stage_external_id_by_deal,
+            )
+            self._merge_stage_history_result(result, chunk_result)
+            skipped_malformed += chunk_skipped
+            self._merge_backfill_payload(backfill_payload, chunk_backfill)
+
+        if carry:
+            chunk_result, chunk_skipped, chunk_backfill = await self._persist_stage_history_rows(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_stage_history=carry,
+                pipeline_external_id_by_deal=pipeline_external_id_by_deal,
+                current_stage_external_id_by_deal=current_stage_external_id_by_deal,
+            )
+            self._merge_stage_history_result(result, chunk_result)
+            skipped_malformed += chunk_skipped
+            self._merge_backfill_payload(backfill_payload, chunk_backfill)
+
+        return fetched_rows, skipped_malformed, result, backfill_payload
+
+    async def _persist_stage_history_rows(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_stage_history: list[dict[str, Any]],
+        pipeline_external_id_by_deal: dict[str, str],
+        current_stage_external_id_by_deal: dict[str, str | None],
+    ) -> tuple[StageHistoryWriteResult, int, dict[str, Any]]:
+        transitions, skipped_malformed = normalize_stage_history(
+            raw_stage_history,
+            pipeline_external_id_by_deal=pipeline_external_id_by_deal,
+        )
+        if not transitions:
+            return StageHistoryWriteResult(), skipped_malformed, {"rows_updated": 0, "per_op": {}}
+
+        stage_entered_at_map = current_stage_entered_at_by_deal(
+            transitions,
+            current_stage_external_id_by_deal=current_stage_external_id_by_deal,
+        )
+        await self._update_deal_relationship_snapshots(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            stage_entered_at_by_deal=stage_entered_at_map,
+            primary_contact_by_deal={},
+            contact_count_by_deal={},
+        )
+        _, stage_history_result, _, _, backfill_payload = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            opportunities=[],
+            transitions=transitions,
+            participant_extraction=DealParticipantExtraction(),
+        )
+        return stage_history_result, skipped_malformed, backfill_payload
+
+    async def _sync_contact_role_relationships(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        token_info: IntegrationTokenInfo,
+        instance_url: str,
+    ) -> tuple[int, int, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]]:
+        fetched_rows = 0
+        skipped_malformed = 0
+        participant_result = ParticipantWriteResult()
+        association_result = AssociationWriteResult()
+        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+        carry: list[dict[str, Any]] = []
+
+        async for page_records in SalesforceOpportunityContactRolesFetcher(
+            token_info=token_info,
+            instance_url=instance_url,
+        ).fetch_pages():
+            fetched_rows += len(page_records)
+            completed_rows, carry = self._split_ordered_rows_by_opportunity(carry + page_records)
+            if not completed_rows:
+                continue
+            chunk_result = await self._persist_contact_role_rows(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_contact_roles=completed_rows,
+            )
+            skipped_malformed += chunk_result[0]
+            self._merge_participant_result(participant_result, chunk_result[1])
+            self._merge_association_result(association_result, chunk_result[2])
+            self._merge_backfill_payload(backfill_payload, chunk_result[3])
+
+        if carry:
+            chunk_result = await self._persist_contact_role_rows(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                raw_contact_roles=carry,
+            )
+            skipped_malformed += chunk_result[0]
+            self._merge_participant_result(participant_result, chunk_result[1])
+            self._merge_association_result(association_result, chunk_result[2])
+            self._merge_backfill_payload(backfill_payload, chunk_result[3])
+
+        return (
+            fetched_rows,
+            skipped_malformed,
+            participant_result,
+            association_result,
+            backfill_payload,
+        )
+
+    async def _persist_contact_role_rows(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        raw_contact_roles: list[dict[str, Any]],
+    ) -> tuple[int, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]]:
+        participant_extraction = extract_participants(
+            raw_contact_roles,
+            company_external_id_by_deal={},
+        )
+        await self._update_deal_relationship_snapshots(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            stage_entered_at_by_deal={},
+            primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
+            contact_count_by_deal=participant_extraction.contact_count_by_deal,
+        )
+        if not participant_extraction.participants and not participant_extraction.associations:
+            return (
+                participant_extraction.skipped_malformed,
+                ParticipantWriteResult(),
+                AssociationWriteResult(),
+                {"rows_updated": 0, "per_op": {}},
+            )
+
+        _, _, participant_result, association_result, backfill_payload = await self._persist(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            opportunities=[],
+            transitions=[],
+            participant_extraction=participant_extraction,
+        )
+        return (
+            participant_extraction.skipped_malformed,
+            participant_result,
+            association_result,
+            backfill_payload,
+        )
+
+    async def _sync_company_relationships(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        company_external_id_by_deal: dict[str, str | None],
+    ) -> tuple[ParticipantWriteResult, AssociationWriteResult, dict[str, Any]]:
+        participant_result = ParticipantWriteResult()
+        association_result = AssociationWriteResult()
+        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+
+        items = list(company_external_id_by_deal.items())
+        for start in range(0, len(items), _DEAL_RELATIONSHIP_CHUNK_SIZE):
+            chunk_map = dict(items[start : start + _DEAL_RELATIONSHIP_CHUNK_SIZE])
+            participant_extraction = extract_participants(
+                [],
+                company_external_id_by_deal=chunk_map,
+            )
+            if not participant_extraction.participants and not participant_extraction.associations:
+                continue
+            _, _, chunk_participant, chunk_association, chunk_backfill = await self._persist(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                opportunities=[],
+                transitions=[],
+                participant_extraction=participant_extraction,
+            )
+            self._merge_participant_result(participant_result, chunk_participant)
+            self._merge_association_result(association_result, chunk_association)
+            self._merge_backfill_payload(backfill_payload, chunk_backfill)
+
+        return participant_result, association_result, backfill_payload
 
     async def persist_single_opportunity(
         self,
@@ -886,6 +1090,41 @@ class SalesforceDealRecordSyncService:
         target.unresolved_updated_by_link += source.unresolved_updated_by_link
 
     @staticmethod
+    def _merge_stage_history_result(
+        target: StageHistoryWriteResult,
+        source: StageHistoryWriteResult,
+    ) -> None:
+        target.stage_history_created += source.stage_history_created
+        target.stage_history_updated += source.stage_history_updated
+        target.unresolved_stage += source.unresolved_stage
+        target.unresolved_from_stage += source.unresolved_from_stage
+
+    @staticmethod
+    def _merge_participant_result(
+        target: ParticipantWriteResult,
+        source: ParticipantWriteResult,
+    ) -> None:
+        target.participants_created += source.participants_created
+        target.participants_updated += source.participants_updated
+        target.unresolved_related += source.unresolved_related
+
+    @staticmethod
+    def _merge_association_result(
+        target: AssociationWriteResult,
+        source: AssociationWriteResult,
+    ) -> None:
+        target.associations_created += source.associations_created
+        target.associations_updated += source.associations_updated
+        target.unresolved_to_local += source.unresolved_to_local
+
+    @staticmethod
+    def _merge_backfill_payload(target: dict[str, Any], source: dict[str, Any]) -> None:
+        target["rows_updated"] += source["rows_updated"]
+        per_op = target["per_op"]
+        for op_name, rows_updated in source["per_op"].items():
+            per_op[op_name] = per_op.get(op_name, 0) + rows_updated
+
+    @staticmethod
     def _relationship_deal_external_ids(
         *,
         transitions: list[Any],
@@ -906,6 +1145,26 @@ class SalesforceDealRecordSyncService:
             )
             if isinstance(external_id, str) and external_id
         }
+
+    @classmethod
+    def _split_ordered_rows_by_opportunity(
+        cls,
+        rows: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not rows:
+            return [], []
+        last_opportunity_id = cls._coerce_str(rows[-1].get("OpportunityId"))
+        if last_opportunity_id is None:
+            return rows, []
+
+        completed: list[dict[str, Any]] = []
+        carry: list[dict[str, Any]] = []
+        for row in rows:
+            if cls._coerce_str(row.get("OpportunityId")) == last_opportunity_id:
+                carry.append(row)
+            else:
+                completed.append(row)
+        return completed, carry
 
     @staticmethod
     def _coerce_str(value: Any) -> str | None:
