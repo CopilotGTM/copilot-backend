@@ -2,38 +2,57 @@
 
 Top-level Meetings APIs are mounted at `/users/meetings`.
 
-V1 is intentionally deal-first. The backend does not create new meeting-link,
-bot-preference, task-link, account, lead, contact, internal, or none-linked tables for this
-version. Meeting context comes from existing calendar sync rows and the existing
-`CalendarEventDealAssociation` mapping.
+V1 is deal-only. The backend does not create meeting-link, bot-preference, task-link,
+account, lead, contact, internal, or none-linked tables. Meeting context comes from existing
+calendar sync tables and the existing `CalendarEventDealAssociation` table.
 
-Existing deal-scoped meeting APIs remain unchanged under `/users/crm/deals` for briefing,
-summary, follow-up, transcript upload, and deal timeline behavior.
+Existing deal-scoped meeting APIs remain unchanged under `/users/crm/deals` for meeting prep,
+summary, follow-up, transcript upload, and deal timeline workflows.
 
-## V1 Scope
+## Frontend Scope
 
-- Lists the authenticated user's synced calendar meetings across Today, Upcoming, Past, and Recordings.
-- Supports links to `DEAL` only.
-- Uses existing `CalendarEventDealAssociation` rows for the linked deal chip and drawer context.
-- Creates meetings through the existing calendar invite service.
-- Invites the Recall bot through the existing meeting-bot dispatch service.
-- Returns Recall recording playback/transcript metadata when a Recall session exists.
-- Keeps task APIs deal-only for now. Lead/contact/account/internal task workflows are not part of V1.
+Build these V1 tabs:
 
-## Shared Types
+| Tab | Backend view | Purpose |
+| --- | --- | --- |
+| Today | `view=today` | Meetings in the current user's local day. |
+| Upcoming | `view=upcoming` | Future synced meetings. |
+| Past | `view=past` | Completed historical meetings. |
+| Recordings | `view=recordings` | Meetings with Recall recording sessions. |
+
+Supported V1 linked record:
+
+```ts
+type MeetingLinkedRecordType = "DEAL";
+```
+
+Hide or disable account, lead, contact, internal, and none-linked business workflows in V1.
+Those drawers can exist as frontend placeholders, but they should not call backend link/task
+workflows yet.
+
+## Response Envelope
+
+All endpoints return the shared API envelope:
+
+```ts
+type ApiResponse<T> = {
+  status: "SUCCESS" | "ERROR";
+  message: string;
+  data: T | null;
+};
+```
+
+## Shared Contracts
 
 ```ts
 type MeetingsView = "today" | "upcoming" | "past" | "recordings";
-type MeetingLinkedRecordType = "DEAL";
 
 type MeetingBotComputedStatus =
   | "recording_live"
   | "already_sent"
   | "auto_invite_eligible"
   | "invite_available";
-```
 
-```ts
 type MeetingAttendeeItem = {
   email: string;
   name: string | null;
@@ -77,7 +96,14 @@ type MeetingListItem = {
   has_recording: boolean;
   has_summary: boolean;
   has_prep: boolean;
-  next_action: string | null;
+  next_action: "prepare" | "view_recording" | string | null;
+};
+
+type MeetingsPage = {
+  items: MeetingListItem[];
+  total_count: number;
+  page: number;
+  limit: number;
 };
 ```
 
@@ -86,6 +112,8 @@ type MeetingListItem = {
 ```http
 GET /users/meetings
 ```
+
+Use this endpoint for all four list tabs.
 
 Query parameters:
 
@@ -101,7 +129,7 @@ Query parameters:
 | `page` | number | No | Default `1`. |
 | `limit` | number | No | Default `50`, max `100`. |
 
-Default view windows:
+Default backend windows:
 
 - `today`: current user's local day.
 - `upcoming`: after today through roughly the next 90 days.
@@ -114,13 +142,77 @@ Example:
 GET /users/meetings?view=today&page=1&limit=50
 ```
 
+Example response:
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Meetings retrieved",
+  "data": {
+    "items": [
+      {
+        "event_id": "4fd09b96-9f31-4dd4-9328-8f9b9f1bb227",
+        "title": "Discovery with Acme leadership",
+        "start_at": "2026-06-04T10:30:00Z",
+        "end_at": "2026-06-04T11:00:00Z",
+        "duration_minutes": 30,
+        "platform": "microsoft_teams",
+        "conference_link": "https://teams.microsoft.com/l/meetup-join/...",
+        "status": "confirmed",
+        "attendees": [
+          {
+            "email": "priya@example.com",
+            "name": "Priya Shah",
+            "response_status": "accepted",
+            "is_organiser": true
+          }
+        ],
+        "attendee_count": 7,
+        "linked_record": {
+          "record_type": "DEAL",
+          "record_id": "2ef6e7fc-23f5-4126-b8e6-4ca748afe840",
+          "name": "Acme Corp",
+          "metadata": {
+            "stage": "Proposal",
+            "amount": 80000
+          }
+        },
+        "bot": {
+          "status": "recording_live",
+          "reason": null,
+          "is_external": true,
+          "provider_session_id": "bot_abc123"
+        },
+        "recording_status": "IN_CALL",
+        "transcript_status": null,
+        "has_recording": true,
+        "has_summary": false,
+        "has_prep": true,
+        "next_action": "prepare"
+      }
+    ],
+    "total_count": 1,
+    "page": 1,
+    "limit": 50
+  }
+}
+```
+
+Frontend rendering notes:
+
+- Use `linked_record` for the "Linked to" deal chip.
+- If `linked_record` is `null`, show an unlinked or "Link deal" state.
+- Use `bot.status` for bot chips and action availability.
+- Use `has_recording`, `recording_status`, and `transcript_status` for Past and Recordings actions.
+- Use `next_action` as a backend hint; frontend can still choose tab-specific button labels.
+
 ## Get Meeting Detail
 
 ```http
 GET /users/meetings/{event_id}
 ```
 
-Use this when a row is selected and the drawer opens.
+Use this when a row is selected and the side drawer opens.
 
 ```ts
 type MeetingDetail = MeetingListItem & {
@@ -132,8 +224,23 @@ type MeetingDetail = MeetingListItem & {
 };
 ```
 
-Security note: every lookup proves the event belongs to the current user's active Google or
-Outlook calendar integration before returning data.
+Example:
+
+```http
+GET /users/meetings/4fd09b96-9f31-4dd4-9328-8f9b9f1bb227
+```
+
+Drawer behavior:
+
+- If `linked_record?.record_type === "DEAL"`, render the deal drawer variant.
+- Use `linked_record_detail` for compact deal context.
+- Use `attendees` and `attendee_count` for attendee stack/list.
+- Use `suggested_actions` as optional hints. In V1, follow-up creation should still use existing deal task endpoints.
+
+Security behavior:
+
+- The backend only returns meetings visible through the authenticated user's active Google or Outlook calendar integration.
+- A raw `event_id` from another user's calendar returns `404`.
 
 ## Create Meeting
 
@@ -141,8 +248,7 @@ Outlook calendar integration before returning data.
 POST /users/meetings
 ```
 
-Creates a provider-backed calendar invite through `CalendarInviteService`. The frontend must
-send attendees explicitly. V1 does not auto-prefill lead/contact participants.
+Creates a provider-backed calendar invite through `CalendarInviteService`.
 
 ```ts
 type CreateMeetingRequest = {
@@ -164,16 +270,61 @@ type CreateMeetingRequest = {
     record_id: string;
   } | null;
 };
+
+type CreateMeetingResponse = {
+  event_id: string;
+  provider_event_id: string;
+  conference_link: string | null;
+  meeting: MeetingDetail;
+  bot_dispatch: Record<string, unknown> | null;
+};
 ```
 
-The backend passes `link.record_id` as `deal_id` to the existing invite service and mirrors the
-result into `CalendarEventDealAssociation` when the provider returns a synced event id.
+Important frontend rules:
+
+- Send at least one attendee explicitly. V1 does not auto-prefill lead/contact participants.
+- `start_at` and `end_at` must include timezone.
+- `end_at` must be after `start_at`.
+- If linking on create, only send `link.record_type = "DEAL"`.
+- `idempotency_key` is optional but recommended for retry-safe create flows.
+
+Example request:
+
+```json
+{
+  "title": "Discovery with Acme leadership",
+  "start_at": "2026-06-04T10:30:00+05:30",
+  "end_at": "2026-06-04T11:00:00+05:30",
+  "timezone": "Asia/Kolkata",
+  "attendees": [
+    {
+      "email": "john@acme.com",
+      "name": "John Davis"
+    }
+  ],
+  "body": "Discovery agenda",
+  "link": {
+    "record_type": "DEAL",
+    "record_id": "2ef6e7fc-23f5-4126-b8e6-4ca748afe840"
+  },
+  "idempotency_key": "meeting-create-4fd09b96"
+}
+```
+
+After creation:
+
+- The backend passes `link.record_id` as `deal_id` to the existing invite service.
+- The resulting synced calendar event is linked through `CalendarEventDealAssociation`.
+- If the meeting is external and linked to a deal, backend attempts safe auto-invite of the bot after save.
+- If auto-invite fails, the meeting is still created and `bot_dispatch` contains a failed status.
 
 ## Link Meeting To Deal
 
 ```http
 PATCH /users/meetings/{event_id}/link
 ```
+
+Request:
 
 ```json
 {
@@ -182,12 +333,21 @@ PATCH /users/meetings/{event_id}/link
 }
 ```
 
+Response data: `MeetingDetail`.
+
 Behavior:
 
 - Validates current-user ownership of the calendar event.
 - Validates the deal belongs to the same organisation and is not deleted.
 - Creates or reactivates a `CalendarEventDealAssociation` for the selected deal.
 - Does not remove other existing deal associations; this keeps existing deal timelines and jobs intact.
+- Attempts safe auto-invite after save when the meeting is external and deal-linked.
+
+Frontend behavior:
+
+- Use this for "Link deal" and "Change link" in V1.
+- Do not send `LEAD`, `CONTACT`, `ACCOUNT`, `INTERNAL`, or `NONE`.
+- Search UI can show only deals for this version.
 
 ## Invite Bot
 
@@ -196,16 +356,37 @@ POST /users/meetings/{event_id}/bot/invite
 ```
 
 Manually dispatches the existing Recall bot flow after proving current-user ownership of the
-calendar event. If the existing dispatch service determines the bot cannot join late, the API
-returns a conflict response.
+calendar event.
 
-There is no V1 `bot-settings` endpoint because per-meeting bot preferences would require new
-storage. The computed default is:
+Possible success payload examples:
 
-- `recording_live` when Recall is joining or in call.
-- `already_sent` when the Recall session has already been sent to the provider.
-- `auto_invite_eligible` when the meeting is external and linked to a deal.
-- `invite_available` otherwise.
+```json
+{
+  "status": "sent",
+  "calendar_event_id": "4fd09b96-9f31-4dd4-9328-8f9b9f1bb227",
+  "provider_session_id": "bot_abc123"
+}
+```
+
+```json
+{
+  "status": "already_sent",
+  "calendar_event_id": "4fd09b96-9f31-4dd4-9328-8f9b9f1bb227"
+}
+```
+
+If the existing dispatch service determines the bot cannot join late, the API returns `409`.
+
+Bot status mapping for the list and drawer:
+
+| `bot.status` | Suggested UI |
+| --- | --- |
+| `recording_live` | Green "Recording live" chip; primary action can open meeting. |
+| `already_sent` | "Bot invited" or "Recording scheduled" chip. |
+| `auto_invite_eligible` | "Bot auto-invite eligible" or "Invite bot" action. |
+| `invite_available` | Show "Invite bot" if meeting has a join link and is not past. |
+
+There is no V1 `bot-settings` endpoint because per-meeting bot preferences would require new storage.
 
 ## Recording Detail
 
@@ -213,8 +394,8 @@ storage. The computed default is:
 GET /users/meetings/{event_id}/recording
 ```
 
-Returns Recall playback and transcript metadata for one current-user meeting. V1 supports
-Recall bot recordings only.
+Returns Recall playback and transcript metadata for one current-user meeting. V1 supports Recall
+bot recordings only.
 
 ```ts
 type MeetingRecordingResponse = {
@@ -229,14 +410,45 @@ type MeetingRecordingResponse = {
 };
 ```
 
-If no playable Recall video artifact is available, the endpoint returns `409` with
-`recording_not_ready` semantics.
+Example:
 
-## Frontend Notes
+```http
+GET /users/meetings/4fd09b96-9f31-4dd4-9328-8f9b9f1bb227/recording
+```
 
-- Render account, lead, contact, internal, and none-linked drawers as future states or hide those
-  workflows in V1.
-- Use `linked_record` for the deal chip and drawer CTA.
-- Use `has_prep`, `has_summary`, `recording_status`, and `transcript_status` to decide row actions.
-- Use existing deal task endpoints for follow-up creation. Do not call lead/contact/account task
-  workflows from the Meetings tab in V1.
+Frontend behavior:
+
+- Use `playback_url` directly as a fresh Recall playback/download URL.
+- Do not treat `playback_url` as permanent; fetch this endpoint again when opening playback.
+- Use `summary` and `action_items` for the right-side intelligence panel when present.
+- Use `transcript_artifact` for transcript availability metadata.
+
+If no playable Recall video artifact is available, backend returns `409`.
+
+## Error Handling
+
+Common frontend cases:
+
+| HTTP status | Likely reason | UI recommendation |
+| --- | --- | --- |
+| `400` | Invalid query/body, unsupported link type, bad datetime. | Show validation error. |
+| `403` | CRM write scope disabled by org preferences. | Disable write action or show permission message. |
+| `404` | Meeting not visible to current user's calendar, or deal not found. | Refresh list and show not-found toast. |
+| `409` | Recording not ready, idempotency conflict, or bot cannot join late. | Show contextual conflict message. |
+| `500/502` | Provider/backend failure. | Keep existing UI state and show retry option. |
+
+## V1 Exclusions
+
+Do not build backend-dependent workflows for these yet:
+
+- Lead-linked meetings.
+- Contact-linked meetings.
+- Account-linked meetings.
+- Internal meeting drawers/actions.
+- None-linked business workflows.
+- Per-meeting bot preference settings.
+- Lead/contact/account/internal task creation from Meetings.
+- Azure video archival for recordings.
+
+For follow-up creation in V1, use the existing deal task endpoints after confirming the meeting
+is linked to a deal.
