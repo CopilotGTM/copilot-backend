@@ -180,6 +180,10 @@ class SalesforceTaskRecordSyncService:
         deactivate_missing: bool = True,
     ):
         async for session in acquire_org_async_session(organisation_id):
+            user_external_ids = _compact_str_set(task.owner_external_id for task in normalized)
+            deal_external_ids = _compact_str_set(task.deal_external_id for task in normalized)
+            contact_external_ids = _compact_str_set(task.contact_external_id for task in normalized)
+            company_external_ids = _compact_str_set(task.company_external_id for task in normalized)
             writer = SalesforceTaskWriter(
                 session=session,
                 organisation_id=organisation_id,
@@ -188,10 +192,18 @@ class SalesforceTaskRecordSyncService:
             write_result = await writer.apply(
                 normalized=normalized,
                 all_external_ids=all_external_ids,
-                user_map=await self._load_user_map(session, organisation_id, integration_id),
-                deal_map=await self._load_deal_map(session, organisation_id, integration_id),
-                contact_map=await self._load_contact_map(session, organisation_id, integration_id),
-                company_map=await self._load_company_map(session, organisation_id, integration_id),
+                user_map=await self._load_user_map(
+                    session, organisation_id, integration_id, user_external_ids
+                ),
+                deal_map=await self._load_deal_map(
+                    session, organisation_id, integration_id, deal_external_ids
+                ),
+                contact_map=await self._load_contact_map(
+                    session, organisation_id, integration_id, contact_external_ids
+                ),
+                company_map=await self._load_company_map(
+                    session, organisation_id, integration_id, company_external_ids
+                ),
                 deactivate_missing=deactivate_missing,
             )
             await session.commit()
@@ -206,21 +218,25 @@ class SalesforceTaskRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMUser).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMUser.external_id, CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(
-                internal_id=row.user_id,
-                name=row.full_name,
-                email=row.email,
+            external_id: ActivityDimensionHit(
+                internal_id=user_id,
+                name=full_name,
+                email=email,
             )
-            for row in rows
-            if row.external_id is not None
+            for external_id, user_id, full_name, email in rows
+            if external_id is not None
         }
 
     async def _load_deal_map(
@@ -228,17 +244,21 @@ class SalesforceTaskRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMDeal).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMDeal.external_id, CRMDeal.deal_id, CRMDeal.name).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
+            col(CRMDeal.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(internal_id=row.deal_id, name=row.name)
-            for row in rows
-            if row.external_id is not None
+            external_id: ActivityDimensionHit(internal_id=deal_id, name=name)
+            for external_id, deal_id, name in rows
+            if external_id is not None
         }
 
     async def _load_contact_map(
@@ -246,21 +266,30 @@ class SalesforceTaskRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMContact).where(
+        if not external_ids:
+            return {}
+        stmt = select(
+            CRMContact.external_id,
+            CRMContact.contact_id,
+            CRMContact.full_name,
+            CRMContact.email,
+        ).where(
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
+            col(CRMContact.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(
-                internal_id=row.contact_id,
-                name=row.full_name,
-                email=row.email,
+            external_id: ActivityDimensionHit(
+                internal_id=contact_id,
+                name=full_name,
+                email=email,
             )
-            for row in rows
-            if row.external_id is not None
+            for external_id, contact_id, full_name, email in rows
+            if external_id is not None
         }
 
     async def _load_company_map(
@@ -268,15 +297,23 @@ class SalesforceTaskRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        stmt = select(CRMCompany).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMCompany.external_id, CRMCompany.company_id, CRMCompany.name).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt)).all()
         return {
-            row.external_id: ActivityDimensionHit(internal_id=row.company_id, name=row.name)
-            for row in rows
-            if row.external_id is not None
+            external_id: ActivityDimensionHit(internal_id=company_id, name=name)
+            for external_id, company_id, name in rows
+            if external_id is not None
         }
+
+
+def _compact_str_set(values) -> set[str]:
+    return {value for value in values if isinstance(value, str) and value}

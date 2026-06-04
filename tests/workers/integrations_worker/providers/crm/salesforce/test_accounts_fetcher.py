@@ -36,7 +36,7 @@ def _mock_client_with_responses(responses: list[httpx.Response]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_fetcher_describes_selectable_account_fields_and_paginates() -> None:
+async def test_fetcher_describes_allowed_account_fields_and_paginates() -> None:
     responses = [
         httpx.Response(
             200,
@@ -49,6 +49,7 @@ async def test_fetcher_describes_selectable_account_fields_and_paginates() -> No
                     {"name": "Id", "type": "id"},
                     {"name": "Name", "type": "string"},
                     {"name": "Website", "type": "url"},
+                    {"name": "Domain__c", "type": "string"},
                     {"name": "BillingStreet", "type": "string"},
                     {"name": "BillingAddress", "type": "address"},
                     {"name": "Unused__c", "type": "string"},
@@ -98,9 +99,10 @@ async def test_fetcher_describes_selectable_account_fields_and_paginates() -> No
     query_soql = client.get.call_args_list[1].kwargs["params"]["q"]
     assert "Name" in query_soql
     assert "Website" in query_soql
+    assert "Domain__c" in query_soql
     assert "BillingStreet" in query_soql
     assert "BillingAddress" not in query_soql
-    assert "Unused__c" in query_soql
+    assert "Unused__c" not in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
 
@@ -176,7 +178,8 @@ async def test_fetch_all_logs_account_query_progress(caplog: pytest.LogCaptureFi
         "Fetched Salesforce accounts page",
         "Fetched Salesforce accounts",
     ]
-    assert account_log_records[1].field_count == 5
+    assert account_log_records[1].field_count == 4
+    assert account_log_records[1].queryable_field_count == 5
     assert account_log_records[3].page == 1
     assert account_log_records[3].has_next_page is False
     assert account_log_records[4].page == 1

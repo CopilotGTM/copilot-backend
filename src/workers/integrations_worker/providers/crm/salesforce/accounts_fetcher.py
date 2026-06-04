@@ -21,7 +21,58 @@ _MAX_PAGES = 500_000
 _QUERY_BATCH_SIZE = 2_000
 _MAX_ERROR_BODY_CHARS = 500
 _REQUIRED_FIELDS = {"Id", "CreatedDate", "LastModifiedDate"}
-_EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
+_ACCOUNT_FIELD_ALLOWLIST = (
+    "Id",
+    "Name",
+    "Account_Name__c",
+    "Website",
+    "Domain__c",
+    "Description",
+    "company_description_lusha_enriched__c",
+    "Industry",
+    "Cohort_Industry__c",
+    "LinkedIn_Industry__c",
+    "Nature_of_Business_Category__c",
+    "Type",
+    "RecordTypeId",
+    "RecordType_name__c",
+    "Customer_Type__c",
+    "Account_Status__c",
+    "Lead_Status__c",
+    "Customer_Stage__c",
+    "Region__c",
+    "Geography__c",
+    "Cluster__c",
+    "Sub_Cluster__c",
+    "Country__c",
+    "OwnerId",
+    "Account_CSM_Name__c",
+    "ParentId",
+    "NumberOfEmployees",
+    "LinkedIn_No_of_Employees__c",
+    "AnnualRevenue",
+    "Annual_Revenue__c",
+    "Phone",
+    "BillingStreet",
+    "BillingCity",
+    "BillingState",
+    "BillingCountry",
+    "BillingPostalCode",
+    "ShippingStreet",
+    "ShippingCity",
+    "ShippingState",
+    "ShippingCountry",
+    "CreatedDate",
+    "LastModifiedDate",
+    "SystemModstamp",
+    "LastActivityDate",
+    "IsDeleted",
+    "Product__c",
+    "Business_Unit__c",
+    "Account_AutoID__c",
+    "Account_Category__c",
+    "LinkedIn_URL__c",
+)
 
 
 class SalesforceAccountsFetcher:
@@ -147,26 +198,37 @@ class SalesforceAccountsFetcher:
         if not isinstance(raw_fields, list):
             raise ValueError("Salesforce Account describe API returned non-list fields")
 
-        field_names = {
+        queryable_field_names = {
             name
             for field in raw_fields
             if isinstance(field, dict)
             for name in [_extract_field_name(field)]
             if name is not None
         }
-        field_names.update(_REQUIRED_FIELDS)
+        queryable_field_names.update(_REQUIRED_FIELDS)
+        field_names = [
+            field_name
+            for field_name in _ACCOUNT_FIELD_ALLOWLIST
+            if field_name in queryable_field_names
+        ]
         if "Id" not in field_names:
             raise ValueError("Salesforce Account describe API did not yield a usable Id field")
-        sorted_field_names = sorted(field_names)
+        missing_allowlist_fields = [
+            field_name
+            for field_name in _ACCOUNT_FIELD_ALLOWLIST
+            if field_name not in queryable_field_names
+        ]
         logger.info(
             "Salesforce Account describe completed",
             extra={
                 "integration_id": str(self.token_info.integration_id),
                 "raw_field_count": len(raw_fields),
-                "field_count": len(sorted_field_names),
+                "queryable_field_count": len(queryable_field_names),
+                "field_count": len(field_names),
+                "missing_allowlist_field_count": len(missing_allowlist_fields),
             },
         )
-        return sorted_field_names
+        return field_names
 
     async def _get_json(
         self,
@@ -201,9 +263,6 @@ def _extract_field_name(field: dict[str, Any]) -> str | None:
     if field.get("queryable") is False:
         return None
     if field.get("deprecatedAndHidden") is True:
-        return None
-    field_type = field.get("type")
-    if isinstance(field_type, str) and field_type.lower() in _EXCLUDED_FIELD_TYPES:
         return None
     return name
 

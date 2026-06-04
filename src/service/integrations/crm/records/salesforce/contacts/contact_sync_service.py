@@ -40,7 +40,7 @@ from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher i
 
 logger = get_logger(__name__)
 
-_CONTACT_PERSIST_CHUNK_SIZE = 2_000
+_CONTACT_PERSIST_CHUNK_SIZE = 500
 
 
 @dataclass(slots=True)
@@ -231,15 +231,23 @@ class SalesforceContactRecordSyncService:
         normalized: list[NormalizedSalesforceContact],
     ) -> tuple[Any, dict[str, Any]]:
         async for session in acquire_org_async_session(organisation_id):
+            company_external_ids = {
+                contact.company_external_id for contact in normalized if contact.company_external_id
+            }
+            owner_external_ids = {
+                contact.owner_external_id for contact in normalized if contact.owner_external_id
+            }
             company_map = await self._load_company_map(
                 session=session,
                 organisation_id=organisation_id,
                 integration_id=integration_id,
+                external_ids=company_external_ids,
             )
             owner_map = await self._load_owner_map(
                 session=session,
                 organisation_id=organisation_id,
                 integration_id=integration_id,
+                external_ids=owner_external_ids,
             )
 
             writer = SalesforceContactWriter(
@@ -315,14 +323,20 @@ class SalesforceContactRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, UUID]:
-        stmt = select(CRMCompany).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMCompany.external_id, CRMCompany.company_id).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.company_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {
+            external_id: company_id for external_id, company_id in rows if external_id is not None
+        }
 
     async def _load_owner_map(
         self,
@@ -330,16 +344,20 @@ class SalesforceContactRecordSyncService:
         session,
         organisation_id: UUID,
         integration_id: UUID,
+        external_ids: set[str],
     ) -> dict[str, UUID]:
         from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 
-        stmt = select(CRMUser).where(
+        if not external_ids:
+            return {}
+        stmt = select(CRMUser.external_id, CRMUser.user_id).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.external_id).in_(external_ids),
         )
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.user_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {external_id: user_id for external_id, user_id in rows if external_id is not None}
 
     async def _load_contact_pk_map(
         self,
@@ -351,7 +369,7 @@ class SalesforceContactRecordSyncService:
     ) -> dict[str, UUID]:
         from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 
-        stmt = select(CRMContact).where(
+        stmt = select(CRMContact.external_id, CRMContact.contact_id).where(
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
@@ -360,5 +378,7 @@ class SalesforceContactRecordSyncService:
             if not external_ids:
                 return {}
             stmt = stmt.where(col(CRMContact.external_id).in_(external_ids))
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.contact_id for row in rows if row.external_id is not None}
+        rows = (await session.execute(stmt)).all()
+        return {
+            external_id: contact_id for external_id, contact_id in rows if external_id is not None
+        }
