@@ -14,6 +14,8 @@ from src.domain.models.organisation_tables.sync import (
     KnowledgeIntegration,
 )
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.backfill import (
@@ -41,6 +43,7 @@ from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher i
 logger = get_logger(__name__)
 
 _CONTACT_PERSIST_CHUNK_SIZE = 500
+_DEAL_BACKFILL_REFERENCE_CHUNK_SIZE = 1000
 
 
 @dataclass(slots=True)
@@ -74,7 +77,6 @@ class SalesforceContactRecordSyncService:
         fetched_contacts = 0
         skipped_malformed = 0
         write_result = ContactWriteResult()
-        backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
 
         async for page_records in fetcher.fetch_pages():
             fetched_contacts += len(page_records)
@@ -88,7 +90,6 @@ class SalesforceContactRecordSyncService:
             )
             self._merge_write_result(write_result, chunk_result[0])
             skipped_malformed += chunk_result[1]
-            self._merge_backfill_payload(backfill_payload, chunk_result[2])
             pending_raw = []
 
         if pending_raw:
@@ -99,7 +100,11 @@ class SalesforceContactRecordSyncService:
             )
             self._merge_write_result(write_result, chunk_result[0])
             skipped_malformed += chunk_result[1]
-            self._merge_backfill_payload(backfill_payload, chunk_result[2])
+
+        backfill_payload = await self._backfill_deal_primary_contacts(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+        )
 
         completed_at = datetime.now(UTC)
         return ContactSyncResult(
@@ -132,6 +137,7 @@ class SalesforceContactRecordSyncService:
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=normalized,
+            backfill_deals=True,
         )
         return {
             "contacts_created": write_result.contacts_created,
@@ -206,6 +212,7 @@ class SalesforceContactRecordSyncService:
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=normalized,
+            backfill_deals=False,
         )
         logger.info(
             "Salesforce contacts chunk persist completed",
@@ -229,6 +236,7 @@ class SalesforceContactRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
         normalized: list[NormalizedSalesforceContact],
+        backfill_deals: bool = True,
     ) -> tuple[Any, dict[str, Any]]:
         async for session in acquire_org_async_session(organisation_id):
             company_external_ids = {
@@ -261,39 +269,39 @@ class SalesforceContactRecordSyncService:
                 owner_map=owner_map,
             )
 
-            contact_pk_map = await self._load_contact_pk_map(
-                session=session,
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-                external_ids=[contact.external_id for contact in normalized],
-            )
-
             backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
-            mapping: dict[str, tuple[UUID, str | None, None, str | None]] = {}
-            for contact in normalized:
-                pk = contact_pk_map.get(contact.external_id)
-                if pk is None:
-                    continue
-                mapping[contact.external_id] = (pk, contact.full_name, None, contact.email)
-
-            if mapping:
-                ops = [
-                    DealFkBackfillOp(
-                        external_col="primary_contact_external_id",
-                        fk_col="primary_contact_id",
-                        name_col="primary_contact_name",
-                        email_col="primary_contact_email",
-                        mapping=mapping,
-                    )
-                ]
-                backfill_result = await backfill_crm_deals(
-                    session,
+            if backfill_deals:
+                contact_pk_map = await self._load_contact_pk_map(
+                    session=session,
                     organisation_id=organisation_id,
                     integration_id=integration_id,
-                    ops=ops,
+                    external_ids=[contact.external_id for contact in normalized],
                 )
-                backfill_payload["rows_updated"] = backfill_result.rows_updated
-                backfill_payload["per_op"] = dict(backfill_result.per_op)
+                mapping: dict[str, tuple[UUID, str | None, None, str | None]] = {}
+                for contact in normalized:
+                    pk = contact_pk_map.get(contact.external_id)
+                    if pk is None:
+                        continue
+                    mapping[contact.external_id] = (pk, contact.full_name, None, contact.email)
+
+                if mapping:
+                    ops = [
+                        DealFkBackfillOp(
+                            external_col="primary_contact_external_id",
+                            fk_col="primary_contact_id",
+                            name_col="primary_contact_name",
+                            email_col="primary_contact_email",
+                            mapping=mapping,
+                        )
+                    ]
+                    backfill_result = await backfill_crm_deals(
+                        session,
+                        organisation_id=organisation_id,
+                        integration_id=integration_id,
+                        ops=ops,
+                    )
+                    backfill_payload["rows_updated"] = backfill_result.rows_updated
+                    backfill_payload["per_op"] = dict(backfill_result.per_op)
 
             await session.commit()
             return write_result, backfill_payload
@@ -316,6 +324,130 @@ class SalesforceContactRecordSyncService:
         per_op = target["per_op"]
         for op_name, rows_updated in source["per_op"].items():
             per_op[op_name] = per_op.get(op_name, 0) + rows_updated
+
+    async def _backfill_deal_primary_contacts(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+        after_external_id: str | None = None
+        batch_number = 0
+
+        while True:
+            async for session in acquire_org_async_session(organisation_id):
+                external_ids = await self._load_deal_primary_contact_external_ids(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    after_external_id=after_external_id,
+                    limit=_DEAL_BACKFILL_REFERENCE_CHUNK_SIZE,
+                )
+                if not external_ids:
+                    return payload
+
+                mapping = await self._load_contact_backfill_map(
+                    session=session,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    external_ids=external_ids,
+                )
+                batch_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
+                if mapping:
+                    backfill_result = await backfill_crm_deals(
+                        session,
+                        organisation_id=organisation_id,
+                        integration_id=integration_id,
+                        ops=[
+                            DealFkBackfillOp(
+                                external_col="primary_contact_external_id",
+                                fk_col="primary_contact_id",
+                                name_col="primary_contact_name",
+                                email_col="primary_contact_email",
+                                mapping=mapping,
+                            )
+                        ],
+                    )
+                    batch_payload["rows_updated"] = backfill_result.rows_updated
+                    batch_payload["per_op"] = dict(backfill_result.per_op)
+                    self._merge_backfill_payload(payload, batch_payload)
+
+                await session.commit()
+                batch_number += 1
+                logger.info(
+                    "Salesforce contact deal backfill batch completed",
+                    extra={
+                        "organisation_id": str(organisation_id),
+                        "integration_id": str(integration_id),
+                        "batch_number": batch_number,
+                        "referenced_contact_ids": len(external_ids),
+                        "resolved_contacts": len(mapping),
+                        "rows_updated": batch_payload["rows_updated"],
+                    },
+                )
+                after_external_id = external_ids[-1]
+                break
+            else:
+                raise SalesforceContactSyncConfigurationError(
+                    "Could not acquire org session for Salesforce contact deal backfill"
+                )
+
+    async def _load_deal_primary_contact_external_ids(
+        self,
+        *,
+        session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        after_external_id: str | None,
+        limit: int,
+    ) -> list[str]:
+        external_col = col(CRMDeal.primary_contact_external_id)
+        stmt = (
+            select(CRMDeal.primary_contact_external_id)
+            .where(
+                col(CRMDeal.organisation_id) == organisation_id,
+                col(CRMDeal.integration_id) == integration_id,
+                col(CRMDeal.is_deleted) == False,  # noqa: E712
+                external_col.is_not(None),
+            )
+            .distinct()
+            .order_by(external_col)
+            .limit(limit)
+        )
+        if after_external_id is not None:
+            stmt = stmt.where(external_col > after_external_id)
+
+        rows = (await session.execute(stmt)).all()
+        return [external_id for (external_id,) in rows if external_id is not None]
+
+    async def _load_contact_backfill_map(
+        self,
+        *,
+        session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        external_ids: list[str],
+    ) -> dict[str, tuple[UUID, str | None, None, str | None]]:
+        if not external_ids:
+            return {}
+        stmt = select(
+            CRMContact.external_id,
+            CRMContact.contact_id,
+            CRMContact.full_name,
+            CRMContact.email,
+        ).where(
+            col(CRMContact.organisation_id) == organisation_id,
+            col(CRMContact.integration_id) == integration_id,
+            col(CRMContact.is_deleted) == False,  # noqa: E712
+            col(CRMContact.external_id).in_(external_ids),
+        )
+        rows = (await session.execute(stmt)).all()
+        return {
+            external_id: (contact_id, full_name, None, email)
+            for external_id, contact_id, full_name, email in rows
+            if external_id is not None
+        }
 
     async def _load_company_map(
         self,
@@ -367,8 +499,6 @@ class SalesforceContactRecordSyncService:
         integration_id: UUID,
         external_ids: list[str] | None = None,
     ) -> dict[str, UUID]:
-        from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-
         stmt = select(CRMContact.external_id, CRMContact.contact_id).where(
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
