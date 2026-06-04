@@ -1,3 +1,10 @@
+"""Run async coroutines safely from synchronous worker code.
+
+Celery tasks in this codebase are mostly synchronous functions that call async
+database and provider code. This module owns the per-thread event loop used by
+those tasks and the fork cleanup needed for prefork worker children.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -90,6 +97,37 @@ def _clear_sync_db_provider_cache() -> None:
         logger.debug("Could not clear sync DB provider cache: %s", e)
 
 
+def reset_after_fork() -> None:
+    """Reset async runtime state inherited by a Celery prefork child.
+
+    Forked children cannot safely reuse the parent's event loop, executor, or
+    DB engines. Discarding them here makes the first task in the child create
+    fresh asyncpg connections on a child-owned loop.
+    """
+    _clear_async_db_provider_cache()
+    _clear_sync_db_provider_cache()
+
+    thread_loop: asyncio.AbstractEventLoop | None = getattr(_thread_local, "loop", None)
+    policy_loop: asyncio.AbstractEventLoop | None = None
+    with contextlib.suppress(RuntimeError):
+        policy_loop = asyncio.get_event_loop()
+
+    for loop in {thread_loop, policy_loop}:
+        if loop is None:
+            continue
+        with contextlib.suppress(Exception):
+            if not loop.is_closed():
+                loop.close()
+
+    if thread_loop is not None:
+        delattr(_thread_local, "loop")
+
+    # Some libraries call asyncio.get_event_loop() directly instead of going
+    # through run_async(); detach the inherited policy loop for those paths too.
+    with contextlib.suppress(Exception):
+        asyncio.set_event_loop(None)
+
+
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
     """Get or create a persistent event loop for the current thread.
 
@@ -159,4 +197,9 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
             logger.debug("Task cleanup encountered exception during shutdown", exc_info=True)
 
 
-__all__ = ["run_async", "_clear_async_db_provider_cache", "_clear_sync_db_provider_cache"]
+__all__ = [
+    "run_async",
+    "reset_after_fork",
+    "_clear_async_db_provider_cache",
+    "_clear_sync_db_provider_cache",
+]

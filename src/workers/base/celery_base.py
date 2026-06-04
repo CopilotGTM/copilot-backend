@@ -1,3 +1,10 @@
+"""Shared Celery app factory and runtime signal wiring for all workers.
+
+Worker modules call `create_celery_app` to get consistent broker settings,
+task routing, observability hooks, and prefork cleanup across API-adjacent
+background jobs.
+"""
+
 import logging
 import os
 import time
@@ -110,13 +117,9 @@ def _register_observability_signals() -> None:
         parent's event loop. Dispose and clear them so fresh engines are
         created in the child.
         """
-        from src.infra.utils.async_runner import (
-            _clear_async_db_provider_cache,
-            _clear_sync_db_provider_cache,
-        )
+        from src.infra.utils.async_runner import reset_after_fork
 
-        _clear_async_db_provider_cache()
-        _clear_sync_db_provider_cache()
+        reset_after_fork()
 
     @worker_process_init.connect(weak=False)
     def _init_otel_after_fork(sender=None, **kwargs):  # noqa: ARG001
@@ -282,14 +285,12 @@ def create_celery_app(worker_name, config, tasks_module):
 
     worker_config_updates: dict[str, Any] = {}
 
-    # Set worker-specific queue configurations
     if hasattr(config, "task_queues"):
         celery_app.conf.task_queues = config.task_queues
 
     if hasattr(config, "task_default_queue"):
         worker_config_updates["task_default_queue"] = config.task_default_queue
 
-    # Set default exchange settings
     if hasattr(config, "task_default_exchange"):
         worker_config_updates["task_default_exchange"] = config.task_default_exchange
 
@@ -302,11 +303,9 @@ def create_celery_app(worker_name, config, tasks_module):
     if worker_config_updates:
         celery_app.conf.update(worker_config_updates)
 
-    # Set task routing if defined in the worker's config
     if hasattr(config, "task_routes"):
         celery_app.conf.task_routes = config.task_routes
 
-    # Set beat schedule if defined in the worker's config (for periodic tasks)
     if hasattr(config, "beat_schedule") and config.beat_schedule:
         celery_app.conf.beat_schedule = config.beat_schedule
 

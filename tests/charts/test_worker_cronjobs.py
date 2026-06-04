@@ -272,6 +272,24 @@ def test_dev_chat_worker_renders_memory_guardrails() -> None:
     assert "--max-memory-per-child=700000" in container["command"]
 
 
+def test_chat_worker_prestop_drains_all_consumed_queues() -> None:
+    """Rolling restarts must stop every queue the multi-queue chat worker consumes."""
+    manifests = _render_all_manifests()
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-chat-worker"
+    )
+
+    command = deployment["spec"]["template"]["spec"]["containers"][0]["lifecycle"]["preStop"][
+        "exec"
+    ]["command"][-1]
+
+    for queue in {"attachments", "chat_processing", "chat_messages", "voice_realtime"}:
+        assert f"control cancel_consumer {queue}" in command
+
+
 def test_api_secret_renders_sentry_settings_for_dev() -> None:
     """Assert dev Sentry secret values render with expected non-empty defaults."""
     manifests = _render_all_manifests()
