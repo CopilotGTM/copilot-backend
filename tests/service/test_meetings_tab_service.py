@@ -40,6 +40,14 @@ def test_existing_deal_association_is_used_as_link_fallback() -> None:
     assert linked.name == "Acme Corp"
 
 
+def test_meetings_query_does_not_depend_on_removed_link_tables() -> None:
+    compiled = str(_service()._meeting_rows_stmt().compile())  # noqa: SLF001
+
+    assert "meeting_record_links" not in compiled
+    assert "meeting_bot_preferences" not in compiled
+    assert "calendar_event_deal_associations" in compiled
+
+
 def test_deal_association_surfaces_deal_summary_state() -> None:
     now = datetime.now(UTC)
     event = SimpleNamespace(
