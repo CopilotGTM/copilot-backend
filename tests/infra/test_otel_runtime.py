@@ -513,8 +513,7 @@ def test_create_fastapi_app_includes_voice_realtime_routes_when_feature_flag_ena
 
 def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
-    mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
-    mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
+    reset_after_fork_mock = mocker.patch("src.infra.utils.async_runner.reset_after_fork")
 
     app = celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
     app.set_current()
@@ -523,13 +522,13 @@ def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
 
     celery_base.worker_process_init.send(sender=None)
 
+    reset_after_fork_mock.assert_called()
     init_mock.assert_any_call(service_name_suffix="-unit_worker")
 
 
 def test_create_celery_app_uses_current_app_name_when_multiple_apps_exist(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
-    mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
-    mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
+    mocker.patch("src.infra.utils.async_runner.reset_after_fork")
 
     chat_app = celery_base.create_celery_app(
         "chat_worker", _DummyWorkerConfig(), "tests.chat_tasks"

@@ -122,6 +122,24 @@ spec:
             {{- end }}
           {{- end }}
           {{- if and .Values.shutdown.enabled (not .Values.config.beatMode) }}
+          {{- $workerApp := "src.workers.knowledge_worker.celery_app:app" }}
+          {{- if contains "knowledge" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.knowledge_worker.celery_app:app" }}
+          {{- else if contains "organization" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.organization_worker.celery_app:app" }}
+          {{- else if contains "integration" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.integrations_worker.celery_app:app" }}
+          {{- else if contains "deal" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.deal_worker.celery_app:app" }}
+          {{- else if contains "attachments" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
+          {{- else if contains "chat" .Values.config.queueName }}
+          {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
+          {{- end }}
+          {{- $drainQueues := list .Values.config.queueName }}
+          {{- if .Values.config.additionalQueues }}
+          {{- $drainQueues = concat $drainQueues .Values.config.additionalQueues }}
+          {{- end }}
           lifecycle:
             preStop:
               exec:
@@ -129,25 +147,12 @@ spec:
                   - /bin/sh
                   - -c
                   - >-
-                    echo "[preStop] Draining Celery worker: stopping consumer for queue {{ .Values.config.queueName }}";
-                    celery -A \
-                    {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app:app \
-                    {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app:app \
-                    {{- else if contains "integration" .Values.config.queueName }} src.workers.integrations_worker.celery_app:app \
-                    {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
-                    {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else }} src.workers.knowledge_worker.celery_app:app \
-                    {{- end }} control cancel_consumer {{ .Values.config.queueName }} || true;
+                    echo "[preStop] Draining Celery worker: stopping consumers for queues {{ join "," $drainQueues }}";
+                    {{- range $queue := $drainQueues }}
+                    celery -A {{ $workerApp }} control cancel_consumer {{ $queue }} || true;
+                    {{- end }}
                     {{- if .Values.shutdown.remoteShutdown }} echo "[preStop] Optional remote shutdown after drain"; celery -A \
-                    {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app:app \
-                    {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app:app \
-                    {{- else if contains "integration" .Values.config.queueName }} src.workers.integrations_worker.celery_app:app \
-                    {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
-                    {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else }} src.workers.knowledge_worker.celery_app:app \
-                    {{- end }} control shutdown || true; {{- end }}
+                    {{ $workerApp }} control shutdown || true; {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
