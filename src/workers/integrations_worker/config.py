@@ -222,8 +222,8 @@ TASK_LIMITS: dict[str, dict] = {
         "retry_delay": 60,
     },
     "integrations.sync_salesforce_deals": {
-        "soft": 2100,
-        "hard": 2160,
+        "soft": 3600,
+        "hard": 3660,
         "retries": 3,
         "retry_delay": 60,
     },

@@ -5,7 +5,6 @@ def test_salesforce_initial_sync_record_phases_allow_large_orgs() -> None:
     for task_name in [
         "integrations.sync_salesforce_companies",
         "integrations.sync_salesforce_contacts",
-        "integrations.sync_salesforce_deals",
     ]:
         limits = TASK_LIMITS[task_name]
 
@@ -22,3 +21,10 @@ def test_salesforce_secondary_record_phases_keep_moderate_limit() -> None:
 
         assert limits["soft"] == 1500
         assert limits["hard"] == 1560
+
+
+def test_salesforce_deals_allows_extra_large_initial_syncs() -> None:
+    limits = TASK_LIMITS["integrations.sync_salesforce_deals"]
+
+    assert limits["soft"] == 3600
+    assert limits["hard"] == 3660
