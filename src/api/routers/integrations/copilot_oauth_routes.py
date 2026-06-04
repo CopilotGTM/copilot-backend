@@ -397,23 +397,27 @@ async def _disable_capability_states(
     integration_id: UUID,
     integration: object | None = None,
 ) -> None:
+    if hasattr(service.db, "execute"):
+        stmt = select(IntegrationSyncState).where(
+            col(IntegrationSyncState.integration_id) == integration_id,
+            col(IntegrationSyncState.organisation_id) == service.user_ids.organisation_id,
+        )
+        no_autoflush = getattr(service.db, "no_autoflush", None)
+        if no_autoflush is None:
+            result = await service.db.execute(stmt)
+        else:
+            with no_autoflush:
+                result = await service.db.execute(stmt)
+        for state in result.scalars().all():
+            _mark_capability_state_disconnected(state)
+            service.db.add(state)
+        return
+
     attached_states = getattr(integration, "sync_states", None)
     if attached_states:
         for state in attached_states:
             _mark_capability_state_disconnected(state)
             service.db.add(state)
-
-    if not hasattr(service.db, "execute"):
-        return
-
-    stmt = select(IntegrationSyncState).where(
-        col(IntegrationSyncState.integration_id) == integration_id,
-        col(IntegrationSyncState.organisation_id) == service.user_ids.organisation_id,
-    )
-    result = await service.db.execute(stmt)
-    for state in result.scalars().all():
-        _mark_capability_state_disconnected(state)
-        service.db.add(state)
 
 
 @router.delete(
