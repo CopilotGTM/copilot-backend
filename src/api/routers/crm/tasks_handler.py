@@ -326,8 +326,6 @@ async def _get_reminder_dict(session: AsyncSession, activity_id: UUID) -> dict |
 async def list_tasks(
     response: FastAPIResponse,
     deal_id: UUID | None = Query(None, description="Filter by deal"),
-    related_object_type: str | None = Query(None, description="Filter by related object type"),
-    related_local_id: UUID | None = Query(None, description="Filter by related object"),
     statuses: list[str] | None = Query(None, description="Filter by statuses"),
     priorities: list[str] | None = Query(None, description="Filter by priorities"),
     source: list[str] | None = Query(None, description="Filter by source"),
@@ -354,8 +352,6 @@ async def list_tasks(
     try:
         tasks, total_count = await service.list_tasks(
             deal_id=deal_id,
-            related_object_type=related_object_type,
-            related_local_id=related_local_id,
             statuses=statuses,
             priorities=priorities,
             source=source,
@@ -584,14 +580,7 @@ async def create_task(
     try:
         payload = request.model_dump(exclude_unset=True)
         deal_id = payload.pop("deal_id", None)
-        related_object_type = payload.pop("related_object_type", None)
-        related_local_id = payload.pop("related_local_id", None)
-        task = await service.create_task(
-            payload,
-            deal_id=deal_id,
-            related_object_type=related_object_type,
-            related_local_id=related_local_id,
-        )
+        task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
         await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
@@ -635,8 +624,6 @@ async def create_deal_task(
     try:
         payload = request.model_dump(exclude_unset=True)
         payload.pop("deal_id", None)
-        payload.pop("related_object_type", None)
-        payload.pop("related_local_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
         await service.session.refresh(task)

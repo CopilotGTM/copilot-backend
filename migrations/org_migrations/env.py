@@ -32,8 +32,8 @@ from src.domain.models.organisation_tables import (
     CRMContact,
     CRMUser,
     CRMCompany,
-    MeetingBotPreferenceOverride,
-    MeetingRecordLink,
+    CRMCustomFieldDefinition,
+    DealStakeholder,
     DealJobs,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
@@ -113,8 +113,6 @@ all_org_models: list[type[Any]] = [
     CalendarAttendee,
     CalendarEventDealAssociation,
     CalendarEventUserState,
-    MeetingRecordLink,
-    MeetingBotPreferenceOverride,
     CRMPipeline,
     CRMDealStage,
     CRMDeal,

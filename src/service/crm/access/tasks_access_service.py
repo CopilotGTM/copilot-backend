@@ -134,8 +134,6 @@ class TasksAccessService:
         self,
         *,
         deal_id: UUID | None = None,
-        related_object_type: str | None = None,
-        related_local_id: UUID | None = None,
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
         source: Iterable[str] | None = None,
@@ -163,11 +161,6 @@ class TasksAccessService:
 
         if deal_id is not None:
             stmt = stmt.where(c.deal_id == deal_id)
-
-        if related_object_type is not None:
-            stmt = stmt.where(c.related_object_type == related_object_type)
-        if related_local_id is not None:
-            stmt = stmt.where(c.related_local_id == related_local_id)
 
         if statuses:
             stmt = stmt.where(c.status.in_(list(statuses)))

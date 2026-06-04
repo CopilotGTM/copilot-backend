@@ -20,7 +20,6 @@ from src.api.schemas.meetings_tab_models import (
     CreateMeetingRequest,
     CreateMeetingResponse,
     MeetingAttendeeItem,
-    MeetingBotPreferenceValue,
     MeetingBotStatus,
     MeetingDetail,
     MeetingLinkedRecord,
@@ -39,9 +38,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventUserState,
     GenerationStatus,
 )
-from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.crm.leads import CRMLead, CRMLeadParticipant
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
@@ -49,12 +46,6 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
-)
-from src.domain.models.organisation_tables.sync.meeting_links import (
-    MeetingBotPreference,
-    MeetingBotPreferenceOverride,
-    MeetingRecordLink,
-    MeetingRecordLinkType,
 )
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -157,14 +148,7 @@ class MeetingsTabService:
                 )
             )
         if linked_type == MeetingLinkedRecordType.DEAL:
-            stmt = stmt.where(
-                or_(
-                    col(MeetingRecordLink.record_type) == MeetingRecordLinkType.DEAL.value,
-                    col(CalendarEventDealAssociation.association_id).is_not(None),
-                )
-            )
-        elif linked_type:
-            stmt = stmt.where(col(MeetingRecordLink.record_type) == linked_type.value)
+            stmt = stmt.where(col(CalendarEventDealAssociation.association_id).is_not(None))
         if recording_status:
             stmt = stmt.where(col(MeetingRecordingSession.status) == recording_status)
 
@@ -176,7 +160,7 @@ class MeetingsTabService:
         )
 
         result = await self.session.execute(stmt)
-        rows = result.all()
+        rows = list(result.all())
         domains = await self._load_org_domains()
         items = [self._format_row(row, domains) for row in self._dedupe_rows(rows)]
         if bot_status:
@@ -196,13 +180,13 @@ class MeetingsTabService:
         row = await self._get_meeting_row(event_id)
         domains = await self._load_org_domains()
         item = self._format_row(row, domains)
-        event, link, assoc, deal, lead, contact, _pref, _recording, _meeting = row
+        event, assoc, deal, _recording, _meeting = row
         return MeetingDetail(
             **item.model_dump(),
             description=event.description,
             organiser_name=resolve_attendee_display_name(event.organiser_name, event.organiser_email),
             organiser_email=event.organiser_email,
-            linked_record_detail=self._linked_record_detail(link, assoc, deal, lead, contact),
+            linked_record_detail=self._linked_record_detail(assoc, deal),
             suggested_actions=self._suggested_actions(item.linked_record),
         )
 
@@ -235,8 +219,6 @@ class MeetingsTabService:
 
         if request.link:
             await self.set_link(result.event_id, request.link.record_type, request.link.record_id)
-        if request.bot_preference:
-            await self.set_bot_preference(result.event_id, request.bot_preference)
 
         return CreateMeetingResponse(
             event_id=result.event_id,
@@ -252,61 +234,15 @@ class MeetingsTabService:
         record_type: MeetingLinkedRecordType,
         record_id: UUID,
     ) -> MeetingDetail:
-        """Set the active V1 CRM link for one user-owned meeting."""
+        """Set the active deal association for one user-owned meeting."""
+        if record_type != MeetingLinkedRecordType.DEAL:
+            raise MeetingsTabServiceError("Meetings V1 only supports deal links", 400)
         await self._ensure_user_calendar_event(event_id)
-        await self._load_record_or_404(record_type, record_id)
+        await self._load_deal_or_404(record_id)
 
-        existing_stmt = select(MeetingRecordLink).where(
-            col(MeetingRecordLink.organisation_id) == self.organisation_id,
-            col(MeetingRecordLink.calendar_event_id) == event_id,
-            col(MeetingRecordLink.is_active) == True,  # noqa: E712
-        )
-        existing = (await self.session.execute(existing_stmt)).scalars().all()
-        for link in existing:
-            link.is_active = False
+        await self._remove_stale_deal_associations(event_id, keep_deal_id=record_id)
+        await self._mirror_deal_link(event_id, record_id)
 
-        link = MeetingRecordLink(
-            organisation_id=self.organisation_id,
-            calendar_event_id=event_id,
-            record_type=MeetingRecordLinkType(record_type.value),
-            record_id=record_id,
-            linked_by_user_id=self.user_id,
-            is_active=True,
-        )
-        self.session.add(link)
-
-        keep_deal_id = record_id if record_type == MeetingLinkedRecordType.DEAL else None
-        await self._remove_stale_deal_associations(event_id, keep_deal_id=keep_deal_id)
-        if record_type == MeetingLinkedRecordType.DEAL:
-            await self._mirror_deal_link(event_id, record_id)
-
-        await self.session.flush()
-        return await self.get_meeting_detail(event_id)
-
-    async def set_bot_preference(
-        self,
-        event_id: UUID,
-        preference: MeetingBotPreferenceValue,
-    ) -> MeetingDetail:
-        """Store the current user's per-meeting bot override."""
-        await self._ensure_user_calendar_event(event_id)
-        stmt = select(MeetingBotPreferenceOverride).where(
-            col(MeetingBotPreferenceOverride.organisation_id) == self.organisation_id,
-            col(MeetingBotPreferenceOverride.calendar_event_id) == event_id,
-            col(MeetingBotPreferenceOverride.user_id) == self.user_id,
-        )
-        existing = (await self.session.execute(stmt)).scalar_one_or_none()
-        if existing:
-            existing.preference = MeetingBotPreference(preference.value)
-        else:
-            self.session.add(
-                MeetingBotPreferenceOverride(
-                    organisation_id=self.organisation_id,
-                    calendar_event_id=event_id,
-                    user_id=self.user_id,
-                    preference=MeetingBotPreference(preference.value),
-                )
-            )
         await self.session.flush()
         return await self.get_meeting_detail(event_id)
 
@@ -321,7 +257,7 @@ class MeetingsTabService:
         row = await self._get_meeting_row(event_id)
         domains = await self._load_org_domains()
         item = self._format_row(row, domains)
-        if item.bot.effective_preference != MeetingBotPreferenceValue.AUTO_INVITE:
+        if item.bot.status != "auto_invite_eligible":
             return None
         if item.bot.status in {"sent", "already_sent", "recording_live"}:
             return None
@@ -330,11 +266,11 @@ class MeetingsTabService:
     async def get_recording(self, event_id: UUID) -> MeetingRecordingResponse:
         """Return Recall-bot recording playback and transcript metadata."""
         row = await self._get_meeting_row(event_id)
-        event, link, assoc, deal, lead, contact, _pref, recording, _meeting = row
+        event, assoc, deal, recording, _meeting = row
         if recording is None:
             raise MeetingsTabServiceError("Recording is not ready", 409, code="recording_not_ready")
 
-        linked_record = self._linked_record(link, assoc, deal, lead, contact)
+        linked_record = self._linked_record(assoc, deal)
         deal_context_assoc = (
             assoc
             if linked_record and linked_record.record_type == MeetingLinkedRecordType.DEAL
@@ -394,35 +330,21 @@ class MeetingsTabService:
         event_c = cast(Any, CalendarEvent).__table__.c
         state_c = cast(Any, CalendarEventUserState).__table__.c
         integration_c = cast(Any, KnowledgeIntegration).__table__.c
-        link_c = cast(Any, MeetingRecordLink).__table__.c
         assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
         recording_c = cast(Any, MeetingRecordingSession).__table__.c
         meeting_c = cast(Any, Meeting).__table__.c
-        pref_c = cast(Any, MeetingBotPreferenceOverride).__table__.c
 
         return (
             select(
                 CalendarEvent,
-                MeetingRecordLink,
                 CalendarEventDealAssociation,
                 CRMDeal,
-                CRMLead,
-                CRMContact,
-                MeetingBotPreferenceOverride,
                 MeetingRecordingSession,
                 Meeting,
             )
             .options(selectinload(cast(Any, CalendarEvent).attendees))
             .join(CalendarEventUserState, state_c.event_id == event_c.event_id)
             .join(KnowledgeIntegration, integration_c.integration_id == state_c.integration_id)
-            .outerjoin(
-                MeetingRecordLink,
-                and_(
-                    link_c.calendar_event_id == event_c.event_id,
-                    link_c.organisation_id == self.organisation_id,
-                    link_c.is_active.is_(True),
-                ),
-            )
             .outerjoin(
                 CalendarEventDealAssociation,
                 and_(
@@ -434,41 +356,9 @@ class MeetingsTabService:
             .outerjoin(
                 CRMDeal,
                 and_(
-                    or_(
-                        and_(
-                            col(CRMDeal.deal_id) == link_c.record_id,
-                            link_c.record_type == MeetingRecordLinkType.DEAL.value,
-                        ),
-                        col(CRMDeal.deal_id) == assoc_c.deal_id,
-                    ),
+                    col(CRMDeal.deal_id) == assoc_c.deal_id,
                     col(CRMDeal.organisation_id) == self.organisation_id,
                     col(CRMDeal.is_deleted) == False,  # noqa: E712
-                ),
-            )
-            .outerjoin(
-                CRMLead,
-                and_(
-                    col(CRMLead.lead_id) == link_c.record_id,
-                    link_c.record_type == MeetingRecordLinkType.LEAD.value,
-                    col(CRMLead.organisation_id) == self.organisation_id,
-                    col(CRMLead.is_deleted) == False,  # noqa: E712
-                ),
-            )
-            .outerjoin(
-                CRMContact,
-                and_(
-                    col(CRMContact.contact_id) == link_c.record_id,
-                    link_c.record_type == MeetingRecordLinkType.CONTACT.value,
-                    col(CRMContact.organisation_id) == self.organisation_id,
-                    col(CRMContact.is_deleted) == False,  # noqa: E712
-                ),
-            )
-            .outerjoin(
-                MeetingBotPreferenceOverride,
-                and_(
-                    pref_c.calendar_event_id == event_c.event_id,
-                    pref_c.organisation_id == self.organisation_id,
-                    pref_c.user_id == self.user_id,
                 ),
             )
             .outerjoin(
@@ -507,35 +397,18 @@ class MeetingsTabService:
 
     async def _ensure_user_calendar_event(self, event_id: UUID) -> CalendarEvent:
         row = await self._get_meeting_row(event_id)
-        return row[0]
+        return cast(CalendarEvent, row[0])
 
-    async def _load_record_or_404(
-        self,
-        record_type: MeetingLinkedRecordType,
-        record_id: UUID,
-    ) -> CRMDeal | CRMLead | CRMContact:
-        if record_type == MeetingLinkedRecordType.DEAL:
-            stmt = select(CRMDeal).where(
-                col(CRMDeal.organisation_id) == self.organisation_id,
-                col(CRMDeal.deal_id) == record_id,
-                col(CRMDeal.is_deleted) == False,  # noqa: E712
-            )
-        elif record_type == MeetingLinkedRecordType.LEAD:
-            stmt = select(CRMLead).where(
-                col(CRMLead.organisation_id) == self.organisation_id,
-                col(CRMLead.lead_id) == record_id,
-                col(CRMLead.is_deleted) == False,  # noqa: E712
-            )
-        else:
-            stmt = select(CRMContact).where(
-                col(CRMContact.organisation_id) == self.organisation_id,
-                col(CRMContact.contact_id) == record_id,
-                col(CRMContact.is_deleted) == False,  # noqa: E712
-            )
-        record = (await self.session.execute(stmt)).scalar_one_or_none()
-        if record is None:
-            raise MeetingsTabServiceError("Linked record not found", 404)
-        return record
+    async def _load_deal_or_404(self, deal_id: UUID) -> CRMDeal:
+        stmt = select(CRMDeal).where(
+            col(CRMDeal.organisation_id) == self.organisation_id,
+            col(CRMDeal.deal_id) == deal_id,
+            col(CRMDeal.is_deleted) == False,  # noqa: E712
+        )
+        deal = (await self.session.execute(stmt)).scalar_one_or_none()
+        if deal is None:
+            raise MeetingsTabServiceError("Deal not found", 404)
+        return deal
 
     async def _remove_stale_deal_associations(
         self,
@@ -576,39 +449,15 @@ class MeetingsTabService:
 
     async def _attendees_for_create(self, request: CreateMeetingRequest) -> list[CalendarInviteAttendee]:
         attendees = list(request.attendees)
-        seen = {attendee.email.lower() for attendee in attendees}
-        if request.link and request.link.record_type == MeetingLinkedRecordType.LEAD:
-            for attendee in await self._lead_attendees(request.link.record_id):
-                if attendee.email.lower() not in seen:
-                    attendees.append(attendee)
-                    seen.add(attendee.email.lower())
-        elif request.link and request.link.record_type == MeetingLinkedRecordType.CONTACT:
-            contact = cast(CRMContact, await self._load_record_or_404(request.link.record_type, request.link.record_id))
-            if contact.email and contact.email.lower() not in seen:
-                attendees.append(CalendarInviteAttendee(email=contact.email, name=contact.full_name))
+        if request.link and request.link.record_type != MeetingLinkedRecordType.DEAL:
+            raise MeetingsTabServiceError("Meetings V1 only supports deal links", 400)
         if not attendees:
             raise MeetingsTabServiceError("At least one attendee is required", 400)
         return attendees
 
-    async def _lead_attendees(self, lead_id: UUID) -> list[CalendarInviteAttendee]:
-        lead = cast(CRMLead, await self._load_record_or_404(MeetingLinkedRecordType.LEAD, lead_id))
-        attendees: list[CalendarInviteAttendee] = []
-        if lead.email:
-            attendees.append(CalendarInviteAttendee(email=lead.email, name=lead.full_name))
-        stmt = select(CRMLeadParticipant).where(
-            col(CRMLeadParticipant.organisation_id) == self.organisation_id,
-            col(CRMLeadParticipant.lead_id) == lead_id,
-            col(CRMLeadParticipant.is_deleted) == False,  # noqa: E712
-            col(CRMLeadParticipant.email).is_not(None),
-        )
-        participants = (await self.session.execute(stmt)).scalars().all()
-        for participant in participants:
-            if participant.email:
-                attendees.append(CalendarInviteAttendee(email=participant.email, name=participant.name))
-        return attendees
-
     async def _load_org_domains(self) -> set[str]:
-        stmt = select(Organisation.domain).where(col(Organisation.organisation_id) == self.organisation_id)
+        org_c = cast(Any, Organisation).__table__.c
+        stmt = select(org_c.domain).where(org_c.organisation_id == self.organisation_id)
         domains = (await self.master_session.execute(stmt)).scalar_one_or_none() or []
         return {str(domain).lower().removeprefix("www.") for domain in domains if domain}
 
@@ -661,7 +510,7 @@ class MeetingsTabService:
         return output
 
     def _format_row(self, row: Any, org_domains: set[str]) -> MeetingListItem:
-        event, link, assoc, deal, lead, contact, pref, recording, meeting = row
+        event, assoc, deal, recording, meeting = row
         attendees = [
             MeetingAttendeeItem(
                 email=attendee.email,
@@ -671,14 +520,14 @@ class MeetingsTabService:
             )
             for attendee in (event.attendees or [])[:12]
         ]
-        linked_record = self._linked_record(link, assoc, deal, lead, contact)
+        linked_record = self._linked_record(assoc, deal)
         deal_context_assoc = (
             assoc
             if linked_record and linked_record.record_type == MeetingLinkedRecordType.DEAL
             else None
         )
         is_external = self._is_external_meeting(event, org_domains)
-        bot = self._bot_status(pref, recording, linked_record, is_external)
+        bot = self._bot_status(recording, linked_record, is_external)
         return MeetingListItem(
             event_id=event.event_id,
             title=event.title,
@@ -706,35 +555,10 @@ class MeetingsTabService:
 
     def _linked_record(
         self,
-        link: MeetingRecordLink | None,
         assoc: CalendarEventDealAssociation | None,
         deal: CRMDeal | None,
-        lead: CRMLead | None,
-        contact: CRMContact | None,
     ) -> MeetingLinkedRecord | None:
-        link_type = str(link.record_type) if link else None
-        if link and link_type == MeetingRecordLinkType.DEAL.value and deal:
-            return MeetingLinkedRecord(
-                record_type=MeetingLinkedRecordType.DEAL,
-                record_id=deal.deal_id,
-                name=deal.name,
-                metadata={"stage": deal.stage_name, "amount": float(deal.amount or 0)},
-            )
-        if link and link_type == MeetingRecordLinkType.LEAD.value and lead:
-            return MeetingLinkedRecord(
-                record_type=MeetingLinkedRecordType.LEAD,
-                record_id=lead.lead_id,
-                name=lead.full_name or lead.company_name or lead.email,
-                metadata={"company": lead.company_name, "status": str(lead.status)},
-            )
-        if link and link_type == MeetingRecordLinkType.CONTACT.value and contact:
-            return MeetingLinkedRecord(
-                record_type=MeetingLinkedRecordType.CONTACT,
-                record_id=contact.contact_id,
-                name=contact.full_name or contact.email,
-                metadata={"company": contact.company_name, "role": contact.job_title},
-            )
-        if link is None and assoc is not None and deal:
+        if assoc is not None and deal:
             return MeetingLinkedRecord(
                 record_type=MeetingLinkedRecordType.DEAL,
                 record_id=deal.deal_id,
@@ -745,48 +569,29 @@ class MeetingsTabService:
 
     def _linked_record_detail(
         self,
-        link: MeetingRecordLink | None,
         assoc: CalendarEventDealAssociation | None,
         deal: CRMDeal | None,
-        lead: CRMLead | None,
-        contact: CRMContact | None,
     ) -> dict[str, Any] | None:
-        compact = self._linked_record(link, assoc, deal, lead, contact)
+        compact = self._linked_record(assoc, deal)
         if compact is None:
             return None
         return compact.model_dump(mode="json")
 
     def _bot_status(
         self,
-        pref: MeetingBotPreferenceOverride | None,
         recording: MeetingRecordingSession | None,
         linked_record: MeetingLinkedRecord | None,
         is_external: bool,
     ) -> MeetingBotStatus:
-        preference = (
-            MeetingBotPreferenceValue(self._enum_value(pref.preference))
-            if pref and pref.preference
-            else None
-        )
-        effective = preference
-        if effective is None and linked_record is not None and is_external:
-            effective = MeetingBotPreferenceValue.AUTO_INVITE
-        elif effective is None:
-            effective = MeetingBotPreferenceValue.ASK_BEFORE
-
-        if preference == MeetingBotPreferenceValue.DO_NOT_INVITE:
-            status = "disabled"
-        elif recording and self._enum_value(recording.status) in {"IN_CALL", "JOINING"}:
+        if recording and self._enum_value(recording.status) in {"IN_CALL", "JOINING"}:
             status = "recording_live"
         elif recording and recording.sent_to_provider_at is not None:
             status = "already_sent"
-        elif effective == MeetingBotPreferenceValue.AUTO_INVITE:
+        elif linked_record is not None and is_external:
             status = "auto_invite_eligible"
         else:
             status = "invite_available"
         return MeetingBotStatus(
-            preference=preference,
-            effective_preference=effective,
             status=status,
             is_external=is_external,
             provider_session_id=recording.provider_session_id if recording else None,

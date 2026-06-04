@@ -31,9 +31,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityStatus,
     CRMActivityType,
 )
-from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
@@ -91,18 +89,9 @@ class TasksWriteService:
             logger.debug("TasksWriteService close exception", exc_info=True)
 
     async def create_task(
-        self,
-        payload: dict[str, Any],
-        *,
-        deal_id: UUID | None = None,
-        related_object_type: str | None = None,
-        related_local_id: UUID | None = None,
+        self, payload: dict[str, Any], *, deal_id: UUID | None = None
     ) -> CRMActivity:
-        related = await self._resolve_related_object(
-            deal_id=deal_id,
-            related_object_type=related_object_type,
-            related_local_id=related_local_id,
-        )
+        deal = await self._load_deal(deal_id) if deal_id else None
 
         task_type = self._normalize_enum(payload.get("task_type")) or CRMActivityType.TASK.value
         if task_type not in _ALLOWED_TASK_TYPES:
@@ -154,14 +143,12 @@ class TasksWriteService:
             due_date=due_date,
             reminder_date=payload.get("reminder_date"),
             completed_date=completed_date,
-            deal_id=related.get("deal_id"),
-            deal_external_id=related.get("deal_external_id"),
-            contact_id=related.get("contact_id"),
-            contact_external_id=related.get("contact_external_id"),
-            related_object_type=related.get("related_object_type"),
-            related_external_id=related.get("related_external_id"),
-            related_local_id=related.get("related_local_id"),
-            related_name=related.get("related_name"),
+            deal_id=deal.deal_id if deal else None,
+            deal_external_id=deal.external_id if deal else None,
+            related_object_type=CRMActivityObjectType.DEAL.value if deal else None,
+            related_external_id=deal.external_id if deal else None,
+            related_local_id=deal.deal_id if deal else None,
+            related_name=deal.name if deal else None,
             owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
@@ -194,7 +181,6 @@ class TasksWriteService:
 
         # Send email to external assignee on creation
         if external_assignee_email:
-            deal = await self._load_deal(task.deal_id) if task.deal_id else None
             await self._send_external_assignment_email(task, deal, is_update=False)
 
         return task
@@ -284,24 +270,24 @@ class TasksWriteService:
             task.external_assignee_name = payload.get("external_assignee_name")
             updated = True
 
-        # Related object reassociation. Keep legacy deal_id behavior intact, but
-        # allow the global task API to target lead/contact records through the
-        # polymorphic CRMActivity columns.
-        if "deal_id" in payload or "related_object_type" in payload:
+        # Deal reassociation
+        if "deal_id" in payload:
             new_deal_id = payload.get("deal_id")
-            related = await self._resolve_related_object(
-                deal_id=new_deal_id,
-                related_object_type=payload.get("related_object_type"),
-                related_local_id=payload.get("related_local_id"),
-            )
-            task.deal_id = related.get("deal_id")
-            task.deal_external_id = related.get("deal_external_id")
-            task.contact_id = related.get("contact_id")
-            task.contact_external_id = related.get("contact_external_id")
-            task.related_object_type = related.get("related_object_type")
-            task.related_external_id = related.get("related_external_id")
-            task.related_local_id = related.get("related_local_id")
-            task.related_name = related.get("related_name")
+            if new_deal_id is not None:
+                deal = await self._load_deal(new_deal_id)
+                task.deal_id = deal.deal_id
+                task.deal_external_id = deal.external_id
+                task.related_object_type = CRMActivityObjectType.DEAL.value
+                task.related_external_id = deal.external_id
+                task.related_local_id = deal.deal_id
+                task.related_name = deal.name
+            else:
+                task.deal_id = None
+                task.deal_external_id = None
+                task.related_object_type = None
+                task.related_external_id = None
+                task.related_local_id = None
+                task.related_name = None
             updated = True
 
         status_in_payload = "status" in payload
@@ -665,71 +651,7 @@ class TasksWriteService:
                 exc_info=True,
             )
 
-    # ── Related record & task loading ────────────────────────────────
-
-    async def _resolve_related_object(
-        self,
-        *,
-        deal_id: UUID | None,
-        related_object_type: str | None,
-        related_local_id: UUID | None,
-    ) -> dict[str, Any]:
-        """Resolve a task's CRM link using the org as the trust boundary."""
-        if deal_id and not related_object_type:
-            deal = await self._load_deal(deal_id)
-            return self._related_from_deal(deal)
-        if related_object_type is None and related_local_id is None:
-            return {}
-        if not related_object_type or not related_local_id:
-            raise TasksWriteServiceError(
-                "related_object_type and related_local_id must be provided together",
-                400,
-            )
-
-        normalized = self._normalize_enum(related_object_type)
-        if deal_id and normalized != CRMActivityObjectType.DEAL.value:
-            raise TasksWriteServiceError(
-                "deal_id cannot be combined with a non-DEAL related object",
-                400,
-            )
-        if deal_id and normalized == CRMActivityObjectType.DEAL.value and deal_id != related_local_id:
-            raise TasksWriteServiceError(
-                "deal_id and DEAL related_local_id must refer to the same deal",
-                400,
-            )
-        if normalized == CRMActivityObjectType.DEAL.value:
-            deal = await self._load_deal(related_local_id)
-            return self._related_from_deal(deal)
-        if normalized == CRMActivityObjectType.CONTACT.value:
-            contact = await self._load_contact(related_local_id)
-            return {
-                "contact_id": contact.contact_id,
-                "contact_external_id": contact.external_id,
-                "related_object_type": CRMActivityObjectType.CONTACT.value,
-                "related_external_id": contact.external_id,
-                "related_local_id": contact.contact_id,
-                "related_name": contact.full_name or contact.email,
-            }
-        if normalized == CRMActivityObjectType.LEAD.value:
-            lead = await self._load_lead(related_local_id)
-            return {
-                "related_object_type": CRMActivityObjectType.LEAD.value,
-                "related_external_id": lead.external_id,
-                "related_local_id": lead.lead_id,
-                "related_name": lead.full_name or lead.company_name or lead.email,
-            }
-        raise TasksWriteServiceError("related_object_type must be DEAL, LEAD, or CONTACT", 400)
-
-    @staticmethod
-    def _related_from_deal(deal: CRMDeal) -> dict[str, Any]:
-        return {
-            "deal_id": deal.deal_id,
-            "deal_external_id": deal.external_id,
-            "related_object_type": CRMActivityObjectType.DEAL.value,
-            "related_external_id": deal.external_id,
-            "related_local_id": deal.deal_id,
-            "related_name": deal.name,
-        }
+    # ── Deal & task loading ──────────────────────────────────────────
 
     async def _load_deal(self, deal_id: UUID) -> CRMDeal:
         deal = await self.session.get(CRMDeal, deal_id)
@@ -738,22 +660,6 @@ class TasksWriteService:
         if deal.is_deleted:
             raise TasksWriteServiceError("Deal is deleted", 404)
         return deal
-
-    async def _load_contact(self, contact_id: UUID) -> CRMContact:
-        contact = await self.session.get(CRMContact, contact_id)
-        if not contact or contact.organisation_id != self.organisation_id:
-            raise TasksWriteServiceError("Contact not found", 404)
-        if contact.is_deleted:
-            raise TasksWriteServiceError("Contact not found", 404)
-        return contact
-
-    async def _load_lead(self, lead_id: UUID) -> CRMLead:
-        lead = await self.session.get(CRMLead, lead_id)
-        if not lead or lead.organisation_id != self.organisation_id:
-            raise TasksWriteServiceError("Lead not found", 404)
-        if lead.is_deleted:
-            raise TasksWriteServiceError("Lead not found", 404)
-        return lead
 
     async def _load_user_task(self, task_id: UUID) -> CRMActivity:
         task = await self.session.get(CRMActivity, task_id)

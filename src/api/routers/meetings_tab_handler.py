@@ -24,11 +24,9 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.meetings_tab_models import (
-    BotPreferenceRequest,
     CreateMeetingRequest,
     CreateMeetingResponse,
     LinkMeetingRequest,
-    MeetingBotPreferenceValue,
     MeetingDetail,
     MeetingLinkedRecordType,
     MeetingRecordingResponse,
@@ -169,7 +167,7 @@ async def create_meeting(
     _crm_write_guard: None = Depends(require_crm_write_scope("meetings:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CreateMeetingResponse]:
-    """Create a real calendar invite and optionally link/configure the bot."""
+    """Create a real calendar invite and optionally link it to a deal."""
     try:
         data = await service.create_meeting(request)
         await service.session.commit()
@@ -202,7 +200,7 @@ async def create_meeting(
 @meetings_tab_router.patch(
     "/{event_id}/link",
     response_model=GenericResponse[MeetingDetail],
-    summary="Link a meeting to a deal, lead, or contact",
+    summary="Link a meeting to a deal",
 )
 async def link_meeting(
     event_id: UUID,
@@ -212,7 +210,7 @@ async def link_meeting(
     _crm_write_guard: None = Depends(require_crm_write_scope("meetings:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[MeetingDetail]:
-    """Set the active V1 CRM link for one current-user meeting."""
+    """Set the active deal link for one current-user meeting."""
     try:
         data = await service.set_link(event_id, request.record_type, request.record_id)
         await service.session.commit()
@@ -231,43 +229,6 @@ async def link_meeting(
         return Response.error_response(
             status_code=500,
             message="Failed to link meeting",
-            response=response,
-        )
-
-
-@meetings_tab_router.patch(
-    "/{event_id}/bot-settings",
-    response_model=GenericResponse[MeetingDetail],
-    summary="Set per-meeting bot preference",
-)
-async def set_bot_settings(
-    event_id: UUID,
-    request: BotPreferenceRequest,
-    response: FastAPIResponse,
-    service: MeetingsTabService = Depends(get_meetings_tab_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("meetings:update")),
-    _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[MeetingDetail]:
-    """Set Invite/Ask/Do-not-invite override for one meeting."""
-    try:
-        data = await service.set_bot_preference(event_id, request.preference)
-        await service.session.commit()
-        if request.preference == MeetingBotPreferenceValue.AUTO_INVITE:
-            await _safe_auto_invite(service, event_id)
-        return Response.success_response("Bot settings updated", data)
-    except MeetingsTabServiceError as exc:
-        await service.session.rollback()
-        return Response.error_response(
-            status_code=exc.status_code,
-            message=exc.message,
-            response=response,
-        )
-    except Exception:
-        await service.session.rollback()
-        logger.exception("Failed to update meeting bot settings")
-        return Response.error_response(
-            status_code=500,
-            message="Failed to update bot settings",
             response=response,
         )
 

@@ -24,16 +24,6 @@ class MeetingLinkedRecordType(StrEnum):
     """Linked CRM record types supported in Meetings V1."""
 
     DEAL = "DEAL"
-    LEAD = "LEAD"
-    CONTACT = "CONTACT"
-
-
-class MeetingBotPreferenceValue(StrEnum):
-    """Per-meeting bot override values."""
-
-    AUTO_INVITE = "AUTO_INVITE"
-    ASK_BEFORE = "ASK_BEFORE"
-    DO_NOT_INVITE = "DO_NOT_INVITE"
 
 
 class MeetingAttendeeItem(BaseModel):
@@ -57,8 +47,6 @@ class MeetingLinkedRecord(BaseModel):
 class MeetingBotStatus(BaseModel):
     """Computed bot state for one calendar event."""
 
-    preference: MeetingBotPreferenceValue | None = None
-    effective_preference: MeetingBotPreferenceValue | None = None
     status: str
     reason: str | None = None
     is_external: bool = False
@@ -114,12 +102,6 @@ class LinkMeetingRequest(BaseModel):
     record_id: UUID
 
 
-class BotPreferenceRequest(BaseModel):
-    """Request to set a per-meeting bot preference."""
-
-    preference: MeetingBotPreferenceValue
-
-
 class CreateMeetingRequest(BaseModel):
     """REST wrapper payload for creating a provider-backed calendar meeting."""
 
@@ -133,7 +115,6 @@ class CreateMeetingRequest(BaseModel):
     sender_email: str | None = Field(default=None, max_length=320)
     idempotency_key: str | None = Field(default=None, max_length=128)
     link: LinkMeetingRequest | None = None
-    bot_preference: MeetingBotPreferenceValue | None = None
 
     @field_validator("start_at", "end_at")
     @classmethod

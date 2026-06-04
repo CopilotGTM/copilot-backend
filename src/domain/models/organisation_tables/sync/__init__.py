@@ -94,12 +94,6 @@ from .meeting_intelligence import (
     MeetingStatus,
     TranscriptSegment,
 )
-from .meeting_links import (
-    MeetingBotPreference,
-    MeetingBotPreferenceOverride,
-    MeetingRecordLink,
-    MeetingRecordLinkType,
-)
 from .meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
@@ -212,11 +206,6 @@ __all__ = [
     "MeetingStatus",
     "Meeting",
     "TranscriptSegment",
-    # Top-level Meetings tab link/preference models
-    "MeetingRecordLinkType",
-    "MeetingRecordLink",
-    "MeetingBotPreference",
-    "MeetingBotPreferenceOverride",
     # Meeting recording orchestration models
     "MeetingRecordingProvider",
     "MeetingRecordingStatus",
