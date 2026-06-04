@@ -196,7 +196,7 @@ class CopilotOAuthService:
                 state_token,
                 oauth_base_url=validated_oauth_base_url,
             )
-        elif integration_type == IntegrationType.GMAIL:
+        elif integration_type == IntegrationType.GOOGLE:
             include_read_scope = await self._should_request_google_gmail_read_scope(
                 user_ids.organisation_id
             )

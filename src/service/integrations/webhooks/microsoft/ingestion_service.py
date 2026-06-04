@@ -13,7 +13,11 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
@@ -222,15 +226,65 @@ class MicrosoftWebhookIngestionService:
         async for session in acquire_org_async_session(organisation_id):
             # Org filter is the immutable trust boundary; integration_id alone is
             # external routing input and is never trusted without org scoping.
-            stmt = select(KnowledgeIntegration).where(
+            parent_stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == organisation_id,
+                col(KnowledgeIntegration.integration_id) == integration_id,
+                col(KnowledgeIntegration.integration_type) == IntegrationType.MICROSOFT.value,
+                col(KnowledgeIntegration.is_active).is_(True),
+            )
+            parent_result = await session.execute(parent_stmt)
+            parent = parent_result.scalars().first()
+            if parent is not None:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == organisation_id,
+                    col(IntegrationSyncState.integration_id) == integration_id,
+                    col(IntegrationSyncState.capability) == expected_integration_type,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return None
+                return self._snapshot_integration(
+                    parent,
+                    connection_metadata=dict(state.webhook_metadata or {}),
+                )
+
+            legacy_stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.integration_type) == expected_integration_type.value,
                 col(KnowledgeIntegration.is_active).is_(True),
             )
-            result = await session.execute(stmt)
-            return result.scalars().first()
+            legacy_result = await session.execute(legacy_stmt)
+            return legacy_result.scalars().first()
         return None
+
+    def _snapshot_integration(
+        self,
+        integration: KnowledgeIntegration,
+        *,
+        connection_metadata: dict[str, Any],
+    ) -> KnowledgeIntegration:
+        return KnowledgeIntegration.model_validate(
+            {
+                "integration_id": integration.integration_id,
+                "organisation_id": integration.organisation_id,
+                "created_by_user_id": integration.created_by_user_id,
+                "created_by_admin": integration.created_by_admin,
+                "integration_email": integration.integration_email,
+                "integration_scope": integration.integration_scope,
+                "integration_type": integration.integration_type,
+                "name": integration.name,
+                "credentials": dict(integration.credentials or {}),
+                "connection_id": integration.connection_id,
+                "access_token_expires_at": integration.access_token_expires_at,
+                "refresh_token_expires_at": integration.refresh_token_expires_at,
+                "scopes": list(integration.scopes or []),
+                "is_active": integration.is_active,
+                "connection_metadata": connection_metadata,
+            }
+        )
 
     def _dedupe_key(
         self,

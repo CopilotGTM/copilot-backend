@@ -43,7 +43,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import attributes
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.domain.models.organisation_tables.sync.email_models import EmailFolder
 from src.infra.config.google_integration_scopes import GOOGLE_SCOPE_GMAIL_READONLY
 from src.infra.database.sessions import acquire_org_async_session
@@ -77,6 +81,7 @@ class IntegrationSyncData:
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
     scopes: list[str] | None
+    sync_state_id: UUID | None = None
 
 
 @dataclass
@@ -96,6 +101,7 @@ EMAIL_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_EMAIL,
     IntegrationType.GMAIL,
 )
+EMAIL_PARENT_TYPES = (IntegrationType.GOOGLE, IntegrationType.MICROSOFT)
 
 # Note: Folder monitoring is controlled by is_monitored flag in email_folders table
 # By default, inbox and sent folders are set to is_monitored=True
@@ -108,6 +114,12 @@ GMAIL_HISTORY_ID_KEY = "gmail_history_id"  # Gmail: single global historyId
 _PROVIDER_MAP: dict[IntegrationType, str] = {
     IntegrationType.OUTLOOK_EMAIL: "outlook",
     IntegrationType.GMAIL: "gmail",
+    IntegrationType.GOOGLE: "gmail",
+    IntegrationType.MICROSOFT: "outlook",
+}
+_EMAIL_CAPABILITY_FOR_PARENT: dict[IntegrationType, IntegrationType] = {
+    IntegrationType.GOOGLE: IntegrationType.GMAIL,
+    IntegrationType.MICROSOFT: IntegrationType.OUTLOOK_EMAIL,
 }
 
 
@@ -180,6 +192,29 @@ def _persist_cursors(
         )
 
 
+def _apply_cursor_updates(
+    metadata: dict[str, Any],
+    provider: str,
+    cursor_updates: dict[str, str | None],
+) -> dict[str, Any]:
+    updated = dict(metadata or {})
+    if provider == "gmail":
+        max_hid = 0
+        for val in cursor_updates.values():
+            if val and val.isdigit():
+                max_hid = max(max_hid, int(val))
+        if max_hid:
+            updated[GMAIL_HISTORY_ID_KEY] = str(max_hid)
+        return updated
+
+    delta_links = dict(updated.get(EMAIL_DELTA_LINKS_KEY) or {})
+    for folder_id, delta_link in cursor_updates.items():
+        if delta_link:
+            delta_links[folder_id] = delta_link
+    updated[EMAIL_DELTA_LINKS_KEY] = delta_links
+    return updated
+
+
 def _record_folder_cursor_update(
     *,
     folder_data: FolderSyncData,
@@ -236,8 +271,23 @@ async def _persist_cursor_updates(
             )
             return
 
-        _persist_cursors(integration, sync_data.provider, cursor_updates)
-        attributes.flag_modified(integration, "connection_metadata")
+        if sync_data.sync_state_id:
+            state_stmt = select(IntegrationSyncState).where(
+                col(IntegrationSyncState.sync_state_id) == sync_data.sync_state_id,
+            )
+            state_result = await session.execute(state_stmt)
+            state = state_result.scalar_one_or_none()
+            if state is None:
+                return
+            state.cursor_metadata = _apply_cursor_updates(
+                dict(state.cursor_metadata or {}),
+                sync_data.provider,
+                cursor_updates,
+            )
+            attributes.flag_modified(state, "cursor_metadata")
+        else:
+            _persist_cursors(integration, sync_data.provider, cursor_updates)
+            attributes.flag_modified(integration, "connection_metadata")
 
         if folder_id is not None:
             folder_stmt = select(EmailFolder).where(
@@ -406,7 +456,9 @@ class EmailDeltaSyncService:
         async for session in acquire_org_async_session(organisation_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.integration_id) == integration_id,
-                col(KnowledgeIntegration.integration_type).in_(EMAIL_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    EMAIL_INTEGRATION_TYPES + EMAIL_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -435,6 +487,29 @@ class EmailDeltaSyncService:
                 if isinstance(integration.integration_type, str)
                 else integration.integration_type
             )
+            cursor_metadata = dict(integration.connection_metadata or {})
+            last_synced_at = integration.last_synced_at
+            sync_state_id = None
+            capability = _EMAIL_CAPABILITY_FOR_PARENT.get(int_type)
+            if capability:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.integration_id) == integration.integration_id,
+                    col(IntegrationSyncState.capability) == capability,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return {
+                        "status": "failed",
+                        "organisation_id": str(organisation_id),
+                        "integration_id": str(integration_id),
+                        "error": "Email capability is not enabled",
+                    }
+                cursor_metadata = dict(state.cursor_metadata or {})
+                last_synced_at = state.last_synced_at
+                sync_state_id = state.sync_state_id
+                int_type = capability
             sync_data = IntegrationSyncData(
                 integration_id=integration.integration_id,
                 integration_type=int_type,
@@ -444,11 +519,12 @@ class EmailDeltaSyncService:
                 connection_id=integration.connection_id,  # type: ignore
                 provider=_PROVIDER_MAP.get(int_type, "outlook"),
                 provider_key=_get_provider_key(int_type),
-                last_synced_at=integration.last_synced_at,
-                connection_metadata=dict(integration.connection_metadata or {}),
+                last_synced_at=last_synced_at,
+                connection_metadata=cursor_metadata,
                 credentials=dict(integration.credentials or {}),
                 access_token_expires_at=integration.access_token_expires_at,
                 scopes=list(integration.scopes or []),
+                sync_state_id=sync_state_id,
             )
         # Session is now released
 
@@ -678,7 +754,24 @@ class EmailDeltaSyncService:
                             "folder_ids": list(delta_link_updates.keys()),
                         },
                     )
-                    _persist_cursors(integration, sync_data.provider, delta_link_updates)
+                    if sync_data.sync_state_id:
+                        state_stmt = select(IntegrationSyncState).where(
+                            col(IntegrationSyncState.sync_state_id) == sync_data.sync_state_id,
+                        )
+                        state_result = await session.execute(state_stmt)
+                        state = state_result.scalar_one_or_none()
+                        if state:
+                            state.cursor_metadata = _apply_cursor_updates(
+                                dict(state.cursor_metadata or {}),
+                                sync_data.provider,
+                                delta_link_updates,
+                            )
+                            state.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                            attributes.flag_modified(state, "cursor_metadata")
+                    else:
+                        _persist_cursors(integration, sync_data.provider, delta_link_updates)
+                        integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                        attributes.flag_modified(integration, "connection_metadata")
                 else:
                     logger.warning(
                         "No delta links to persist — all folders returned None cursor",
@@ -688,11 +781,9 @@ class EmailDeltaSyncService:
                         },
                     )
 
-                integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                attributes.flag_modified(integration, "connection_metadata")
                 await session.commit()
 
-                stored = (integration.connection_metadata or {}).get(EMAIL_DELTA_LINKS_KEY, {})
+                stored = (sync_data.connection_metadata or {}).get(EMAIL_DELTA_LINKS_KEY, {})
                 logger.info(
                     "Delta links committed",
                     extra={

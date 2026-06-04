@@ -147,8 +147,16 @@ async def test_ensure_subscription_skips_gmail_without_read_scope(monkeypatch) -
 
     monkeypatch.setattr(
         task_service,
-        "_load_integration_snapshot",
-        AsyncMock(return_value=_gmail_send_only_integration()),
+        "_load_subscription_targets",
+        AsyncMock(
+            return_value=[
+                (
+                    _gmail_send_only_integration(),
+                    GoogleSubscriptionKind.GMAIL,
+                    None,
+                )
+            ]
+        ),
     )
 
     result = await task_service.ensure_subscription(
@@ -161,7 +169,6 @@ async def test_ensure_subscription_skips_gmail_without_read_scope(monkeypatch) -
         "reason": "gmail_read_scope_missing",
         "organisation_id": str(organisation_id),
         "integration_id": str(integration_id),
-        "kind": "gmail",
     }
     assert subscription_service.calls == []
 
@@ -179,8 +186,8 @@ async def test_ensure_subscription_loads_snapshot_and_persists_after_api_call(
 
     monkeypatch.setattr(
         task_service,
-        "_load_integration_snapshot",
-        AsyncMock(return_value=_integration()),
+        "_load_subscription_targets",
+        AsyncMock(return_value=[(_integration(), GoogleSubscriptionKind.GMAIL, None)]),
     )
 
     async def fake_persist_metadata(**kwargs) -> bool:

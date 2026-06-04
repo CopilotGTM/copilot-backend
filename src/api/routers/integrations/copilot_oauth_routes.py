@@ -1,10 +1,13 @@
+from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -14,6 +17,7 @@ from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import OAuthInitiateRequest
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync import IntegrationSyncState
 from src.infra.config.configs import app_config
 from src.infra.config.constant import IntegrationErrors
 from src.infra.utils.logger import get_logger
@@ -47,7 +51,7 @@ _MICROSOFT_ADMIN_CONSENT_ERROR_MARKERS = (
     "admin_consent",
     "aadsts65001",
 )
-_MICROSOFT_USER_OWNED_TYPES = {"outlook_email", "outlook_calendar", "teams"}
+_MICROSOFT_USER_OWNED_TYPES = {"microsoft", "outlook_email", "outlook_calendar", "teams"}
 
 
 async def get_copilot_oauth_service() -> CopilotOAuthService:
@@ -382,6 +386,36 @@ async def get_integration_service(
     yield IntegrationService(db_session=session, user_ids=user_ids)
 
 
+def _mark_capability_state_disconnected(state: Any) -> None:
+    state.enabled = False
+    state.last_sync_status = "disconnected"
+    state.last_sync_error = "Integration disconnected by user"
+
+
+async def _disable_capability_states(
+    service: IntegrationService,
+    integration_id: UUID,
+    integration: object | None = None,
+) -> None:
+    attached_states = getattr(integration, "sync_states", None)
+    if attached_states:
+        for state in attached_states:
+            _mark_capability_state_disconnected(state)
+            service.db.add(state)
+
+    if not hasattr(service.db, "execute"):
+        return
+
+    stmt = select(IntegrationSyncState).where(
+        col(IntegrationSyncState.integration_id) == integration_id,
+        col(IntegrationSyncState.organisation_id) == service.user_ids.organisation_id,
+    )
+    result = await service.db.execute(stmt)
+    for state in result.scalars().all():
+        _mark_capability_state_disconnected(state)
+        service.db.add(state)
+
+
 @router.delete(
     "/disconnect/{integration_id}",
     response_model=GenericResponse[None],
@@ -415,6 +449,7 @@ async def disconnect_integration(
         if integration.is_active is False and integration.requires_reauth:
             integration.requires_reauth = False
             integration.last_sync_error = "Integration removed by user"
+            await _disable_capability_states(service, integration_id, integration)
             service.db.add(integration)
             await service.db.commit()
 
@@ -442,6 +477,7 @@ async def disconnect_integration(
         integration.is_active = False
         integration.requires_reauth = False
         integration.last_sync_error = "Integration disconnected by user"
+        await _disable_capability_states(service, integration_id, integration)
         service.db.add(integration)
         await service.db.commit()
 

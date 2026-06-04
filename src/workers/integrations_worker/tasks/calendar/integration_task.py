@@ -31,7 +31,11 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.config.provider_categories import categorize_integration_type
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
@@ -81,6 +85,7 @@ class IntegrationFetchData:
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
     scopes: list[str] | None
+    sync_state_id: UUID | None = None
 
 
 # Calendar integration types
@@ -88,6 +93,11 @@ CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
 )
+CALENDAR_PARENT_TYPES = (IntegrationType.GOOGLE, IntegrationType.MICROSOFT)
+_CALENDAR_CAPABILITY_FOR_PARENT: dict[IntegrationType, IntegrationType] = {
+    IntegrationType.GOOGLE: IntegrationType.GOOGLE_CALENDAR,
+    IntegrationType.MICROSOFT: IntegrationType.OUTLOOK_CALENDAR,
+}
 
 _TASK_NAME = "integrations.sync_calendar_integration"
 _L = TASK_LIMITS[_TASK_NAME]
@@ -155,7 +165,9 @@ def sync_calendar_integration_task(
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.integration_id) == int_id,
-                col(KnowledgeIntegration.integration_type).in_(CALENDAR_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    CALENDAR_INTEGRATION_TYPES + CALENDAR_PARENT_TYPES
+                ),
             )
             result = await session.execute(stmt)
             integration_row = result.scalar_one_or_none()
@@ -196,13 +208,37 @@ def sync_calendar_integration_task(
                 if isinstance(integration_row.integration_type, str)
                 else integration_row.integration_type
             )
+            sync_state_id = None
+            cursor_metadata = dict(integration_row.connection_metadata or {})
+            last_synced_at = integration_row.last_synced_at
+            capability = _CALENDAR_CAPABILITY_FOR_PARENT.get(int_type)
+            if capability:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.integration_id) == integration_row.integration_id,
+                    col(IntegrationSyncState.capability) == capability,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Calendar capability is not enabled",
+                    }
+                cursor_metadata = dict(state.cursor_metadata or {})
+                last_synced_at = state.last_synced_at
+                sync_state_id = state.sync_state_id
+                int_type = capability
             _, provider = categorize_integration_type(int_type)
 
             # Single shared calendar cursor key per integration row.
-            connection_metadata = integration_row.connection_metadata or {}
             calendar_delta_link = None
-            if integration_row.last_synced_at is not None:
-                calendar_delta_link = get_calendar_delta_link(connection_metadata, int_type)
+            if last_synced_at is not None:
+                calendar_delta_link = get_calendar_delta_link(cursor_metadata, int_type)
                 if calendar_delta_link is None:
                     logger.warning(
                         "Calendar incremental sync missing stored cursor",
@@ -219,12 +255,13 @@ def sync_calendar_integration_task(
                 integration_type=int_type,
                 integration_type_value=int_type.value,
                 provider=provider,
-                is_initial=integration_row.last_synced_at is None,
-                last_synced_at=integration_row.last_synced_at,
+                is_initial=last_synced_at is None,
+                last_synced_at=last_synced_at,
                 calendar_delta_link=calendar_delta_link,
                 credentials=dict(integration_row.credentials or {}),
                 access_token_expires_at=integration_row.access_token_expires_at,
                 scopes=list(integration_row.scopes or []),
+                sync_state_id=sync_state_id,
             )
         # Session is now released
 
@@ -330,13 +367,27 @@ def sync_calendar_integration_task(
             cursor_saved = new_calendar_delta_link is not None
 
             # Persist cursor after successful sync.
-            updated_metadata = dict(integration_db.connection_metadata or {})
             if new_calendar_delta_link:
-                updated_metadata = set_calendar_delta_link(
-                    updated_metadata,
-                    fetch_data.integration_type,
-                    new_calendar_delta_link,
-                )
+                if fetch_data.sync_state_id:
+                    state_stmt = select(IntegrationSyncState).where(
+                        col(IntegrationSyncState.sync_state_id) == fetch_data.sync_state_id,
+                    )
+                    state_result = await session.execute(state_stmt)
+                    state = state_result.scalar_one_or_none()
+                    if state:
+                        state.cursor_metadata = set_calendar_delta_link(
+                            dict(state.cursor_metadata or {}),
+                            fetch_data.integration_type,
+                            new_calendar_delta_link,
+                        )
+                        state.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                        session.add(state)
+                else:
+                    integration_db.connection_metadata = set_calendar_delta_link(
+                        dict(integration_db.connection_metadata or {}),
+                        fetch_data.integration_type,
+                        new_calendar_delta_link,
+                    )
                 logger.info(
                     "Calendar cursor saved",
                     extra={
@@ -344,8 +395,6 @@ def sync_calendar_integration_task(
                         "integration_type": fetch_data.integration_type_value,
                     },
                 )
-            integration_db.connection_metadata = updated_metadata
-
             logger.info(
                 "Calendar sync persistence diagnostics",
                 extra={
@@ -365,7 +414,8 @@ def sync_calendar_integration_task(
 
             # Strip tzinfo — column is `timestamp without time zone`; asyncpg
             # rejects tz-aware datetimes for tz-naive columns.
-            integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+            if not fetch_data.sync_state_id:
+                integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(integration_db)
             await session.commit()
 

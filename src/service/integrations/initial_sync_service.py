@@ -130,6 +130,7 @@ class InitialSyncService:
         self,
         organisation_id: UUID,
         integration: KnowledgeIntegration,
+        enabled_capabilities: list[IntegrationType] | None = None,
     ) -> None:
         """Trigger initial sync for a newly connected/reactivated integration.
 
@@ -148,8 +149,18 @@ class InitialSyncService:
 
         org_id_str = str(organisation_id)
         int_id_str = str(integration.integration_id)
+        capabilities = enabled_capabilities or []
 
         try:
+            if integration_type in {IntegrationType.GOOGLE, IntegrationType.MICROSOFT}:
+                self._trigger_provider_capability_syncs(
+                    org_id_str,
+                    int_id_str,
+                    str(integration.connection_id or integration.integration_id),
+                    capabilities,
+                )
+                return
+
             # Calendar
             if integration_type in self.CALENDAR_INTEGRATION_TYPES:
                 self._trigger_calendar_sync(
@@ -251,6 +262,31 @@ class InitialSyncService:
         )
         chain(sync_signature, discovery_signature).apply_async()
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
+
+    def _trigger_provider_capability_syncs(
+        self,
+        org_id_str: str,
+        int_id_str: str,
+        connection_id: str,
+        enabled_capabilities: list[IntegrationType],
+    ) -> None:
+        for capability in enabled_capabilities:
+            if capability in self.CALENDAR_INTEGRATION_TYPES:
+                self._trigger_calendar_sync(org_id_str, int_id_str, connection_id)
+                if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                    self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
+                if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                    self._trigger_google_subscription_ensure(org_id_str, int_id_str)
+                continue
+            if capability in self.EMAIL_INTEGRATION_TYPES:
+                self._trigger_email_sync(org_id_str, int_id_str)
+                if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                    self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
+                if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                    self._trigger_google_subscription_ensure(org_id_str, int_id_str)
+                continue
+            if capability in self.MESSAGING_INTEGRATION_TYPES:
+                self._trigger_messaging_sync(org_id_str, int_id_str)
 
     def _trigger_email_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger email initial sync."""

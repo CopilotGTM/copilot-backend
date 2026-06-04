@@ -148,7 +148,7 @@ class GoogleProvider(BaseIntegrationProvider):
             "prompt": "consent",  # Force consent to ensure we get a refresh token
             "include_granted_scopes": (
                 "false"
-                if self.integration_type == IntegrationType.GMAIL and not include_gmail_read_scope
+                if self.integration_type == IntegrationType.GOOGLE and not include_gmail_read_scope
                 else "true"
             ),
             "state": state,

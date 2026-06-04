@@ -13,9 +13,14 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import attributes
 from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.config.google_integration_scopes import GOOGLE_SCOPE_GMAIL_READONLY
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.integrations.scope_validation import is_required_scope_satisfied
@@ -32,6 +37,7 @@ GOOGLE_WEBHOOK_INTEGRATION_TYPES = (
     IntegrationType.GMAIL,
     IntegrationType.GOOGLE_CALENDAR,
 )
+GOOGLE_WEBHOOK_PARENT_TYPES = (IntegrationType.GOOGLE,)
 
 
 def kind_for_integration_type(integration_type: IntegrationType) -> GoogleSubscriptionKind | None:
@@ -61,11 +67,11 @@ class GoogleSubscriptionTaskService:
         session, then reopens the tenant session to persist metadata. This
         ordering prevents slow provider calls from pinning pooled connections.
         """
-        integration_snapshot = await self._load_integration_snapshot(
+        targets = await self._load_subscription_targets(
             organisation_id=organisation_id,
             integration_id=integration_id,
         )
-        if integration_snapshot is None:
+        if not targets:
             return {
                 "status": "skipped",
                 "reason": "integration_not_found",
@@ -73,51 +79,49 @@ class GoogleSubscriptionTaskService:
                 "integration_id": str(integration_id),
             }
 
-        kind = self._kind_for_integration(integration_snapshot)
-        if kind is None:
+        completed_kinds: list[str] = []
+        skipped_for_missing_scope = False
+        for integration_snapshot, kind, sync_state_id in targets:
+            if not self._can_ensure_subscription(integration_snapshot, kind):
+                skipped_for_missing_scope = True
+                continue
+            metadata = await self._subscription_service.ensure_subscription_metadata(
+                organisation_id=organisation_id,
+                integration=integration_snapshot,
+                kind=kind,
+            )
+            persisted = await self._persist_metadata(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                metadata=metadata,
+                kind=kind,
+                sync_state_id=sync_state_id,
+            )
+            if persisted:
+                completed_kinds.append(kind.value)
+
+        if not completed_kinds:
+            reason = (
+                "gmail_read_scope_missing"
+                if skipped_for_missing_scope
+                else "integration_not_found_at_persist"
+            )
             return {
                 "status": "skipped",
-                "reason": "unsupported_integration_type",
+                "reason": reason,
                 "organisation_id": str(organisation_id),
                 "integration_id": str(integration_id),
             }
 
-        if not self._can_ensure_subscription(integration_snapshot, kind):
-            return {
-                "status": "skipped",
-                "reason": "gmail_read_scope_missing",
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-                "kind": kind.value,
-            }
-
-        # Provider calls happen after `_load_integration_snapshot` has returned
-        # a detached model, so no tenant session is held during Google latency.
-        metadata = await self._subscription_service.ensure_subscription_metadata(
-            organisation_id=organisation_id,
-            integration=integration_snapshot,
-            kind=kind,
-        )
-        persisted = await self._persist_metadata(
-            organisation_id=organisation_id,
-            integration_id=integration_id,
-            metadata=metadata,
-            kind=kind,
-        )
-        if not persisted:
-            return {
-                "status": "skipped",
-                "reason": "integration_not_found_at_persist",
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-            }
-
-        return {
+        response = {
             "status": "success",
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
-            "kind": kind.value,
+            "kinds": completed_kinds,
         }
+        if len(completed_kinds) == 1:
+            response["kind"] = completed_kinds[0]
+        return response
 
     async def dispatch_all_subscription_ensures(
         self,
@@ -155,12 +159,12 @@ class GoogleSubscriptionTaskService:
             "completed_at": datetime.now(UTC).isoformat(),
         }
 
-    async def _load_integration_snapshot(
+    async def _load_subscription_targets(
         self,
         *,
         organisation_id: UUID,
         integration_id: UUID,
-    ) -> KnowledgeIntegration | None:
+    ) -> list[tuple[KnowledgeIntegration, GoogleSubscriptionKind, UUID | None]]:
         """Load one eligible integration and detach a snapshot from the DB session."""
         async for session in acquire_org_async_session(organisation_id):
             # The organisation filter is the tenant boundary; `integration_id`
@@ -168,16 +172,54 @@ class GoogleSubscriptionTaskService:
             statement = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
-                col(KnowledgeIntegration.integration_type).in_(GOOGLE_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    GOOGLE_WEBHOOK_INTEGRATION_TYPES + GOOGLE_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
             result = await session.execute(statement)
             integration = result.scalar_one_or_none()
             if integration is None:
-                return None
-            return self._snapshot_integration(integration)
-        return None
+                return []
+            integration_type = (
+                IntegrationType(integration.integration_type)
+                if isinstance(integration.integration_type, str)
+                else integration.integration_type
+            )
+            if integration_type in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                kind = self._kind_for_integration(integration)
+                return [(self._snapshot_integration(integration), kind, None)] if kind else []
+
+            state_stmt = select(IntegrationSyncState).where(
+                col(IntegrationSyncState.integration_id) == integration.integration_id,
+                col(IntegrationSyncState.capability).in_(GOOGLE_WEBHOOK_INTEGRATION_TYPES),
+                col(IntegrationSyncState.enabled).is_(True),
+            )
+            state_result = await session.execute(state_stmt)
+            targets: list[tuple[KnowledgeIntegration, GoogleSubscriptionKind, UUID | None]] = []
+            for state in state_result.scalars().all():
+                capability = (
+                    IntegrationType(state.capability)
+                    if isinstance(state.capability, str)
+                    else state.capability
+                )
+                kind = kind_for_integration_type(capability)
+                if kind is None:
+                    continue
+                targets.append(
+                    (
+                        self._snapshot_integration(
+                            integration,
+                            integration_type=capability,
+                            connection_metadata=dict(state.webhook_metadata or {}),
+                        ),
+                        kind,
+                        state.sync_state_id,
+                    )
+                )
+            return targets
+        return []
 
     async def _load_org_integration_ids(self, organisation_id: UUID) -> list[UUID]:
         """Load eligible Google integration ids for renewal fanout."""
@@ -186,7 +228,9 @@ class GoogleSubscriptionTaskService:
             # rows keep their metadata for audit but should not renew watches.
             statement = select(col(KnowledgeIntegration.integration_id)).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
-                col(KnowledgeIntegration.integration_type).in_(GOOGLE_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    GOOGLE_WEBHOOK_INTEGRATION_TYPES + GOOGLE_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -201,6 +245,7 @@ class GoogleSubscriptionTaskService:
         integration_id: UUID,
         metadata: dict[str, Any],
         kind: GoogleSubscriptionKind,
+        sync_state_id: UUID | None = None,
     ) -> bool:
         """Persist subscription metadata only if the integration is still connected."""
         async for session in acquire_org_async_session(organisation_id):
@@ -210,7 +255,9 @@ class GoogleSubscriptionTaskService:
             statement = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
-                col(KnowledgeIntegration.integration_type).in_(GOOGLE_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    GOOGLE_WEBHOOK_INTEGRATION_TYPES + GOOGLE_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -218,6 +265,25 @@ class GoogleSubscriptionTaskService:
             integration = result.scalar_one_or_none()
             if integration is None:
                 return False
+
+            if sync_state_id:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.sync_state_id) == sync_state_id,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return False
+                state.webhook_metadata = self._merge_subscription_metadata(
+                    current_metadata=state.webhook_metadata,
+                    provider_metadata=metadata,
+                    kind=kind,
+                )
+                attributes.flag_modified(state, "webhook_metadata")
+                session.add(state)
+                await session.commit()
+                return True
 
             merged_metadata = self._merge_subscription_metadata(
                 current_metadata=integration.connection_metadata,
@@ -273,7 +339,13 @@ class GoogleSubscriptionTaskService:
             list(integration.scopes or []),
         )
 
-    def _snapshot_integration(self, integration: KnowledgeIntegration) -> KnowledgeIntegration:
+    def _snapshot_integration(
+        self,
+        integration: KnowledgeIntegration,
+        *,
+        integration_type: IntegrationType | None = None,
+        connection_metadata: dict[str, Any] | None = None,
+    ) -> KnowledgeIntegration:
         """Copy the integration row for provider calls outside the DB session.
 
         SQLModel instances are session-bound; this plain validated copy carries
@@ -287,7 +359,7 @@ class GoogleSubscriptionTaskService:
                 "created_by_admin": integration.created_by_admin,
                 "integration_email": integration.integration_email,
                 "integration_scope": integration.integration_scope,
-                "integration_type": integration.integration_type,
+                "integration_type": integration_type or integration.integration_type,
                 "name": integration.name,
                 "credentials": dict(integration.credentials or {}),
                 "connection_id": integration.connection_id,
@@ -295,7 +367,11 @@ class GoogleSubscriptionTaskService:
                 "refresh_token_expires_at": integration.refresh_token_expires_at,
                 "scopes": list(integration.scopes or []),
                 "is_active": integration.is_active,
-                "connection_metadata": dict(integration.connection_metadata or {}),
+                "connection_metadata": (
+                    dict(connection_metadata)
+                    if connection_metadata is not None
+                    else dict(integration.connection_metadata or {})
+                ),
             }
         )
 
