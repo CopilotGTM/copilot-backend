@@ -59,6 +59,7 @@ class FakeKnowledgeIntegration:
         scopes: list[str] | None = None,
         requires_reauth: bool = False,
         connection_metadata: dict | None = None,
+        sync_states: list[Any] | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
     ):
@@ -80,6 +81,7 @@ class FakeKnowledgeIntegration:
         self.scopes = scopes
         self.requires_reauth = requires_reauth
         self.connection_metadata = connection_metadata or {}
+        self.sync_states = sync_states or []
         self.created_at = created_at or datetime(2024, 1, 1, 0, 0, 0)
         self.updated_at = updated_at or datetime(2024, 1, 1, 0, 0, 0)
 
@@ -368,7 +370,7 @@ class FakeCopilotOAuthService:
         if self.should_raise_value_error:
             raise ValueError("Invalid or expired state parameter")
         return {
-            "integration_type": "outlook_calendar",
+            "integration_type": "microsoft",
             "tenant": tenant or "tenant-id",
             "attempt_id": "admin-consent-attempt",
         }
@@ -377,11 +379,11 @@ class FakeCopilotOAuthService:
         if state == "admin-consent-state":
             return {
                 "jti": "admin-consent-attempt",
-                "type": "outlook_calendar",
+                "type": "microsoft",
                 "purpose": "microsoft_admin_consent",
             }
         if state == "valid-state":
-            return {"jti": "attempt-from-valid-state", "type": "outlook_email"}
+            return {"jti": "attempt-from-valid-state", "type": "microsoft"}
         raise ValueError("Invalid state")
 
 

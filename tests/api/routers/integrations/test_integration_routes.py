@@ -2,6 +2,7 @@
 Tests for integration listing routes in the integrations API.
 """
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -25,6 +26,14 @@ def test_list_available_no_connections(client: TestClient, integrations_dependen
     # All integrations should have is_connected=False
     for integration in data["integrations"]:
         assert integration["is_connected"] is False
+    integration_types = {integration["integration_type"] for integration in data["integrations"]}
+    assert "google" in integration_types
+    assert "microsoft" in integration_types
+    assert "gmail" not in integration_types
+    assert "google_calendar" not in integration_types
+    assert "outlook_email" not in integration_types
+    assert "outlook_calendar" not in integration_types
+    assert "teams" not in integration_types
 
 
 def test_list_available_salesforce_includes_admin_prerequisite_when_install_url_configured(
@@ -116,14 +125,14 @@ def test_list_available_with_connections(client: TestClient, integrations_depend
     integration_service = integrations_dependency_overrides["integration_service"]
     current_user = integrations_dependency_overrides["user_ids"]
 
-    # Add a connected Teams integration
+    # Add a connected Microsoft provider integration
     integration_id = uuid4()
     integration = FakeKnowledgeIntegration(
         integration_id=integration_id,
         organisation_id=current_user.organisation_id,
         created_by_user_id=current_user.user_id,
-        integration_type="teams",
-        name="Company Teams",
+        integration_type="microsoft",
+        name="Company Microsoft",
         is_active=True,
     )
     integration_service.add_integration(integration)
@@ -135,14 +144,63 @@ def test_list_available_with_connections(client: TestClient, integrations_depend
     data = body["data"]
     assert data["total_connected"] == 1
 
-    # Find teams integration in the list
-    teams_integration = next(
-        (i for i in data["integrations"] if i["integration_type"] == "teams"),
+    # Find Microsoft integration in the list
+    microsoft_integration = next(
+        (i for i in data["integrations"] if i["integration_type"] == "microsoft"),
         None,
     )
-    assert teams_integration is not None
-    assert teams_integration["is_connected"] is True
-    assert len(teams_integration["connected_integrations"]) == 1
+    assert microsoft_integration is not None
+    assert microsoft_integration["is_connected"] is True
+    assert len(microsoft_integration["connected_integrations"]) == 1
+
+
+def test_list_available_google_provider_does_not_expose_capability_state(
+    client: TestClient, integrations_dependency_overrides
+) -> None:
+    """Provider rows keep internal child sync state out of the frontend contract."""
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
+    integration_id = uuid4()
+    integration_service.add_integration(
+        FakeKnowledgeIntegration(
+            integration_id=integration_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
+            integration_type="google",
+            name="Google",
+            is_active=True,
+            sync_states=[
+                SimpleNamespace(
+                    capability="google_calendar",
+                    enabled=True,
+                    last_synced_at=None,
+                    last_sync_status="success",
+                    last_sync_error=None,
+                    consecutive_sync_failures=0,
+                ),
+                SimpleNamespace(
+                    capability="gmail",
+                    enabled=False,
+                    last_synced_at=None,
+                    last_sync_status=None,
+                    last_sync_error=None,
+                    consecutive_sync_failures=0,
+                ),
+            ],
+        )
+    )
+
+    resp = client.get("/users/integrations/available")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    google = next((i for i in data["integrations"] if i["integration_type"] == "google"), None)
+    assert google is not None
+    assert google["is_connected"] is True
+    assert len(google["connected_integrations"]) == 1
+    assert "capabilities" not in google
 
 
 def test_list_available_multiple_same_type(client: TestClient, integrations_dependency_overrides):
@@ -196,8 +254,8 @@ def test_list_available_mixed_active_inactive(
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="teams",
-            name="Active Teams",
+            integration_type="microsoft",
+            name="Active Microsoft",
             is_active=True,
         )
     )
@@ -235,8 +293,8 @@ def test_list_available_includes_requires_reauth_instances(
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="gmail",
-            name="Expired Gmail",
+            integration_type="google",
+            name="Expired Google",
             is_active=False,
             requires_reauth=True,
             last_sync_status="auth_failed",
@@ -247,14 +305,14 @@ def test_list_available_includes_requires_reauth_instances(
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    gmail = next((i for i in data["integrations"] if i["integration_type"] == "gmail"), None)
-    assert gmail is not None
-    assert gmail["is_connected"] is False
-    assert gmail["has_action_required"] is True
-    assert gmail["connected_integrations"] == []
-    assert len(gmail["action_required_integrations"]) == 1
-    assert gmail["action_required_integrations"][0]["requires_reauth"] is True
-    assert gmail["action_required_integrations"][0]["action_required"] == "reauth_expired"
+    google = next((i for i in data["integrations"] if i["integration_type"] == "google"), None)
+    assert google is not None
+    assert google["is_connected"] is False
+    assert google["has_action_required"] is True
+    assert google["connected_integrations"] == []
+    assert len(google["action_required_integrations"]) == 1
+    assert google["action_required_integrations"][0]["requires_reauth"] is True
+    assert google["action_required_integrations"][0]["action_required"] == "reauth_expired"
 
 
 def test_list_available_marks_missing_scopes_as_additional_permissions(
@@ -270,8 +328,8 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="google_calendar",
-            name="Google Calendar",
+            integration_type="google",
+            name="Google",
             is_active=True,
             scopes=["https://www.googleapis.com/auth/calendar.readonly"],
         )
@@ -281,15 +339,15 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    calendar = next(
-        (i for i in data["integrations"] if i["integration_type"] == "google_calendar"),
+    google = next(
+        (i for i in data["integrations"] if i["integration_type"] == "google"),
         None,
     )
-    assert calendar is not None
-    assert calendar["is_connected"] is True
-    assert calendar["has_action_required"] is True
-    assert len(calendar["connected_integrations"]) == 1
-    connected = calendar["connected_integrations"][0]
+    assert google is not None
+    assert google["is_connected"] is True
+    assert google["has_action_required"] is True
+    assert len(google["connected_integrations"]) == 1
+    connected = google["connected_integrations"][0]
     assert connected["action_required"] == "additional_permissions"
     assert connected["missing_scopes"] == [
         "https://www.googleapis.com/auth/calendar.events",
@@ -304,8 +362,8 @@ def test_list_available_marks_missing_scopes_as_additional_permissions(
 def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions(
     client: TestClient, integrations_dependency_overrides
 ) -> None:
-    """Microsoft integrations report exact missing scopes after scope changes."""
-    # Contract: outlook_email scope drift surfaces reconnect guidance and exact labels.
+    """Microsoft provider reports exact missing mail scopes after scope changes."""
+    # Contract: provider-level scope drift surfaces reconnect guidance and exact labels.
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
@@ -315,10 +373,15 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="outlook_email",
-            name="Outlook Email",
+            integration_type="microsoft",
+            name="Microsoft",
             is_active=True,
-            scopes=["offline_access", "User.Read"],
+            scopes=[
+                "offline_access",
+                "User.Read",
+                "Calendars.ReadWrite",
+                "OnlineMeetings.Read",
+            ],
         )
     )
 
@@ -326,14 +389,14 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    outlook_email = next(
-        (i for i in data["integrations"] if i["integration_type"] == "outlook_email"),
+    microsoft = next(
+        (i for i in data["integrations"] if i["integration_type"] == "microsoft"),
         None,
     )
-    assert outlook_email is not None
-    assert outlook_email["is_connected"] is True
-    assert outlook_email["has_action_required"] is True
-    connected = outlook_email["connected_integrations"][0]
+    assert microsoft is not None
+    assert microsoft["is_connected"] is True
+    assert microsoft["has_action_required"] is True
+    connected = microsoft["connected_integrations"][0]
     assert connected["action_required"] == "additional_permissions"
     assert connected["missing_scopes"] == ["Mail.Read", "Mail.Send"]
     assert connected["missing_scope_labels"] == [
@@ -345,7 +408,7 @@ def test_list_available_marks_microsoft_missing_scopes_as_additional_permissions
 def test_list_available_marks_outlook_calendar_write_scope_as_additional_permission(
     client: TestClient, integrations_dependency_overrides
 ) -> None:
-    """Read-only Outlook Calendar connections must reconnect before sending invites."""
+    """Read-only Microsoft calendar grants must reconnect before sending invites."""
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
@@ -355,10 +418,17 @@ def test_list_available_marks_outlook_calendar_write_scope_as_additional_permiss
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="outlook_calendar",
-            name="Outlook Calendar",
+            integration_type="microsoft",
+            name="Microsoft",
             is_active=True,
-            scopes=["offline_access", "User.Read", "Calendars.Read", "OnlineMeetings.Read"],
+            scopes=[
+                "offline_access",
+                "User.Read",
+                "Mail.Read",
+                "Mail.Send",
+                "Calendars.Read",
+                "OnlineMeetings.Read",
+            ],
         )
     )
 
@@ -366,14 +436,14 @@ def test_list_available_marks_outlook_calendar_write_scope_as_additional_permiss
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    outlook_calendar = next(
-        (i for i in data["integrations"] if i["integration_type"] == "outlook_calendar"),
+    microsoft = next(
+        (i for i in data["integrations"] if i["integration_type"] == "microsoft"),
         None,
     )
-    assert outlook_calendar is not None
-    assert outlook_calendar["is_connected"] is True
-    assert outlook_calendar["has_action_required"] is True
-    connected = outlook_calendar["connected_integrations"][0]
+    assert microsoft is not None
+    assert microsoft["is_connected"] is True
+    assert microsoft["has_action_required"] is True
+    connected = microsoft["connected_integrations"][0]
     assert connected["action_required"] == "additional_permissions"
     assert connected["missing_scopes"] == ["Calendars.ReadWrite"]
     assert connected["missing_scope_labels"] == ["Outlook calendar write access"]
@@ -395,12 +465,19 @@ def test_list_available_hides_other_users_personal_integrations_even_if_legacy_o
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=other_user_id,
-            integration_type="teams",
-            name="Other User Teams",
+            integration_type="microsoft",
+            name="Other User Microsoft",
             integration_email="teammate@example.com",
             integration_scope=IntegrationScope.ORGANIZATION,
             is_active=True,
-            scopes=["offline_access", "User.Read"],
+            scopes=[
+                "offline_access",
+                "User.Read",
+                "Mail.Read",
+                "Mail.Send",
+                "Calendars.ReadWrite",
+                "OnlineMeetings.Read",
+            ],
         )
     )
     integration_service.add_integration(
@@ -408,12 +485,19 @@ def test_list_available_hides_other_users_personal_integrations_even_if_legacy_o
             integration_id=uuid4(),
             organisation_id=current_user.organisation_id,
             created_by_user_id=current_user.user_id,
-            integration_type="teams",
-            name="My Teams",
+            integration_type="microsoft",
+            name="My Microsoft",
             integration_email="me@example.com",
             integration_scope=IntegrationScope.ORGANIZATION,
             is_active=True,
-            scopes=["offline_access", "User.Read"],
+            scopes=[
+                "offline_access",
+                "User.Read",
+                "Mail.Read",
+                "Mail.Send",
+                "Calendars.ReadWrite",
+                "OnlineMeetings.Read",
+            ],
         )
     )
 
@@ -421,11 +505,15 @@ def test_list_available_hides_other_users_personal_integrations_even_if_legacy_o
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    teams = next((i for i in data["integrations"] if i["integration_type"] == "teams"), None)
-    assert teams is not None
+    microsoft = next(
+        (i for i in data["integrations"] if i["integration_type"] == "microsoft"),
+        None,
+    )
+    assert microsoft is not None
     emails = [
         instance["integration_email"]
-        for instance in teams["connected_integrations"] + teams["action_required_integrations"]
+        for instance in microsoft["connected_integrations"]
+        + microsoft["action_required_integrations"]
     ]
     assert emails == ["me@example.com"]
 
@@ -536,11 +624,18 @@ def test_disconnect_active_integration_revokes_and_clears_reauth(
         integration_id=integration_id,
         organisation_id=current_user.organisation_id,
         created_by_user_id=current_user.user_id,
-        integration_type="gmail",
-        name="Active Gmail",
+        integration_type="google",
+        name="Active Google",
         is_active=True,
         requires_reauth=True,
         connection_id="gmail_conn_123",
+        sync_states=[
+            SimpleNamespace(
+                enabled=True,
+                last_sync_status="success",
+                last_sync_error=None,
+            )
+        ],
     )
     integration_service.add_integration(integration)
 
@@ -550,6 +645,8 @@ def test_disconnect_active_integration_revokes_and_clears_reauth(
     assert integration.is_active is False
     assert integration.requires_reauth is False
     assert integration.last_sync_error == "Integration disconnected by user"
+    assert integration.sync_states[0].enabled is False
+    assert integration.sync_states[0].last_sync_status == "disconnected"
     assert integration_service.db._committed is True
     assert integration_service.revoked_integrations == [integration_id]
 

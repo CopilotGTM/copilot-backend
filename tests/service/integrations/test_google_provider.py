@@ -18,12 +18,13 @@ def test_google_provider_gmail_scopes_include_send() -> None:
     ]
 
 
-def test_google_provider_gmail_scopes_exclude_read_scope_when_disabled() -> None:
+def test_google_provider_gmail_scopes_ignore_read_scope_flag() -> None:
     provider = GoogleProvider(IntegrationType.GMAIL)
 
     assert provider._get_scopes(include_gmail_read_scope=False) == [
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
     ]
 
@@ -41,11 +42,10 @@ def test_google_provider_calendar_scopes_include_google_meet() -> None:
 
 
 def test_google_integration_metadata_matches_provider_requested_scopes() -> None:
-    for integration_type in (IntegrationType.GMAIL, IntegrationType.GOOGLE_CALENDAR):
-        assert (
-            INTEGRATION_METADATA[integration_type].oauth_scopes
-            == GoogleProvider(integration_type)._get_scopes()
-        )
+    assert (
+        INTEGRATION_METADATA[IntegrationType.GOOGLE].oauth_scopes
+        == GoogleProvider(IntegrationType.GOOGLE)._get_scopes()
+    )
 
 
 @pytest.mark.asyncio

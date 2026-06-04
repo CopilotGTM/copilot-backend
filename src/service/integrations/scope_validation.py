@@ -31,6 +31,7 @@ from src.infra.config.slack_integration_scopes import SLACK_USER_SCOPES
 
 _MICROSOFT_INTEGRATION_TYPES = frozenset(
     {
+        IntegrationType.MICROSOFT,
         IntegrationType.OUTLOOK_EMAIL,
         IntegrationType.OUTLOOK_CALENDAR,
         IntegrationType.TEAMS,
@@ -39,6 +40,7 @@ _MICROSOFT_INTEGRATION_TYPES = frozenset(
 
 _GOOGLE_INTEGRATION_TYPES = frozenset(
     {
+        IntegrationType.GOOGLE,
         IntegrationType.GMAIL,
         IntegrationType.GOOGLE_CALENDAR,
     }
@@ -48,6 +50,7 @@ _GOOGLE_INTEGRATION_TYPES = frozenset(
 # Keep this map as the single source of truth for what a feature expects to
 # have before attempting provider calls.
 _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
+    IntegrationType.GOOGLE: frozenset(get_google_required_granted_scopes(IntegrationType.GOOGLE)),
     IntegrationType.GMAIL: frozenset(get_google_required_granted_scopes(IntegrationType.GMAIL)),
     IntegrationType.GOOGLE_CALENDAR: frozenset(
         get_google_required_granted_scopes(IntegrationType.GOOGLE_CALENDAR)
@@ -65,6 +68,11 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.TEAMS: frozenset(
         scope
         for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.TEAMS]
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
+    ),
+    IntegrationType.MICROSOFT: frozenset(
+        scope
+        for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.MICROSOFT]
         if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
     ),
     IntegrationType.SLACK: frozenset(SLACK_USER_SCOPES),
@@ -87,11 +95,13 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
 }
 
 _REQUIRED_TOKEN_FIELDS: dict[IntegrationType, frozenset[str]] = {
+    IntegrationType.GOOGLE: frozenset({"refresh_token"}),
     IntegrationType.GMAIL: frozenset({"refresh_token"}),
     IntegrationType.GOOGLE_CALENDAR: frozenset({"refresh_token"}),
     IntegrationType.OUTLOOK_EMAIL: frozenset({"refresh_token"}),
     IntegrationType.OUTLOOK_CALENDAR: frozenset({"refresh_token"}),
     IntegrationType.TEAMS: frozenset({"refresh_token"}),
+    IntegrationType.MICROSOFT: frozenset({"refresh_token"}),
 }
 
 # A required scope may be satisfied by a broader grant.

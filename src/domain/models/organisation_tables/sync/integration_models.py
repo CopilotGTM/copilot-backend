@@ -14,6 +14,10 @@ EMPTY_JSONB_SQL = "'{}'::jsonb"
 
 
 class IntegrationType(str, Enum):
+    # Provider parent accounts. Capability-specific values below remain during transition.
+    GOOGLE = "google"
+    MICROSOFT = "microsoft"
+
     # Collaboration & Communication
     SLACK = "slack"
     TEAMS = "teams"
@@ -159,6 +163,72 @@ class KnowledgeIntegration(TimestampMixin, table=True):
     )
 
     sync_history: list["IntegrationSyncHistory"] = Relationship(back_populates="integration")
+    sync_states: list["IntegrationSyncState"] = Relationship(back_populates="integration")
+
+
+class IntegrationSyncState(TimestampMixin, table=True):
+    """Capability-level sync state for provider parent integrations.
+
+    `knowledge_integrations` stores the connected provider account and tokens.
+    This table stores per-capability enablement, cursors, webhook state, and
+    sync health so Gmail and Calendar do not overwrite each other's metadata.
+    """
+
+    __tablename__ = "integration_sync_states"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ux_integration_sync_states_integration_capability",
+            "integration_id",
+            "capability",
+            unique=True,
+        ),
+        Index("ix_integration_sync_states_org_capability", "organisation_id", "capability"),
+        Index("ix_integration_sync_states_enabled", "enabled"),
+    )
+
+    sync_state_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organisation_id: UUID = Field(index=True)
+    integration_id: UUID = Field(
+        sa_column=Column(
+            sa.Uuid,
+            sa.ForeignKey("knowledge_integrations.integration_id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
+        description="Provider parent integration this capability belongs to.",
+    )
+    capability: IntegrationType = Field(
+        sa_column=Column(String(50), nullable=False),
+        description="Enabled provider capability such as gmail or google_calendar.",
+    )
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
+    )
+    last_synced_at: datetime | None = Field(default=None)
+    last_sync_status: str | None = Field(default=None, sa_column=Column(String(20)))
+    last_sync_error: str | None = Field(default=None)
+    consecutive_sync_failures: int = Field(
+        default=0,
+        sa_column=Column(sa.Integer, server_default=text("0"), nullable=False),
+    )
+    cursor_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL), nullable=False),
+        description="Capability-specific sync cursors.",
+    )
+    webhook_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL), nullable=False),
+        description="Capability-specific webhook subscription state.",
+    )
+    sync_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL), nullable=False),
+        description="Additional capability-specific sync diagnostics.",
+    )
+
+    integration: "KnowledgeIntegration" = Relationship(back_populates="sync_states")
 
 
 class SyncStatus(str, Enum):
@@ -203,6 +273,7 @@ __all__ = [
     "IntegrationType",
     "IntegrationScope",
     "KnowledgeIntegration",
+    "IntegrationSyncState",
     "SyncStatus",
     "IntegrationSyncHistory",
     "EMPTY_JSONB_SQL",

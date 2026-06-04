@@ -8,6 +8,7 @@ from sqlmodel import col
 from src.domain.models.master_tables import OrganisationIntegrationDetails, User
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
+    IntegrationSyncState,
     IntegrationType,
     KnowledgeIntegration,
 )
@@ -30,6 +31,15 @@ from src.service.integrations.scope_validation import (
 from src.service.integrations.webhooks.salesforce.metadata import SALESFORCE_CDC_OBJECTS
 
 logger = get_logger(__name__)
+
+PROVIDER_CAPABILITY_ORDER: dict[IntegrationType, tuple[IntegrationType, ...]] = {
+    IntegrationType.GOOGLE: (IntegrationType.GOOGLE_CALENDAR, IntegrationType.GMAIL),
+    IntegrationType.MICROSOFT: (
+        IntegrationType.OUTLOOK_EMAIL,
+        IntegrationType.OUTLOOK_CALENDAR,
+        IntegrationType.TEAMS,
+    ),
+}
 
 
 class CopilotCallbackService:
@@ -160,6 +170,25 @@ class CopilotCallbackService:
             raise ValueError(
                 self._get_missing_token_field_message(integration_type, missing_token_fields)
             )
+
+    def _get_enabled_capabilities(
+        self,
+        integration_type: IntegrationType,
+        token_payload: dict[str, Any],
+    ) -> list[IntegrationType]:
+        capabilities = PROVIDER_CAPABILITY_ORDER.get(integration_type)
+        if not capabilities:
+            return [integration_type]
+
+        granted_scopes = parse_granted_scopes_from_token_payload(token_payload, [])
+        enabled: list[IntegrationType] = []
+        for capability in capabilities:
+            if get_missing_required_scopes(capability, granted_scopes):
+                continue
+            if get_missing_required_token_fields(capability, token_payload):
+                continue
+            enabled.append(capability)
+        return enabled
 
     def _apply_custom_token_payload(
         self,
@@ -375,6 +404,10 @@ class CopilotCallbackService:
             ):
                 validation_payload["scopes"] = user_info.get("scopes")
             self._validate_required_scopes(integration_type, validation_payload)
+            enabled_capabilities = self._get_enabled_capabilities(
+                integration_type,
+                validation_payload,
+            )
 
             integration_email = str(user_info.get("email") or "").strip().lower()
             if not integration_email:
@@ -429,6 +462,7 @@ class CopilotCallbackService:
                     integration_type=integration_type,
                     provider_key=provider.provider_key,
                     tokens=tokens,
+                    enabled_capabilities=enabled_capabilities,
                     integration_email=integration_email,
                     provider_user_info=user_info,
                     oauth_base_url=oauth_base_url,
@@ -445,6 +479,7 @@ class CopilotCallbackService:
             integration_scope=metadata.default_scope,
             provider_key=provider.provider_key,
             tokens=tokens,
+            enabled_capabilities=enabled_capabilities,
             integration_email=integration_email,
             provider_user_info=user_info,
             oauth_base_url=oauth_base_url,
@@ -490,6 +525,7 @@ class CopilotCallbackService:
         integration_type: IntegrationType,
         provider_key: str,
         tokens: dict[str, Any],
+        enabled_capabilities: list[IntegrationType],
         integration_email: str,
         provider_user_info: dict[str, Any] | None = None,
         oauth_base_url: str | None = None,
@@ -521,6 +557,12 @@ class CopilotCallbackService:
         session.add(integration)
         await session.commit()
         await session.refresh(integration)
+        await self._sync_capability_states(
+            session=session,
+            integration=integration,
+            provider_type=integration_type,
+            enabled_capabilities=enabled_capabilities,
+        )
 
         await self._save_connection_mapping(
             connection_id,
@@ -532,7 +574,7 @@ class CopilotCallbackService:
 
         # Trigger initial sync so data starts flowing immediately — without this,
         # users would wait up to 30 min for the next Celery Beat cycle
-        self._trigger_initial_sync(integration)
+        self._trigger_initial_sync(integration, enabled_capabilities=enabled_capabilities)
 
         return self._build_success_response(integration, reactivated=True)
 
@@ -546,6 +588,7 @@ class CopilotCallbackService:
         integration_scope: IntegrationScope,
         provider_key: str,
         tokens: dict[str, Any],
+        enabled_capabilities: list[IntegrationType],
         integration_email: str,
         provider_user_info: dict[str, Any] | None = None,
         oauth_base_url: str | None = None,
@@ -577,6 +620,12 @@ class CopilotCallbackService:
             org_session.add(integration)
             await org_session.commit()
             await org_session.refresh(integration)
+            await self._sync_capability_states(
+                session=org_session,
+                integration=integration,
+                provider_type=integration_type,
+                enabled_capabilities=enabled_capabilities,
+            )
 
             type_key = str(self._enum_value(integration_type))
             await self._save_connection_mapping(
@@ -586,13 +635,59 @@ class CopilotCallbackService:
             )
 
             # Trigger initial sync so data starts flowing immediately
-            self._trigger_initial_sync(integration)
+            self._trigger_initial_sync(integration, enabled_capabilities=enabled_capabilities)
 
             return self._build_success_response(integration, reactivated=False)
 
         raise RuntimeError("Failed to acquire organisation session")
 
-    def _trigger_initial_sync(self, integration: KnowledgeIntegration) -> None:
+    async def _sync_capability_states(
+        self,
+        *,
+        session: Any,
+        integration: KnowledgeIntegration,
+        provider_type: IntegrationType,
+        enabled_capabilities: list[IntegrationType],
+    ) -> None:
+        capabilities = PROVIDER_CAPABILITY_ORDER.get(provider_type)
+        if not capabilities:
+            return
+
+        enabled_set = set(enabled_capabilities)
+        for capability in capabilities:
+            stmt = select(IntegrationSyncState).where(
+                col(IntegrationSyncState.organisation_id) == integration.organisation_id,
+                col(IntegrationSyncState.integration_id) == integration.integration_id,
+                col(IntegrationSyncState.capability) == capability,
+            )
+            state = (await session.execute(stmt)).scalars().first()
+            if capability not in enabled_set:
+                if state:
+                    state.enabled = False
+                    session.add(state)
+                continue
+            if state:
+                state.enabled = True
+                state.last_sync_error = None
+                session.add(state)
+                continue
+            session.add(
+                IntegrationSyncState(
+                    organisation_id=integration.organisation_id,
+                    integration_id=integration.integration_id,
+                    capability=capability,
+                    enabled=True,
+                )
+            )
+
+        await session.commit()
+
+    def _trigger_initial_sync(
+        self,
+        integration: KnowledgeIntegration,
+        *,
+        enabled_capabilities: list[IntegrationType] | None = None,
+    ) -> None:
         """Dispatch initial sync task so data flows immediately after connect.
 
         Errors are caught and logged — a failed sync trigger should not
@@ -602,6 +697,7 @@ class CopilotCallbackService:
             InitialSyncService().trigger_initial_sync(
                 organisation_id=integration.organisation_id,
                 integration=integration,
+                enabled_capabilities=enabled_capabilities,
             )
             logger.info(
                 "Triggered initial sync: integration=%s type=%s",

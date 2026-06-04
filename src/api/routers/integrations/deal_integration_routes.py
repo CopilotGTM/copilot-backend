@@ -54,7 +54,7 @@ async def get_integration_service(
     "/deals/{deal_id}/available",
     response_model=GenericResponse[AvailableIntegrationsResponse],
     summary="List available integrations for deals",
-    description="Get available integrations specifically for deal context (Slack, Teams).",
+    description="Get available integrations specifically for deal context (Slack, Microsoft).",
 )
 async def list_available_deal_integrations(
     deal_id: UUID,
@@ -63,7 +63,7 @@ async def list_available_deal_integrations(
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[AvailableIntegrationsResponse]:
     """
-    List available integrations for deals (Slack, Teams).
+    List available integrations for deals (Slack, Microsoft).
 
     Returns metadata for supported deal integrations along with connected instances
     linked to the specified deal.
@@ -104,8 +104,8 @@ async def list_available_deal_integrations(
             elif projected.action_required != "none":
                 action_required_by_type.setdefault(int_type, []).append(projected)
 
-        # Only messaging integrations are relevant in deal context
-        deal_integration_types = [IntegrationType.TEAMS, IntegrationType.SLACK]
+        # Deal context links channels, but Microsoft is the public provider card.
+        deal_integration_types = [IntegrationType.MICROSOFT, IntegrationType.SLACK]
         all_metadata = get_all_integration_metadata()
 
         integrations = []

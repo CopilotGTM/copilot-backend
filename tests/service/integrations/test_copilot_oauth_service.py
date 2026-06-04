@@ -84,7 +84,7 @@ async def test_initiate_oauth_flow_allows_beta_integration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_initiate_gmail_oauth_omits_read_scope_without_org_opt_in(
+async def test_initiate_gmail_oauth_ignores_org_gmail_read_scope_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = CopilotOAuthService()
@@ -129,9 +129,10 @@ async def test_initiate_gmail_oauth_omits_read_scope_without_org_opt_in(
     assert requested_scopes == {
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
     }
-    assert query["include_granted_scopes"] == ["false"]
+    assert query["include_granted_scopes"] == ["true"]
 
 
 @pytest.mark.asyncio
@@ -180,6 +181,55 @@ async def test_initiate_gmail_oauth_includes_read_scope_with_org_opt_in(
     assert "https://www.googleapis.com/auth/gmail.readonly" in requested_scopes
     assert "https://www.googleapis.com/auth/gmail.send" in requested_scopes
     assert query["include_granted_scopes"] == ["true"]
+
+
+@pytest.mark.asyncio
+async def test_initiate_google_oauth_uses_org_gmail_read_scope_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CopilotOAuthService()
+    user_ids = _make_user_ids()
+
+    async def fake_master_session():
+        yield SimpleNamespace(
+            get=AsyncMock(
+                return_value=SimpleNamespace(
+                    preferences={"integrations": {"google": {"gmail_read_enabled": False}}}
+                )
+            )
+        )
+
+    monkeypatch.setattr(
+        "src.service.integrations.copilot_oauth_service.acquire_master_async_session",
+        fake_master_session,
+    )
+
+    with (
+        patch(
+            "src.service.integrations.copilot_oauth_service.get_integration_metadata",
+            return_value=FakeMetadata(availability_status="beta"),
+        ),
+        patch(
+            "src.service.integrations.copilot_oauth_service.security_secrets_config.get_oauth_state_secret",
+            new=AsyncMock(return_value="oauth-signing-secret"),
+        ),
+        patch(
+            "src.service.integrations.providers.google_provider.google_integration_config.get_credentials",
+            new=AsyncMock(return_value=("client-id", "client-secret")),
+        ),
+    ):
+        result = await service.initiate_oauth_flow(
+            user_ids=user_ids,
+            integration_type=IntegrationType.GOOGLE,
+        )
+
+    query = parse_qs(urlparse(result.auth_url).query)
+    requested_scopes = set(query["scope"][0].split())
+
+    assert "https://www.googleapis.com/auth/calendar.readonly" in requested_scopes
+    assert "https://www.googleapis.com/auth/gmail.send" in requested_scopes
+    assert "https://www.googleapis.com/auth/gmail.readonly" not in requested_scopes
+    assert query["include_granted_scopes"] == ["false"]
 
 
 @pytest.mark.asyncio

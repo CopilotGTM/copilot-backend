@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import Boolean, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
@@ -120,9 +121,13 @@ class IntegrationService:
         Returns:
             List of active KnowledgeIntegration instances, ordered by created_at DESC
         """
-        statement = select(KnowledgeIntegration).where(
-            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
-            cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
+        statement = (
+            select(KnowledgeIntegration)
+            .options(selectinload(KnowledgeIntegration.sync_states))
+            .where(
+                col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
+                cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
+            )
         )
 
         if user_id:
@@ -162,12 +167,16 @@ class IntegrationService:
         Excludes:
         - manually disconnected inactive integrations
         """
-        statement = select(KnowledgeIntegration).where(
-            col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
-            or_(
-                cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
-                cast(col(KnowledgeIntegration.requires_reauth), Boolean).is_(True),
-            ),
+        statement = (
+            select(KnowledgeIntegration)
+            .options(selectinload(KnowledgeIntegration.sync_states))
+            .where(
+                col(KnowledgeIntegration.organisation_id) == self.user_ids.organisation_id,
+                or_(
+                    cast(col(KnowledgeIntegration.is_active), Boolean).is_(True),
+                    cast(col(KnowledgeIntegration.requires_reauth), Boolean).is_(True),
+                ),
+            )
         )
 
         if user_id:

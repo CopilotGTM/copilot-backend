@@ -83,6 +83,7 @@ from .integration_activity_request import (
 from .integration_models import (
     IntegrationScope,
     IntegrationSyncHistory,
+    IntegrationSyncState,
     IntegrationType,
     KnowledgeIntegration,
     SyncStatus,
@@ -150,6 +151,7 @@ __all__ = [
     "IntegrationType",
     "IntegrationScope",
     "KnowledgeIntegration",
+    "IntegrationSyncState",
     "IntegrationSyncHistory",
     "SyncStatus",
     "CRMContact",

@@ -92,13 +92,13 @@ calendar invite creation, restore the router/schema/test around this shape and w
 `src/api/routers/integrations/__init__.py`.
 
 The underlying implementation still creates an Outlook calendar event from the current user's
-connected Outlook Calendar integration. The event is created with `isOnlineMeeting=true` and
+connected Microsoft integration. The event is created with `isOnlineMeeting=true` and
 `onlineMeetingProvider=teamsForBusiness`, so Microsoft sends normal calendar invites and includes a
 Teams join link.
 
-If the current user has multiple writable Outlook Calendar integrations, the active agent/tool path
+If the current user has multiple writable Microsoft integrations, the active agent/tool path
 must ask which sender email to use before creating the invite. The selected `sender_email` must
-match a connected Outlook Calendar account owned by the current user, and that selected account must
+match a connected Microsoft account owned by the current user, and that selected account must
 pass scope, reauth, and token checks before any Microsoft Graph write is attempted.
 
 ### Endpoint
@@ -111,7 +111,7 @@ Status: deprecated/not registered.
 
 ### Required Permission
 
-The current user must have an active `outlook_calendar` integration connected with delegated
+The current user must have an active `microsoft` integration connected with delegated
 `Calendars.ReadWrite`. This is a user-delegated Microsoft OAuth scope, not a Teams bot permission
 and not an application/admin permission.
 
@@ -141,7 +141,7 @@ and not an application/admin permission.
 | `end_at` | datetime | Yes | Meeting end time; must be after `start_at` |
 | `timezone` | string | No | IANA timezone. Defaults to the authenticated user's timezone, then UTC |
 | `attendees` | array | Yes | Invitees; at least one email is required |
-| `sender_email` | string | No | Required when the user has more than one writable Outlook Calendar account |
+| `sender_email` | string | No | Required when the user has more than one writable Microsoft account |
 | `body` | string | No | Event description |
 | `location` | string | No | Display location |
 | `deal_id` | UUID | No | Optional deal association; validated inside the current organisation |
@@ -168,10 +168,10 @@ and not an application/admin permission.
 
 | Code | Meaning |
 |------|---------|
-| `calendar_integration_required` | User has not connected Outlook Calendar |
-| `calendar_sender_selection_required` | Multiple writable Outlook Calendar accounts exist; ask which sender email to use |
-| `calendar_sender_not_found` | Selected sender email is not one of the current user's Outlook Calendar connections |
-| `calendar_write_scope_required` | Existing Outlook Calendar connection lacks `Calendars.ReadWrite` |
+| `calendar_integration_required` | User has not connected Microsoft |
+| `calendar_sender_selection_required` | Multiple writable Microsoft accounts exist; ask which sender email to use |
+| `calendar_sender_not_found` | Selected sender email is not one of the current user's Microsoft connections |
+| `calendar_write_scope_required` | Existing Microsoft connection lacks `Calendars.ReadWrite` |
 | `calendar_reauth_required` | OAuth token is missing, expired, or revoked |
 | `unsupported_online_meeting_provider` | Mailbox cannot create Teams calendar meetings |
 | `deal_not_found` | Provided `deal_id` is not visible in the current organisation |
@@ -196,7 +196,7 @@ Each item in `data.integrations` includes:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `integration_type` | string | Provider key, for example `salesforce`, `hubspot`, `gmail`, or `teams`. |
+| `integration_type` | string | Provider key, for example `salesforce`, `hubspot`, `google`, or `microsoft`. |
 | `name` | string | Display name for the integration. |
 | `description` | string | Brief description of what the integration does. |
 | `logo_url` | string\|null | Provider logo URL. |
@@ -849,7 +849,7 @@ OAuth scopes are managed server-side based on integration requirements; the fron
 
 - HubSpot: `oauth`, `automation`, `conversations.read`, `sales-email-read`, `crm.objects.companies.read`, `crm.objects.companies.write`, `crm.objects.contacts.read`, `crm.objects.contacts.write`, `crm.objects.deals.read`, `crm.objects.deals.write`, `crm.objects.leads.read`, `crm.objects.leads.write`, `crm.objects.line_items.read`, `crm.objects.line_items.write`, `crm.objects.products.read`, `crm.objects.products.write`, `crm.objects.owners.read`, `crm.objects.users.read`, `crm.schemas.companies.read`, `crm.schemas.contacts.read`, `crm.schemas.deals.read`
 - Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
-- Gmail: by default requests Google identity scopes and `gmail.send`. The Gmail
+- Google: requests Google identity, Calendar, and Gmail send scopes. The Gmail
   read scope (`gmail.readonly`) is requested only when the organisation has
   `public.organisations.preferences.integrations.google.gmail_read_enabled = true`.
 
@@ -1142,9 +1142,9 @@ POST /users/integrations/copilot-oauth/microsoft/admin-consent
 ```
 
 Returns one Microsoft Entra admin-consent URL for CopilotGTM's Microsoft integration
-app. The request can be triggered from Outlook Email, Outlook Calendar, or Teams, but
-the consent URL always requests the shared Microsoft scope bundle for all current
-user-owned Microsoft integrations:
+app. The request is triggered from the Microsoft provider card, and the consent URL
+always requests the shared Microsoft scope bundle for all current user-owned
+Microsoft integrations:
 
 - `offline_access`
 - `User.Read`
@@ -1165,7 +1165,7 @@ without a separate admin-consent step.
 
 ```mermaid
 flowchart TD
-    A[User clicks Outlook Email, Outlook Calendar, or Teams] --> B[Frontend starts normal Microsoft OAuth]
+    A[User clicks Microsoft] --> B[Frontend starts normal Microsoft OAuth]
     B --> C{Microsoft allows delegated user consent?}
     C -->|Yes| D[Backend OAuth callback exchanges code and stores user's Microsoft connection]
     D --> E[GET /users/integrations/available shows the integration connected]
@@ -1208,13 +1208,13 @@ OAuth tokens.
 
 ```json
 {
-  "integration_type": "outlook_calendar"
+  "integration_type": "microsoft"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `integration_type` | string | Yes | Must be `outlook_email`, `outlook_calendar`, or `teams`. This only records which card triggered the shared Microsoft admin-consent flow. |
+| `integration_type` | string | Yes | Must be `microsoft`. |
 
 ### Response
 
@@ -1239,7 +1239,7 @@ OAuth tokens.
 When Microsoft rejects a normal OAuth callback with an admin-approval error, or returns
 a bare `access_denied` callback for a Microsoft user-owned integration without provider
 detail, the popup completion redirect includes `action_required=admin_consent_required`
-and `integration_type=<triggering Microsoft integration>`. The frontend should then
+and `integration_type=microsoft`. The frontend should then
 surface the admin approval required state for Microsoft instead of guessing from stored
 organization preference state. If Microsoft returns `access_denied` for a signed
 Microsoft admin-consent state, the backend preserves

@@ -40,7 +40,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -140,7 +140,9 @@ def sync_email_org_task(
                 col(KnowledgeIntegration.integration_id),
                 col(KnowledgeIntegration.integration_type),
             ).where(
-                col(KnowledgeIntegration.integration_type).in_(EMAIL_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    EMAIL_INTEGRATION_TYPES + (IntegrationType.GOOGLE, IntegrationType.MICROSOFT)
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
                 # Circuit breaker: skip integrations with too many consecutive

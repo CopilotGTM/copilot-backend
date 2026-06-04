@@ -13,8 +13,10 @@ class ProviderFactory:
     """
 
     _providers: dict[IntegrationType, type[BaseIntegrationProvider]] = {
+        IntegrationType.GOOGLE: GoogleProvider,
         IntegrationType.GMAIL: GoogleProvider,
         IntegrationType.GOOGLE_CALENDAR: GoogleProvider,
+        IntegrationType.MICROSOFT: MicrosoftProvider,
         IntegrationType.OUTLOOK_EMAIL: MicrosoftProvider,
         IntegrationType.OUTLOOK_CALENDAR: MicrosoftProvider,
         IntegrationType.TEAMS: MicrosoftProvider,

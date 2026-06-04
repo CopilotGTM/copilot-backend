@@ -28,12 +28,14 @@ def test_deal_available_with_connected_slack(
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
     deal_id = uuid4()
 
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="slack",
             name="Revenue Slack",
             is_active=True,
@@ -61,14 +63,16 @@ def test_deal_available_includes_reauth_and_additional_permissions_state(
     from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
 
     integration_service = integrations_dependency_overrides["integration_service"]
+    current_user = integrations_dependency_overrides["user_ids"]
     deal_id = uuid4()
 
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
-            integration_type="teams",
-            name="Expired Teams",
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
+            integration_type="microsoft",
+            name="Expired Microsoft",
             is_active=False,
             requires_reauth=True,
         )
@@ -76,7 +80,8 @@ def test_deal_available_includes_reauth_and_additional_permissions_state(
     integration_service.add_integration(
         FakeKnowledgeIntegration(
             integration_id=uuid4(),
-            organisation_id=integrations_dependency_overrides["user_ids"].organisation_id,
+            organisation_id=current_user.organisation_id,
+            created_by_user_id=current_user.user_id,
             integration_type="slack",
             name="Slack Workspace",
             is_active=True,
@@ -88,15 +93,15 @@ def test_deal_available_includes_reauth_and_additional_permissions_state(
 
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    teams = next(
-        (item for item in data["integrations"] if item["integration_type"] == "teams"), None
+    microsoft = next(
+        (item for item in data["integrations"] if item["integration_type"] == "microsoft"), None
     )
     slack = next(
         (item for item in data["integrations"] if item["integration_type"] == "slack"), None
     )
-    assert teams is not None and slack is not None
-    assert teams["has_action_required"] is True
-    assert teams["action_required_integrations"][0]["action_required"] == "reauth_expired"
+    assert microsoft is not None and slack is not None
+    assert microsoft["has_action_required"] is True
+    assert microsoft["action_required_integrations"][0]["action_required"] == "reauth_expired"
     assert slack["has_action_required"] is True
     assert slack["connected_integrations"][0]["action_required"] == "additional_permissions"
 

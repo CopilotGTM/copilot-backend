@@ -9,12 +9,17 @@ provider data writes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
@@ -204,14 +209,45 @@ class GoogleWebhookIngestionService:
         async for session in acquire_org_async_session(organisation_id):
             # The org filter is the trust boundary. Provider callback ids are
             # externally supplied and cannot be used without tenant scoping.
-            stmt = select(KnowledgeIntegration).where(
+            provider = (
+                IntegrationType.GOOGLE
+                if integration_type == IntegrationType.GOOGLE_CALENDAR
+                else integration_type
+            )
+            parent_stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == organisation_id,
+                col(KnowledgeIntegration.integration_id) == integration_id,
+                col(KnowledgeIntegration.integration_type) == provider.value,
+                col(KnowledgeIntegration.is_active).is_(True),
+            )
+            parent_result = await session.execute(parent_stmt)
+            parent = parent_result.scalars().first()
+            if parent is not None and provider == IntegrationType.GOOGLE:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == organisation_id,
+                    col(IntegrationSyncState.integration_id) == integration_id,
+                    col(IntegrationSyncState.capability) == integration_type,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return None
+                return self._snapshot_integration(
+                    parent,
+                    connection_metadata=dict(state.webhook_metadata or {}),
+                )
+            if parent is not None:
+                return parent
+
+            legacy_stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.integration_type) == integration_type.value,
                 col(KnowledgeIntegration.is_active).is_(True),
             )
-            result = await session.execute(stmt)
-            return result.scalars().first()
+            legacy_result = await session.execute(legacy_stmt)
+            return legacy_result.scalars().first()
         return None
 
     async def _load_gmail_targets_by_email(
@@ -242,21 +278,60 @@ class GoogleWebhookIngestionService:
                 # owner email is the stable routing key from OAuth connect.
                 integration_stmt = select(KnowledgeIntegration).where(
                     col(KnowledgeIntegration.organisation_id) == organisation_id,
-                    col(KnowledgeIntegration.integration_type) == IntegrationType.GMAIL.value,
+                    col(KnowledgeIntegration.integration_type) == IntegrationType.GOOGLE.value,
                     col(KnowledgeIntegration.is_active).is_(True),
                     col(KnowledgeIntegration.connection_id).isnot(None),
                     func.lower(col(KnowledgeIntegration.integration_email)) == normalized_email,
                 )
                 integration_result = await session.execute(integration_stmt)
                 for integration in integration_result.scalars().all():
+                    state_stmt = select(IntegrationSyncState).where(
+                        col(IntegrationSyncState.organisation_id) == organisation_id,
+                        col(IntegrationSyncState.integration_id) == integration.integration_id,
+                        col(IntegrationSyncState.capability) == IntegrationType.GMAIL,
+                        col(IntegrationSyncState.enabled).is_(True),
+                    )
+                    state_result = await session.execute(state_stmt)
+                    state = state_result.scalar_one_or_none()
+                    if state is None:
+                        continue
                     targets.append(
                         GoogleWebhookIntegrationTarget(
                             organisation_id=organisation_id,
                             integration_id=integration.integration_id,
-                            integration=integration,
+                            integration=self._snapshot_integration(
+                                integration,
+                                connection_metadata=dict(state.webhook_metadata or {}),
+                            ),
                         )
                     )
         return targets
+
+    def _snapshot_integration(
+        self,
+        integration: KnowledgeIntegration,
+        *,
+        connection_metadata: dict[str, Any],
+    ) -> KnowledgeIntegration:
+        return KnowledgeIntegration.model_validate(
+            {
+                "integration_id": integration.integration_id,
+                "organisation_id": integration.organisation_id,
+                "created_by_user_id": integration.created_by_user_id,
+                "created_by_admin": integration.created_by_admin,
+                "integration_email": integration.integration_email,
+                "integration_scope": integration.integration_scope,
+                "integration_type": integration.integration_type,
+                "name": integration.name,
+                "credentials": dict(integration.credentials or {}),
+                "connection_id": integration.connection_id,
+                "access_token_expires_at": integration.access_token_expires_at,
+                "refresh_token_expires_at": integration.refresh_token_expires_at,
+                "scopes": list(integration.scopes or []),
+                "is_active": integration.is_active,
+                "connection_metadata": connection_metadata,
+            }
+        )
 
     def _matches_gmail_email(
         self,

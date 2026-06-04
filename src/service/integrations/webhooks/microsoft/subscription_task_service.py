@@ -13,9 +13,14 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import attributes
 from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.integrations.webhooks.microsoft.metadata import MicrosoftSubscriptionKind
 from src.service.integrations.webhooks.microsoft.subscription_service import (
@@ -27,6 +32,7 @@ MICROSOFT_WEBHOOK_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_CALENDAR,
     IntegrationType.OUTLOOK_EMAIL,
 )
+MICROSOFT_WEBHOOK_PARENT_TYPES = (IntegrationType.MICROSOFT,)
 
 
 def kind_for_integration_type(
@@ -56,11 +62,11 @@ class MicrosoftGraphSubscriptionTaskService:
         integration_id: UUID,
     ) -> dict[str, Any]:
         """Create or renew subscription metadata for one connected Outlook integration."""
-        integration_snapshot = await self._load_integration_snapshot(
+        targets = await self._load_subscription_targets(
             organisation_id=organisation_id,
             integration_id=integration_id,
         )
-        if integration_snapshot is None:
+        if not targets:
             return {
                 "status": "skipped",
                 "reason": "integration_not_found",
@@ -68,41 +74,31 @@ class MicrosoftGraphSubscriptionTaskService:
                 "integration_id": str(integration_id),
             }
 
-        kind = self._kind_for_integration(integration_snapshot)
-        if kind is None:
-            return {
-                "status": "skipped",
-                "reason": "unsupported_integration_type",
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-            }
+        completed_kinds: list[str] = []
+        for integration_snapshot, kind, sync_state_id in targets:
+            metadata = await self._subscription_service.ensure_subscription_metadata(
+                organisation_id=organisation_id,
+                integration=integration_snapshot,
+                kind=kind,
+            )
+            persisted = await self._persist_metadata(
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                metadata=metadata,
+                sync_state_id=sync_state_id,
+            )
+            if persisted:
+                completed_kinds.append(kind.value)
 
-        metadata = await self._subscription_service.ensure_subscription_metadata(
-            organisation_id=organisation_id,
-            integration=integration_snapshot,
-            kind=kind,
-        )
-        # Re-open the org session after the Graph call. The integration may have
-        # been disconnected while Graph was responding, so persistence re-checks.
-        persisted = await self._persist_metadata(
-            organisation_id=organisation_id,
-            integration_id=integration_id,
-            metadata=metadata,
-        )
-        if not persisted:
-            return {
-                "status": "skipped",
-                "reason": "integration_not_found_at_persist",
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-            }
-
-        return {
+        response = {
             "status": "success",
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
-            "kind": kind.value,
+            "kinds": completed_kinds,
         }
+        if len(completed_kinds) == 1:
+            response["kind"] = completed_kinds[0]
+        return response
 
     async def dispatch_all_subscription_ensures(
         self,
@@ -135,12 +131,12 @@ class MicrosoftGraphSubscriptionTaskService:
             "completed_at": datetime.now(UTC).isoformat(),
         }
 
-    async def _load_integration_snapshot(
+    async def _load_subscription_targets(
         self,
         *,
         organisation_id: UUID,
         integration_id: UUID,
-    ) -> KnowledgeIntegration | None:
+    ) -> list[tuple[KnowledgeIntegration, MicrosoftSubscriptionKind, UUID | None]]:
         """Load one eligible integration and detach a snapshot from the DB session."""
         async for session in acquire_org_async_session(organisation_id):
             # The org filter is the tenant boundary; integration_id is only a
@@ -148,16 +144,54 @@ class MicrosoftGraphSubscriptionTaskService:
             statement = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
-                col(KnowledgeIntegration.integration_type).in_(MICROSOFT_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    MICROSOFT_WEBHOOK_INTEGRATION_TYPES + MICROSOFT_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
             result = await session.execute(statement)
             integration = result.scalar_one_or_none()
             if integration is None:
-                return None
-            return self._snapshot_integration(integration)
-        return None
+                return []
+            integration_type = (
+                IntegrationType(integration.integration_type)
+                if isinstance(integration.integration_type, str)
+                else integration.integration_type
+            )
+            if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                kind = self._kind_for_integration(integration)
+                return [(self._snapshot_integration(integration), kind, None)] if kind else []
+
+            state_stmt = select(IntegrationSyncState).where(
+                col(IntegrationSyncState.integration_id) == integration.integration_id,
+                col(IntegrationSyncState.capability).in_(MICROSOFT_WEBHOOK_INTEGRATION_TYPES),
+                col(IntegrationSyncState.enabled).is_(True),
+            )
+            state_result = await session.execute(state_stmt)
+            targets: list[tuple[KnowledgeIntegration, MicrosoftSubscriptionKind, UUID | None]] = []
+            for state in state_result.scalars().all():
+                capability = (
+                    IntegrationType(state.capability)
+                    if isinstance(state.capability, str)
+                    else state.capability
+                )
+                kind = kind_for_integration_type(capability)
+                if kind is None:
+                    continue
+                targets.append(
+                    (
+                        self._snapshot_integration(
+                            integration,
+                            integration_type=capability,
+                            connection_metadata=dict(state.webhook_metadata or {}),
+                        ),
+                        kind,
+                        state.sync_state_id,
+                    )
+                )
+            return targets
+        return []
 
     async def _load_org_integration_ids(
         self,
@@ -169,7 +203,9 @@ class MicrosoftGraphSubscriptionTaskService:
             # subscription can fail/retry independently.
             statement = select(col(KnowledgeIntegration.integration_id)).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
-                col(KnowledgeIntegration.integration_type).in_(MICROSOFT_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    MICROSOFT_WEBHOOK_INTEGRATION_TYPES + MICROSOFT_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -183,6 +219,7 @@ class MicrosoftGraphSubscriptionTaskService:
         organisation_id: UUID,
         integration_id: UUID,
         metadata: dict[str, Any],
+        sync_state_id: UUID | None = None,
     ) -> bool:
         """Persist subscription metadata only if the integration is still connected."""
         async for session in acquire_org_async_session(organisation_id):
@@ -191,7 +228,9 @@ class MicrosoftGraphSubscriptionTaskService:
             statement = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
-                col(KnowledgeIntegration.integration_type).in_(MICROSOFT_WEBHOOK_INTEGRATION_TYPES),
+                col(KnowledgeIntegration.integration_type).in_(
+                    MICROSOFT_WEBHOOK_INTEGRATION_TYPES + MICROSOFT_WEBHOOK_PARENT_TYPES
+                ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -199,6 +238,21 @@ class MicrosoftGraphSubscriptionTaskService:
             integration = result.scalar_one_or_none()
             if integration is None:
                 return False
+
+            if sync_state_id:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.sync_state_id) == sync_state_id,
+                    col(IntegrationSyncState.enabled).is_(True),
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
+                if state is None:
+                    return False
+                state.webhook_metadata = dict(metadata or {})
+                attributes.flag_modified(state, "webhook_metadata")
+                session.add(state)
+                await session.commit()
+                return True
 
             persist_subscription_metadata(integration, metadata)
             session.add(integration)
@@ -217,21 +271,31 @@ class MicrosoftGraphSubscriptionTaskService:
         )
         return kind_for_integration_type(integration_type)
 
-    def _snapshot_integration(self, integration: KnowledgeIntegration) -> KnowledgeIntegration:
+    def _snapshot_integration(
+        self,
+        integration: KnowledgeIntegration,
+        *,
+        integration_type: IntegrationType | None = None,
+        connection_metadata: dict[str, Any] | None = None,
+    ) -> KnowledgeIntegration:
         """Copy the integration row for provider calls outside the DB session."""
         return KnowledgeIntegration.model_validate(
             {
                 "integration_id": integration.integration_id,
                 "organisation_id": integration.organisation_id,
                 "created_by_user_id": integration.created_by_user_id,
-                "integration_type": integration.integration_type,
+                "integration_type": integration_type or integration.integration_type,
                 "name": integration.name,
                 "credentials": dict(integration.credentials or {}),
                 "connection_id": integration.connection_id,
                 "access_token_expires_at": integration.access_token_expires_at,
                 "scopes": list(integration.scopes or []),
                 "is_active": integration.is_active,
-                "connection_metadata": dict(integration.connection_metadata or {}),
+                "connection_metadata": (
+                    dict(connection_metadata)
+                    if connection_metadata is not None
+                    else dict(integration.connection_metadata or {})
+                ),
             }
         )
 

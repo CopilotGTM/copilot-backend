@@ -114,3 +114,51 @@ def test_validate_required_scopes_accepts_google_without_offline_scope_echo() ->
             "refresh_token": "refresh-token",
         },
     )
+
+
+def test_google_parent_default_requires_calendar_but_not_gmail() -> None:
+    service = CopilotCallbackService()
+
+    service._validate_required_scopes(
+        IntegrationType.GOOGLE,
+        {
+            "scope": "https://www.googleapis.com/auth/calendar.readonly "
+            "https://www.googleapis.com/auth/calendar.events "
+            "https://www.googleapis.com/auth/meetings.space.readonly",
+            "refresh_token": "refresh-token",
+        },
+    )
+
+    assert service._get_enabled_capabilities(
+        IntegrationType.GOOGLE,
+        {
+            "scope": "https://www.googleapis.com/auth/calendar.readonly "
+            "https://www.googleapis.com/auth/calendar.events "
+            "https://www.googleapis.com/auth/meetings.space.readonly",
+            "refresh_token": "refresh-token",
+        },
+    ) == [IntegrationType.GOOGLE_CALENDAR]
+
+
+def test_google_parent_enables_gmail_when_gmail_scopes_are_granted() -> None:
+    assert CopilotCallbackService()._get_enabled_capabilities(
+        IntegrationType.GOOGLE,
+        {
+            "scope": "https://www.googleapis.com/auth/calendar.readonly "
+            "https://www.googleapis.com/auth/calendar.events "
+            "https://www.googleapis.com/auth/meetings.space.readonly "
+            "https://www.googleapis.com/auth/gmail.readonly "
+            "https://www.googleapis.com/auth/gmail.send",
+            "refresh_token": "refresh-token",
+        },
+    ) == [IntegrationType.GOOGLE_CALENDAR, IntegrationType.GMAIL]
+
+
+def test_microsoft_parent_default_enables_email_and_calendar_without_teams() -> None:
+    assert CopilotCallbackService()._get_enabled_capabilities(
+        IntegrationType.MICROSOFT,
+        {
+            "scope": "User.Read Mail.Read Mail.Send Calendars.ReadWrite OnlineMeetings.Read",
+            "refresh_token": "refresh-token",
+        },
+    ) == [IntegrationType.OUTLOOK_EMAIL, IntegrationType.OUTLOOK_CALENDAR]
