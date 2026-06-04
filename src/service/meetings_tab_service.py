@@ -152,11 +152,17 @@ class MeetingsTabService:
         if recording_status:
             stmt = stmt.where(col(MeetingRecordingSession.status) == recording_status)
 
-        stmt = stmt.order_by(
+        order_start = (
             col(CalendarEvent.start_at).desc()
             if view in {MeetingsView.PAST, MeetingsView.RECORDINGS}
-            else col(CalendarEvent.start_at).asc(),
+            else col(CalendarEvent.start_at).asc()
+        )
+        assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
+        stmt = stmt.order_by(
+            order_start,
             col(CalendarEvent.event_id),
+            assoc_c.match_score.desc().nullslast(),
+            assoc_c.updated_at.desc().nullslast(),
         )
 
         result = await self.session.execute(stmt)
@@ -240,7 +246,6 @@ class MeetingsTabService:
         await self._ensure_user_calendar_event(event_id)
         await self._load_deal_or_404(record_id)
 
-        await self._remove_stale_deal_associations(event_id, keep_deal_id=record_id)
         await self._mirror_deal_link(event_id, record_id)
 
         await self.session.flush()
@@ -410,23 +415,6 @@ class MeetingsTabService:
             raise MeetingsTabServiceError("Deal not found", 404)
         return deal
 
-    async def _remove_stale_deal_associations(
-        self,
-        event_id: UUID,
-        *,
-        keep_deal_id: UUID | None,
-    ) -> None:
-        stmt = select(CalendarEventDealAssociation).where(
-            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-            col(CalendarEventDealAssociation.event_id) == event_id,
-            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
-        )
-        associations = (await self.session.execute(stmt)).scalars().all()
-        for assoc in associations:
-            if keep_deal_id is not None and assoc.deal_id == keep_deal_id:
-                continue
-            assoc.status = AssociationStatus.REMOVED
-
     async def _mirror_deal_link(self, event_id: UUID, deal_id: UUID) -> None:
         stmt = select(CalendarEventDealAssociation).where(
             col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
@@ -436,6 +424,8 @@ class MeetingsTabService:
         assoc = (await self.session.execute(stmt)).scalar_one_or_none()
         if assoc:
             assoc.status = AssociationStatus.ACTIVE
+            assoc.match_score = 1.0
+            assoc.updated_at = datetime.now(UTC)
             return
         self.session.add(
             CalendarEventDealAssociation(

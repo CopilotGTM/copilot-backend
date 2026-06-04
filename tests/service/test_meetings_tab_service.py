@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.api.schemas.meetings_tab_models import MeetingLinkedRecordType, MeetingsView
-from src.domain.models.organisation_tables.sync.calendar import GenerationStatus
+from src.domain.models.organisation_tables.sync.calendar import AssociationStatus, GenerationStatus
 from src.service.meetings_tab_service import MeetingsTabService
 
 
@@ -38,6 +38,7 @@ def test_existing_deal_association_is_used_as_link_fallback() -> None:
     assert linked.record_type == MeetingLinkedRecordType.DEAL
     assert linked.record_id == deal_id
     assert linked.name == "Acme Corp"
+
 
 def test_deal_association_surfaces_deal_summary_state() -> None:
     now = datetime.now(UTC)
@@ -72,6 +73,40 @@ def test_deal_association_surfaces_deal_summary_state() -> None:
     assert item.linked_record.record_type == MeetingLinkedRecordType.DEAL
     assert item.has_summary is True
     assert item.has_prep is True
+
+
+@pytest.mark.asyncio
+async def test_mirror_deal_link_reactivates_without_removing_other_deal_associations() -> None:
+    existing_assoc = SimpleNamespace(
+        status=AssociationStatus.REMOVED,
+        match_score=0.2,
+        updated_at=datetime.now(UTC) - timedelta(days=1),
+    )
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return existing_assoc
+
+    class _Session:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, _stmt):
+            return _Result()
+
+        def add(self, item):
+            self.added.append(item)
+
+    service = _service()
+    fake_session = _Session()
+    service.session = fake_session
+
+    await service._mirror_deal_link(uuid4(), uuid4())  # noqa: SLF001
+
+    assert existing_assoc.status == AssociationStatus.ACTIVE
+    assert existing_assoc.match_score == 1.0
+    assert existing_assoc.updated_at > datetime.now(UTC) - timedelta(seconds=5)
+    assert fake_session.added == []
 
 
 def test_recordings_window_includes_today_by_default() -> None:

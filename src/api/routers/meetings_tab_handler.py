@@ -48,12 +48,12 @@ async def _safe_auto_invite(
 ) -> dict[str, Any] | None:
     try:
         return await service.auto_invite_if_eligible(event_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("Auto invite failed after meeting write")
         return {
             "status": "failed",
             "reason": "auto_invite_failed",
-            "message": str(exc),
+            "message": "Auto invite failed after the meeting was saved.",
         }
 
 

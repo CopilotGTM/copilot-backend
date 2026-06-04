@@ -186,8 +186,8 @@ Behavior:
 
 - Validates current-user ownership of the calendar event.
 - Validates the deal belongs to the same organisation and is not deleted.
-- Marks other active associations for the same event as `REMOVED`.
 - Creates or reactivates a `CalendarEventDealAssociation` for the selected deal.
+- Does not remove other existing deal associations; this keeps existing deal timelines and jobs intact.
 
 ## Invite Bot
 
