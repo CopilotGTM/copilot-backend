@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -117,6 +118,7 @@ class SalesforceDealRecordSyncService:
         fetched_stage_history_rows = 0
         fetched_participant_rows = 0
 
+        phase_started_at = perf_counter()
         async for page_records, field_names in opportunities_fetcher.fetch_pages():
             fetched_opportunities += len(page_records)
             if field_names:
@@ -150,6 +152,20 @@ class SalesforceDealRecordSyncService:
             self._merge_deal_write_result(write_result, chunk_result[0])
             skipped_malformed_opportunities += chunk_result[1]
 
+        logger.info(
+            "Salesforce deal opportunities phase completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "duration_ms": _elapsed_ms(phase_started_at),
+                "fetched_opportunities": fetched_opportunities,
+                "deals_created": write_result.deals_created,
+                "deals_updated": write_result.deals_updated,
+                "skipped_malformed_opportunities": skipped_malformed_opportunities,
+            },
+        )
+
+        phase_started_at = perf_counter()
         (
             fetched_stage_history_rows,
             skipped_malformed_stage_history,
@@ -164,7 +180,20 @@ class SalesforceDealRecordSyncService:
             current_stage_external_id_by_deal=current_stage_external_id_by_deal,
         )
         self._merge_backfill_payload(backfill_payload, stage_backfill_payload)
+        logger.info(
+            "Salesforce deal stage history phase completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "duration_ms": _elapsed_ms(phase_started_at),
+                "fetched_stage_history_rows": fetched_stage_history_rows,
+                "stage_history_created": stage_history_result.stage_history_created,
+                "stage_history_updated": stage_history_result.stage_history_updated,
+                "skipped_malformed_stage_history": skipped_malformed_stage_history,
+            },
+        )
 
+        phase_started_at = perf_counter()
         (
             fetched_participant_rows,
             skipped_malformed_participants,
@@ -180,7 +209,34 @@ class SalesforceDealRecordSyncService:
         self._merge_participant_result(participant_result, role_participant_result)
         self._merge_association_result(association_result, role_association_result)
         self._merge_backfill_payload(backfill_payload, role_backfill_payload)
+        logger.info(
+            "Salesforce deal contact roles phase completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "duration_ms": _elapsed_ms(phase_started_at),
+                "fetched_participant_rows": fetched_participant_rows,
+                "participants_created": role_participant_result.participants_created,
+                "participants_updated": role_participant_result.participants_updated,
+                "associations_created": role_association_result.associations_created,
+                "associations_updated": role_association_result.associations_updated,
+                "skipped_malformed_participants": skipped_malformed_participants,
+                "deal_backfill_rows_updated": role_backfill_payload["rows_updated"],
+                "deal_backfill_per_op": role_backfill_payload["per_op"],
+            },
+        )
 
+        logger.info(
+            "Salesforce deal company relationships phase started",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "company_relationship_count": sum(
+                    1 for company_id in company_external_id_by_deal.values() if company_id
+                ),
+            },
+        )
+        phase_started_at = perf_counter()
         (
             company_participant_result,
             company_association_result,
@@ -193,6 +249,20 @@ class SalesforceDealRecordSyncService:
         self._merge_participant_result(participant_result, company_participant_result)
         self._merge_association_result(association_result, company_association_result)
         self._merge_backfill_payload(backfill_payload, company_backfill_payload)
+        logger.info(
+            "Salesforce deal company relationships phase completed",
+            extra={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration_id),
+                "duration_ms": _elapsed_ms(phase_started_at),
+                "participants_created": company_participant_result.participants_created,
+                "participants_updated": company_participant_result.participants_updated,
+                "associations_created": company_association_result.associations_created,
+                "associations_updated": company_association_result.associations_updated,
+                "deal_backfill_rows_updated": company_backfill_payload["rows_updated"],
+                "deal_backfill_per_op": company_backfill_payload["per_op"],
+            },
+        )
 
         completed_at = datetime.now(UTC)
         return DealSyncResult(
@@ -686,6 +756,7 @@ class SalesforceDealRecordSyncService:
                 opportunities=[],
                 transitions=[],
                 participant_extraction=participant_extraction,
+                backfill=False,
             )
             self._merge_participant_result(participant_result, chunk_participant)
             self._merge_association_result(association_result, chunk_association)
@@ -833,7 +904,7 @@ class SalesforceDealRecordSyncService:
         integration_id: UUID,
         external_ids: set[str] | None = None,
     ) -> dict[str, UUID]:
-        stmt = select(CRMDeal.external_id, CRMDeal.deal_id).where(
+        stmt = select(col(CRMDeal.external_id), col(CRMDeal.deal_id)).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
@@ -865,10 +936,10 @@ class SalesforceDealRecordSyncService:
 
         if pipeline_external_ids:
             pipeline_stmt = select(
-                CRMPipeline.external_id,
-                CRMPipeline.pipeline_id,
-                CRMPipeline.name,
-                CRMPipeline.label,
+                col(CRMPipeline.external_id),
+                col(CRMPipeline.pipeline_id),
+                col(CRMPipeline.name),
+                col(CRMPipeline.label),
             ).where(
                 col(CRMPipeline.organisation_id) == organisation_id,
                 col(CRMPipeline.integration_id) == integration_id,
@@ -887,11 +958,11 @@ class SalesforceDealRecordSyncService:
 
         if stage_external_ids:
             stage_stmt = select(
-                CRMDealStage.external_id,
-                CRMDealStage.stage_id,
-                CRMDealStage.name,
-                CRMDealStage.label,
-                CRMDealStage.pipeline_id,
+                col(CRMDealStage.external_id),
+                col(CRMDealStage.stage_id),
+                col(CRMDealStage.name),
+                col(CRMDealStage.label),
+                col(CRMDealStage.pipeline_id),
             ).where(
                 col(CRMDealStage.organisation_id) == organisation_id,
                 col(CRMDealStage.integration_id) == integration_id,
@@ -911,10 +982,10 @@ class SalesforceDealRecordSyncService:
 
         if user_external_ids:
             user_stmt = select(
-                CRMUser.external_id,
-                CRMUser.user_id,
-                CRMUser.full_name,
-                CRMUser.email,
+                col(CRMUser.external_id),
+                col(CRMUser.user_id),
+                col(CRMUser.full_name),
+                col(CRMUser.email),
             ).where(
                 col(CRMUser.organisation_id) == organisation_id,
                 col(CRMUser.integration_id) == integration_id,
@@ -931,10 +1002,10 @@ class SalesforceDealRecordSyncService:
 
         if company_external_ids:
             company_stmt = select(
-                CRMCompany.external_id,
-                CRMCompany.company_id,
-                CRMCompany.name,
-                CRMCompany.domain,
+                col(CRMCompany.external_id),
+                col(CRMCompany.company_id),
+                col(CRMCompany.name),
+                col(CRMCompany.domain),
             ).where(
                 col(CRMCompany.organisation_id) == organisation_id,
                 col(CRMCompany.integration_id) == integration_id,
@@ -953,10 +1024,10 @@ class SalesforceDealRecordSyncService:
 
         if contact_external_ids:
             contact_stmt = select(
-                CRMContact.external_id,
-                CRMContact.contact_id,
-                CRMContact.full_name,
-                CRMContact.email,
+                col(CRMContact.external_id),
+                col(CRMContact.contact_id),
+                col(CRMContact.full_name),
+                col(CRMContact.email),
             ).where(
                 col(CRMContact.organisation_id) == organisation_id,
                 col(CRMContact.integration_id) == integration_id,
@@ -1176,3 +1247,7 @@ class SalesforceDealRecordSyncService:
 
 def _compact_str_set(values) -> set[str]:
     return {value for value in values if isinstance(value, str) and value}
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
