@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivityObjectType,
     CRMActivityPriority,
     CRMActivitySource,
     CRMActivityStatus,
@@ -143,6 +144,9 @@ class TaskListItem(BaseModel):
     # Deal linkage
     deal_id: UUID | None
     deal_name: str | None = Field(default=None, description="Denormalized deal name.")
+    related_object_type: str | None = Field(default=None, description="Related CRM object type.")
+    related_local_id: UUID | None = Field(default=None, description="Related CRM object UUID.")
+    related_name: str | None = Field(default=None, description="Related CRM object display name.")
     # Source and creator
     source: str | None = None
     created_by_user_id: UUID | None = None
@@ -207,6 +211,9 @@ class TaskDetail(BaseModel):
     # Deal linkage
     deal_id: UUID | None
     deal_name: str | None = None
+    related_object_type: str | None = None
+    related_local_id: UUID | None = None
+    related_name: str | None = None
 
     # Core task fields
     subject: str | None
@@ -334,6 +341,14 @@ class CreateTaskRequest(BaseModel):
         default=None,
         description="Link task to a deal. If null, creates a standalone task.",
     )
+    related_object_type: CRMActivityObjectType | None = Field(
+        default=None,
+        description="Optional related object type for V1 tasks: DEAL, LEAD, or CONTACT.",
+    )
+    related_local_id: UUID | None = Field(
+        default=None,
+        description="Internal UUID for the related DEAL, LEAD, or CONTACT.",
+    )
     reminder: ReminderConfig | None = Field(
         default=None,
         description="Optional reminder configuration.",
@@ -377,6 +392,26 @@ class CreateTaskRequest(BaseModel):
             raise ValueError(msg)
         if self.owner_user_id and self.external_assignee_email:
             msg = "Cannot assign to both an internal user and an external person. Choose one."
+            raise ValueError(msg)
+        if bool(self.related_object_type) != bool(self.related_local_id):
+            msg = "related_object_type and related_local_id must be provided together"
+            raise ValueError(msg)
+        if self.related_object_type and self.related_object_type not in {
+            CRMActivityObjectType.DEAL,
+            CRMActivityObjectType.LEAD,
+            CRMActivityObjectType.CONTACT,
+        }:
+            msg = "related_object_type must be DEAL, LEAD, or CONTACT"
+            raise ValueError(msg)
+        if self.deal_id and self.related_object_type and self.related_object_type != CRMActivityObjectType.DEAL:
+            msg = "deal_id cannot be combined with a non-DEAL related object"
+            raise ValueError(msg)
+        if (
+            self.deal_id
+            and self.related_object_type == CRMActivityObjectType.DEAL
+            and self.related_local_id != self.deal_id
+        ):
+            msg = "deal_id and DEAL related_local_id must refer to the same deal"
             raise ValueError(msg)
         return self
 
@@ -440,6 +475,14 @@ class UpdateTaskRequest(BaseModel):
         default=None,
         description="Link or unlink task from a deal. Pass null to remove.",
     )
+    related_object_type: CRMActivityObjectType | None = Field(
+        default=None,
+        description="Related object type for reassociation: DEAL, LEAD, or CONTACT.",
+    )
+    related_local_id: UUID | None = Field(
+        default=None,
+        description="Internal UUID for the related DEAL, LEAD, or CONTACT.",
+    )
     reminder: ReminderConfig | None = Field(
         default=None,
         description="Create, update, or remove reminder. Set enabled=false to remove.",
@@ -476,11 +519,45 @@ class UpdateTaskRequest(BaseModel):
             raise ValueError(msg)
         return value
 
+    @model_validator(mode="after")
+    def _validate_related_object_pair(self) -> UpdateTaskRequest:
+        if ("related_object_type" in self.model_fields_set) != (
+            "related_local_id" in self.model_fields_set
+        ):
+            msg = "related_object_type and related_local_id must be updated together"
+            raise ValueError(msg)
+        if self.related_object_type and self.related_object_type not in {
+            CRMActivityObjectType.DEAL,
+            CRMActivityObjectType.LEAD,
+            CRMActivityObjectType.CONTACT,
+        }:
+            msg = "related_object_type must be DEAL, LEAD, or CONTACT"
+            raise ValueError(msg)
+        if (
+            "deal_id" in self.model_fields_set
+            and self.deal_id
+            and self.related_object_type
+            and self.related_object_type != CRMActivityObjectType.DEAL
+        ):
+            msg = "deal_id cannot be combined with a non-DEAL related object"
+            raise ValueError(msg)
+        if (
+            "deal_id" in self.model_fields_set
+            and self.deal_id
+            and self.related_object_type == CRMActivityObjectType.DEAL
+            and self.related_local_id != self.deal_id
+        ):
+            msg = "deal_id and DEAL related_local_id must refer to the same deal"
+            raise ValueError(msg)
+        return self
+
 
 class GlobalTaskListParams(BaseModel):
     """Query parameters for global task listing."""
 
     deal_id: UUID | None = Field(default=None, description="Filter by deal")
+    related_object_type: str | None = Field(default=None, description="Filter by related object type")
+    related_local_id: UUID | None = Field(default=None, description="Filter by related object")
     statuses: list[str] | None = Field(default=None, description="Filter by statuses")
     priorities: list[str] | None = Field(default=None, description="Filter by priorities")
     source: list[str] | None = Field(default=None, description="Filter by source")

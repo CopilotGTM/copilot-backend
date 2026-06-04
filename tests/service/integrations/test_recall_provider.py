@@ -232,6 +232,29 @@ class TestRecallMeetingRecordingProvider:
 
         assert result == transcript_payload
 
+    async def test_extract_video_mixed_download_returns_playback_artifact(self) -> None:
+        payload = {
+            "recordings": [
+                {
+                    "id": "recording_123",
+                    "media_shortcuts": {
+                        "video_mixed": {
+                            "id": "video_123",
+                            "data": {"download_url": "https://download.example/video.mp4"},
+                        }
+                    },
+                }
+            ]
+        }
+
+        result = RecallMeetingRecordingProvider.extract_video_mixed_download(payload)
+
+        assert result == {
+            "recording_id": "recording_123",
+            "video_id": "video_123",
+            "download_url": "https://download.example/video.mp4",
+        }
+
     async def test_create_session_raises_provider_error_on_http_failure(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
         response = _json_response(

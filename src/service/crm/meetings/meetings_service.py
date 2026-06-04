@@ -204,8 +204,10 @@ class MeetingsService:
         Checks event association, removed/cancelled status, existing transcript,
         and in-progress processing.
         """
-        # Verify event belongs to this deal and is not removed/cancelled
+        # The org filter is the tenant boundary; event/deal UUIDs alone are not
+        # trusted because this endpoint accepts both from the client path.
         assoc_stmt = select(CalendarEventDealAssociation).where(
+            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
             col(CalendarEventDealAssociation.event_id) == event_id,
             col(CalendarEventDealAssociation.deal_id) == deal_id,
         )
