@@ -322,8 +322,141 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
     }
 
 
+@pytest.mark.asyncio
+async def test_stage_history_sync_carries_last_deal_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    persisted_groups: list[list[str]] = []
+
+    class FakeHistoryFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def fetch_pages(self):
+            yield [
+                {"OpportunityId": "006A", "StageName": "Prospecting"},
+                {"OpportunityId": "006B", "StageName": "Prospecting"},
+            ]
+            yield [
+                {"OpportunityId": "006B", "StageName": "Proposal"},
+                {"OpportunityId": "006C", "StageName": "Prospecting"},
+            ]
+
+    async def fake_persist_stage_history_rows(**kwargs):
+        persisted_groups.append([row["OpportunityId"] for row in kwargs["raw_stage_history"]])
+        return (
+            StageHistoryWriteResult(stage_history_created=1),
+            0,
+            {
+                "rows_updated": 0,
+                "per_op": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        deal_sync_service, "SalesforceOpportunityHistoryFetcher", FakeHistoryFetcher
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_stage_history_rows",
+        fake_persist_stage_history_rows,
+    )
+
+    fetched, skipped, result, backfill = await service._sync_stage_history_relationships(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        token_info=_token_info(organisation_id, integration_id),
+        instance_url="https://example.my.salesforce.com",
+        pipeline_external_id_by_deal={},
+        current_stage_external_id_by_deal={},
+    )
+
+    assert persisted_groups == [["006A"], ["006B", "006B"], ["006C"]]
+    assert fetched == 4
+    assert skipped == 0
+    assert result.stage_history_created == 3
+    assert backfill == {"rows_updated": 0, "per_op": {}}
+
+
+@pytest.mark.asyncio
+async def test_contact_role_sync_carries_last_deal_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    persisted_groups: list[list[str]] = []
+
+    class FakeContactRolesFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def fetch_pages(self):
+            yield [
+                {"OpportunityId": "006A", "ContactId": "003A"},
+                {"OpportunityId": "006B", "ContactId": "003B"},
+            ]
+            yield [
+                {"OpportunityId": "006B", "ContactId": "003C"},
+                {"OpportunityId": "006C", "ContactId": "003D"},
+            ]
+
+    async def fake_persist_contact_role_rows(**kwargs):
+        persisted_groups.append([row["OpportunityId"] for row in kwargs["raw_contact_roles"]])
+        return (
+            0,
+            ParticipantWriteResult(participants_created=1),
+            AssociationWriteResult(associations_created=1),
+            {"rows_updated": 0, "per_op": {}},
+        )
+
+    monkeypatch.setattr(
+        deal_sync_service,
+        "SalesforceOpportunityContactRolesFetcher",
+        FakeContactRolesFetcher,
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_contact_role_rows",
+        fake_persist_contact_role_rows,
+    )
+
+    (
+        fetched,
+        skipped,
+        participants,
+        associations,
+        backfill,
+    ) = await service._sync_contact_role_relationships(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        token_info=_token_info(organisation_id, integration_id),
+        instance_url="https://example.my.salesforce.com",
+    )
+
+    assert persisted_groups == [["006A"], ["006B", "006B"], ["006C"]]
+    assert fetched == 4
+    assert skipped == 0
+    assert participants.participants_created == 3
+    assert associations.associations_created == 3
+    assert backfill == {"rows_updated": 0, "per_op": {}}
+
+
 async def _fake_backfill_deals(**_kwargs):
     return {"rows_updated": 0, "per_op": {}}
+
+
+def _token_info(organisation_id, integration_id) -> IntegrationTokenInfo:
+    return IntegrationTokenInfo(
+        integration_id=integration_id,
+        organisation_id=organisation_id,
+        access_token="token",
+        refresh_token=None,
+        access_token_expires_at=None,
+    )
 
 
 def _normalized_opportunity(
