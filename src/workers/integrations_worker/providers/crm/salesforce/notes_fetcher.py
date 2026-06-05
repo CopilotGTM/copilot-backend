@@ -46,13 +46,16 @@ class SalesforceNotesFetcher:
         if not scoped_ids:
             return
 
-        link_rows_by_document_id: dict[str, list[dict[str, Any]]] = {}
         link_count = 0
-        for batch in _chunked(scoped_ids, _LINK_BATCH_SIZE):
+        hydrated_note_count = 0
+        merged_row_count = 0
+
+        for linked_entity_batch in _chunked(scoped_ids, _LINK_BATCH_SIZE):
+            link_rows_by_document_id: dict[str, list[dict[str, Any]]] = {}
             # IDs come from our own synced CRM dimension tables, not from user input.
             soql = (
                 "SELECT Id, ContentDocumentId, LinkedEntityId "  # noqa: S608  # nosec B608
-                f"FROM ContentDocumentLink WHERE LinkedEntityId IN ({_quoted_csv(batch)})"
+                f"FROM ContentDocumentLink WHERE LinkedEntityId IN ({_quoted_csv(linked_entity_batch)})"
             )
             for link_row in await self._query_all(soql, error_label="notes link"):
                 document_id = link_row.get("ContentDocumentId")
@@ -61,36 +64,22 @@ class SalesforceNotesFetcher:
                 link_rows_by_document_id.setdefault(document_id, []).append(link_row)
                 link_count += 1
 
-        document_ids = sorted(link_rows_by_document_id)
-        if not document_ids:
-            logger.info(
-                "Fetched Salesforce note links but found no ContentDocumentIds",
-                extra={
-                    "integration_id": str(self.token_info.integration_id),
-                    "linked_entity_count": len(scoped_ids),
-                    "link_count": link_count,
-                },
-            )
-            return
-
-        hydrated_note_count = 0
-        merged_row_count = 0
-        for batch in _chunked(document_ids, _NOTE_BATCH_SIZE):
-            # ContentDocumentIds also come from the provider-scoped link query above.
-            soql = (
-                "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "  # noqa: S608  # nosec B608
-                f"FROM ContentNote WHERE Id IN ({_quoted_csv(batch)})"
-            )
-            merged_rows: list[dict[str, Any]] = []
-            for row in await self._query_all(soql, error_label="notes hydrate"):
-                note_id = row.get("Id")
-                if isinstance(note_id, str) and note_id:
-                    hydrated_note_count += 1
-                    for link_row in link_rows_by_document_id.get(note_id, []):
-                        merged_rows.append(_merge_link_and_note(link_row, row))
-            if merged_rows:
-                merged_row_count += len(merged_rows)
-                yield merged_rows
+            for document_batch in _chunked(sorted(link_rows_by_document_id), _NOTE_BATCH_SIZE):
+                # ContentDocumentIds also come from the provider-scoped link query above.
+                soql = (
+                    "SELECT Id, Title, Content, OwnerId, CreatedDate, LastModifiedDate "  # noqa: S608  # nosec B608
+                    f"FROM ContentNote WHERE Id IN ({_quoted_csv(document_batch)})"
+                )
+                merged_rows: list[dict[str, Any]] = []
+                for row in await self._query_all(soql, error_label="notes hydrate"):
+                    note_id = row.get("Id")
+                    if isinstance(note_id, str) and note_id:
+                        hydrated_note_count += 1
+                        for link_row in link_rows_by_document_id.get(note_id, []):
+                            merged_rows.append(_merge_link_and_note(link_row, row))
+                if merged_rows:
+                    merged_row_count += len(merged_rows)
+                    yield merged_rows
 
         logger.info(
             "Fetched Salesforce notes",

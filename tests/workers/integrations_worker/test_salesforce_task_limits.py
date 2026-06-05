@@ -8,8 +8,8 @@ def test_salesforce_initial_sync_record_phases_allow_large_orgs() -> None:
     ]:
         limits = TASK_LIMITS[task_name]
 
-        assert limits["soft"] == 2100
-        assert limits["hard"] == 2160
+        assert limits["soft"] == 3600
+        assert limits["hard"] == 3660
 
 
 def test_salesforce_secondary_record_phases_allow_large_orgs() -> None:
@@ -19,8 +19,8 @@ def test_salesforce_secondary_record_phases_allow_large_orgs() -> None:
     ]:
         limits = TASK_LIMITS[task_name]
 
-        assert limits["soft"] == 1800
-        assert limits["hard"] == 1860
+        assert limits["soft"] == 3600
+        assert limits["hard"] == 3660
 
 
 def test_salesforce_deals_allows_extra_large_initial_syncs() -> None:

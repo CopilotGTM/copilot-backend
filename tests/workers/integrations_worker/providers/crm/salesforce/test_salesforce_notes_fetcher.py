@@ -92,6 +92,89 @@ async def test_fetcher_queries_links_then_hydrates_salesforce_notes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_iter_batches_yields_first_note_batch_before_querying_all_link_chunks() -> None:
+    linked_entity_ids = [f"006OPPTY{i:03d}" for i in range(201)]
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    async def _fake_get(url, *, headers, params=None):
+        query = params["q"]
+        request = httpx.Request("GET", url)
+        if "FROM ContentDocumentLink" in query and linked_entity_ids[-1] in query:
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "records": [
+                        {
+                            "ContentDocumentId": "069NOTE2",
+                            "LinkedEntityId": linked_entity_ids[-1],
+                        }
+                    ]
+                },
+            )
+        if "FROM ContentDocumentLink" in query:
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "records": [
+                        {
+                            "ContentDocumentId": "069NOTE1",
+                            "LinkedEntityId": linked_entity_ids[0],
+                        }
+                    ]
+                },
+            )
+        records = []
+        if "069NOTE1" in query:
+            records.append(
+                {
+                    "Id": "069NOTE1",
+                    "Title": "First batch note",
+                    "Content": "Persist this before querying every link chunk.",
+                    "OwnerId": "005OWNER",
+                }
+            )
+        if "069NOTE2" in query:
+            records.append(
+                {
+                    "Id": "069NOTE2",
+                    "Title": "Second batch note",
+                    "Content": "This should not be fetched before the first yield.",
+                    "OwnerId": "005OWNER",
+                }
+            )
+        return httpx.Response(200, request=request, json={"records": records})
+
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=_fake_get)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.notes_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.notes_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        batches = SalesforceNotesFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).iter_batches(linked_entity_ids=linked_entity_ids)
+        first_batch = await batches.__anext__()
+
+    assert len(first_batch) == 1
+    assert first_batch[0]["Id"] == "069NOTE1"
+    assert client.get.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_fetch_one_by_note_id_hydrates_note_with_scoped_links() -> None:
     responses = [
         httpx.Response(
