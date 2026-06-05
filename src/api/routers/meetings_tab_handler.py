@@ -270,6 +270,37 @@ async def invite_bot(
         )
 
 
+@meetings_tab_router.delete(
+    "/{event_id}/bot/invite",
+    response_model=GenericResponse[dict],
+    summary="Remove the meeting bot",
+)
+async def remove_bot(
+    event_id: UUID,
+    response: FastAPIResponse,
+    service: MeetingsTabService = Depends(get_meetings_tab_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("meetings:update")),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[dict]:
+    """Cancel a scheduled Recall bot for a current-user calendar event."""
+    try:
+        data = await service.cancel_bot(event_id)
+        return Response.success_response("Bot invite removed", data)
+    except MeetingsTabServiceError as exc:
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        logger.exception("Failed to remove meeting bot")
+        return Response.error_response(
+            status_code=500,
+            message="Failed to remove bot",
+            response=response,
+        )
+
+
 @meetings_tab_router.get(
     "/{event_id}/recording",
     response_model=GenericResponse[MeetingRecordingResponse],

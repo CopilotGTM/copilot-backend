@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -50,11 +51,17 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
+    MeetingRecordingStatus,
+    MeetingTranscriptStatus,
 )
 from src.infra.config.configs import recall_config
 from src.infra.utils.logger import get_logger
 from src.service.calendar_invites.models import CalendarInviteAttendee, CalendarInviteCreateRequest
 from src.service.calendar_invites.service import CalendarInviteService
+from src.service.crm.access.meetings_access_service import (
+    CRMMeetingRecordingControlService,
+    CRMMeetingsAccessServiceError,
+)
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
@@ -62,9 +69,22 @@ from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchSer
 logger = get_logger(__name__)
 
 CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
 )
+REMOVABLE_RECORDING_STATUSES = {
+    MeetingRecordingStatus.PENDING_SEND.value,
+    MeetingRecordingStatus.SEND_QUEUED.value,
+    MeetingRecordingStatus.SENT.value,
+    MeetingRecordingStatus.FAILED.value,
+}
+PROCESSING_RECORDING_STATUSES = {
+    MeetingRecordingStatus.PENDING_SEND.value,
+    MeetingRecordingStatus.SEND_QUEUED.value,
+    MeetingRecordingStatus.SENT.value,
+    MeetingRecordingStatus.JOINING.value,
+    MeetingRecordingStatus.IN_CALL.value,
+}
 
 
 class MeetingsTabServiceError(Exception):
@@ -255,7 +275,30 @@ class MeetingsTabService:
         """Manually send the Recall bot after proving current-user event ownership."""
         await self._ensure_user_calendar_event(event_id)
         await self.session.rollback()
-        return await MeetingRecordingDispatchService(self.organisation_id).dispatch_event(event_id)
+        try:
+            cleanup_result = await self._retry_cancel_cleanup_if_needed(event_id)
+        except CRMMeetingsAccessServiceError as exc:
+            raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
+        if cleanup_result is not None and cleanup_result.get("status") != "cancelled":
+            return cleanup_result
+        return await MeetingRecordingDispatchService(self.organisation_id).dispatch_event(
+            event_id,
+            allow_cancelled_reinvite=True,
+        )
+
+    async def cancel_bot(self, event_id: UUID) -> dict[str, Any]:
+        """Cancel a scheduled Recall bot after proving current-user event ownership."""
+        event = await self._ensure_user_calendar_event(event_id)
+        start_at = event.start_at
+        if start_at.tzinfo is None:
+            start_at = start_at.replace(tzinfo=UTC)
+        if start_at <= datetime.now(UTC):
+            raise MeetingsTabServiceError("Recording bot cannot be removed after meeting start", 409)
+        await self.session.rollback()
+        try:
+            return await CRMMeetingRecordingControlService(self.organisation_id).cancel_bot(event_id)
+        except CRMMeetingsAccessServiceError as exc:
+            raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
 
     async def auto_invite_if_eligible(self, event_id: UUID) -> dict[str, Any] | None:
         """Dispatch the bot after commit when effective policy says auto-invite."""
@@ -517,7 +560,7 @@ class MeetingsTabService:
             else None
         )
         is_external = self._is_external_meeting(event, org_domains)
-        bot = self._bot_status(recording, linked_record, is_external)
+        bot = self._bot_status(event, recording, linked_record, is_external)
         return MeetingListItem(
             event_id=event.event_id,
             title=event.title,
@@ -527,6 +570,7 @@ class MeetingsTabService:
             if event.start_at and event.end_at
             else None,
             platform=event.online_meeting_provider or event.provider,
+            platform_label=self._platform_label(event),
             conference_link=event.conference_link,
             status=event.status,
             attendees=attendees,
@@ -534,6 +578,7 @@ class MeetingsTabService:
             linked_record=linked_record,
             bot=bot,
             recording_status=self._enum_value(recording.status) if recording else None,
+            recording_availability=self._recording_availability(recording),
             transcript_status=self._enum_value(recording.transcript_status) if recording else None,
             has_recording=recording is not None,
             has_summary=deal_context_assoc is not None
@@ -569,6 +614,7 @@ class MeetingsTabService:
 
     def _bot_status(
         self,
+        event: CalendarEvent,
         recording: MeetingRecordingSession | None,
         linked_record: MeetingLinkedRecord | None,
         is_external: bool,
@@ -585,7 +631,98 @@ class MeetingsTabService:
             status=status,
             is_external=is_external,
             provider_session_id=recording.provider_session_id if recording else None,
+            can_invite=self._can_invite_bot(event=event, recording=recording),
+            can_remove=self._can_remove_bot(event, recording),
         )
+
+    async def _retry_cancel_cleanup_if_needed(self, event_id: UUID) -> dict[str, Any] | None:
+        """Retry failed provider cleanup before a user-triggered re-invite.
+
+        A cancelled row with `last_cancel_error` means the user's opt-out was
+        recorded locally, but Recall cleanup failed. Re-invite should not create
+        a replacement bot until the old provider session is gone or confirmed gone.
+        """
+        row = await self._get_meeting_row(event_id)
+        recording = row[3]
+        if (
+            recording is None
+            or self._enum_value(recording.status) != MeetingRecordingStatus.CANCELLED.value
+            or not (recording.provider_payload or {}).get("last_cancel_error")
+        ):
+            return None
+        return await CRMMeetingRecordingControlService(self.organisation_id).cancel_bot(event_id)
+
+    @staticmethod
+    def _platform_label(event: CalendarEvent) -> str:
+        provider = (event.online_meeting_provider or event.provider or "").strip().lower()
+        hostname = MeetingsTabService._conference_hostname(event.conference_link)
+        if "googlemeet" in provider or "google meet" in provider or hostname == "meet.google.com":
+            return "Google Meet"
+        if "teams" in provider or hostname.endswith(("teams.microsoft.com", "teams.live.com")):
+            return "Microsoft Teams"
+        if "zoom" in provider or hostname.endswith("zoom.us"):
+            return "Zoom"
+        if "webex" in provider or hostname.endswith("webex.com"):
+            return "Webex"
+        return "Not available"
+
+    @staticmethod
+    def _conference_hostname(conference_link: str | None) -> str:
+        if not conference_link:
+            return ""
+        parsed = urlparse(conference_link if "://" in conference_link else f"https://{conference_link}")
+        return (parsed.hostname or "").lower().removeprefix("www.")
+
+    @staticmethod
+    def _recording_availability(recording: MeetingRecordingSession | None) -> str:
+        if recording is None:
+            return "Not available"
+        status = MeetingsTabService._enum_value(recording.status)
+        if status == MeetingRecordingStatus.COMPLETED.value:
+            return "Available"
+        if status in PROCESSING_RECORDING_STATUSES:
+            return "Processing"
+        return "Not available"
+
+    @staticmethod
+    def _can_remove_bot(event: CalendarEvent, recording: MeetingRecordingSession | None) -> bool:
+        if recording is None:
+            return False
+        start_at = event.start_at
+        if start_at.tzinfo is None:
+            start_at = start_at.replace(tzinfo=UTC)
+        if start_at <= datetime.now(UTC):
+            return False
+        if MeetingsTabService._enum_value(recording.transcript_status) == (
+            MeetingTranscriptStatus.READY.value
+        ):
+            return False
+        status = MeetingsTabService._enum_value(recording.status)
+        if status == MeetingRecordingStatus.CANCELLED.value:
+            return bool((recording.provider_payload or {}).get("last_cancel_error"))
+        return status in REMOVABLE_RECORDING_STATUSES
+
+    @staticmethod
+    def _can_invite_bot(
+        *,
+        event: CalendarEvent,
+        recording: MeetingRecordingSession | None,
+    ) -> bool:
+        if not event.conference_link:
+            return False
+        start_at = event.start_at
+        if start_at.tzinfo is None:
+            start_at = start_at.replace(tzinfo=UTC)
+        if start_at <= datetime.now(UTC):
+            return False
+        if recording is None:
+            return True
+        status = MeetingsTabService._enum_value(recording.status)
+        if status == MeetingRecordingStatus.CANCELLED.value:
+            return not bool((recording.provider_payload or {}).get("last_cancel_error"))
+        return status in {
+            MeetingRecordingStatus.FAILED.value,
+        }
 
     @staticmethod
     def _is_external_meeting(event: CalendarEvent, org_domains: set[str]) -> bool:

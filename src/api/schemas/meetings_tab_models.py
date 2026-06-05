@@ -51,6 +51,8 @@ class MeetingBotStatus(BaseModel):
     reason: str | None = None
     is_external: bool = False
     provider_session_id: str | None = None
+    can_invite: bool = False
+    can_remove: bool = False
 
 
 class MeetingListItem(BaseModel):
@@ -62,6 +64,7 @@ class MeetingListItem(BaseModel):
     end_at: datetime
     duration_minutes: int | None = None
     platform: str | None = None
+    platform_label: str = "Not available"
     conference_link: str | None = None
     status: str | None = None
     attendees: list[MeetingAttendeeItem] = Field(default_factory=list)
@@ -69,6 +72,7 @@ class MeetingListItem(BaseModel):
     linked_record: MeetingLinkedRecord | None = None
     bot: MeetingBotStatus
     recording_status: str | None = None
+    recording_availability: str = "Not available"
     transcript_status: str | None = None
     has_recording: bool = False
     has_summary: bool = False

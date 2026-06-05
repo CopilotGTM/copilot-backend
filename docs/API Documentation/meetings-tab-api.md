@@ -76,6 +76,8 @@ type MeetingBotStatus = {
   reason: string | null;
   is_external: boolean;
   provider_session_id: string | null;
+  can_invite: boolean;
+  can_remove: boolean;
 };
 
 type MeetingListItem = {
@@ -85,6 +87,7 @@ type MeetingListItem = {
   end_at: string;
   duration_minutes: number | null;
   platform: string | null;
+  platform_label: "Google Meet" | "Microsoft Teams" | "Zoom" | "Webex" | "Not available";
   conference_link: string | null;
   status: string | null;
   attendees: MeetingAttendeeItem[];
@@ -92,6 +95,7 @@ type MeetingListItem = {
   linked_record: MeetingLinkedRecord | null;
   bot: MeetingBotStatus;
   recording_status: string | null;
+  recording_availability: "Not available" | "Processing" | "Available";
   transcript_status: string | null;
   has_recording: boolean;
   has_summary: boolean;
@@ -157,6 +161,7 @@ Example response:
         "end_at": "2026-06-04T11:00:00Z",
         "duration_minutes": 30,
         "platform": "microsoft_teams",
+        "platform_label": "Microsoft Teams",
         "conference_link": "https://teams.microsoft.com/l/meetup-join/...",
         "status": "confirmed",
         "attendees": [
@@ -181,9 +186,12 @@ Example response:
           "status": "recording_live",
           "reason": null,
           "is_external": true,
-          "provider_session_id": "bot_abc123"
+          "provider_session_id": "bot_abc123",
+          "can_invite": false,
+          "can_remove": true
         },
         "recording_status": "IN_CALL",
+        "recording_availability": "Processing",
         "transcript_status": null,
         "has_recording": true,
         "has_summary": false,
@@ -202,8 +210,9 @@ Frontend rendering notes:
 
 - Use `linked_record` for the "Linked to" deal chip.
 - If `linked_record` is `null`, show an unlinked or "Link deal" state.
-- Use `bot.status` for bot chips and action availability.
-- Use `has_recording`, `recording_status`, and `transcript_status` for Past and Recordings actions.
+- Use `platform_label` for the platform column; raw `platform` remains for compatibility.
+- Use `bot.status` for bot chips and `bot.can_invite` / `bot.can_remove` for action availability.
+- Use `recording_availability` for the recording column; raw recording fields remain for detail flows.
 - Use `next_action` as a backend hint; frontend can still choose tab-specific button labels.
 
 ## Get Meeting Detail
@@ -387,6 +396,22 @@ Bot status mapping for the list and drawer:
 | `invite_available` | Show "Invite bot" if meeting has a join link and is not past. |
 
 There is no V1 `bot-settings` endpoint because per-meeting bot preferences would require new storage.
+
+## Remove Bot
+
+```http
+DELETE /users/meetings/{event_id}/bot/invite
+```
+
+Cancels a scheduled Recall bot for a current-user meeting. Removal is only available before
+the bot has joined or completed the call.
+
+Frontend behavior:
+
+- Show the hover remove affordance only when `bot.can_remove === true`.
+- Past meetings should not show invite or remove actions.
+- If a user cancels and later clicks invite again, the backend reuses the same recording row and
+  creates at most one replacement provider bot.
 
 ## Recording Detail
 
