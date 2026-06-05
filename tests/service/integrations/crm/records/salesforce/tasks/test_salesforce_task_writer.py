@@ -10,7 +10,10 @@ from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
     NormalizedSalesforceTask,
 )
-from src.service.integrations.crm.records.salesforce.tasks.task_writer import SalesforceTaskWriter
+from src.service.integrations.crm.records.salesforce.tasks.task_writer import (
+    _ASYNC_PG_BIND_PARAMETER_LIMIT,
+    SalesforceTaskWriter,
+)
 
 
 def _normalized_task(*, external_id: str, deal_external_id: str | None) -> NormalizedSalesforceTask:
@@ -209,6 +212,43 @@ async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None
     assert "WHERE integration_id IS NOT NULL" in sql
     assert "ON CONSTRAINT" not in sql
     assert result.tasks_created == 1
+
+
+@pytest.mark.asyncio
+async def test_writer_splits_bulk_upsert_before_asyncpg_bind_parameter_limit() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    now = datetime.now(UTC)
+    rows = [
+        writer._row_values(
+            task=_normalized_task(external_id=f"00T{i}", deal_external_id="006OPPTY"),
+            owner_hit=None,
+            deal_hit=None,
+            contact_hit=None,
+            company_hit=None,
+            related_local_id=None,
+            related_name=None,
+            now=now,
+            last_seen_at=now,
+        )
+        for i in range(1000)
+    ]
+
+    await writer._bulk_upsert(rows)
+
+    assert session.execute.await_count == 2
+    for call in session.execute.await_args_list:
+        compiled = call.args[0].compile(dialect=writer._pg_dialect())
+        assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
 
 
 @pytest.mark.asyncio
