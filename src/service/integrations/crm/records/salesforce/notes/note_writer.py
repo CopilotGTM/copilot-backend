@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Set
+from collections.abc import Set
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
+from sqlalchemy.dialects.postgresql import dialect as pg_dialect
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
@@ -36,7 +38,7 @@ class SalesforceNoteWriter:
         self,
         *,
         normalized: list[NormalizedSalesforceNote],
-        all_external_ids: Iterable[str],
+        snapshot_started_at: datetime | None,
         user_map: dict[str, ActivityDimensionHit],
         deal_map: dict[str, ActivityDimensionHit],
         contact_map: dict[str, ActivityDimensionHit],
@@ -45,12 +47,14 @@ class SalesforceNoteWriter:
     ) -> NoteWriteResult:
         result = NoteWriteResult()
         now = datetime.now(UTC)
-        batch_external_ids = {note.external_id for note in normalized}
-        existing_by_external = await self._load_existing_rows(
-            external_ids=None if deactivate_missing else batch_external_ids
-        )
+        snapshot_time = snapshot_started_at or now
+        normalized_by_external = {note.external_id: note for note in normalized}
+        batch = list(normalized_by_external.values())
+        batch_external_ids = set(normalized_by_external)
+        existing_by_external = await self._load_existing_rows(external_ids=batch_external_ids)
+        rows: list[dict] = []
 
-        for note in normalized:
+        for note in batch:
             owner_hit = self._resolve_hit(
                 note.owner_external_id, user_map, result, field_name="owner"
             )
@@ -71,7 +75,15 @@ class SalesforceNoteWriter:
 
             existing = existing_by_external.get(note.external_id)
             if existing is None:
-                row = self._new_row(
+                result.notes_created += 1
+            elif bool(existing.is_deleted):
+                result.notes_reactivated += 1
+            else:
+                result.notes_updated += 1
+
+            if existing is not None:
+                self._apply_updates(
+                    existing,
                     note=note,
                     owner_hit=owner_hit,
                     deal_hit=deal_hit,
@@ -80,36 +92,28 @@ class SalesforceNoteWriter:
                     related_local_id=related_local_id,
                     related_name=related_name,
                     now=now,
+                    last_seen_at=snapshot_time,
                 )
-                self.session.add(row)
-                result.notes_created += 1
-                continue
 
-            was_deleted = bool(existing.is_deleted)
-            self._apply_updates(
-                existing,
-                note=note,
-                owner_hit=owner_hit,
-                deal_hit=deal_hit,
-                contact_hit=contact_hit,
-                company_hit=company_hit,
-                related_local_id=related_local_id,
-                related_name=related_name,
-                now=now,
+            rows.append(
+                self._row_values(
+                    note=note,
+                    owner_hit=owner_hit,
+                    deal_hit=deal_hit,
+                    contact_hit=contact_hit,
+                    company_hit=company_hit,
+                    related_local_id=related_local_id,
+                    related_name=related_name,
+                    now=now,
+                    last_seen_at=snapshot_time,
+                )
             )
-            if was_deleted:
-                result.notes_reactivated += 1
-            else:
-                result.notes_updated += 1
+
+        if rows:
+            await self._bulk_upsert(rows)
 
         if deactivate_missing:
-            snapshot_external_ids = set(all_external_ids)
-            for external_id, row in existing_by_external.items():
-                if external_id in snapshot_external_ids:
-                    continue
-                if not row.is_deleted:
-                    row.is_deleted = True
-                    result.notes_deactivated += 1
+            result.notes_deactivated += await self._deactivate_missing(snapshot_time)
 
         await self.session.flush()
         logger.info(
@@ -117,6 +121,7 @@ class SalesforceNoteWriter:
             extra={
                 "organisation_id": str(self.organisation_id),
                 "integration_id": str(self.integration_id),
+                "batch_size": len(batch),
                 "notes_created": result.notes_created,
                 "notes_updated": result.notes_updated,
                 "notes_reactivated": result.notes_reactivated,
@@ -128,6 +133,44 @@ class SalesforceNoteWriter:
             },
         )
         return result
+
+    async def _bulk_upsert(self, rows: list[dict]) -> None:
+        insert_stmt = pg_insert(CRMActivity).values(rows)
+        excluded = insert_stmt.excluded
+        update_columns = {
+            column_name: getattr(excluded, column_name)
+            for column_name in rows[0]
+            if column_name not in {"created_at"}
+        }
+        update_columns["updated_at"] = datetime.now(UTC)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[CRMActivity.integration_id, CRMActivity.external_id],
+            index_where=col(CRMActivity.integration_id).is_not(None),
+            set_=update_columns,
+        )
+        await self.session.execute(stmt)
+
+    async def _deactivate_missing(self, snapshot_started_at: datetime) -> int:
+        stmt = (
+            update(CRMActivity)
+            .where(
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                col(CRMActivity.integration_id) == self.integration_id,
+                col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
+                col(CRMActivity.is_deleted) == False,  # noqa: E712
+                or_(
+                    col(CRMActivity.last_seen_at).is_(None),
+                    col(CRMActivity.last_seen_at) < snapshot_started_at,
+                ),
+            )
+            .values(is_deleted=True, updated_at=datetime.now(UTC))
+        )
+        result = await self.session.execute(stmt)
+        rowcount = getattr(result, "rowcount", 0)
+        return rowcount if isinstance(rowcount, int) else 0
+
+    def _pg_dialect(self):
+        return pg_dialect()
 
     def _resolve_hit(
         self,
@@ -232,6 +275,54 @@ class SalesforceNoteWriter:
             data_payload=note.data_payload,
         )
 
+    def _row_values(
+        self,
+        *,
+        note: NormalizedSalesforceNote,
+        owner_hit: ActivityDimensionHit | None,
+        deal_hit: ActivityDimensionHit | None,
+        contact_hit: ActivityDimensionHit | None,
+        company_hit: ActivityDimensionHit | None,
+        related_local_id: UUID | None,
+        related_name: str | None,
+        now: datetime,
+        last_seen_at: datetime,
+    ) -> dict:
+        return {
+            "organisation_id": self.organisation_id,
+            "integration_id": self.integration_id,
+            "external_id": note.external_id,
+            "related_object_type": note.related_object_type,
+            "related_external_id": note.related_external_id,
+            "related_local_id": related_local_id,
+            "related_name": related_name,
+            "deal_id": deal_hit.internal_id if deal_hit is not None else None,
+            "deal_external_id": note.deal_external_id,
+            "contact_id": contact_hit.internal_id if contact_hit is not None else None,
+            "contact_external_id": note.contact_external_id,
+            "company_id": company_hit.internal_id if company_hit is not None else None,
+            "company_external_id": note.company_external_id,
+            "subject": note.subject,
+            "body": note.body,
+            "status": None,
+            "activity_type": CRMActivityType.NOTE.value,
+            "activity_subtype": note.activity_subtype,
+            "priority": None,
+            "owner_external_id": note.owner_external_id,
+            "owner_name": owner_hit.name if owner_hit is not None else None,
+            "owner_email": owner_hit.email if owner_hit is not None else None,
+            "owner_id": owner_hit.internal_id if owner_hit is not None else None,
+            "source": "CRM_SYNC",
+            "source_created_at": note.source_created_at,
+            "source_modified_at": note.source_modified_at,
+            "synced_at": now,
+            "last_seen_at": last_seen_at,
+            "is_deleted": False,
+            "properties": note.properties,
+            "metrics": {},
+            "data_payload": note.data_payload,
+        }
+
     def _apply_updates(
         self,
         row: CRMActivity,
@@ -244,6 +335,7 @@ class SalesforceNoteWriter:
         related_local_id: UUID | None,
         related_name: str | None,
         now: datetime,
+        last_seen_at: datetime | None = None,
     ) -> None:
         row.related_object_type = note.related_object_type
         row.related_external_id = note.related_external_id
@@ -269,7 +361,7 @@ class SalesforceNoteWriter:
         row.source_created_at = note.source_created_at
         row.source_modified_at = note.source_modified_at
         row.synced_at = now
-        row.last_seen_at = now
+        row.last_seen_at = last_seen_at or now
         row.is_deleted = False
         row.properties = note.properties
         row.metrics = {}

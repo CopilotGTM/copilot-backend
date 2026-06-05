@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -52,6 +53,8 @@ class SalesforceTaskRecordSyncService:
         integration_id: UUID,
     ) -> TaskSyncResult:
         started_at = datetime.now(UTC)
+        snapshot_started_at = started_at
+        run_started = perf_counter()
 
         context = await self._load_context(organisation_id, integration_id)
         fetcher = SalesforceTasksFetcher(
@@ -60,31 +63,63 @@ class SalesforceTaskRecordSyncService:
         )
         fetched_tasks = 0
         skipped_malformed = 0
-        all_external_ids: set[str] = set()
         write_result = TaskWriteResult()
+        batch_count = 0
 
         async for raw_batch in fetcher.iter_batches():
+            batch_count += 1
+            batch_started = perf_counter()
             fetched_tasks += len(raw_batch)
+            normalize_started = perf_counter()
             normalized, batch_skipped = normalize_tasks(raw_batch)
+            normalize_elapsed = perf_counter() - normalize_started
             skipped_malformed += batch_skipped
             scoped = [task for task in normalized if self._is_in_scope(task)]
-            all_external_ids.update(task.external_id for task in scoped)
             if not scoped:
+                logger.info(
+                    "Salesforce tasks sync batch skipped",
+                    extra={
+                        "organisation_id": str(organisation_id),
+                        "integration_id": str(integration_id),
+                        "batch_number": batch_count,
+                        "raw_batch_size": len(raw_batch),
+                        "scoped_batch_size": 0,
+                        "normalize_elapsed_seconds": round(normalize_elapsed, 3),
+                        "elapsed_seconds": round(perf_counter() - run_started, 3),
+                    },
+                )
                 continue
+            persist_started = perf_counter()
             batch_result = await self._persist(
                 organisation_id=organisation_id,
                 integration_id=integration_id,
                 normalized=scoped,
-                all_external_ids=[task.external_id for task in scoped],
+                snapshot_started_at=snapshot_started_at,
                 deactivate_missing=False,
             )
+            persist_elapsed = perf_counter() - persist_started
             _add_write_result(write_result, batch_result)
+            logger.info(
+                "Salesforce tasks sync batch persisted",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "batch_number": batch_count,
+                    "raw_batch_size": len(raw_batch),
+                    "scoped_batch_size": len(scoped),
+                    "normalize_elapsed_seconds": round(normalize_elapsed, 3),
+                    "writer_elapsed_seconds": round(persist_elapsed, 3),
+                    "batch_elapsed_seconds": round(perf_counter() - batch_started, 3),
+                    "fetched_tasks": fetched_tasks,
+                    "elapsed_seconds": round(perf_counter() - run_started, 3),
+                },
+            )
 
         final_result = await self._persist(
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=[],
-            all_external_ids=all_external_ids,
+            snapshot_started_at=snapshot_started_at,
             deactivate_missing=True,
         )
         _add_write_result(write_result, final_result)
@@ -140,7 +175,7 @@ class SalesforceTaskRecordSyncService:
             organisation_id=organisation_id,
             integration_id=integration_id,
             normalized=scoped,
-            all_external_ids=[task.external_id for task in scoped],
+            snapshot_started_at=datetime.now(UTC),
             deactivate_missing=False,
         )
 
@@ -197,14 +232,29 @@ class SalesforceTaskRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
         normalized,
-        all_external_ids,
+        snapshot_started_at: datetime | None,
         deactivate_missing: bool = True,
     ):
+        persist_started = perf_counter()
         async for session in acquire_org_async_session(organisation_id):
             user_external_ids = _compact_str_set(task.owner_external_id for task in normalized)
             deal_external_ids = _compact_str_set(task.deal_external_id for task in normalized)
             contact_external_ids = _compact_str_set(task.contact_external_id for task in normalized)
             company_external_ids = _compact_str_set(task.company_external_id for task in normalized)
+            map_started = perf_counter()
+            user_map = await self._load_user_map(
+                session, organisation_id, integration_id, user_external_ids
+            )
+            deal_map = await self._load_deal_map(
+                session, organisation_id, integration_id, deal_external_ids
+            )
+            contact_map = await self._load_contact_map(
+                session, organisation_id, integration_id, contact_external_ids
+            )
+            company_map = await self._load_company_map(
+                session, organisation_id, integration_id, company_external_ids
+            )
+            map_elapsed = perf_counter() - map_started
             writer = SalesforceTaskWriter(
                 session=session,
                 organisation_id=organisation_id,
@@ -212,22 +262,25 @@ class SalesforceTaskRecordSyncService:
             )
             write_result = await writer.apply(
                 normalized=normalized,
-                all_external_ids=all_external_ids,
-                user_map=await self._load_user_map(
-                    session, organisation_id, integration_id, user_external_ids
-                ),
-                deal_map=await self._load_deal_map(
-                    session, organisation_id, integration_id, deal_external_ids
-                ),
-                contact_map=await self._load_contact_map(
-                    session, organisation_id, integration_id, contact_external_ids
-                ),
-                company_map=await self._load_company_map(
-                    session, organisation_id, integration_id, company_external_ids
-                ),
+                snapshot_started_at=snapshot_started_at,
+                user_map=user_map,
+                deal_map=deal_map,
+                contact_map=contact_map,
+                company_map=company_map,
                 deactivate_missing=deactivate_missing,
             )
             await session.commit()
+            logger.info(
+                "Salesforce tasks persist complete",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "batch_size": len(normalized),
+                    "deactivate_missing": deactivate_missing,
+                    "dimension_map_elapsed_seconds": round(map_elapsed, 3),
+                    "persist_elapsed_seconds": round(perf_counter() - persist_started, 3),
+                },
+            )
             return write_result
 
         raise SalesforceTaskSyncConfigurationError(

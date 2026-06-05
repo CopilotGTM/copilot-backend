@@ -63,6 +63,11 @@ def test_salesforce_initial_sync_success_enqueues_all_enabled_cdc_subscribers(
     monkeypatch.setattr(salesforce_initial_sync_succeeded_task, "run_async", _run_coroutine)
     monkeypatch.setattr(
         salesforce_initial_sync_succeeded_task,
+        "is_task_locked",
+        lambda _key: False,
+    )
+    monkeypatch.setattr(
+        salesforce_initial_sync_succeeded_task,
         "acquire_org_async_session",
         fake_acquire_session,
     )
@@ -87,3 +92,43 @@ def test_salesforce_initial_sync_success_enqueues_all_enabled_cdc_subscribers(
         "/data/ContentNoteChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ]
+
+
+def test_salesforce_initial_sync_success_skips_while_task_or_note_sync_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    queued: list[dict[str, object]] = []
+
+    def fake_is_task_locked(lock_key: str) -> bool:
+        return lock_key == f"salesforce_record_sync:note:{org_id}:{integration_id}"
+
+    async def fake_send_task(**kwargs):
+        queued.append(kwargs)
+        return "task-id"
+
+    monkeypatch.setattr(salesforce_initial_sync_succeeded_task, "run_async", _run_coroutine)
+    monkeypatch.setattr(
+        salesforce_initial_sync_succeeded_task,
+        "is_task_locked",
+        fake_is_task_locked,
+    )
+    monkeypatch.setattr(
+        salesforce_initial_sync_succeeded_task,
+        "send_integrations_task_async",
+        fake_send_task,
+    )
+
+    result = salesforce_initial_sync_succeeded_task.mark_salesforce_initial_sync_succeeded_task.run(
+        str(org_id),
+        str(integration_id),
+    )
+
+    assert result == {
+        "status": "skipped",
+        "reason": "record_sync_still_running",
+        "organisation_id": str(org_id),
+        "integration_id": str(integration_id),
+    }
+    assert queued == []
