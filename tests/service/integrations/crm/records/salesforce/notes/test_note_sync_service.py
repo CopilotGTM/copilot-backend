@@ -42,7 +42,7 @@ def _normalized_note(
 
 
 @pytest.mark.asyncio
-async def test_run_persists_notes_batch_by_batch_before_final_deactivation(
+async def test_run_buffers_notes_before_persisting_and_then_deactivates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     org_id = uuid4()
@@ -100,16 +100,13 @@ async def test_run_persists_notes_batch_by_batch_before_final_deactivation(
 
     assert result.fetched_notes == 2
     assert result.notes_created == 2
-    assert len(persist_calls) == 3
-    assert persist_calls[0]["normalized"] == [first_note]
-    assert persist_calls[0]["all_external_ids"] == ["069A"]
+    assert len(persist_calls) == 2
+    assert persist_calls[0]["normalized"] == [first_note, second_note]
     assert persist_calls[0]["deactivate_missing"] is False
-    assert persist_calls[1]["normalized"] == [second_note]
-    assert persist_calls[1]["all_external_ids"] == ["069B"]
-    assert persist_calls[1]["deactivate_missing"] is False
-    assert persist_calls[2]["normalized"] == []
-    assert persist_calls[2]["all_external_ids"] == {"069A", "069B"}
-    assert persist_calls[2]["deactivate_missing"] is True
+    assert persist_calls[1]["normalized"] == []
+    assert persist_calls[1]["deactivate_missing"] is True
+    assert "all_external_ids" not in persist_calls[1]
+    assert persist_calls[0]["snapshot_started_at"] == persist_calls[1]["snapshot_started_at"]
 
 
 @pytest.mark.asyncio
@@ -139,8 +136,8 @@ async def test_persist_single_note_writes_only_the_changed_note(
     )
 
     assert result.notes_reactivated == 1
-    assert persist_calls[0]["all_external_ids"] == [note.external_id]
     assert persist_calls[0]["normalized"] == [note]
+    assert persist_calls[0]["deactivate_missing"] is False
 
 
 @pytest.mark.asyncio
@@ -198,7 +195,7 @@ async def test_persist_loads_activity_maps_for_current_notes_only(
                 company_external_id="001A",
             )
         ],
-        all_external_ids=["069A"],
+        snapshot_started_at=None,
     )
 
     assert result.notes_created == 1

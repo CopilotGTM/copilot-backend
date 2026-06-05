@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -9,7 +10,10 @@ from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
     NormalizedSalesforceTask,
 )
-from src.service.integrations.crm.records.salesforce.tasks.task_writer import SalesforceTaskWriter
+from src.service.integrations.crm.records.salesforce.tasks.task_writer import (
+    _ASYNC_PG_BIND_PARAMETER_LIMIT,
+    SalesforceTaskWriter,
+)
 
 
 def _normalized_task(*, external_id: str, deal_external_id: str | None) -> NormalizedSalesforceTask:
@@ -63,6 +67,7 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
 
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute = AsyncMock(side_effect=[MagicMock(rowcount=1), MagicMock(rowcount=1)])
     session.flush = AsyncMock()
 
     writer = SalesforceTaskWriter(
@@ -76,7 +81,7 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
 
     result = await writer.apply(
         normalized=[_normalized_task(external_id="00T1", deal_external_id="006OPPTY")],
-        all_external_ids=["00T1"],
+        snapshot_started_at=datetime.now(UTC),
         user_map={
             "005OWNER": ActivityDimensionHit(
                 internal_id=owner_id,
@@ -104,7 +109,7 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.company_id == company_id
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
-    assert stale.is_deleted is True
+    assert stale.is_deleted is False
 
 
 @pytest.mark.asyncio
@@ -133,7 +138,7 @@ async def test_writer_single_record_mode_does_not_soft_delete_unrelated_rows() -
 
     result = await writer.apply(
         normalized=[],
-        all_external_ids=[],
+        snapshot_started_at=datetime.now(UTC),
         user_map={},
         deal_map={},
         contact_map={},
@@ -163,7 +168,7 @@ async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
 
     result = await writer.apply(
         normalized=[_normalized_task(external_id="00T1", deal_external_id="006OPPTY")],
-        all_external_ids=["00T1"],
+        snapshot_started_at=datetime.now(UTC),
         user_map={},
         deal_map={},
         contact_map={},
@@ -173,3 +178,142 @@ async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
 
     assert result.tasks_created == 1
     writer._load_existing_rows.assert_awaited_once_with(external_ids={"00T1"})
+
+
+@pytest.mark.asyncio
+async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    session.flush = AsyncMock()
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[_normalized_task(external_id="00T1", deal_external_id="006OPPTY")],
+        snapshot_started_at=datetime.now(UTC),
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=False,
+    )
+
+    sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
+    assert "ON CONFLICT" in sql
+    assert "ON CONFLICT (integration_id, external_id)" in sql
+    assert "WHERE integration_id IS NOT NULL" in sql
+    assert "ON CONSTRAINT" not in sql
+    assert result.tasks_created == 1
+
+
+@pytest.mark.asyncio
+async def test_writer_splits_bulk_upsert_before_asyncpg_bind_parameter_limit() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    now = datetime.now(UTC)
+    rows = [
+        writer._row_values(
+            task=_normalized_task(external_id=f"00T{i}", deal_external_id="006OPPTY"),
+            owner_hit=None,
+            deal_hit=None,
+            contact_hit=None,
+            company_hit=None,
+            related_local_id=None,
+            related_name=None,
+            now=now,
+            last_seen_at=now,
+        )
+        for i in range(1000)
+    ]
+
+    await writer._bulk_upsert(rows)
+
+    assert session.execute.await_count == 2
+    for call in session.execute.await_args_list:
+        compiled = call.args[0].compile(dialect=writer._pg_dialect())
+        assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_writer_upsert_does_not_clear_columns_outside_salesforce_task_mapping() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    session.flush = AsyncMock()
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await writer.apply(
+        normalized=[_normalized_task(external_id="00T1", deal_external_id="006OPPTY")],
+        snapshot_started_at=datetime.now(UTC),
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=False,
+    )
+
+    sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
+    assert "created_by_user_id = excluded.created_by_user_id" not in sql
+    assert "attendees = excluded.attendees" not in sql
+    assert "is_all_day = excluded.is_all_day" not in sql
+    assert "direction = excluded.direction" not in sql
+
+
+@pytest.mark.asyncio
+async def test_writer_deactivates_rows_older_than_snapshot() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    snapshot_started_at = datetime.now(UTC)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=3))
+    session.flush = AsyncMock()
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[],
+        snapshot_started_at=snapshot_started_at,
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=True,
+    )
+
+    assert result.tasks_deactivated == 3
+    statement = session.execute.await_args_list[0].args[0]
+    sql = str(statement.compile(dialect=writer._pg_dialect()))
+    assert "last_seen_at <" in sql
+    assert "last_seen_at IS NULL" in sql
+    assert "is_deleted = false" in sql

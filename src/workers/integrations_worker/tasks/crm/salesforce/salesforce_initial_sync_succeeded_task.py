@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.infra.utils.task_lock import is_task_locked
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.service.integrations.webhooks.salesforce.metadata import (
     SALESFORCE_CDC_OBJECTS,
@@ -46,6 +47,14 @@ def mark_salesforce_initial_sync_succeeded_task(
     int_id = UUID(integration_id)
 
     async def _run() -> dict[str, Any]:
+        if _record_sync_still_running(org_id, int_id):
+            return {
+                "status": "skipped",
+                "reason": "record_sync_still_running",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+            }
+
         cdc_channels: list[str] = []
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
@@ -98,6 +107,13 @@ def mark_salesforce_initial_sync_succeeded_task(
         }
 
     return run_async(_run())
+
+
+def _record_sync_still_running(organisation_id: UUID, integration_id: UUID) -> bool:
+    return any(
+        is_task_locked(f"salesforce_record_sync:{object_type}:{organisation_id}:{integration_id}")
+        for object_type in ("task", "note")
+    )
 
 
 def _enabled_salesforce_cdc_channels(metadata: dict[str, Any]) -> list[str]:
