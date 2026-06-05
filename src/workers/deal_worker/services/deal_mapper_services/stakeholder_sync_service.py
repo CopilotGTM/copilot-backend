@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
 from src.domain.models.master_tables.organisation_models import Organisation
@@ -162,6 +163,18 @@ class StakeholderSyncService:
             return set()
         return {str(field) for field in manual_overrides}
 
+    @staticmethod
+    def _normalize_email(email: str) -> str:
+        """Normalize email identity before stakeholder matching or storage."""
+        return email.strip().lower()
+
+    @staticmethod
+    def _is_duplicate_stakeholder_email_error(exc: IntegrityError) -> bool:
+        """Return True when Postgres rejected the deal/email uniqueness invariant."""
+        return "uq_deal_stakeholder_email" in str(exc.orig) or (
+            "uq_deal_stakeholder_email" in str(exc)
+        )
+
     async def sync_for_organisation(self) -> OrgStakeholderSyncResult:
         """Sync stakeholders for ALL deals in the organization.
 
@@ -179,10 +192,14 @@ class StakeholderSyncService:
         # Phase 1: Get all active deal IDs (fresh session)
         deal_ids: list[UUID] = []
         async for session in acquire_org_async_session(self.organisation_id):
-            stmt = select(col(CRMDeal.deal_id)).where(
-                col(CRMDeal.organisation_id) == self.organisation_id,
-                col(CRMDeal.is_deleted).is_(False),
-                col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
+            stmt = (
+                select(col(CRMDeal.deal_id))
+                .where(
+                    col(CRMDeal.organisation_id) == self.organisation_id,
+                    col(CRMDeal.is_deleted).is_(False),
+                    col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
+                )
+                .order_by(col(CRMDeal.deal_id))
             )
             query_result = await session.execute(stmt)
             deal_ids = [row[0] for row in query_result.all()]
@@ -367,7 +384,7 @@ class StakeholderSyncService:
         # Load existing stakeholders
         existing_stakeholders = await self._load_stakeholders(session, deal_id)
         existing_by_email: dict[str, DealStakeholder] = {
-            s.email.lower(): s for s in existing_stakeholders if s.email
+            self._normalize_email(s.email): s for s in existing_stakeholders if s.email
         }
 
         # Track emails we see in current participants
@@ -379,8 +396,10 @@ class StakeholderSyncService:
             if participant.participant_type != CRMParticipantType.CONTACT:
                 continue
 
+            email = self._normalize_email(participant.related_email or "")
+
             # Skip participants with no email
-            if not participant.related_email:
+            if not email:
                 result.skipped += 1
                 logger.debug(
                     "Skipped participant %s - no email",
@@ -388,7 +407,15 @@ class StakeholderSyncService:
                 )
                 continue
 
-            email = participant.related_email.lower()
+            if email in seen_emails:
+                result.skipped += 1
+                logger.debug(
+                    "Skipped participant %s - duplicate email %s",
+                    participant.participant_id,
+                    email,
+                )
+                continue
+
             seen_emails.add(email)
 
             was_created = await self._ensure_stakeholder(
@@ -438,6 +465,7 @@ class StakeholderSyncService:
                 col(CRMDeal.organisation_id) == self.organisation_id,
             )
             .options(selectinload(deal_participants_rel))
+            .with_for_update()
         )
         result = await session.execute(stmt)
         return result.scalars().first()
@@ -458,6 +486,18 @@ class StakeholderSyncService:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def _load_stakeholder_by_email(
+        self, session: AsyncSession, deal_id: UUID, email: str
+    ) -> DealStakeholder | None:
+        """Load the canonical stakeholder row for a normalized deal/email identity."""
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.organisation_id) == self.organisation_id,
+            col(DealStakeholder.email) == email,
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
     async def _ensure_stakeholder(
         self,
         session: AsyncSession,
@@ -477,7 +517,8 @@ class StakeholderSyncService:
             True if created new stakeholder, False if updated existing.
             Returns False without changes if stakeholder was REMOVED by user.
         """
-        if not participant.related_email:
+        email = self._normalize_email(participant.related_email or "")
+        if not email:
             logger.warning(
                 "Participant %s has no related_email, skipping",
                 participant.participant_id,
@@ -489,7 +530,6 @@ class StakeholderSyncService:
                 },
             )
             return False
-        email = participant.related_email.lower()
 
         if existing:
             # Respect user decision: if stakeholder was REMOVED, don't reactivate
@@ -568,8 +608,41 @@ class StakeholderSyncService:
         # Enrich from CRMContact if available
         await self._enrich_from_contact(session, stakeholder, email)
 
-        session.add(stakeholder)
-        await session.flush()  # Generate stakeholder_id
+        try:
+            async with self._deal_savepoint(session):
+                session.add(stakeholder)
+                await session.flush()  # Generate stakeholder_id
+        except IntegrityError as exc:
+            if not self._is_duplicate_stakeholder_email_error(exc):
+                raise
+
+            existing_after_conflict = await self._load_stakeholder_by_email(
+                session,
+                deal.deal_id,
+                email,
+            )
+            if existing_after_conflict is None:
+                raise
+
+            logger.info(
+                "Recovered duplicate stakeholder insert for deal %s and email %s",
+                deal.deal_id,
+                email,
+                extra={
+                    "event": "stakeholder_sync_duplicate_insert_recovered",
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal.deal_id),
+                    "participant_id": str(participant.participant_id),
+                    "email": email,
+                },
+            )
+            return await self._ensure_stakeholder(
+                session,
+                deal=deal,
+                participant=participant,
+                existing=existing_after_conflict,
+            )
+
         self._pending_research.append((stakeholder.stakeholder_id, deal.deal_id))
         return True
 
