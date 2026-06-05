@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 from uuid import UUID
 
@@ -60,6 +60,10 @@ _MAX_STORAGE_FILENAME_LENGTH = 128
 
 # Bound execution time per deal
 MAX_ATTACHMENTS_PER_DEAL = 50
+EMAIL_PROVIDER_INTEGRATION_TYPES = (
+    IntegrationType.GOOGLE.value,
+    IntegrationType.MICROSOFT.value,
+)
 
 
 @dataclass
@@ -136,7 +140,7 @@ def _is_supported_attachment_mimetype(mimetype: str | None) -> bool:
 
 
 def _is_gmail(integration_type: IntegrationType) -> bool:
-    return integration_type == IntegrationType.GMAIL
+    return integration_type in {IntegrationType.GMAIL, IntegrationType.GOOGLE}
 
 
 def _email_has_attachments_filter() -> ColumnElement[bool]:
@@ -292,15 +296,15 @@ class DealAssetEmailAttachmentService:
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = (
                 select(
-                    Email.email_id,
-                    Email.external_message_id,
-                    Email.internet_message_id,
-                    Email.subject,
-                    Email.integration_id,
+                    col(Email.email_id),
+                    col(Email.external_message_id),
+                    col(Email.internet_message_id),
+                    col(Email.subject),
+                    col(Email.integration_id),
                     KnowledgeIntegration,
-                    KnowledgeIntegration.integration_type,
-                    DealEmailAssociation.direction,
-                    DealEmailAssociation.deal_id,
+                    col(KnowledgeIntegration.integration_type),
+                    col(DealEmailAssociation.direction),
+                    col(DealEmailAssociation.deal_id),
                 )
                 .join(
                     DealEmailAssociation,
@@ -319,11 +323,11 @@ class DealAssetEmailAttachmentService:
                     col(KnowledgeIntegration.organisation_id) == self.organisation_id,
                     col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                     col(KnowledgeIntegration.integration_type).in_(
-                        [IntegrationType.GMAIL.value, IntegrationType.OUTLOOK_EMAIL.value]
+                        EMAIL_PROVIDER_INTEGRATION_TYPES
                     ),
                 )
-                .distinct(Email.internet_message_id)
-                .order_by(Email.internet_message_id, Email.email_id)
+                .distinct(col(Email.internet_message_id))
+                .order_by(col(Email.internet_message_id), col(Email.email_id))
             )
 
             result = await session.execute(stmt)
@@ -511,7 +515,7 @@ class DealAssetEmailAttachmentService:
         # format=full required to get the MIME parts tree with attachmentIds
         response = await client.get(url, params={"format": "full"})
         response.raise_for_status()
-        return response.json().get("payload", {})
+        return cast(dict[str, Any], response.json().get("payload", {}))
 
     # ── Phase 3: Create DealAsset record (fresh session) ────────────
 
@@ -575,7 +579,7 @@ class DealAssetEmailAttachmentService:
                     },
                 )
                 .on_conflict_do_nothing(constraint="uq_deal_asset_source_dedup")
-                .returning(DealAsset.asset_id)
+                .returning(col(DealAsset.asset_id))
             )
             result = await session.execute(stmt)
             row = result.first()

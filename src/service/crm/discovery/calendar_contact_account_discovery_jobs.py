@@ -20,8 +20,8 @@ CALENDAR_DISCOVERY_TRIGGER_INITIAL_SYNC = "calendar_initial_sync"
 CALENDAR_DISCOVERY_TRIGGER_CONNECTION = "calendar_connection"
 
 _CALENDAR_INTEGRATION_TYPES = {
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
 }
 
 

@@ -27,8 +27,8 @@ def _integration(metadata: dict | None = None) -> KnowledgeIntegration:
         integration_id=INTEGRATION_ID,
         organisation_id=ORG_ID,
         created_by_user_id=UUID("33333333-3333-3333-3333-333333333333"),
-        integration_type=IntegrationType.GOOGLE_CALENDAR,
-        name="Google Calendar",
+        integration_type=IntegrationType.GOOGLE,
+        name="Google",
         credentials={},
         connection_id="conn",
         connection_metadata=metadata or {},
@@ -217,6 +217,7 @@ async def test_prepare_calendar_discovery_job_records_connection_trigger_for_emp
     assert job.job_metadata["trigger"] == "calendar_connection"
     assert job.job_metadata["trigger_id"] == "new-connection"
     assert job.job_metadata["records_synced"] == 0
+    assert job.job_metadata["integration_type"] == IntegrationType.GOOGLE.value
     metadata = integration.connection_metadata[CALENDAR_DISCOVERY_METADATA_KEY]
     assert metadata["status"] == "pending"
     assert metadata["trigger"] == "calendar_connection"

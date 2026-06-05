@@ -51,10 +51,56 @@ _TEAMS_TRANSCRIPT_SCOPES = frozenset(
         MICROSOFT_SCOPE_ONLINE_MEETING_TRANSCRIPT_READ_ALL,
     }
 )
+_CALENDAR_PROVIDER_INTEGRATION_TYPES = (
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
+)
+_MEETING_PROVIDER_INTEGRATION_TYPES = {
+    "googleMeet": IntegrationType.GOOGLE,
+    "teamsForBusiness": IntegrationType.MICROSOFT,
+}
+_COMPATIBLE_CALENDAR_INTEGRATION_TYPES = {
+    IntegrationType.GOOGLE: {IntegrationType.GOOGLE, IntegrationType.GOOGLE_CALENDAR},
+    IntegrationType.MICROSOFT: {IntegrationType.MICROSOFT, IntegrationType.OUTLOOK_CALENDAR},
+}
 
 
 def _has_teams_transcript_scopes(integration: KnowledgeIntegration) -> bool:
     return _TEAMS_TRANSCRIPT_SCOPES.issubset(set(integration.scopes or []))
+
+
+def _normalize_integration_type(value: IntegrationType | str | None) -> IntegrationType | None:
+    if isinstance(value, IntegrationType):
+        return value
+    if not value:
+        return None
+    try:
+        return IntegrationType(value)
+    except ValueError:
+        return None
+
+
+def _expected_provider_integration_type(event: CalendarEvent) -> IntegrationType | None:
+    return _MEETING_PROVIDER_INTEGRATION_TYPES.get(event.online_meeting_provider or "")
+
+
+def _compatible_calendar_integration_types(
+    provider_type: IntegrationType | None,
+) -> tuple[IntegrationType, ...]:
+    if provider_type is None:
+        return _CALENDAR_PROVIDER_INTEGRATION_TYPES
+    return (provider_type,)
+
+
+def _integration_matches_event_provider(
+    event: CalendarEvent,
+    integration: KnowledgeIntegration,
+) -> bool:
+    expected = _expected_provider_integration_type(event)
+    if expected is None:
+        return True
+    actual = _normalize_integration_type(integration.integration_type)
+    return actual in _COMPATIBLE_CALENDAR_INTEGRATION_TYPES[expected]
 
 
 @dataclass
@@ -149,21 +195,22 @@ class TranscriptService:
         """Get existing Meeting record without fetching."""
         return await self._get_meeting(event_id)
 
-    async def find_integration_by_email(self, email: str) -> KnowledgeIntegration | None:
+    async def find_integration_by_email(
+        self,
+        email: str,
+        *,
+        integration_type: IntegrationType | None = None,
+    ) -> KnowledgeIntegration | None:
         """Find active calendar integration by email."""
         if not email:
             return None
+        supported_types = _compatible_calendar_integration_types(integration_type)
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = select(KnowledgeIntegration).where(
                 col(KnowledgeIntegration.organisation_id) == self.organisation_id,
                 col(KnowledgeIntegration.integration_email) == email.lower(),
                 col(KnowledgeIntegration.is_active) == True,  # noqa: E712
-                col(KnowledgeIntegration.integration_type).in_(
-                    [
-                        IntegrationType.OUTLOOK_CALENDAR,
-                        IntegrationType.GOOGLE_CALENDAR,
-                    ]
-                ),
+                col(KnowledgeIntegration.integration_type).in_(supported_types),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
             return (await session.execute(stmt)).scalars().first()
@@ -179,6 +226,8 @@ class TranscriptService:
         """
         integrations: list[KnowledgeIntegration] = []
         results: list[KnowledgeIntegration] = []
+        expected_integration_type = _expected_provider_integration_type(event)
+        supported_types = _compatible_calendar_integration_types(expected_integration_type)
 
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = (
@@ -193,9 +242,7 @@ class TranscriptService:
                     col(CalendarEventUserState.is_deleted).is_(False),
                     col(KnowledgeIntegration.is_active).is_(True),
                     col(KnowledgeIntegration.connection_id).isnot(None),
-                    col(KnowledgeIntegration.integration_type).in_(
-                        [IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR]
-                    ),
+                    col(KnowledgeIntegration.integration_type).in_(supported_types),
                 )
             )
             results = list((await session.execute(stmt)).scalars().all())
@@ -204,7 +251,10 @@ class TranscriptService:
             # Fallback for old data without CalendarEventUserState rows
             if not event.organiser_email:
                 return []
-            fallback = await self.find_integration_by_email(event.organiser_email)
+            fallback = await self.find_integration_by_email(
+                event.organiser_email,
+                integration_type=expected_integration_type,
+            )
             return [fallback] if fallback else []
 
         # Prioritise organiser's integration first
@@ -314,6 +364,15 @@ class TranscriptService:
         """Try to fetch transcript using a specific integration."""
         if not integration.connection_id:
             return TranscriptFetchResult(success=False, error="No connection_id", should_retry=True)
+        if not _integration_matches_event_provider(event, integration):
+            return TranscriptFetchResult(
+                success=False,
+                error=(
+                    f"Integration type {integration.integration_type} does not match "
+                    f"meeting provider {event.online_meeting_provider}"
+                ),
+                should_retry=True,
+            )
 
         if event.online_meeting_provider == "teamsForBusiness":
             return await self._fetch_teams(event, integration, existing)

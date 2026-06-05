@@ -94,8 +94,10 @@ async def test_resolves_active_integration_emails_for_integration_user_ids() -> 
     assert str(partner_id) in stmt
     assert "knowledge_integrations.integration_type" in stmt
     assert "'GMAIL'" not in stmt
-    assert "'gmail'" in stmt
-    assert "'outlook_email'" in stmt
+    assert "'google'" in stmt
+    assert "'microsoft'" in stmt
+    assert "'gmail'" not in stmt
+    assert "'outlook_email'" not in stmt
     assert "knowledge_integrations.is_active" in stmt
     assert "IS true" in stmt
     assert "knowledge_integrations.integration_email" in stmt
@@ -139,8 +141,10 @@ async def test_resolves_active_integration_emails_grouped_by_user_id() -> None:
     assert str(owner_id) in stmt
     assert str(partner_id) in stmt
     assert "knowledge_integrations.integration_type" in stmt
-    assert "'gmail'" in stmt
-    assert "'outlook_email'" in stmt
+    assert "'google'" in stmt
+    assert "'microsoft'" in stmt
+    assert "'gmail'" not in stmt
+    assert "'outlook_email'" not in stmt
     assert "knowledge_integrations.is_active" in stmt
     assert "IS true" in stmt
     assert "knowledge_integrations.integration_email" in stmt
@@ -179,5 +183,7 @@ async def test_resolves_calendar_integration_types() -> None:
 
     stmt = _compile_sql(session.statements[0])
     assert "knowledge_integrations.integration_type" in stmt
-    assert "'google_calendar'" in stmt
-    assert "'outlook_calendar'" in stmt
+    assert "'google'" in stmt
+    assert "'microsoft'" in stmt
+    assert "'google_calendar'" not in stmt
+    assert "'outlook_calendar'" not in stmt

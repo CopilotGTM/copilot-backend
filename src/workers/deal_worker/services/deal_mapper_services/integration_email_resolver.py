@@ -17,10 +17,10 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 
-EMAIL_MATCHER_INTEGRATION_TYPES = (IntegrationType.GMAIL, IntegrationType.OUTLOOK_EMAIL)
+EMAIL_MATCHER_INTEGRATION_TYPES = (IntegrationType.GOOGLE, IntegrationType.MICROSOFT)
 CALENDAR_MATCHER_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
 )
 
 
