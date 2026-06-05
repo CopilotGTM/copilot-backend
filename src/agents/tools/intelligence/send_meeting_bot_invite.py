@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE.value,
+    IntegrationType.MICROSOFT.value,
 )
 
 
@@ -137,7 +137,7 @@ async def _resolve_user_calendar_event(
             logger.exception("send_meeting_bot_invite: database error: %s", exc)
             return None
 
-    return cast(CalendarEvent | None, result.scalars().first())
+    return result.scalars().first()
 
 
 def _format_confirmation_event(event: CalendarEvent) -> dict[str, Any]:

@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE.value,
+    IntegrationType.MICROSOFT.value,
 )
 
 
@@ -224,7 +224,7 @@ async def list_meetings(
     async with context.acquire_session() as session:
         try:
             result = await session.execute(stmt)
-            rows = result.all()
+            rows = list(result.all())
         except Exception as exc:
             logger.exception("list_meetings: database error: %s", exc)
             return []

@@ -34,7 +34,7 @@ def _integration(**overrides) -> KnowledgeIntegration:
         "integration_id": uuid4(),
         "organisation_id": UUID("11111111-1111-1111-1111-111111111111"),
         "created_by_user_id": UUID("22222222-2222-2222-2222-222222222222"),
-        "integration_type": IntegrationType.OUTLOOK_EMAIL,
+        "integration_type": IntegrationType.MICROSOFT,
         "integration_email": "seller@contoso.com",
         "is_active": True,
         "requires_reauth": False,
@@ -47,7 +47,7 @@ def _integration(**overrides) -> KnowledgeIntegration:
 
 
 @pytest.mark.asyncio
-async def test_resolve_requires_outlook_email_connection() -> None:
+async def test_resolve_requires_provider_connection() -> None:
     resolver = EmailIntegrationResolver()
 
     with pytest.raises(EmailSendError) as exc_info:
@@ -115,7 +115,7 @@ async def test_resolve_accepts_explicit_gmail_sender_owned_by_user() -> None:
         _Session(
             [
                 _integration(
-                    integration_type=IntegrationType.GMAIL,
+                    integration_type=IntegrationType.GOOGLE,
                     integration_email="seller@gmail.com",
                     scopes=[
                         "https://www.googleapis.com/auth/gmail.readonly",
@@ -129,7 +129,7 @@ async def test_resolve_accepts_explicit_gmail_sender_owned_by_user() -> None:
         sender_email="seller@gmail.com",
     )
 
-    assert resolved.integration.integration_type == IntegrationType.GMAIL
+    assert resolved.integration.integration_type == IntegrationType.GOOGLE
     assert resolved.integration.integration_email == "seller@gmail.com"
 
 
@@ -143,7 +143,7 @@ async def test_resolve_requires_sender_selection_across_gmail_and_outlook() -> N
                 [
                     _integration(integration_email="seller@contoso.com"),
                     _integration(
-                        integration_type=IntegrationType.GMAIL,
+                        integration_type=IntegrationType.GOOGLE,
                         integration_email="seller@gmail.com",
                         scopes=[
                             "https://www.googleapis.com/auth/gmail.readonly",
@@ -168,7 +168,7 @@ async def test_resolve_rejects_gmail_missing_send_scope() -> None:
             _Session(
                 [
                     _integration(
-                        integration_type=IntegrationType.GMAIL,
+                        integration_type=IntegrationType.GOOGLE,
                         integration_email="seller@gmail.com",
                         scopes=["https://www.googleapis.com/auth/gmail.readonly"],
                     )
@@ -190,7 +190,7 @@ async def test_resolve_requires_reauth_for_unusable_gmail_token() -> None:
             _Session(
                 [
                     _integration(
-                        integration_type=IntegrationType.GMAIL,
+                        integration_type=IntegrationType.GOOGLE,
                         integration_email="seller@gmail.com",
                         credentials={},
                         scopes=[
