@@ -1,4 +1,4 @@
-"""Tests for selecting the correct Outlook sender integration."""
+"""Tests for selecting the correct calendar sender integration."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from src.infra.config.google_integration_scopes import (
 )
 from src.infra.config.microsoft_integration_scopes import MICROSOFT_INTEGRATION_SCOPES
 from src.service.calendar_invites.models import CalendarInviteError
-from src.service.calendar_invites.resolver import OutlookCalendarIntegrationResolver
+from src.service.calendar_invites.resolver import CalendarIntegrationResolver
 
 
 class _FakeScalars:
@@ -55,12 +55,12 @@ def _integration(
     scopes: list[str] | None = None,
     requires_reauth: bool = False,
     is_active: bool = True,
-    integration_type: IntegrationType = IntegrationType.OUTLOOK_CALENDAR,
+    integration_type: IntegrationType = IntegrationType.MICROSOFT,
 ) -> KnowledgeIntegration:
-    """Create a test Outlook integration with deterministic identity and grants."""
+    """Create a test provider integration with deterministic identity and grants."""
     default_scopes = (
         list(GOOGLE_INTEGRATION_SCOPES[IntegrationType.GOOGLE_CALENDAR])
-        if integration_type == IntegrationType.GOOGLE_CALENDAR
+        if integration_type == IntegrationType.GOOGLE
         else list(MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_CALENDAR])
     )
     return KnowledgeIntegration(
@@ -83,7 +83,7 @@ async def test_resolver_requires_sender_selection_when_multiple_writable_account
     """Multiple writable integrations should request explicit sender selection."""
     # Contract: with >1 writable accounts and no explicit sender, resolver asks
     # caller to pick sender.
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     with pytest.raises(CalendarInviteError) as exc_info:
         await resolver.resolve(
@@ -107,7 +107,7 @@ async def test_resolver_uses_selected_sender_email() -> None:
     """Explicit sender_email must select the matching integration deterministically."""
     # Contract: explicit sender_email filters candidate integrations deterministically.
     selected = _integration(email="seller@contoso.com")
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     resolved = await resolver.resolve(
         _FakeSession([selected, _integration(email="ae@contoso.com")]),
@@ -123,7 +123,7 @@ async def test_resolver_uses_selected_sender_email() -> None:
 async def test_resolver_rejects_selected_account_without_write_scope() -> None:
     """Selected account without write scope should return reconnect guidance."""
     # Contract: selected account with read-only scope returns write scope action.
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     with pytest.raises(CalendarInviteError) as exc_info:
         await resolver.resolve(
@@ -139,7 +139,7 @@ async def test_resolver_rejects_selected_account_without_write_scope() -> None:
 @pytest.mark.asyncio
 async def test_resolver_rejects_selected_account_requiring_reauth() -> None:
     """Selected account requiring reauth should not fall back to another sender."""
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     with pytest.raises(CalendarInviteError) as exc_info:
         await resolver.resolve(
@@ -160,7 +160,7 @@ async def test_resolver_rejects_selected_account_requiring_reauth() -> None:
 @pytest.mark.asyncio
 async def test_resolver_returns_reauth_for_inactive_reauth_calendar_connection() -> None:
     """Inactive reauth rows should produce reconnect guidance, not disconnected state."""
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     with pytest.raises(CalendarInviteError) as exc_info:
         await resolver.resolve(
@@ -181,13 +181,13 @@ async def test_resolver_returns_reauth_for_inactive_reauth_calendar_connection()
 
 
 @pytest.mark.asyncio
-async def test_resolver_uses_selected_google_calendar_sender() -> None:
-    """Explicit Google sender should resolve to the Google Calendar integration."""
+async def test_resolver_uses_selected_google_sender() -> None:
+    """Explicit Google sender should resolve to the Google provider integration."""
     selected = _integration(
         email="seller@gmail.com",
-        integration_type=IntegrationType.GOOGLE_CALENDAR,
+        integration_type=IntegrationType.GOOGLE,
     )
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     resolved = await resolver.resolve(
         _FakeSession([_integration(email="ae@contoso.com"), selected]),
@@ -203,7 +203,7 @@ async def test_resolver_uses_selected_google_calendar_sender() -> None:
 @pytest.mark.asyncio
 async def test_resolver_requires_selection_for_multiple_provider_writable_accounts() -> None:
     """Writable Outlook and Google accounts should still require sender selection."""
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
 
     with pytest.raises(CalendarInviteError) as exc_info:
         await resolver.resolve(
@@ -212,7 +212,7 @@ async def test_resolver_requires_selection_for_multiple_provider_writable_accoun
                     _integration(email="seller@contoso.com"),
                     _integration(
                         email="seller@gmail.com",
-                        integration_type=IntegrationType.GOOGLE_CALENDAR,
+                        integration_type=IntegrationType.GOOGLE,
                     ),
                 ]
             ),
@@ -228,7 +228,7 @@ async def test_resolver_requires_selection_for_multiple_provider_writable_accoun
 @pytest.mark.asyncio
 async def test_resolver_rejects_selected_google_account_without_write_scope() -> None:
     """Selected Google Calendar sender must have event-write scope."""
-    resolver = OutlookCalendarIntegrationResolver()
+    resolver = CalendarIntegrationResolver()
     read_only_google_scopes = [
         scope
         for scope in GOOGLE_INTEGRATION_SCOPES[IntegrationType.GOOGLE_CALENDAR]
@@ -242,7 +242,7 @@ async def test_resolver_rejects_selected_google_account_without_write_scope() ->
                     _integration(
                         email="seller@gmail.com",
                         scopes=read_only_google_scopes,
-                        integration_type=IntegrationType.GOOGLE_CALENDAR,
+                        integration_type=IntegrationType.GOOGLE,
                     )
                 ]
             ),

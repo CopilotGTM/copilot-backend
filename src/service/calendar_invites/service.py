@@ -22,7 +22,7 @@ from src.service.calendar_invites.models import (
     CalendarInviteCreateResult,
     CalendarInviteError,
 )
-from src.service.calendar_invites.resolver import OutlookCalendarIntegrationResolver
+from src.service.calendar_invites.resolver import CalendarIntegrationResolver
 from src.service.calendar_invites.timezones import to_outlook_timezone
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
 from src.service.integrations.calendar.writer import CalendarSyncWriter
@@ -83,7 +83,7 @@ class CalendarInviteService:
         *,
         organisation_id: UUID,
         requested_by_user_id: UUID,
-        integration_resolver: OutlookCalendarIntegrationResolver | None = None,
+        integration_resolver: CalendarIntegrationResolver | None = None,
         graph_client: MicrosoftCalendarInviteClient | None = None,
         google_client: GoogleCalendarInviteClient | None = None,
         normalizer: CalendarEventNormalizer | None = None,
@@ -92,7 +92,7 @@ class CalendarInviteService:
         self.session = session
         self.organisation_id = organisation_id
         self.requested_by_user_id = requested_by_user_id
-        self.integration_resolver = integration_resolver or OutlookCalendarIntegrationResolver()
+        self.integration_resolver = integration_resolver or CalendarIntegrationResolver()
         self.graph_client = graph_client or MicrosoftCalendarInviteClient()
         self.google_client = google_client or GoogleCalendarInviteClient()
         self.normalizer = normalizer or CalendarEventNormalizer()

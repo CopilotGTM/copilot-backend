@@ -90,8 +90,8 @@ class EmailSendService:
         self.requested_by_user_id = requested_by_user_id
         self.integration_resolver = integration_resolver or EmailIntegrationResolver()
         self.provider_clients: dict[IntegrationType, EmailSendClient] = provider_clients or {
-            IntegrationType.OUTLOOK_EMAIL: graph_client or MicrosoftEmailSendClient(),
-            IntegrationType.GMAIL: GmailEmailSendClient(),
+            IntegrationType.MICROSOFT: graph_client or MicrosoftEmailSendClient(),
+            IntegrationType.GOOGLE: GmailEmailSendClient(),
         }
 
     async def send_email(self, request: EmailSendCreateRequest) -> EmailSendCreateResult:

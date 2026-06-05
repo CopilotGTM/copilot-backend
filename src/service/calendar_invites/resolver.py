@@ -31,13 +31,13 @@ class ResolvedCalendarIntegration:
     provider: str
 
 
-class OutlookCalendarIntegrationResolver:
+class CalendarIntegrationResolver:
     """Find a user-owned calendar connection with invite-write scope.
 
     Resolution is deterministic and constrained by organization and sender context.
     """
 
-    _SUPPORTED_TYPES = (IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR)
+    _SUPPORTED_TYPES = (IntegrationType.MICROSOFT, IntegrationType.GOOGLE)
 
     async def resolve(
         self,
@@ -108,7 +108,7 @@ class OutlookCalendarIntegrationResolver:
             integration
             for integration in integrations
             if not get_missing_required_scopes(
-                integration.integration_type,
+                self._calendar_capability_type(integration.integration_type),
                 list(integration.scopes or []),
             )
             and not integration.requires_reauth
@@ -152,7 +152,10 @@ class OutlookCalendarIntegrationResolver:
             )
 
         scopes = list(integration.scopes or [])
-        missing = get_missing_required_scopes(integration.integration_type, scopes)
+        missing = get_missing_required_scopes(
+            self._calendar_capability_type(integration.integration_type),
+            scopes,
+        )
         if missing:
             provider_name = self._provider_display_name(integration.integration_type)
             labels = ", ".join(get_missing_scope_labels(missing))
@@ -198,12 +201,21 @@ class OutlookCalendarIntegrationResolver:
 
     @staticmethod
     def _provider_key(integration_type: IntegrationType) -> str:
-        if integration_type == IntegrationType.GOOGLE_CALENDAR:
+        if integration_type == IntegrationType.GOOGLE:
             return "google"
         return "microsoft"
 
     @staticmethod
     def _provider_display_name(integration_type: IntegrationType) -> str:
-        if integration_type == IntegrationType.GOOGLE_CALENDAR:
-            return "Google Calendar"
-        return "Outlook Calendar"
+        if integration_type == IntegrationType.GOOGLE:
+            return "Google"
+        return "Microsoft"
+
+    @staticmethod
+    def _calendar_capability_type(integration_type: IntegrationType) -> IntegrationType:
+        if integration_type == IntegrationType.GOOGLE:
+            return IntegrationType.GOOGLE_CALENDAR
+        return IntegrationType.OUTLOOK_CALENDAR
+
+
+OutlookCalendarIntegrationResolver = CalendarIntegrationResolver

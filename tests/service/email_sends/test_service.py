@@ -54,7 +54,7 @@ class _FakeSession:
 
 
 class _FakeResolver:
-    def __init__(self, integration_type=IntegrationType.OUTLOOK_EMAIL) -> None:
+    def __init__(self, integration_type=IntegrationType.MICROSOFT) -> None:
         self.integration_type = integration_type
 
     async def resolve(self, session, organisation_id, requested_by_user_id, *, sender_email=None):
@@ -169,8 +169,8 @@ async def test_send_email_uses_gmail_client_and_marks_sent_after_200() -> None:
         session,
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
         requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        integration_resolver=_FakeResolver(IntegrationType.GMAIL),
-        provider_clients={IntegrationType.GMAIL: gmail_client},
+        integration_resolver=_FakeResolver(IntegrationType.GOOGLE),
+        provider_clients={IntegrationType.GOOGLE: gmail_client},
     )
 
     result = await service.send_email(_request(sender_email="seller@gmail.com"))

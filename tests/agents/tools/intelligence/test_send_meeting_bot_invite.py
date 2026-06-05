@@ -15,7 +15,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.context import AgentContext
-from src.agents.tools.intelligence.send_meeting_bot_invite import send_meeting_bot_invite
+from src.agents.tools.intelligence.list_meetings_unified import (
+    CALENDAR_INTEGRATION_TYPES as LIST_MEETINGS_CALENDAR_INTEGRATION_TYPES,
+)
+from src.agents.tools.intelligence.send_meeting_bot_invite import (
+    CALENDAR_INTEGRATION_TYPES,
+    send_meeting_bot_invite,
+)
 
 
 class _AsyncSessionContext:
@@ -75,6 +81,18 @@ def _event() -> SimpleNamespace:
         start_at=datetime.now(UTC) + timedelta(hours=2),
         end_at=datetime.now(UTC) + timedelta(hours=3),
         conference_link="https://meet.google.com/abc-defg-hij",
+    )
+
+
+def test_calendar_tool_filters_provider_parent_integrations() -> None:
+    """Meeting-bot ownership checks should use provider rows, not sync capabilities."""
+    assert CALENDAR_INTEGRATION_TYPES == (
+        "google",
+        "microsoft",
+    )
+    assert LIST_MEETINGS_CALENDAR_INTEGRATION_TYPES == (
+        "google",
+        "microsoft",
     )
 
 

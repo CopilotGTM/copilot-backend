@@ -16,7 +16,7 @@ from src.service.integrations.scope_validation import (
     get_missing_scope_labels,
 )
 
-EMAIL_SEND_INTEGRATION_TYPES = (IntegrationType.OUTLOOK_EMAIL, IntegrationType.GMAIL)
+EMAIL_SEND_INTEGRATION_TYPES = (IntegrationType.MICROSOFT, IntegrationType.GOOGLE)
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ class EmailIntegrationResolver:
             integration
             for integration in integrations
             if not get_missing_required_scopes(
-                integration.integration_type,
+                self._email_capability_type(integration.integration_type),
                 list(integration.scopes or []),
             )
             and not integration.requires_reauth
@@ -121,7 +121,7 @@ class EmailIntegrationResolver:
             )
 
         missing = get_missing_required_scopes(
-            integration.integration_type,
+            self._email_capability_type(integration.integration_type),
             list(integration.scopes or []),
         )
         if missing:
@@ -159,9 +159,15 @@ class EmailIntegrationResolver:
 
     @staticmethod
     def _provider_label(integration: KnowledgeIntegration) -> str:
-        if integration.integration_type == IntegrationType.GMAIL:
-            return "Gmail"
-        return "Outlook Email"
+        if integration.integration_type == IntegrationType.GOOGLE:
+            return "Google"
+        return "Microsoft"
+
+    @staticmethod
+    def _email_capability_type(integration_type: IntegrationType) -> IntegrationType:
+        if integration_type == IntegrationType.GOOGLE:
+            return IntegrationType.GMAIL
+        return IntegrationType.OUTLOOK_EMAIL
 
 
 OutlookEmailIntegrationResolver = EmailIntegrationResolver
