@@ -97,14 +97,13 @@ async def test_run_persists_tasks_page_by_page_before_final_deactivation(
     assert result.tasks_created == 2
     assert len(persist_calls) == 3
     assert persist_calls[0]["normalized"] == [first_task]
-    assert persist_calls[0]["all_external_ids"] == ["00T1"]
     assert persist_calls[0]["deactivate_missing"] is False
     assert persist_calls[1]["normalized"] == [second_task]
-    assert persist_calls[1]["all_external_ids"] == ["00T2"]
     assert persist_calls[1]["deactivate_missing"] is False
     assert persist_calls[2]["normalized"] == []
-    assert persist_calls[2]["all_external_ids"] == {"00T1", "00T2"}
     assert persist_calls[2]["deactivate_missing"] is True
+    assert "all_external_ids" not in persist_calls[2]
+    assert persist_calls[0]["snapshot_started_at"] == persist_calls[2]["snapshot_started_at"]
 
 
 @pytest.mark.asyncio
@@ -134,8 +133,8 @@ async def test_persist_single_task_writes_only_the_changed_task(
     )
 
     assert result.tasks_updated == 1
-    assert persist_calls[0]["all_external_ids"] == [task.external_id]
     assert persist_calls[0]["normalized"] == [task]
+    assert persist_calls[0]["deactivate_missing"] is False
 
 
 @pytest.mark.asyncio
@@ -193,7 +192,7 @@ async def test_persist_loads_activity_maps_for_current_tasks_only(
                 company_external_id="001A",
             )
         ],
-        all_external_ids=["00TA"],
+        snapshot_started_at=None,
     )
 
     assert result.tasks_created == 1

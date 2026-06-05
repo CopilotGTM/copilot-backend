@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
+from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.service.integrations.crm.records.salesforce.notes.note_sync_service import (
     SalesforceNoteRecordSyncService,
     SalesforceNoteSyncConfigurationError,
@@ -54,6 +55,9 @@ def sync_salesforce_notes_task(
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
+    lock_key = f"salesforce_record_sync:note:{org_id}:{int_id}"
+    if not acquire_task_lock(lock_key, ttl=_L["hard"] + 300):
+        return {"status": "skipped", "reason": "already_running"}
 
     async def _run() -> dict[str, Any]:
         sync_id: UUID | None = None
@@ -133,16 +137,19 @@ def sync_salesforce_notes_task(
         }
 
     try:
-        return run_async(_run())
-    except SoftTimeLimitExceeded:
-        run_async(
-            record_sync_failure(
-                organisation_id=org_id,
-                integration_id=int_id,
-                error=TimeoutError("Salesforce notes record sync timed out"),
+        try:
+            return run_async(_run())
+        except SoftTimeLimitExceeded:
+            run_async(
+                record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    error=TimeoutError("Salesforce notes record sync timed out"),
+                )
             )
-        )
-        raise
+            raise
+    finally:
+        release_task_lock(lock_key)
 
 
 async def _mark_history_failed(
