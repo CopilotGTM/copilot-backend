@@ -10,6 +10,8 @@ from uuid import uuid4
 import pytest
 import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
+from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
@@ -141,6 +143,84 @@ async def test_ensure_stakeholder_skips_write_when_no_values_change() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_stakeholder_skips_whitespace_only_email() -> None:
+    service = StakeholderSyncService(uuid4())
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    session = SimpleNamespace(add=MagicMock(), flush=AsyncMock())
+    participant = SimpleNamespace(
+        related_email="   ",
+        related_name="Whitespace Contact",
+        participant_id=uuid4(),
+    )
+    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
+
+    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
+        session=session,
+        deal=deal,
+        participant=participant,
+        existing=None,
+    )
+
+    assert was_created is False
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()
+    service._enrich_from_contact.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_ensure_stakeholder_recovers_from_duplicate_insert_race() -> None:
+    service = StakeholderSyncService(uuid4())
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        related_email="Info@Salesforce.com",
+        related_name="CRM Name",
+        participant_id=participant_id,
+    )
+    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
+    existing = SimpleNamespace(
+        approval_status=ApprovalStatus.APPROVED,
+        source=StakeholderSource.CRM,
+        source_reference_id=None,
+        is_deleted=False,
+        updated_at=None,
+        name=None,
+        stakeholder_data={},
+    )
+    service._load_stakeholder_by_email = AsyncMock(  # type: ignore[attr-defined,method-assign]
+        return_value=existing
+    )
+    integrity_error = IntegrityError(
+        "INSERT INTO deal_stakeholders ...",
+        {},
+        Exception('duplicate key violates unique constraint "uq_deal_stakeholder_email"'),
+    )
+    session = SimpleNamespace(
+        add=MagicMock(),
+        flush=AsyncMock(side_effect=integrity_error),
+        begin_nested=MagicMock(return_value=_FakeSavepoint()),
+    )
+
+    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
+        session=session,
+        deal=deal,
+        participant=participant,
+        existing=None,
+    )
+
+    assert was_created is False
+    assert existing.source_reference_id == participant_id
+    assert existing.name == "CRM Name"
+    service._load_stakeholder_by_email.assert_awaited_once_with(  # type: ignore[attr-defined]
+        session,
+        deal.deal_id,
+        "info@salesforce.com",
+    )
+
+
+@pytest.mark.asyncio
 async def test_enrich_from_contact_respects_manual_override_fields() -> None:
     service = StakeholderSyncService(uuid4())
     contact = SimpleNamespace(
@@ -167,6 +247,69 @@ async def test_enrich_from_contact_respects_manual_override_fields() -> None:
     assert stakeholder.contact_id == contact.contact_id
     assert stakeholder.name == "Manual Name"
     assert stakeholder.job_title == "Manual Title"
+
+
+@pytest.mark.asyncio
+async def test_sync_deal_collapses_duplicate_contact_participants_by_normalized_email() -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    service._load_stakeholders = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    service._reject_internal_stakeholders = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        integration_id=uuid4(),
+        participants=[
+            SimpleNamespace(
+                participant_id=uuid4(),
+                participant_type=CRMParticipantType.CONTACT,
+                related_email="Info@Salesforce.com",
+                related_name="Salesforce Info",
+                relationship_role="decision_maker",
+            ),
+            SimpleNamespace(
+                participant_id=uuid4(),
+                participant_type=CRMParticipantType.CONTACT,
+                related_email=" info@salesforce.com ",
+                related_name="Salesforce Billing",
+                relationship_role="billing_contact",
+            ),
+        ],
+    )
+    service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
+    session = SimpleNamespace(add=MagicMock(), flush=AsyncMock())
+
+    result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
+
+    assert result.created == 1
+    assert result.updated == 0
+    assert result.skipped == 1
+    session.add.assert_called_once()
+    session.flush.assert_awaited_once()
+    stakeholder = session.add.call_args.args[0]
+    assert stakeholder.email == "info@salesforce.com"
+
+
+@pytest.mark.asyncio
+async def test_load_deal_locks_deal_row_to_serialize_concurrent_syncs() -> None:
+    service = StakeholderSyncService(uuid4())
+
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.first.return_value = None
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    await service._load_deal(session, uuid4())  # noqa: SLF001 - query contract test
+
+    stmt = session.execute.await_args.args[0]
+    compiled_query = str(
+        stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "FOR UPDATE" in compiled_query
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +339,14 @@ class _FakeSession:
 
     async def execute(self, _stmt):  # noqa: ANN001
         return _FakeExecuteResult(self._rows)
+
+
+class _FakeSavepoint:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
 
 
 class _FakeDealIdQueryResult:
@@ -424,6 +575,7 @@ async def test_sync_for_organisation_selects_only_open_deals(monkeypatch) -> Non
         )
     )
     assert "crm_deals.deal_status = 'open'" in compiled_query
+    assert "ORDER BY crm_deals.deal_id" in compiled_query
 
 
 @pytest.mark.asyncio
