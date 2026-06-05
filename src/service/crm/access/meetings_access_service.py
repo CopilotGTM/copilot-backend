@@ -38,8 +38,8 @@ from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchSer
 logger = get_logger("crm_meetings_access_service")
 
 CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
 )
 
 REMOVABLE_RECORDING_STATUSES = {

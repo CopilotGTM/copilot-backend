@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql.elements import ClauseElement
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingStatus
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingProvider
@@ -117,6 +119,39 @@ def _fake_session_gen(results):
         yield mock_session
 
     return gen
+
+
+class _CapturingSession:
+    def __init__(self, results):
+        self.statements: list[ClauseElement] = []
+        self._session_gen = _fake_session_gen(results)
+        self._session = None
+
+    async def execute(self, stmt: ClauseElement):
+        self.statements.append(stmt)
+        if self._session is None:
+            async for session in self._session_gen(None):
+                self._session = session
+                break
+        return await self._session.execute(stmt)
+
+
+def _capturing_session_gen(results) -> tuple[_CapturingSession, object]:
+    session = _CapturingSession(results)
+
+    async def gen(_oid):
+        yield session
+
+    return session, gen
+
+
+def _compile_sql(stmt: ClauseElement) -> str:
+    return str(
+        stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
 
 
 # =============================================================================
@@ -269,16 +304,22 @@ class TestFindIntegrationsForEvent:
 
         int1 = FakeIntegration(integration_email="alice@example.com", organisation_id=org_id)
         int2 = FakeIntegration(integration_email="bob@example.com", organisation_id=org_id)
+        capture, session_gen = _capturing_session_gen([int1, int2])
 
         with patch(
             "src.service.integrations.transcripts.service.acquire_org_async_session",
-            side_effect=_fake_session_gen([int1, int2]),
+            side_effect=session_gen,
         ):
             result = await svc.find_integrations_for_event(event)  # type: ignore[arg-type]
 
         assert len(result) == 2
         emails = {r.integration_email for r in result}
         assert emails == {"alice@example.com", "bob@example.com"}
+        stmt = _compile_sql(capture.statements[0])
+        assert "'google'" in stmt
+        assert "'microsoft'" in stmt
+        assert "'google_calendar'" not in stmt
+        assert "'outlook_calendar'" not in stmt
 
     @pytest.mark.asyncio
     async def test_prioritises_organiser_integration(self) -> None:
@@ -435,6 +476,22 @@ class TestTryFetchWithIntegration:
         svc._google_meet = MagicMock()  # provider needed on service
         event = FakeCalendarEvent(online_meeting_provider="googleMeet")
         integration = FakeIntegration()
+        expected = TranscriptFetchResult(success=True, meeting=FakeMeeting())
+
+        svc._fetch_google_meet = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+        result = await svc.try_fetch_with_integration(event, integration)  # type: ignore[arg-type]
+
+        assert result == expected
+        svc._fetch_google_meet.assert_awaited_once_with(event, integration, None)
+
+    @pytest.mark.asyncio
+    async def test_google_provider_parent_delegates_to_fetch_google_meet(self) -> None:
+        """Provider-parent Google integrations are valid for Google Meet transcript fetch."""
+        svc = _make_service()
+        svc._google_meet = MagicMock()
+        event = FakeCalendarEvent(online_meeting_provider="googleMeet")
+        integration = FakeIntegration(integration_type=IntegrationType.GOOGLE)
         expected = TranscriptFetchResult(success=True, meeting=FakeMeeting())
 
         svc._fetch_google_meet = AsyncMock(return_value=expected)  # type: ignore[method-assign]
@@ -823,3 +880,21 @@ class TestFindIntegrationByEmail:
 
         assert result is None
         mock_acquire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lookup_uses_provider_parent_integration_types(self) -> None:
+        svc = _make_service()
+        capture, session_gen = _capturing_session_gen([])
+
+        with patch(
+            "src.service.integrations.transcripts.service.acquire_org_async_session",
+            side_effect=session_gen,
+        ):
+            result = await svc.find_integration_by_email("organiser@example.com")
+
+        assert result is None
+        stmt = _compile_sql(capture.statements[0])
+        assert "'google'" in stmt
+        assert "'microsoft'" in stmt
+        assert "'google_calendar'" not in stmt
+        assert "'outlook_calendar'" not in stmt

@@ -2,23 +2,53 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
 from uuid import UUID
 
+import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql.elements import ClauseElement
 from src.domain.models.organisation_tables.deal_asset_models import (
     DealAssetDirection,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailDirection,
 )
+from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.workers.deal_worker.services.deal_asset_email_attachment_service import (
+    DealAssetEmailAttachmentService,
     _build_attachment_source_record_id,
     _build_storage_path,
     _email_has_attachments_filter,
+    _is_gmail,
     _is_supported_attachment_mimetype,
     _map_email_direction_to_asset_direction,
     _normalize_mimetype,
     _safe_asset_filename,
 )
+
+
+class _FakeExecuteResult:
+    def all(self) -> list[object]:
+        return []
+
+
+class _CapturingSession:
+    def __init__(self) -> None:
+        self.statements: list[ClauseElement] = []
+
+    async def execute(self, stmt: ClauseElement) -> _FakeExecuteResult:
+        self.statements.append(stmt)
+        return _FakeExecuteResult()
+
+
+def _compile_sql(stmt: ClauseElement) -> str:
+    return str(
+        stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
 
 
 class TestBuildStoragePath:
@@ -154,3 +184,27 @@ class TestEmailAttachmentQueryFilters:
         )
 
         assert "emails.has_attachments = 'true'" in compiled
+
+    def test_google_provider_parent_uses_gmail_attachment_api(self):
+        assert _is_gmail(IntegrationType.GOOGLE) is True
+
+    @pytest.mark.asyncio
+    async def test_email_extraction_query_uses_provider_parent_integrations(self):
+        service = DealAssetEmailAttachmentService(organisation_id=UUID(int=1))
+        session = _CapturingSession()
+
+        async def fake_acquire(_org_id):
+            yield session
+
+        with patch(
+            "src.workers.deal_worker.services.deal_asset_email_attachment_service.acquire_org_async_session",
+            side_effect=fake_acquire,
+        ):
+            emails = await service._find_emails_needing_extraction(UUID(int=2))  # noqa: SLF001
+
+        assert emails == []
+        stmt = _compile_sql(session.statements[0])
+        assert "'google'" in stmt
+        assert "'microsoft'" in stmt
+        assert "'gmail'" not in stmt
+        assert "'outlook_email'" not in stmt

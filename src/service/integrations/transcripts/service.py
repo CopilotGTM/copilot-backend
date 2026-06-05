@@ -51,6 +51,10 @@ _TEAMS_TRANSCRIPT_SCOPES = frozenset(
         MICROSOFT_SCOPE_ONLINE_MEETING_TRANSCRIPT_READ_ALL,
     }
 )
+_CALENDAR_PROVIDER_INTEGRATION_TYPES = (
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
+)
 
 
 def _has_teams_transcript_scopes(integration: KnowledgeIntegration) -> bool:
@@ -159,10 +163,7 @@ class TranscriptService:
                 col(KnowledgeIntegration.integration_email) == email.lower(),
                 col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                 col(KnowledgeIntegration.integration_type).in_(
-                    [
-                        IntegrationType.OUTLOOK_CALENDAR,
-                        IntegrationType.GOOGLE_CALENDAR,
-                    ]
+                    _CALENDAR_PROVIDER_INTEGRATION_TYPES
                 ),
                 col(KnowledgeIntegration.connection_id).isnot(None),
             )
@@ -194,7 +195,7 @@ class TranscriptService:
                     col(KnowledgeIntegration.is_active).is_(True),
                     col(KnowledgeIntegration.connection_id).isnot(None),
                     col(KnowledgeIntegration.integration_type).in_(
-                        [IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR]
+                        _CALENDAR_PROVIDER_INTEGRATION_TYPES
                     ),
                 )
             )

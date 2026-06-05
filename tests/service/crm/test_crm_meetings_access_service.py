@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -269,6 +270,15 @@ def test_visible_events_query_deduplicates_user_state_matches() -> None:
         user_id=uuid4(),
     )
 
-    compiled = str(service._base_visible_events_stmt().compile())  # noqa: SLF001
+    compiled = str(
+        service._base_visible_events_stmt().compile(  # noqa: SLF001
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
 
     assert "SELECT DISTINCT calendar_events.event_id" in compiled
+    assert "'google'" in compiled
+    assert "'microsoft'" in compiled
+    assert "'google_calendar'" not in compiled
+    assert "'outlook_calendar'" not in compiled
