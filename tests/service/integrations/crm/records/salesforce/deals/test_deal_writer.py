@@ -6,6 +6,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealResolutionMaps,
     DimensionHit,
@@ -83,6 +86,9 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"006A": existing})  # type: ignore[method-assign]
 
     maps = DealResolutionMaps(
@@ -126,5 +132,9 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
     assert existing.primary_contact_email == "alex@example.com"
     created_rows = [call.args[0] for call in session.add.call_args_list]
     assert len(created_rows) == 1
-    assert created_rows[0].external_id == "006B"
+    assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].company_id is None
+    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
+    assert [call.kwargs["external_id"] for call in mapping_calls] == ["006A", "006B"]
+    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.DEAL
+    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.DEAL

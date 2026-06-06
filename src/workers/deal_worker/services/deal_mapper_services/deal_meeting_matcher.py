@@ -90,7 +90,6 @@ class DealMeetingMatcher:
         self._session = session  # Optional - used by process_deal()
         self._suppress_research_dispatch = suppress_research_dispatch
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
-        self._contact_cache_by_external: dict[str, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
         self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
         # Recording rows are created inside the DB transaction, but the Celery
@@ -154,26 +153,6 @@ class DealMeetingMatcher:
         contact = result.scalars().first()
         if contact:
             self._contact_cache_by_id[contact_id] = contact
-            if contact.external_id:
-                self._contact_cache_by_external[contact.external_id] = contact
-        return contact
-
-    async def _get_contact_by_external_id(
-        self, session: AsyncSession, external_id: str
-    ) -> CRMContact | None:
-        """Retrieve a contact by its external ID, using a local cache."""
-        cached = self._contact_cache_by_external.get(external_id)
-        if cached:
-            return cached
-        stmt = select(CRMContact).where(
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.external_id) == external_id,
-        )
-        result = await session.execute(stmt)
-        contact = result.scalars().first()
-        if contact:
-            self._contact_cache_by_external[external_id] = contact
-            self._contact_cache_by_id[contact.contact_id] = contact
         return contact
 
     async def _collect_contact_emails(self, session: AsyncSession, deal: CRMDeal) -> set[str]:

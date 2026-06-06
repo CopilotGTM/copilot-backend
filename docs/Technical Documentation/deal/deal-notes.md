@@ -67,11 +67,11 @@ Key columns used:
 - `activity_type` (set to `NOTE` via normalization)
 - `subject` (best-effort mapping, e.g., HubSpot notes may have no subject)
 - `body` (note content)
-- `deal_external_id` and `deal_id` (if linked to a deal/opportunity)
-- `contact_external_id`, `company_external_id` (if available)
-- `owner_external_id`, `owner_name`, `owner_email`
+- `deal_id` (if linked to a deal/opportunity)
+- `contact_id`, `company_id` (if available)
+- `owner_id`, `owner_name`, `owner_email`
 - `properties` (provider properties, includes raw/unmapped values)
-- `data_payload` (raw provider payload for debugging)
+- Provider identity and raw payloads are stored in `crm_source_object_mappings`.
 
 Persistence path:
 
@@ -82,16 +82,14 @@ Persistence path:
 ### HubSpot
 
 - HubSpot notes include associations in the response.
-- We resolve the first associated deal (if present) and set:
-  - `deal_external_id`
-  - `deal_id` (resolved from the deal map if the deal already exists)
+- We resolve the first associated deal (if present) through source mappings and set `deal_id`.
 
 ### Salesforce
 
 - Salesforce notes have `ParentId`.
 - We map `ParentId` into the activity linkage field `what_id`.
-- During sync, we link notes to opportunities by Salesforce ID prefix:
-  - `006...` = Opportunity → `deal_external_id`
+- During sync, opportunity `ParentId` values are resolved through `crm_source_object_mappings`
+  before setting local `deal_id`.
 
 ## Operational Notes / Caveats
 
@@ -99,4 +97,4 @@ Persistence path:
   - HubSpot notes: the fetcher attempts to filter by `hs_lastmodifieddate` (best-effort). Exact semantics may depend on the proxy/provider behavior.
   - Salesforce notes: incremental filtering uses `LastModifiedDate >= last_synced_at`.
 - Attachments:
-  - HubSpot notes can reference attachments via `hs_attachment_ids`. We currently retain this in `properties`/`data_payload` rather than syncing attachments into a dedicated table.
+  - HubSpot notes can reference attachments via `hs_attachment_ids`. We currently retain this in `properties` or source mapping payload metadata rather than syncing attachments into a dedicated table.

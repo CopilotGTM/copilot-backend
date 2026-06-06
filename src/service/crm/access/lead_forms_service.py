@@ -628,14 +628,6 @@ class PublicLeadFormSubmissionService:
             form_version_id=None,
             form_submission_id=submission.submission_id,
             properties=properties,
-            data_payload={
-                "fields": fields_payload,
-                "context": context,
-                "form_id": str(form.form_id),
-                "form_version": form.current_version,
-                "public_form_key": self.public_form_key,
-                **({"ingestion": ingestion_metadata} if ingestion_metadata else {}),
-            },
             captured_at=now,
         )
         self.org_session.add(lead)

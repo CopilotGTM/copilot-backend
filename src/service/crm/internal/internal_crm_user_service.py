@@ -100,12 +100,12 @@ class InternalCRMUserService:
         return count > 0
 
     async def get_crm_user_by_app_user_id(self, user_id: UUID) -> CRMUser | None:
-        """Look up a CRM user by their app user ID (external_id)."""
+        """Look up an internal CRM user by the matching app user UUID."""
         integration_id = await self._get_internal_integration_id()
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
             col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.external_id) == str(user_id),
+            col(CRMUser.user_id) == user_id,
             col(CRMUser.is_deleted).is_not(True),
         )
         result = await self.session.execute(stmt)
@@ -135,7 +135,6 @@ class InternalCRMUserService:
             user_id=app_user.user_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(app_user.user_id),
         )
         crm_user.email = str(app_user.email) if app_user.email else None
         crm_user.first_name = app_user.first_name
@@ -193,21 +192,19 @@ class InternalCRMUserService:
             col(CRMUser.integration_id) == integration_id,
         )
         existing_result = await self.session.execute(existing_stmt)
-        existing_crm_users = {cu.external_id: cu for cu in existing_result.scalars().all()}
+        existing_crm_users = {cu.user_id: cu for cu in existing_result.scalars().all()}
 
         now = datetime.now(UTC)
         synced_count = 0
 
         for app_user in app_users:
-            external_id = str(app_user.user_id)
-            crm_user = existing_crm_users.get(external_id)
+            crm_user = existing_crm_users.get(app_user.user_id)
 
             if not crm_user:
                 crm_user = CRMUser(
                     user_id=app_user.user_id,
                     organisation_id=self.organisation_id,
                     integration_id=integration_id,
-                    external_id=external_id,
                 )
 
             # Keep crm_users row aligned with public.users metadata for display and identity.

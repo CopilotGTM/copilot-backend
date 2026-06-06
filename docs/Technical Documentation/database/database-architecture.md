@@ -117,7 +117,7 @@ Tenancy and access
   - Path: `src/domain/models/organisation_tables/sync/integration_models.py`
   - Keys: `sync_id` (PK), `integration_id` (FK), timestamps, `status`, counters, `error_details`.
 
-Principle: An integration connection (credentials + metadata) owns sync history and any downstream synced entities. All synced rows must be attributable to `(organisation_id, integration_id, external_id)`.
+Principle: An integration connection (credentials + metadata) owns sync history and any downstream synced entities. Provider-owned rows must be attributable to their source within the organisation.
 
 Tenancy and access
 
@@ -134,10 +134,12 @@ Tenancy and access
   - Keys: `event_id` (PK) + mixin columns, event fields (`title`, `description`, `start_at`, `end_at`, etc.).
   - Attendees: `CalendarAttendee` with `event_id` FK and uniqueness per event/email.
 
-### CRM (Synced Data)
+### CRM (Canonical Data With Source Mappings)
 
-- CRM entities follow the same pattern as Calendar: one or more tables per entity built on `SyncedRecordMixin` to ensure `organisation_id`, `integration_id`, provider `external_id`, and `data_payload` are present.
-- Current placeholder: `src/domain/models/organisation_tables/sync/crm/deals.py` (to be implemented following the mixin pattern for `deals`, and similarly for `contacts`, `companies`, etc., as needed).
+- CRM entity tables store canonical product state with local UUID primary keys and local foreign keys.
+- Provider and migration identity is stored in `crm_source_object_mappings` as `(organisation_id, source_kind, integration_id/source_run_id, provider, external_object_type, external_id) -> (local_object_type, local_object_id)`.
+- Raw provider payloads used for replay/debug belong on source mapping rows, not canonical CRM tables.
+  This applies to deals, contacts, companies, users, pipelines, stages, activities, notes, associations, leads, and lead participants.
 
 ## IDs and Relationships Summary
 
@@ -151,7 +153,7 @@ Tenancy and access
 - Domain keys (non‑exhaustive)
   - Chat: `session_id`, `message_id`, `attachment_id`, `job_id`.
   - Knowledge: `source_id`, `document_id`, `job_id`.
-  - Integrations & Sync: `integration_id`, `sync_id` and entity‑specific IDs (`event_id`, CRM deal/contact IDs), plus provider `external_id`.
+  - Integrations & Sync: `integration_id`, `sync_id` and entity‑specific IDs (`event_id`, CRM deal/contact IDs). CRM provider IDs are resolved through source mappings.
 
 ## Query Patterns and Access Control
 
@@ -160,7 +162,8 @@ Tenancy and access
   - Chat: `(organisation_id, user_id)`, `session_id`, `message_type`.
   - Knowledge: visibility, `deal_id`, `content_hash`, `embedding` for vector search.
   - Integrations: `(integration_id, started_at)` for sync history; `is_active` for connection state.
-  - Calendar/CRM: `(organisation_id, start_at)` or `(integration_id, external_id)` depending on the entity.
+  - Calendar: `(organisation_id, start_at)` or `(integration_id, external_id)` depending on the entity.
+  - CRM: local foreign-key lookups on canonical tables; provider lookup through `crm_source_object_mappings`.
 
 ## Conventions
 
@@ -174,7 +177,7 @@ Tenancy and access
 
 - Retrieval‑augmented generation (RAG): query `knowledge_base` by `organisation_id` with vector similarity on `embedding`, constrained by visibility and optional domain filters (`deal_id`, tags, message context).
 - Context from chat: join recent `ChatMessage` rows in a `ChatSession` to provide conversational history.
-- Integrations: use synced calendar (and planned CRM) tables to enrich answers with up‑to‑date external context; rely on `external_id` and `data_payload` for provenance.
+- Integrations: use synced calendar tables and canonical CRM tables to enrich answers with up-to-date external context; for CRM provenance, resolve provider IDs and payloads through `crm_source_object_mappings`.
 
 ## Where to Find Things
 
@@ -268,6 +271,6 @@ class SyncedEntity(SyncedRecordMixin, table=True):
 5) Flexibility: move volatile/optional fields into JSONB.
 6) Indexes: FKs, frequent filters, and composite indexes for common queries.
 7) Visibility: if needed, add `is_org_wide` vs owner `user_id` pattern.
-8) Sync: for provider data, inherit from `SyncedRecordMixin` and ensure `(integration_id, external_id)` uniqueness.
+8) Sync: for non-CRM provider data, inherit from `SyncedRecordMixin` and ensure `(integration_id, external_id)` uniqueness. For canonical CRM tables, use local IDs on the entity row and store provider identity in `crm_source_object_mappings`.
 9) Migrations: add comments, names for constraints, and reversible `downgrade()`.
 10) Tests: basic CRUD + RLS/tenant scoping where applicable.

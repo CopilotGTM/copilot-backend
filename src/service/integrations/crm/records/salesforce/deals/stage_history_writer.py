@@ -9,7 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DimensionHit,
     NormalizedSalesforceStageTransition,
@@ -30,6 +34,12 @@ class SalesforceDealStageHistoryWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -73,7 +83,6 @@ class SalesforceDealStageHistoryWriter:
             if existing is None:
                 row = self._new_row(
                     transition=transition,
-                    external_id=external_id,
                     deal_id=deal_id,
                     stage_id=resolved_stage_id,
                     from_stage_id=resolved_from_stage_id,
@@ -81,6 +90,12 @@ class SalesforceDealStageHistoryWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    transition=transition,
+                    local_history_id=row.history_id,
+                    now=now,
+                )
                 result.stage_history_created += 1
             else:
                 self._apply_updates(
@@ -88,6 +103,13 @@ class SalesforceDealStageHistoryWriter:
                     transition=transition,
                     stage_id=resolved_stage_id,
                     from_stage_id=resolved_from_stage_id,
+                    now=now,
+                )
+                existing.is_deleted = False
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    transition=transition,
+                    local_history_id=existing.history_id,
                     now=now,
                 )
                 result.stage_history_updated += 1
@@ -110,23 +132,49 @@ class SalesforceDealStageHistoryWriter:
         self,
         external_ids: set[str] | None = None,
     ) -> dict[str, CRMDealStageHistory]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.STAGE_HISTORY,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMDealStageHistory).where(
             col(CRMDealStageHistory.organisation_id) == self.organisation_id,
             col(CRMDealStageHistory.integration_id) == self.integration_id,
-            col(CRMDealStageHistory.is_deleted) == False,  # noqa: E712
+            col(CRMDealStageHistory.history_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMDealStageHistory.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = _local_to_external(external_to_local)
+        return {
+            local_to_external[row.history_id]: row
+            for row in rows
+            if row.history_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        *,
+        external_id: str,
+        transition: NormalizedSalesforceStageTransition,
+        local_history_id: UUID,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.STAGE_HISTORY,
+            external_id=external_id,
+            local_object_type=CRMSourceObjectType.STAGE_HISTORY,
+            local_object_id=local_history_id,
+            data_payload=transition.data_payload,
+            source_created_at=transition.entered_at,
+            source_modified_at=transition.exited_at,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
         *,
         transition: NormalizedSalesforceStageTransition,
-        external_id: str,
         deal_id: UUID,
         stage_id: UUID | None,
         from_stage_id: UUID | None,
@@ -135,12 +183,9 @@ class SalesforceDealStageHistoryWriter:
         return CRMDealStageHistory(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=external_id,
             deal_id=deal_id,
             stage_id=stage_id,
             from_stage_id=from_stage_id,
-            stage_external_id=transition.stage_external_id,
-            from_stage_external_id=transition.from_stage_external_id,
             entered_at=transition.entered_at,
             exited_at=transition.exited_at,
             elapsed_seconds=transition.elapsed_seconds,
@@ -149,7 +194,6 @@ class SalesforceDealStageHistoryWriter:
             source=transition.source,
             synced_at=now,
             last_seen_at=now,
-            data_payload=transition.data_payload,
         )
 
     def _apply_updates(
@@ -163,7 +207,6 @@ class SalesforceDealStageHistoryWriter:
     ) -> None:
         row.stage_id = stage_id
         row.from_stage_id = from_stage_id
-        row.from_stage_external_id = transition.from_stage_external_id
         row.exited_at = transition.exited_at
         row.elapsed_seconds = transition.elapsed_seconds
         row.amount_at_stage = transition.amount_at_stage
@@ -171,7 +214,6 @@ class SalesforceDealStageHistoryWriter:
         row.source = transition.source
         row.synced_at = now
         row.last_seen_at = now
-        row.data_payload = transition.data_payload
 
 
 def _synthetic_external_id(transition: NormalizedSalesforceStageTransition) -> str:
@@ -179,3 +221,7 @@ def _synthetic_external_id(transition: NormalizedSalesforceStageTransition) -> s
         f"{transition.deal_external_id}:{transition.stage_external_id}:"
         f"{transition.entered_at.isoformat()}"
     )
+
+
+def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
+    return {local_id: external_id for external_id, local_id in external_to_local.items()}

@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealResolutionMaps,
     DealWriteResult,
@@ -53,6 +57,12 @@ class SalesforceDealWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -74,6 +84,7 @@ class SalesforceDealWriter:
                 row = self._new_row(deal, resolved, now=now)
                 self.session.add(row)
                 existing_by_external[deal.external_id] = row
+                await self._upsert_source_mapping(deal, row.deal_id, now=now)
                 result.deals_created += 1
             else:
                 self._apply_updates(
@@ -83,6 +94,8 @@ class SalesforceDealWriter:
                     now=now,
                     preserve_relationship_fields=preserve_relationship_fields,
                 )
+                existing.is_deleted = False
+                await self._upsert_source_mapping(deal, existing.deal_id, now=now)
                 result.deals_updated += 1
 
         await self.session.flush()
@@ -165,17 +178,48 @@ class SalesforceDealWriter:
         )
 
     async def _load_existing_rows(self, external_ids: set[str] | None = None) -> dict[str, CRMDeal]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.DEAL,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.integration_id) == self.integration_id,
-            col(CRMDeal.is_deleted) == False,  # noqa: E712
+            col(CRMDeal.deal_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMDeal.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.deal_id]: row for row in rows if row.deal_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        deal: NormalizedSalesforceOpportunity,
+        local_deal_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.DEAL,
+            external_id=deal.external_id,
+            local_object_type=CRMSourceObjectType.DEAL,
+            local_object_id=local_deal_id,
+            data_payload=deal.data_payload,
+            source_created_at=deal.source_created_at,
+            source_modified_at=deal.source_modified_at,
+            synced_at=now,
+            mapping_metadata=(
+                {"associations_payload": deal.associations_payload}
+                if deal.associations_payload
+                else None
+            ),
+        )
 
     def _new_row(
         self,
@@ -187,7 +231,6 @@ class SalesforceDealWriter:
         return CRMDeal(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=deal.external_id,
             name=deal.name,
             amount=deal.amount,
             currency=deal.currency,
@@ -201,10 +244,8 @@ class SalesforceDealWriter:
             closed_lost_at=deal.closed_lost_at,
             closed_reason=deal.closed_reason,
             crm_url=deal.crm_url,
-            stage_external_id=deal.stage_external_id,
             stage_name=resolved.stage_name,
             stage_label=resolved.stage_label,
-            pipeline_external_id=deal.pipeline_external_id,
             pipeline_name=resolved.pipeline_name,
             pipeline_label=resolved.pipeline_label,
             pipeline_id=resolved.pipeline_id,
@@ -213,19 +254,14 @@ class SalesforceDealWriter:
             deal_type=deal.deal_type,
             priority=deal.priority,
             lead_source=deal.lead_source,
-            owner_external_id=deal.owner_external_id,
             owner_name=resolved.owner_name,
             owner_email=resolved.owner_email,
             owner_id=resolved.owner_id,
             created_by_user_id=resolved.created_by_user_id,
             updated_by_user_id=resolved.updated_by_user_id,
-            created_by_user_external_id=deal.created_by_user_external_id,
-            updated_by_user_external_id=deal.updated_by_user_external_id,
-            company_external_id=deal.primary_company_external_id,
             company_id=resolved.company_id,
             company_name=resolved.company_name,
             company_domain=resolved.company_domain,
-            primary_contact_external_id=deal.primary_contact_external_id,
             primary_contact_id=resolved.primary_contact_id,
             primary_contact_name=resolved.primary_contact_name,
             primary_contact_email=resolved.primary_contact_email,
@@ -243,8 +279,6 @@ class SalesforceDealWriter:
             associated_contact_count=deal.associated_contact_count,
             associated_company_count=deal.associated_company_count,
             note_count=deal.note_count,
-            associations_payload=deal.associations_payload,
-            data_payload=deal.data_payload,
         )
 
     def _apply_updates(
@@ -269,10 +303,8 @@ class SalesforceDealWriter:
         row.closed_lost_at = deal.closed_lost_at
         row.closed_reason = deal.closed_reason
         row.crm_url = deal.crm_url
-        row.stage_external_id = deal.stage_external_id
         row.stage_name = resolved.stage_name
         row.stage_label = resolved.stage_label
-        row.pipeline_external_id = deal.pipeline_external_id
         row.pipeline_name = resolved.pipeline_name
         row.pipeline_label = resolved.pipeline_label
         row.pipeline_id = resolved.pipeline_id
@@ -281,20 +313,15 @@ class SalesforceDealWriter:
         row.deal_type = deal.deal_type
         row.priority = deal.priority
         row.lead_source = deal.lead_source
-        row.owner_external_id = deal.owner_external_id
         row.owner_name = resolved.owner_name
         row.owner_email = resolved.owner_email
         row.owner_id = resolved.owner_id
         row.created_by_user_id = resolved.created_by_user_id
         row.updated_by_user_id = resolved.updated_by_user_id
-        row.created_by_user_external_id = deal.created_by_user_external_id
-        row.updated_by_user_external_id = deal.updated_by_user_external_id
-        row.company_external_id = deal.primary_company_external_id
         row.company_id = resolved.company_id
         row.company_name = resolved.company_name
         row.company_domain = resolved.company_domain
         if not preserve_relationship_fields or deal.primary_contact_external_id is not None:
-            row.primary_contact_external_id = deal.primary_contact_external_id
             row.primary_contact_id = resolved.primary_contact_id
             row.primary_contact_name = resolved.primary_contact_name
             row.primary_contact_email = resolved.primary_contact_email
@@ -313,8 +340,6 @@ class SalesforceDealWriter:
         row.associated_contact_count = deal.associated_contact_count
         row.associated_company_count = deal.associated_company_count
         row.note_count = deal.note_count
-        row.associations_payload = deal.associations_payload
-        row.data_payload = deal.data_payload
 
 
 def _lookup(key: str | None, mapping: dict[str, DimensionHit]) -> DimensionHit | None:

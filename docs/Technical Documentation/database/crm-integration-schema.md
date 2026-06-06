@@ -51,29 +51,40 @@ Understanding the differences across major CRMs is critical for designing a prov
 
 ---
 
+## Current CRM Identity Contract
+
+Canonical CRM tables now store local product state with local UUID identifiers and
+local foreign keys. HubSpot, Salesforce, and migration identifiers are stored in
+`crm_source_object_mappings`, which maps source identity to local CRM objects and
+stores raw provider payload where needed. This supersedes older references in this
+review to `external_id`, `*_external_id`, or `data_payload` columns on canonical CRM
+tables.
+
 ## Big Picture: What’s Already Correct (Provider-Agnostic)
 
 ### 1) Integration-scoped identity is a strong foundation
 
-All CRM tables inherit `SyncedRecordMixin`, which adds:
+CRM rows carry organisation and integration lifecycle metadata:
 
 - `organisation_id` (tenant isolation)
-- `integration_id` (FK → `knowledge_integrations.integration_id`)
+- `integration_id` (FK -> `knowledge_integrations.integration_id`)
 - `is_deleted` (soft-delete reflecting provider state)
 - `created_at`, `updated_at` (internal timestamps via `TimestampMixin`)
 
-Most CRM tables also enforce `UNIQUE (integration_id, external_id)`. This is the core requirement for multi‑CRM syncing: **idempotent upserts** per connected account.
+Idempotent provider upserts are enforced through `crm_source_object_mappings`, not
+through provider ID columns on canonical CRM tables.
 
-### 2) “Normalized + raw JSON” gives you flexibility
+### 2) “Normalized + source-mapped payloads” gives you flexibility
 
 Most tables have:
 
-- “common query” columns (e.g., `email`, `amount`, `stage_external_id`)
+- “common query” columns (e.g., `email`, `amount`, local `stage_id`)
 - `properties` (JSONB) for provider custom fields and provider-specific extras
-- `data_payload` (JSONB) for raw payload/debug/replay
 - sometimes `metrics` (JSONB) for derived analytics
 
-This pattern is what makes the schema **diverse enough** to hold different CRMs without constantly migrating columns.
+Raw provider payloads used for replay/debug live in `crm_source_object_mappings`.
+This keeps canonical CRM tables clean while still preserving source evidence at
+the integration boundary.
 
 ### 3) Pipeline/stage normalization is broadly compatible
 
@@ -109,9 +120,10 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 #### What’s correct — `crm_companies`
 
-- Strong identity: `external_id` + `integration_id` uniqueness.
+- Strong local identity through `company_id`; provider identity resolves through
+  `crm_source_object_mappings`.
 - Good “common CRM” fields: `name`, `domain`, `industry`, `annual_revenue`, `number_of_employees`, address/location, owner fields.
-- Flexibility: `properties`, `metrics`, `data_payload`.
+- Flexibility: `properties`, `metrics`, plus source-mapping payloads for provider replay/debug.
 - Practical indexes for common filters (domain/name/owner/lifecycle/sync recency).
 
 #### HubSpot-shaped / portability notes — `crm_companies`
@@ -132,7 +144,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 - Core identity + profile fields (`first_name`, `last_name`, `email`, phones, title).
 - `additional_emails` as JSONB list is a good cross-provider approach.
 - Activity timestamps (`last_contacted_at`, `last_activity_at`) are useful for pre‑sales.
-- Flexibility via `properties`, `metrics`, `data_payload`.
+- Flexibility via `properties`, `metrics`, plus source-mapping payloads for provider replay/debug.
 
 #### HubSpot-shaped / portability notes — `crm_contacts`
 
@@ -149,7 +161,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 #### What’s correct — `crm_users`
 
-- Normalized owner/user profile with `external_id`.
+- Normalized owner/user profile with provider identity in `crm_source_object_mappings`.
 - Team membership via `team_ids` is flexible.
 - `is_active` and canonical `is_deleted` cover common CRM user lifecycle patterns (with `is_deleted_remote` retained only as a backwards-compatible alias).
 
@@ -159,7 +171,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 #### Missing for multi‑CRM / “our own CRM” — `crm_users`
 
-- Deals/contacts/tasks store `owner_external_id` and owner name/email but do not maintain a consistent **FK link** to `crm_users.user_id`. You can do it via enrichment, but it’s not structurally enforced.
+- Deals/contacts/companies/activities store resolved `owner_id` plus display snapshots where useful. Provider owner IDs should resolve through `crm_source_object_mappings`.
 
 ---
 
@@ -170,7 +182,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 - Provider-agnostic representation of a pipeline and ordered stages.
 - `stage_state` (open/won/lost) and probability constraints enable consistent analytics.
 - `object_type` on pipelines is a good forward-compat hook (deals vs tickets vs other objects).
-- JSON `properties` + `data_payload` retain provider details.
+- JSON `properties` retain normalized/provider-specific details; raw provider payloads live in source mappings.
 
 #### HubSpot-shaped / portability notes — `crm_pipelines` / `crm_deal_stages`
 
@@ -187,12 +199,9 @@ This is a strong building block for multi-CRM because it supports resolving the 
 #### What’s correct — `crm_deals`
 
 - Captures the core deal/opportunity fields used in most CRMs: `name`, `amount`, `currency`, close dates, status, probability.
-- Stores both:
-  - provider identifiers (`pipeline_external_id`, `stage_external_id`) and
-  - normalized FK references (`pipeline_id`, `stage_id`)
-  This is good for resilience (you can show stage text even if stages aren’t synced yet).
+- Stores normalized local FK references such as `pipeline_id`, `stage_id`, `owner_id`, `company_id`, and `primary_contact_id`.
 - `crm_url` is universally useful (deep link to provider UI).
-- Rich extensibility: `properties`, `metrics`, `associations_payload`, `data_payload`.
+- Rich extensibility: `properties`, `metrics`, and source-mapping payloads.
 - Supports internal augmentation via `deal_summary_data` (AI output).
 
 #### HubSpot-shaped / portability notes — `crm_deals`
@@ -202,12 +211,9 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 #### Missing for multi‑CRM / “our own CRM” — `crm_deals`
 
-- Company/contact relationships are only partially normalized:
-  - fields like `company_external_id`, `primary_contact_external_id` are useful, but there is no enforced FK to `crm_companies` / `crm_contacts`.
-  - multi-CRM reality: many CRMs allow many contacts, many accounts, and “contact roles” on opportunities. That belongs in a relationship/association model (see `crm_deal_participants` and the “gaps” section).
-- The table is fundamentally **integration-scoped** (via required `integration_id`). If you want “our own CRM” objects created internally, you’ll need either:
-  - an internal “CRM integration” concept, or
-  - a separate canonical table that is not tied to a single integration.
+- Company/contact relationships are normalized through local IDs on `crm_deals`
+  and through `crm_deal_participants` for many-to-many/contact-role cases.
+- `integration_id` is nullable where internal CRM creation is supported. Provider-backed rows still keep integration attribution without storing provider IDs on the canonical row.
 
 ---
 
@@ -259,7 +265,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 - A canonical task/activity table is essential for pre‑sales workflows.
 - Captures common fields: `subject`, `body`, `status`, `task_type`, `priority`, `due_date`, owner fields, completion timestamps.
-- Flexible `properties`/`metrics`/`data_payload`.
+- Flexible `properties`/`metrics`; raw provider payloads live in source mappings.
 
 #### HubSpot-shaped / portability notes — `crm_activities`
 
@@ -271,7 +277,7 @@ This is a strong building block for multi-CRM because it supports resolving the 
 
 #### Missing for multi‑CRM / “our own CRM” — `crm_activities`
 
-- Activity association is limited to `deal_id` / `deal_external_id`. Tasks often relate to contacts/companies/leads **without** a deal.
+- Activity association uses local IDs: `deal_id`, `contact_id`, `company_id`, plus polymorphic `related_object_type` and `related_local_id`.
 - Status/type/priority are stored as `str` (not the provided enums), which reduces consistency for cross-CRM analytics unless you enforce canonicalization in the sync layer.
 - No participant/attendee modeling for “MEETING” task type (often needed in sales workflows).
 
@@ -318,7 +324,7 @@ Implemented: `crm_object_associations` provides this generic association layer; 
 The `crm_activities` table now provides a canonical activity model with:
 
 - Multiple activity types: tasks, calls, meetings/events, emails, notes
-- Polymorphic associations to deals/contacts/companies via `related_object_type` + `related_external_id`
+- Polymorphic associations to deals/contacts/companies via `related_object_type` + `related_local_id`
 - Direct FK columns: `deal_id`, `contact_id`, `company_id`
 - Meeting attendee support via `attendees` JSONB
 - Communication fields: `direction`, `call_outcome`, `duration_minutes`
@@ -351,10 +357,10 @@ This is not required for syncing “happy path” data, but it becomes important
 ### Minimal (keeps current tables, improves multi‑CRM)
 
 1. Implemented: add a generic association table (or generalize `crm_deal_participants`):
-   - `crm_object_associations`: `(integration_id, from_object_type, from_external_id, to_object_type, to_external_id, role, properties, data_payload, source_created_at, source_modified_at, last_seen_at)`
+   - `crm_object_associations`: local `from_*` / `to_*` object links and association metadata; provider identity/payloads are mapped through `crm_source_object_mappings`
 2. Implemented (initial): normalize contact ↔ company relationships via `crm_object_associations` during contact sync.
 3. Implemented: Generalize activities:
-   - Renamed `crm_deal_tasks` to `crm_activities` with polymorphic `related_object_type` + `related_external_id` + direct FK columns.
+   - Renamed `crm_deal_tasks` to `crm_activities` with local-ID polymorphic columns + direct FK columns.
 4. Decide on one deletion/archival strategy:
    - Implemented: `is_deleted` (mixin) is canonical; redundant `is_deleted_remote` DB columns were removed (alias properties remain for backwards compatibility).
 
@@ -363,7 +369,7 @@ This is not required for syncing “happy path” data, but it becomes important
 1. Introduce canonical internal tables (example naming):
    - `core_accounts`, `core_people`, `core_opportunities`, `core_activities`
 2. Add mapping tables:
-   - `crm_object_mappings` linking `(organisation_id, integration_id, external_object_type, external_id)` → `(internal_object_type, internal_id)`
+   - implemented as `crm_source_object_mappings`, linking source identity to local CRM row IDs
 3. Treat `crm_*` tables as the **integration import/cache layer**, and treat `core_*` as the **product CRM layer**.
 
 This separation makes multi‑CRM orgs workable (one canonical record, many external mappings) and sets you up for write-back and internal creation.
@@ -391,7 +397,7 @@ Given that Salesforce is the most complex CRM to integrate (and often the most c
 | **Product2/PricebookEntry** | ❌ Missing | 🟡 Optional - product catalog support can be added later |
 | **OpportunityFieldHistory** | `crm_deal_stage_history` | 🟡 Partial - only stage history |
 | **RecordType** | ❌ Missing | 🟡 Minor - map to pipeline concept |
-| **Lead** | ❌ Missing | 🟡 Future - separate object type |
+| **Lead** | `crm_leads` | ✅ First-class pre-opportunity object |
 
 ### Key Salesforce Fields to Support
 
@@ -423,10 +429,11 @@ Status: ✅ Implemented in `crm_activities`
 The `crm_activities` table now has:
 
 - `related_object_type` (what type)
-- `related_external_id` / `related_local_id` (what's ID)
-- `contact_id` / `contact_external_id` (who - contact)
-- `company_id` / `company_external_id` (what - company)
-- `deal_id` / `deal_external_id` (what - deal)
+- `related_local_id` (local polymorphic object ID)
+- `contact_id` (who - contact)
+- `company_id` (what - company)
+- `deal_id` (what - deal)
+- provider relationship IDs resolved through `crm_source_object_mappings`
 
 ---
 

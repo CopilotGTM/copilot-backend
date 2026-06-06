@@ -24,7 +24,6 @@ class LeadParticipantItem(BaseModel):
     relationship_role: str | None
     is_primary: bool
     related_local_id: UUID | None
-    related_external_id: str | None
     name: str | None
     email: str | None
     phone: str | None
@@ -226,7 +225,6 @@ class CreateLeadParticipantRequest(BaseModel):
     relationship_role: str = "participant"
     is_primary: bool = False
     related_local_id: UUID | None = None
-    related_external_id: str | None = None
     name: str | None = None
     email: str | None = None
     phone: str | None = None

@@ -9,6 +9,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.hubspot.companies.company_types import (
     NormalizedHubSpotCompany,
 )
@@ -50,6 +53,14 @@ def _normalized_company(
     )
 
 
+def _mock_source_mappings(writer: HubSpotCompanyWriter) -> MagicMock:
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    return mapping_helper
+
+
 @pytest.mark.asyncio
 async def test_single_apply_does_not_deactivate_unrelated_companies() -> None:
     """Webhook company upserts must not treat one event as a full active snapshot."""
@@ -82,6 +93,7 @@ async def test_single_apply_does_not_deactivate_unrelated_companies() -> None:
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"123": existing, "999": unrelated}
     )
+    _mock_source_mappings(writer)
 
     result = await writer.apply_single(
         company=_normalized_company(external_id="123", name="New Acme"),
@@ -118,6 +130,7 @@ async def test_single_apply_reactivates_soft_deleted_company() -> None:
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    mapping_helper = _mock_source_mappings(writer)
 
     result = await writer.apply_single(
         company=_normalized_company(external_id="123", name="Restored Acme"),
@@ -129,6 +142,10 @@ async def test_single_apply_reactivates_soft_deleted_company() -> None:
     assert existing.is_deleted is False
     assert existing.is_active is True
     assert existing.name == "Restored Acme"
+    mapping_helper.upsert_integration_mapping.assert_awaited_once()
+    assert mapping_helper.upsert_integration_mapping.call_args.kwargs["external_object_type"] == (
+        CRMSourceObjectType.COMPANY
+    )
     session.add.assert_not_called()
 
 
@@ -147,6 +164,7 @@ async def test_single_apply_resolves_owner_and_counts_unresolved_owner() -> None
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     created = await writer.apply_single(
         company=_normalized_company(external_id="123", owner_external_id="owner-1"),
@@ -188,6 +206,7 @@ async def test_single_apply_skips_stale_active_company_without_overwriting_snaps
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     result = await writer.apply_single(
         company=replace(
@@ -231,6 +250,7 @@ async def test_single_apply_reactivates_soft_deleted_company_even_when_timestamp
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     result = await writer.apply_single(
         company=replace(

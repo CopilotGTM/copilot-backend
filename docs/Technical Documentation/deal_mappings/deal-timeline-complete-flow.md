@@ -442,14 +442,13 @@ Used for STAGE_CHANGE events:
 CREATE TABLE crm_deal_stage_history (
     history_id UUID PRIMARY KEY,
     deal_id UUID NOT NULL REFERENCES crm_deal(deal_id),
-    stage_external_id VARCHAR,
+    stage_id UUID,
     stage_name VARCHAR,
     stage_label VARCHAR,
-    from_stage_external_id VARCHAR,
+    from_stage_id UUID,
     from_stage_name VARCHAR,
     from_stage_label VARCHAR,
     entered_at TIMESTAMP WITH TIME ZONE,
-    external_id VARCHAR,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 ```
@@ -669,22 +668,22 @@ stmt = (
 | `CRMDealStageHistory` | Base table | Contains all stage transitions |
 | `→ KnowledgeIntegration` | Get CRM type | HubSpot vs Salesforce |
 
-**Source record ID:** Uses `external_id` from history (HubSpot's property history ID).
+**Source record ID:** Uses local `CRMDealStageHistory.history_id`. Provider history identity and raw payloads live in `crm_source_object_mappings` when available.
 
 #### STAGE_CHANGE Sync Gaps & Issues
 
 | Gap | Description | Impact | Mitigation |
 |-----|-------------|--------|------------|
-| **No stage labels in history** | `CRMDealStageHistory` stores `stage_external_id` but not display labels | Timeline shows IDs like "123456" instead of "Discovery" | **GAP** - Need to join with pipeline stages |
+| **No stage labels in history** | `CRMDealStageHistory` can have `stage_id` without display labels | Timeline may show minimal transition text | Join with local pipeline stages when display labels are missing |
 | **Missing from_stage on first entry** | Initial stage has no previous stage | Shows "Stage: Discovery" (no arrow) | Handled correctly |
 | **Integration not stored** | If `integration_id` is NULL on history record | Falls back to CRM_HUBSPOT | Need to ensure integration_id is populated |
 
 **Recommended fix for stage labels:**
 ```python
-# Should also join CRMDealPipelineStage to get labels
+# Should also join CRMDealStage to get labels
 .outerjoin(
-    CRMDealPipelineStage,
-    history_table.c.stage_external_id == stage_table.c.external_id,
+    CRMDealStage,
+    history_table.c.stage_id == stage_table.c.stage_id,
 )
 ```
 

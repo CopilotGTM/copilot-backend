@@ -57,7 +57,7 @@ The current public form implementation already provides the storage foundation:
   `PublicIngressResourceType.LEAD_INGESTION` already exist.
 - `CRMLeadSourceType.API` already exists.
 - `CRMLead` already has normalized lead columns plus `attribution`, `consent`,
-  `properties`, `metrics`, and `data_payload`.
+  `properties`, and `metrics`.
 
 The private ingestion implementation should not call
 `PublicLeadFormSubmissionService`. Public forms are definition-driven and versioned;
@@ -159,7 +159,6 @@ Request:
 
 ```json
 {
-  "external_id": "leadgen-98765",
   "source_type": "api",
   "source_channel": "meta_ads",
   "source_name": "Q2 demo campaign",
@@ -186,13 +185,11 @@ Request:
     "captured_at": "2026-05-03T10:00:00Z"
   },
   "properties": {
-    "lead_temperature": "warm"
+    "lead_temperature": "warm",
+    "raw_source": "caller-normalized payload or provider replay reference"
   },
   "metrics": {
     "meta_quality_score": 0.92
-  },
-  "data_payload": {
-    "raw_source": "caller-normalized payload or provider replay reference"
   }
 }
 ```
@@ -287,18 +284,18 @@ Private ingestion must be retry-safe.
 V1 behavior:
 
 - Require `Idempotency-Key` by default.
-- Store the idempotency key in `CRMLead.data_payload.ingestion.idempotency_key`.
-- Also store the ingress key id in `CRMLead.data_payload.ingestion.key_id`.
+- Store the idempotency key in the dedicated `CRMLead.idempotency_key` column.
+- Store the ingress key id in the dedicated `CRMLead.ingestion_key_id` column.
+- Mirror ingestion diagnostics in `CRMLead.properties._copilotgtm_ingestion`.
 - Before creating a lead, check whether a non-deleted lead already exists for:
   - current organisation
   - `source_type = api`
-  - matching `data_payload.ingestion.key_id`
-  - matching `data_payload.ingestion.idempotency_key`
+  - matching `ingestion_key_id`
+  - matching `idempotency_key`
 - If found, return the existing `lead_id` with status `accepted`.
 
-If JSONB lookup becomes too slow or heavily used, add a dedicated ingestion event
-table later. Do not add that table in v1 unless tests or load expectations prove
-it is needed.
+The dedicated replay columns are the lookup contract; do not use JSONB traversal
+for idempotency.
 
 ## Payload Validation
 
@@ -314,8 +311,8 @@ The private request must validate more than basic Pydantic shape:
 - Non-negative numeric validation for score, employee count, revenue, and budget.
 - Require at least one of `email`, `phone`, `full_name`, or `company_name`.
 
-Unknown fields should be rejected. Extra source data belongs under
-`data_payload`, not at the top level.
+Unknown fields should be rejected. Extra caller diagnostics belong under
+`properties`, not at the top level.
 
 ## Service Boundaries
 
@@ -359,7 +356,8 @@ Responsibilities:
 - Apply idempotency lookup.
 - Create `CRMLead` in the resolved organisation schema.
 - Set `source_type = CRMLeadSourceType.API` by default.
-- Store ingestion metadata in `data_payload.ingestion`.
+- Store ingestion metadata in dedicated replay columns and mirrored
+  `properties._copilotgtm_ingestion`.
 
 ## Routing
 
@@ -384,16 +382,15 @@ Create a lead with:
 - `source_channel`, `source_name`, and `source_ref` from request.
 - Standard lead fields copied directly after normalization.
 - `attribution`, `consent`, `properties`, and `metrics` copied from request.
-- `data_payload` merged with:
+- `properties` merged with reserved ingestion diagnostics:
 
 ```json
 {
-  "ingestion": {
+  "_copilotgtm_ingestion": {
     "key_id": "skid_2mYpWq7t5nQeVd4H",
     "idempotency_key": "meta-lead-98765",
     "received_at": "2026-05-03T10:00:00Z"
-  },
-  "source_payload": {}
+  }
 }
 ```
 

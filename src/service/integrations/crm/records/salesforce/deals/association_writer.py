@@ -13,7 +13,11 @@ from src.domain.models.organisation_tables.sync.crm.associations import (
     CRMObjectAssociation,
     CRMObjectType,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     AssociationWriteResult,
     DimensionHit,
@@ -34,6 +38,12 @@ class SalesforceDealAssociationWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -71,13 +81,18 @@ class SalesforceDealAssociationWriter:
             if existing is None:
                 row = self._new_row(
                     edge=edge,
-                    external_id=external_id,
                     from_local_id=from_local_id,
                     to_local_id=to_local_id,
                     now=now,
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    edge=edge,
+                    local_association_id=row.association_id,
+                    now=now,
+                )
                 result.associations_created += 1
             else:
                 self._apply_updates(
@@ -85,6 +100,13 @@ class SalesforceDealAssociationWriter:
                     edge=edge,
                     from_local_id=from_local_id,
                     to_local_id=to_local_id,
+                    now=now,
+                )
+                existing.is_deleted = False
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    edge=edge,
+                    local_association_id=existing.association_id,
                     now=now,
                 )
                 result.associations_updated += 1
@@ -121,24 +143,50 @@ class SalesforceDealAssociationWriter:
         self,
         external_ids: set[str] | None = None,
     ) -> dict[str, CRMObjectAssociation]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.ASSOCIATION,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMObjectAssociation).where(
             col(CRMObjectAssociation.organisation_id) == self.organisation_id,
             col(CRMObjectAssociation.integration_id) == self.integration_id,
-            col(CRMObjectAssociation.is_deleted) == False,  # noqa: E712
             col(CRMObjectAssociation.from_object_type) == CRMObjectType.DEAL,
+            col(CRMObjectAssociation.association_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMObjectAssociation.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = _local_to_external(external_to_local)
+        return {
+            local_to_external[row.association_id]: row
+            for row in rows
+            if row.association_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        *,
+        external_id: str,
+        edge: NormalizedSalesforceDealAssociation,
+        local_association_id: UUID,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.ASSOCIATION,
+            external_id=external_id,
+            local_object_type=CRMSourceObjectType.ASSOCIATION,
+            local_object_id=local_association_id,
+            data_payload=edge.data_payload,
+            source_created_at=None,
+            source_modified_at=None,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
         *,
         edge: NormalizedSalesforceDealAssociation,
-        external_id: str,
         from_local_id: UUID,
         to_local_id: UUID | None,
         now: datetime,
@@ -146,12 +194,9 @@ class SalesforceDealAssociationWriter:
         return CRMObjectAssociation(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=external_id,
             from_object_type=CRMObjectType(edge.from_object_type),
-            from_external_id=edge.from_external_id,
             from_local_id=from_local_id,
             to_object_type=CRMObjectType(edge.to_object_type),
-            to_external_id=edge.to_external_id,
             to_local_id=to_local_id,
             association_category=CRMAssociationCategory(edge.association_category),
             association_type_id=edge.association_type_id,
@@ -160,7 +205,6 @@ class SalesforceDealAssociationWriter:
             is_primary=edge.is_primary,
             synced_at=now,
             last_seen_at=now,
-            data_payload=edge.data_payload,
         )
 
     def _apply_updates(
@@ -181,7 +225,6 @@ class SalesforceDealAssociationWriter:
         row.is_primary = edge.is_primary
         row.synced_at = now
         row.last_seen_at = now
-        row.data_payload = edge.data_payload
 
 
 def _synthetic_external_id(edge: NormalizedSalesforceDealAssociation) -> str:
@@ -190,3 +233,7 @@ def _synthetic_external_id(edge: NormalizedSalesforceDealAssociation) -> str:
         f"{edge.from_external_id}:{edge.from_object_type}:"
         f"{edge.to_object_type}:{edge.to_external_id}:{type_id}"
     )
+
+
+def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
+    return {local_id: external_id for external_id, local_id in external_to_local.items()}

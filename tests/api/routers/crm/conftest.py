@@ -50,9 +50,37 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightType,
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
-from src.service.crm.access.tasks_access_service import TasksAccessServiceError
 
 logger = logging.getLogger(__name__)
+
+
+async def _override_rate_limit():
+    return None
+
+
+class _EmptyScalarResult:
+    def all(self):
+        return []
+
+
+class _EmptyExecuteResult:
+    def scalars(self):
+        return _EmptyScalarResult()
+
+    def all(self):
+        return []
+
+    def scalar_one_or_none(self):
+        return None
+
+
+class FakeAsyncSession:
+    async def scalar(self, *_args, **_kwargs):
+        return 0
+
+    async def execute(self, *_args, **_kwargs):
+        return _EmptyExecuteResult()
+
 
 # =============================================================================
 # FAKE MODELS - Mirror the real domain models with all fields
@@ -130,7 +158,6 @@ class FakeContact:
         full_name: str | None = None,
         job_title: str | None = None,
         company_name: str | None = None,
-        external_id: str | None = None,
         phone: str | None = None,
         linkedin_url: str | None = None,
     ):
@@ -140,7 +167,6 @@ class FakeContact:
         self.full_name = full_name
         self.job_title = job_title
         self.company_name = company_name
-        self.external_id = external_id or str(contact_id)
         self.phone = phone
         self.linkedin_url = linkedin_url
 
@@ -533,7 +559,6 @@ class FakeStakeholdersService:
             contacts.append(
                 {
                     "contact_id": c.contact_id,
-                    "external_id": c.external_id,
                     "email": c.email,
                     "full_name": c.full_name,
                     "job_title": c.job_title,
@@ -824,7 +849,6 @@ class FakeDeal:
         self,
         deal_id: UUID,
         organisation_id: UUID,
-        external_id: str | None = None,
         name: str = "Test Deal",
         amount: float | None = 10000.0,
         currency: str | None = "USD",
@@ -838,23 +862,18 @@ class FakeDeal:
         closed_lost_at: datetime | None = None,
         stage_name: str | None = "Qualification",
         stage_label: str | None = "Qualification",
-        stage_external_id: str | None = None,
         stage_id: UUID | None = None,
-        pipeline_external_id: str | None = None,
         pipeline_name: str | None = "default",
         pipeline_label: str | None = "Default Pipeline",
         pipeline_id: UUID | None = None,
         integration_id: UUID | None = None,
         owner_id: UUID | None = None,
-        owner_external_id: str | None = None,
         owner_name: str | None = None,
         owner_email: str | None = None,
         company_id: UUID | None = None,
-        company_external_id: str | None = None,
         company_name: str | None = None,
         company_domain: str | None = None,
         primary_contact_id: UUID | None = None,
-        primary_contact_external_id: str | None = None,
         primary_contact_name: str | None = None,
         primary_contact_email: str | None = None,
         deal_type: str | None = None,
@@ -880,7 +899,6 @@ class FakeDeal:
     ):
         self.deal_id = deal_id
         self.organisation_id = organisation_id
-        self.external_id = external_id or str(deal_id)
         self.name = name
         self.amount = amount
         self.currency = currency
@@ -894,23 +912,18 @@ class FakeDeal:
         self.closed_lost_at = closed_lost_at
         self.stage_name = stage_name
         self.stage_label = stage_label
-        self.stage_external_id = stage_external_id
         self.stage_id = stage_id
-        self.pipeline_external_id = pipeline_external_id
         self.pipeline_name = pipeline_name
         self.pipeline_label = pipeline_label
         self.pipeline_id = pipeline_id or uuid4()
         self.integration_id = integration_id
         self.owner_id = owner_id
-        self.owner_external_id = owner_external_id
         self.owner_name = owner_name
         self.owner_email = owner_email
         self.company_id = company_id
-        self.company_external_id = company_external_id
         self.company_name = company_name
         self.company_domain = company_domain
         self.primary_contact_id = primary_contact_id
-        self.primary_contact_external_id = primary_contact_external_id
         self.primary_contact_name = primary_contact_name
         self.primary_contact_email = primary_contact_email
         self.deal_type = deal_type
@@ -942,17 +955,21 @@ class FakeCompany:
         self,
         company_id: UUID,
         organisation_id: UUID,
-        external_id: str,
         name: str | None = None,
         domain: str | None = None,
         industry: str | None = None,
+        website: str | None = None,
+        linkedin_url: str | None = None,
+        country: str | None = None,
     ):
         self.company_id = company_id
         self.organisation_id = organisation_id
-        self.external_id = external_id
         self.name = name
         self.domain = domain
         self.industry = industry
+        self.website = website
+        self.linkedin_url = linkedin_url
+        self.country = country
 
 
 class FakeDealJob:
@@ -1029,9 +1046,10 @@ class FakeDealsAccessService:
 
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
+        self.session = FakeAsyncSession()
         self._deals: dict[UUID, FakeDeal] = {}
         self._team_members: dict[UUID, list[dict]] = {}  # deal_id -> team members
-        self._companies: dict[str, FakeCompany] = {}  # external_id -> company
+        self._companies: dict[UUID, FakeCompany] = {}
 
     async def close(self):
         """Release fake deals service resources after test scope ends."""
@@ -1048,16 +1066,20 @@ class FakeDealsAccessService:
         self._team_members[deal_id].append(member)
 
     def add_company(self, company: FakeCompany):
-        """Seed a company fixture by external id for resolution tests."""
-        self._companies[company.external_id] = company
+        """Retained for older tests that seed company context separately."""
+        self._companies[company.company_id] = company
+
+    async def get_company_by_id(self, company_id: UUID) -> FakeCompany | None:
+        """Get company by local ID."""
+        return self._companies.get(company_id)
 
     async def list_deals(
         self,
         limit: int = 50,
-        cursor: str | None = None,
+        page: int = 1,
         statuses: list[CRMDealStatus] | None = None,
         pipeline_ids: list[UUID] | None = None,
-        owner_external_ids: list[str] | None = None,
+        owner_ids: list[UUID] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
@@ -1072,7 +1094,7 @@ class FakeDealsAccessService:
             deals,
             statuses,
             pipeline_ids,
-            owner_external_ids,
+            owner_ids,
             min_amount,
             max_amount,
             min_close_date,
@@ -1083,29 +1105,16 @@ class FakeDealsAccessService:
         # Sort by created_at desc
         deals.sort(key=lambda d: (d.created_at, str(d.deal_id)), reverse=True)
 
-        # Apply cursor pagination
-        if cursor:
-            ts, did = decode_cursor(cursor)
-            deals = [
-                d
-                for d in deals
-                if (d.created_at < ts) or (d.created_at == ts and str(d.deal_id) < str(did))
-            ]
-
-        has_more = len(deals) > limit
-        items = deals[:limit]
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].deal_id) if has_more and items else None
-        )
-
-        return items, next_cursor
+        total_count = len(deals)
+        start = max(page - 1, 0) * limit
+        return deals[start : start + limit], total_count
 
     async def get_all_deals(
         self,
         max_results: int = 500,
         statuses: list[CRMDealStatus] | None = None,
         pipeline_ids: list[UUID] | None = None,
-        owner_external_ids: list[str] | None = None,
+        owner_ids: list[UUID] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
@@ -1120,7 +1129,7 @@ class FakeDealsAccessService:
             deals,
             statuses,
             pipeline_ids,
-            owner_external_ids,
+            owner_ids,
             min_amount,
             max_amount,
             min_close_date,
@@ -1138,7 +1147,7 @@ class FakeDealsAccessService:
         deals: list[FakeDeal],
         statuses: list[CRMDealStatus] | None,
         pipeline_ids: list[UUID] | None,
-        owner_external_ids: list[str] | None,
+        owner_ids: list[UUID] | None,
         min_amount: float | None,
         max_amount: float | None,
         min_close_date: datetime | None,
@@ -1152,8 +1161,8 @@ class FakeDealsAccessService:
         if pipeline_ids:
             deals = [d for d in deals if d.pipeline_id in pipeline_ids]
 
-        if owner_external_ids:
-            deals = [d for d in deals if d.owner_external_id in owner_external_ids]
+        if owner_ids:
+            deals = [d for d in deals if d.owner_id in owner_ids]
 
         if min_amount is not None:
             deals = [d for d in deals if d.amount is not None and d.amount >= min_amount]
@@ -1219,10 +1228,6 @@ class FakeDealsAccessService:
     async def get_deal_team_members_batch(self, deal_ids: list[UUID]) -> dict[UUID, list[dict]]:
         """Get team members for multiple deals."""
         return {did: self._team_members.get(did, []) for did in deal_ids}
-
-    async def get_company_by_external_id(self, external_id: str) -> FakeCompany | None:
-        """Get company by external ID."""
-        return self._companies.get(external_id)
 
 
 class FakeDealJobService:
@@ -1429,6 +1434,8 @@ def stakeholders_dependency_overrides(
         _override_job_visibility_service
     )
     app.dependency_overrides[get_stakeholder_deal_job_service] = _override_deal_job_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield
     app.dependency_overrides = {}
 
@@ -1500,9 +1507,6 @@ def deals_dependency_overrides(client, test_user_ids, fake_deals_service, fake_d
         finally:
             await fake_deal_job_service.close()
 
-    async def _override_rate_limit():
-        return None
-
     from src.infra.utils.app_state import fastapp as app
 
     app.dependency_overrides[get_current_user] = _override_user
@@ -1533,10 +1537,8 @@ class FakeNote:
         organisation_id: UUID,
         body: str = "Test note content",
         subject: str | None = None,
-        owner_external_id: str | None = None,
         owner_name: str | None = None,
         owner_email: str | None = None,
-        external_id: str | None = None,
         integration_id: UUID | None = None,  # None = user-created
         source_created_at: datetime | None = None,
         created_at: datetime | None = None,
@@ -1548,10 +1550,8 @@ class FakeNote:
         self.organisation_id = organisation_id
         self.body = body
         self.subject = subject
-        self.owner_external_id = owner_external_id
         self.owner_name = owner_name
         self.owner_email = owner_email
-        self.external_id = external_id
         self.integration_id = integration_id
         self.source_created_at = source_created_at or datetime.now(UTC)
         self.created_at = created_at or datetime.now(UTC)
@@ -1686,7 +1686,6 @@ class FakeDealNotesService:
             organisation_id=self.organisation_id,
             body=content,
             subject=subject,
-            owner_external_id=str(user_id),
             owner_name=user_name,
             owner_email=user_email,
             integration_id=None,  # User-created
@@ -2478,7 +2477,6 @@ class FakeTask:
         activity_id: UUID,
         deal_id: UUID,
         organisation_id: UUID,
-        external_id: str | None = None,
         subject: str | None = "Test Task",
         body: str | None = None,
         status: str = "NOT_STARTED",
@@ -2487,10 +2485,10 @@ class FakeTask:
         due_date: datetime | None = None,
         completed_date: datetime | None = None,
         reminder_date: datetime | None = None,
-        owner_external_id: str | None = None,
+        owner_id: UUID | None = None,
         owner_name: str | None = None,
         owner_email: str | None = None,
-        deal_external_id: str | None = None,
+        related_name: str | None = None,
         is_deleted: bool = False,
         is_deleted_remote: bool = False,
         integration_id: UUID | None = None,
@@ -2505,7 +2503,6 @@ class FakeTask:
         self.task_id = activity_id  # Alias
         self.deal_id = deal_id
         self.organisation_id = organisation_id
-        self.external_id = external_id or f"ext-{activity_id}"
         self.subject = subject
         self.body = body
         self.status = status
@@ -2515,10 +2512,10 @@ class FakeTask:
         self.due_date = due_date
         self.completed_date = completed_date
         self.reminder_date = reminder_date
-        self.owner_external_id = owner_external_id
+        self.owner_id = owner_id
         self.owner_name = owner_name
         self.owner_email = owner_email
-        self.deal_external_id = deal_external_id
+        self.related_name = related_name
         self.is_deleted = is_deleted
         self.is_deleted_remote = is_deleted_remote
         self.integration_id = integration_id
@@ -2540,6 +2537,7 @@ class FakeTasksAccessService:
 
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
+        self.session = FakeAsyncSession()
         self._tasks: dict[UUID, list[FakeTask]] = {}  # deal_id -> tasks
 
     def add_task(self, task: FakeTask):
@@ -2560,11 +2558,11 @@ class FakeTasksAccessService:
         self,
         deal_id: UUID,
         limit: int = 50,
-        cursor: str | None = None,
+        page: int = 1,
         statuses: list[str] | None = None,
         priorities: list[str] | None = None,
         task_types: list[str] | None = None,
-    ) -> tuple[list[FakeTask], str | None]:
+    ) -> tuple[list[FakeTask], int]:
         """List tasks for a deal with filtering and pagination."""
         tasks = [t for t in self._tasks.get(deal_id, []) if not t.is_deleted]
 
@@ -2573,7 +2571,7 @@ class FakeTasksAccessService:
         if task_types:
             requested = {t for t in task_types if t} & allowed_types
             if not requested:
-                return [], None
+                return [], 0
             tasks = [t for t in tasks if t.activity_type in requested]
         else:
             tasks = [t for t in tasks if t.activity_type in allowed_types]
@@ -2589,27 +2587,9 @@ class FakeTasksAccessService:
         # Sort by created_at DESC, activity_id DESC
         tasks.sort(key=lambda t: (t.created_at, t.activity_id), reverse=True)
 
-        # Apply cursor pagination
-        if cursor:
-            try:
-                ts, tid = decode_cursor(cursor)
-                tasks = [
-                    t
-                    for t in tasks
-                    if t.created_at < ts or (t.created_at == ts and t.activity_id < tid)
-                ]
-            except Exception as err:
-                raise TasksAccessServiceError("Invalid cursor format", status_code=400) from err
-
-        # Paginate
-        has_more = len(tasks) > limit
-        items = tasks[:limit]
-        next_cursor = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.activity_id)
-
-        return items, next_cursor
+        total_count = len(tasks)
+        offset = max(page - 1, 0) * limit
+        return tasks[offset : offset + limit], total_count
 
     async def get_task_by_id(self, task_id: UUID) -> FakeTask | None:
         """Get a task by ID."""
@@ -2801,6 +2781,8 @@ def tasks_dependency_overrides(client, test_user_ids, fake_tasks_service):
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_tasks_access_service] = _override_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield {
         "service": fake_tasks_service,
         "user_ids": test_user_ids,

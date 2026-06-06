@@ -41,6 +41,10 @@ All endpoints return the shared `GenericResponse` envelope.
 
 Stakeholders should belong to the company associated with the deal. The system enforces domain validation:
 
+Stakeholder APIs expose local IDs (`stakeholder_id`, `deal_id`, `contact_id`) and
+do not expose provider contact IDs. Provider identity is resolved internally via
+`crm_source_object_mappings`.
+
 ### How It Works
 
 1. **Deal has a company domain**: Each deal is linked to a company with a domain (e.g., `acmecorp.com`)
@@ -305,7 +309,6 @@ export interface UpdateStakeholderRequest {
 
 export interface AvailableContactItem {
   contact_id: UUID;
-  external_id: string;
   email: string;                     // Required - only contacts with email are returned
   first_name: string | null;
   last_name: string | null;
@@ -459,7 +462,6 @@ GET /{deal_id}/stakeholders/available-contacts
   "data": [
     {
       "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "external_id": "contact_12345",
       "email": "alice.smith@acmecorp.com",
       "first_name": "Alice",
       "last_name": "Smith",

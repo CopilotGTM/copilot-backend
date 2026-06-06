@@ -63,9 +63,17 @@ Tasks can be reassigned between deals or detached from deals via the update endp
 ```ts
 export type UUID = string;
 
+export interface TaskAssignee {
+  kind: "internal_user" | "crm_owner" | "external" | "unknown";
+  filter_key: string;
+  name: string | null;
+  email: string | null;
+  public_user_id: UUID | null;
+  crm_user_id: UUID | null;
+}
+
 export interface TaskListItem {
   task_id: UUID;
-  external_id: string;
   subject: string | null;
   body: string | null;
   status: string | null;
@@ -74,11 +82,11 @@ export interface TaskListItem {
   due_date: string | null;        // ISO8601
   completed_date: string | null;
   reminder_date: string | null;
-  owner_external_id: string | null;
+  owner_id: UUID | null;
   owner_name: string | null;
   owner_email: string | null;
+  assigned_to: TaskAssignee | null;
   deal_id: UUID | null;
-  deal_external_id: string | null;
   deal_name: string | null;       // Resolved from crm_deals
   source: string | null;          // MANUAL | CRM_SYNC | AI_MEETING | AI_INSIGHT
   created_by_user_id: UUID | null;
@@ -284,7 +292,6 @@ GET /tasks/{task_id}
   "message": "Task retrieved successfully",
   "data": {
     "task_id": "e7c4c3b1-0b70-4a5c-9071-3a21e1d9f3e1",
-    "external_id": "e7c4c3b1-0b70-4a5c-9071-3a21e1d9f3e1",
     "subject": "Prep discovery agenda",
     "body": "Collect last call notes and build agenda.",
     "status": "NOT_STARTED",
@@ -293,11 +300,18 @@ GET /tasks/{task_id}
     "due_date": "2026-03-24T10:30:00Z",
     "completed_date": null,
     "reminder_date": null,
-    "owner_external_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
+    "owner_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
     "owner_name": "Jordan Lee",
     "owner_email": "jordan@example.com",
+    "assigned_to": {
+      "kind": "internal_user",
+      "filter_key": "email:jordan@example.com",
+      "name": "Jordan Lee",
+      "email": "jordan@example.com",
+      "public_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
+      "crm_user_id": null
+    },
     "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
-    "deal_external_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
     "deal_name": "Acme Corp Enterprise",
     "source": "MANUAL",
     "created_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",

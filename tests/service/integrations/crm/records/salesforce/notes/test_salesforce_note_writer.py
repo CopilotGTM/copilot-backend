@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
     NormalizedSalesforceNote,
@@ -31,8 +32,22 @@ def _normalized_note(*, external_id: str, deal_external_id: str | None) -> Norma
         source_created_at=None,
         source_modified_at=None,
         properties={},
-        data_payload={"ContentDocumentId": external_id},
+        data_payload={"rows": [{"ContentDocumentId": external_id}]},
     )
+
+
+def _normalized_note_with_link(
+    *, external_id: str, link_id: str, deal_external_id: str | None
+) -> NormalizedSalesforceNote:
+    note = _normalized_note(external_id=external_id, deal_external_id=deal_external_id)
+    note.data_payload["rows"] = [
+        {
+            "Id": link_id,
+            "ContentDocumentId": external_id,
+            "ContentDocumentLinkId": link_id,
+        }
+    ]
+    return note
 
 
 @pytest.mark.asyncio
@@ -71,6 +86,9 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"069NOTE": reactivated, "069OLD": stale}
     )
@@ -106,6 +124,57 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
     assert stale.is_deleted is False
+    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
+    assert [call.kwargs["external_id"] for call in mapping_calls] == ["069NOTE"]
+    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.NOTE
+    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.ACTIVITY
+    assert mapping_calls[0].kwargs["local_object_id"] == reactivated.activity_id
+
+
+@pytest.mark.asyncio
+async def test_writer_upserts_note_link_source_mapping_for_content_document_link() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    activity_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    session.flush = AsyncMock()
+
+    writer = SalesforceNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+    writer._activity_ids_by_external = {"069NOTE": activity_id}
+
+    await writer.apply(
+        normalized=[
+            _normalized_note_with_link(
+                external_id="069NOTE",
+                link_id="06ALINK",
+                deal_external_id="006OPPTY",
+            )
+        ],
+        snapshot_started_at=datetime.now(UTC),
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=False,
+    )
+
+    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
+    assert [call.kwargs["external_object_type"] for call in mapping_calls] == [
+        CRMSourceObjectType.NOTE,
+        CRMSourceObjectType.NOTE_LINK,
+    ]
+    assert mapping_calls[1].kwargs["external_id"] == "06ALINK"
+    assert mapping_calls[1].kwargs["local_object_type"] == CRMSourceObjectType.ACTIVITY
 
 
 @pytest.mark.asyncio
@@ -160,6 +229,9 @@ async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -190,6 +262,9 @@ async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -204,8 +279,7 @@ async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None
 
     sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
     assert "ON CONFLICT" in sql
-    assert "ON CONFLICT (integration_id, external_id)" in sql
-    assert "WHERE integration_id IS NOT NULL" in sql
+    assert "ON CONFLICT (activity_id)" in sql
     assert "ON CONSTRAINT" not in sql
     assert result.notes_created == 1
 

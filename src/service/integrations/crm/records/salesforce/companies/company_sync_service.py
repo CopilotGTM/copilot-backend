@@ -14,12 +14,16 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.companies.company_normalizer import (
     normalize_accounts,
 )
@@ -393,21 +397,22 @@ class SalesforceCompanyRecordSyncService:
         integration_id: UUID,
         external_ids: list[str] | None = None,
     ) -> dict[str, UUID]:
-        from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-
-        stmt = select(CRMCompany.external_id, CRMCompany.company_id).where(
-            col(CRMCompany.organisation_id) == organisation_id,
-            col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.is_deleted) == False,  # noqa: E712
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.COMPANY,
+            external_ids=external_ids,
+            provider=self.PROVIDER,
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMCompany.external_id).in_(external_ids))
-        rows = (await session.execute(stmt)).all()
-        return {
-            external_id: company_id for external_id, company_id in rows if external_id is not None
-        }
+        return await _filter_existing_ids(
+            session=session,
+            model=CRMCompany,
+            id_column=CRMCompany.company_id,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_to_local=external_to_local,
+        )
 
     async def _load_owner_map(
         self,
@@ -417,19 +422,67 @@ class SalesforceCompanyRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, UUID]:
-        from src.domain.models.organisation_tables.sync.crm.users import CRMUser
-
-        if not external_ids:
-            return {}
-        stmt = select(CRMUser.external_id, CRMUser.user_id).where(
-            col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712
-            col(CRMUser.external_id).in_(external_ids),
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.USER,
+            external_ids=external_ids,
+            provider=self.PROVIDER,
         )
-        rows = (await session.execute(stmt)).all()
-        return {external_id: user_id for external_id, user_id in rows if external_id is not None}
+        return await _filter_existing_ids(
+            session=session,
+            model=CRMUser,
+            id_column=CRMUser.user_id,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_to_local=external_to_local,
+        )
 
 
 def _compact_str_set(values: Iterable[object]) -> set[str]:
     return {value for value in values if isinstance(value, str) and value}
+
+
+async def _load_mapping_ids(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    provider: str,
+    object_type: CRMSourceObjectType,
+    external_ids: Iterable[str] | None = None,
+) -> dict[str, UUID]:
+    helper = CRMSourceMappingHelper(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider=provider,
+    )
+    return await helper.load_local_id_map(object_type=object_type, external_ids=external_ids)
+
+
+async def _filter_existing_ids(
+    *,
+    session,
+    model,
+    id_column,
+    organisation_id: UUID,
+    integration_id: UUID,
+    external_to_local: dict[str, UUID],
+) -> dict[str, UUID]:
+    if not external_to_local:
+        return {}
+    stmt = select(id_column).where(
+        col(model.organisation_id) == organisation_id,
+        col(model.integration_id) == integration_id,
+        col(model.is_deleted) == False,  # noqa: E712
+        col(id_column).in_(set(external_to_local.values())),
+    )
+    rows = (await session.execute(stmt)).all()
+    live_ids = {local_id for (local_id,) in rows}
+    return {
+        external_id: local_id
+        for external_id, local_id in external_to_local.items()
+        if local_id in live_ids
+    }

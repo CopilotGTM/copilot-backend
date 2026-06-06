@@ -11,6 +11,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.hubspot.notes.note_types import (
     ActivityDimensionHit,
     NormalizedHubSpotNote,
@@ -35,6 +38,14 @@ def _normalized_note(*, external_id: str, deal_external_id: str | None) -> Norma
         properties={},
         data_payload={"id": external_id},
     )
+
+
+def _mock_source_mappings(writer: HubSpotNoteWriter) -> MagicMock:
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    return mapping_helper
 
 
 @pytest.mark.asyncio
@@ -72,6 +83,7 @@ async def test_single_record_apply_does_not_soft_delete_unrelated_rows() -> None
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"note-1": updated, "note-2": unrelated}
     )
+    _mock_source_mappings(writer)
 
     result = await writer.apply_single(
         note=_normalized_note(external_id="note-1", deal_external_id=None),
@@ -123,6 +135,7 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"note-1": reactivated, "note-2": stale}
     )
+    mapping_helper = _mock_source_mappings(writer)
 
     result = await writer.apply(
         normalized=[_normalized_note(external_id="note-1", deal_external_id="deal-1")],
@@ -147,3 +160,14 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
     assert stale.is_deleted is True
+    mapping_helper.upsert_integration_mapping.assert_awaited_once()
+    assert mapping_helper.upsert_integration_mapping.call_args.kwargs["external_object_type"] == (
+        CRMSourceObjectType.NOTE
+    )
+    assert mapping_helper.upsert_integration_mapping.call_args.kwargs["local_object_type"] == (
+        CRMSourceObjectType.ACTIVITY
+    )
+    mapping_helper.mark_missing_deleted.assert_awaited_once_with(
+        object_type=CRMSourceObjectType.NOTE,
+        seen_external_ids={"note-1"},
+    )

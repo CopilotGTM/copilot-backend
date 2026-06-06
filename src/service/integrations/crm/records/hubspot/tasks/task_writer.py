@@ -14,8 +14,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivity,
+    CRMActivityType,
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.tasks.task_types import (
     ActivityDimensionHit,
     NormalizedHubSpotTask,
@@ -38,6 +43,12 @@ class HubSpotTaskWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="hubspot",
+        )
 
     async def apply(
         self,
@@ -144,6 +155,7 @@ class HubSpotTaskWriter:
                     now=now,
                 )
                 self.session.add(row)
+                await self._upsert_source_mapping(task, row.activity_id, now=now)
                 result.tasks_created += 1
                 continue
 
@@ -168,6 +180,7 @@ class HubSpotTaskWriter:
                 result.tasks_reactivated += 1
             else:
                 result.tasks_updated += 1
+            await self._upsert_source_mapping(task, existing.activity_id, now=now)
 
         if deactivate_missing:
             # Only full sync owns tombstoning. Incremental and webhook refreshes
@@ -180,6 +193,10 @@ class HubSpotTaskWriter:
                 if not row.is_deleted:
                     row.is_deleted = True
                     result.tasks_deactivated += 1
+            await self.source_mappings.mark_missing_deleted(
+                object_type=CRMSourceObjectType.TASK,
+                seen_external_ids=snapshot_external_ids,
+            )
 
         await self.session.flush()
         logger.info(
@@ -240,15 +257,47 @@ class HubSpotTaskWriter:
         return None, None
 
     async def _load_existing_rows(self) -> dict[str, CRMActivity]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.TASK,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMActivity).where(
             col(CRMActivity.organisation_id) == self.organisation_id,
             col(CRMActivity.integration_id) == self.integration_id,
             col(CRMActivity.activity_type).in_(
                 [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
             ),
+            col(CRMActivity.activity_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.activity_id]: row
+            for row in rows
+            if row.activity_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        task: NormalizedHubSpotTask,
+        local_activity_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.TASK,
+            external_id=task.external_id,
+            local_object_type=CRMSourceObjectType.ACTIVITY,
+            local_object_id=local_activity_id,
+            data_payload=task.data_payload,
+            source_created_at=task.source_created_at,
+            source_modified_at=task.source_modified_at,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
@@ -265,24 +314,18 @@ class HubSpotTaskWriter:
         return CRMActivity(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=task.external_id,
             related_object_type=task.related_object_type,
-            related_external_id=task.related_external_id,
             related_local_id=related_local_id,
             related_name=related_name,
             deal_id=deal_hit.internal_id if deal_hit is not None else None,
-            deal_external_id=task.deal_external_id,
             contact_id=contact_hit.internal_id if contact_hit is not None else None,
-            contact_external_id=task.contact_external_id,
             company_id=company_hit.internal_id if company_hit is not None else None,
-            company_external_id=task.company_external_id,
             subject=task.subject,
             body=task.body,
             status=task.status,
             activity_type=CRMActivityType.TASK.value,
             activity_subtype=task.activity_subtype,
             priority=task.priority,
-            owner_external_id=task.owner_external_id,
             owner_name=owner_hit.name if owner_hit is not None else None,
             owner_email=owner_hit.email if owner_hit is not None else None,
             owner_id=owner_hit.internal_id if owner_hit is not None else None,
@@ -296,7 +339,6 @@ class HubSpotTaskWriter:
             is_deleted=False,
             properties=task.properties,
             metrics={},
-            data_payload=task.data_payload,
         )
 
     def _apply_updates(
@@ -313,22 +355,17 @@ class HubSpotTaskWriter:
         now: datetime,
     ) -> None:
         row.related_object_type = task.related_object_type
-        row.related_external_id = task.related_external_id
         row.related_local_id = related_local_id
         row.related_name = related_name
         row.deal_id = deal_hit.internal_id if deal_hit is not None else None
-        row.deal_external_id = task.deal_external_id
         row.contact_id = contact_hit.internal_id if contact_hit is not None else None
-        row.contact_external_id = task.contact_external_id
         row.company_id = company_hit.internal_id if company_hit is not None else None
-        row.company_external_id = task.company_external_id
         row.subject = task.subject
         row.body = task.body
         row.status = task.status
         row.activity_type = CRMActivityType.TASK.value
         row.activity_subtype = task.activity_subtype
         row.priority = task.priority
-        row.owner_external_id = task.owner_external_id
         row.owner_name = owner_hit.name if owner_hit is not None else None
         row.owner_email = owner_hit.email if owner_hit is not None else None
         row.owner_id = owner_hit.internal_id if owner_hit is not None else None
@@ -342,7 +379,6 @@ class HubSpotTaskWriter:
         row.is_deleted = False
         row.properties = task.properties
         row.metrics = {}
-        row.data_payload = task.data_payload
 
 
 def _is_stale_task(row: CRMActivity, task: NormalizedHubSpotTask) -> bool:

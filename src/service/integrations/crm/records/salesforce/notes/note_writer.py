@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Set
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import dialect as pg_dialect
@@ -10,7 +10,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
     NormalizedSalesforceNote,
@@ -36,6 +40,13 @@ class SalesforceNoteWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
+        self._activity_ids_by_external: dict[str, UUID] = {}
 
     async def apply(
         self,
@@ -84,6 +95,11 @@ class SalesforceNoteWriter:
             else:
                 result.notes_updated += 1
 
+            activity_id = (
+                existing.activity_id
+                if existing is not None
+                else self._activity_ids_by_external.get(note.external_id, uuid4())
+            )
             if existing is not None:
                 self._apply_updates(
                     existing,
@@ -100,6 +116,7 @@ class SalesforceNoteWriter:
 
             rows.append(
                 self._row_values(
+                    activity_id=activity_id,
                     note=note,
                     owner_hit=owner_hit,
                     deal_hit=deal_hit,
@@ -111,9 +128,16 @@ class SalesforceNoteWriter:
                     last_seen_at=snapshot_time,
                 )
             )
+            self._activity_ids_by_external[note.external_id] = activity_id
 
         if rows:
             await self._bulk_upsert(rows)
+            for note in batch:
+                await self._upsert_source_mapping(
+                    note=note,
+                    local_activity_id=self._activity_ids_by_external[note.external_id],
+                    now=now,
+                )
 
         if deactivate_missing:
             result.notes_deactivated += await self._deactivate_missing(snapshot_time)
@@ -150,12 +174,11 @@ class SalesforceNoteWriter:
         update_columns = {
             column_name: getattr(excluded, column_name)
             for column_name in rows[0]
-            if column_name not in {"created_at"}
+            if column_name not in {"activity_id", "created_at"}
         }
         update_columns["updated_at"] = datetime.now(UTC)
         stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[CRMActivity.integration_id, CRMActivity.external_id],
-            index_where=col(CRMActivity.integration_id).is_not(None),
+            index_elements=[CRMActivity.activity_id],
             set_=update_columns,
         )
         await self.session.execute(stmt)
@@ -226,17 +249,58 @@ class SalesforceNoteWriter:
         *,
         external_ids: Set[str] | None = None,
     ) -> dict[str, CRMActivity]:
-        if external_ids is not None and not external_ids:
+        self._activity_ids_by_external = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.NOTE,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not self._activity_ids_by_external:
             return {}
         stmt = select(CRMActivity).where(
             col(CRMActivity.organisation_id) == self.organisation_id,
             col(CRMActivity.integration_id) == self.integration_id,
             col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
+            col(CRMActivity.activity_id).in_(set(self._activity_ids_by_external.values())),
         )
-        if external_ids is not None:
-            stmt = stmt.where(col(CRMActivity.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = {
+            local_id: external_id
+            for external_id, local_id in self._activity_ids_by_external.items()
+        }
+        return {
+            local_to_external[row.activity_id]: row
+            for row in rows
+            if row.activity_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        *,
+        note: NormalizedSalesforceNote,
+        local_activity_id: UUID,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.NOTE,
+            external_id=note.external_id,
+            local_object_type=CRMSourceObjectType.ACTIVITY,
+            local_object_id=local_activity_id,
+            data_payload=note.data_payload,
+            source_created_at=note.source_created_at,
+            source_modified_at=note.source_modified_at,
+            synced_at=now,
+        )
+        for link_id in _iter_content_document_link_ids(note.data_payload):
+            await self.source_mappings.upsert_integration_mapping(
+                external_object_type=CRMSourceObjectType.NOTE_LINK,
+                external_id=link_id,
+                local_object_type=CRMSourceObjectType.ACTIVITY,
+                local_object_id=local_activity_id,
+                data_payload=note.data_payload,
+                source_created_at=note.source_created_at,
+                source_modified_at=note.source_modified_at,
+                synced_at=now,
+            )
 
     def _new_row(
         self,
@@ -253,24 +317,18 @@ class SalesforceNoteWriter:
         return CRMActivity(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=note.external_id,
             related_object_type=note.related_object_type,
-            related_external_id=note.related_external_id,
             related_local_id=related_local_id,
             related_name=related_name,
             deal_id=deal_hit.internal_id if deal_hit is not None else None,
-            deal_external_id=note.deal_external_id,
             contact_id=contact_hit.internal_id if contact_hit is not None else None,
-            contact_external_id=note.contact_external_id,
             company_id=company_hit.internal_id if company_hit is not None else None,
-            company_external_id=note.company_external_id,
             subject=note.subject,
             body=note.body,
             status=None,
             activity_type=CRMActivityType.NOTE.value,
             activity_subtype=note.activity_subtype,
             priority=None,
-            owner_external_id=note.owner_external_id,
             owner_name=owner_hit.name if owner_hit is not None else None,
             owner_email=owner_hit.email if owner_hit is not None else None,
             owner_id=owner_hit.internal_id if owner_hit is not None else None,
@@ -282,12 +340,12 @@ class SalesforceNoteWriter:
             is_deleted=False,
             properties=note.properties,
             metrics={},
-            data_payload=note.data_payload,
         )
 
     def _row_values(
         self,
         *,
+        activity_id: UUID | None = None,
         note: NormalizedSalesforceNote,
         owner_hit: ActivityDimensionHit | None,
         deal_hit: ActivityDimensionHit | None,
@@ -301,24 +359,19 @@ class SalesforceNoteWriter:
         return {
             "organisation_id": self.organisation_id,
             "integration_id": self.integration_id,
-            "external_id": note.external_id,
+            "activity_id": activity_id or uuid4(),
             "related_object_type": note.related_object_type,
-            "related_external_id": note.related_external_id,
             "related_local_id": related_local_id,
             "related_name": related_name,
             "deal_id": deal_hit.internal_id if deal_hit is not None else None,
-            "deal_external_id": note.deal_external_id,
             "contact_id": contact_hit.internal_id if contact_hit is not None else None,
-            "contact_external_id": note.contact_external_id,
             "company_id": company_hit.internal_id if company_hit is not None else None,
-            "company_external_id": note.company_external_id,
             "subject": note.subject,
             "body": note.body,
             "status": None,
             "activity_type": CRMActivityType.NOTE.value,
             "activity_subtype": note.activity_subtype,
             "priority": None,
-            "owner_external_id": note.owner_external_id,
             "owner_name": owner_hit.name if owner_hit is not None else None,
             "owner_email": owner_hit.email if owner_hit is not None else None,
             "owner_id": owner_hit.internal_id if owner_hit is not None else None,
@@ -330,7 +383,6 @@ class SalesforceNoteWriter:
             "is_deleted": False,
             "properties": note.properties,
             "metrics": {},
-            "data_payload": note.data_payload,
         }
 
     def _apply_updates(
@@ -348,22 +400,17 @@ class SalesforceNoteWriter:
         last_seen_at: datetime | None = None,
     ) -> None:
         row.related_object_type = note.related_object_type
-        row.related_external_id = note.related_external_id
         row.related_local_id = related_local_id
         row.related_name = related_name
         row.deal_id = deal_hit.internal_id if deal_hit is not None else None
-        row.deal_external_id = note.deal_external_id
         row.contact_id = contact_hit.internal_id if contact_hit is not None else None
-        row.contact_external_id = note.contact_external_id
         row.company_id = company_hit.internal_id if company_hit is not None else None
-        row.company_external_id = note.company_external_id
         row.subject = note.subject
         row.body = note.body
         row.status = None
         row.activity_type = CRMActivityType.NOTE.value
         row.activity_subtype = note.activity_subtype
         row.priority = None
-        row.owner_external_id = note.owner_external_id
         row.owner_name = owner_hit.name if owner_hit is not None else None
         row.owner_email = owner_hit.email if owner_hit is not None else None
         row.owner_id = owner_hit.internal_id if owner_hit is not None else None
@@ -375,4 +422,17 @@ class SalesforceNoteWriter:
         row.is_deleted = False
         row.properties = note.properties
         row.metrics = {}
-        row.data_payload = note.data_payload
+
+
+def _iter_content_document_link_ids(data_payload: dict) -> list[str]:
+    rows = data_payload.get("rows") if isinstance(data_payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    link_ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        link_id = row.get("ContentDocumentLinkId") or row.get("Id")
+        if isinstance(link_id, str) and link_id.strip():
+            link_ids.append(link_id.strip())
+    return link_ids

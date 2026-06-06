@@ -7,9 +7,11 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.contacts.contact_sync_service import (
     HubSpotContactRecordSyncService,
 )
@@ -100,10 +102,23 @@ class HubSpotContactWebhookHandler:
     ) -> bool:
         """Mark one org-scoped HubSpot contact deleted without PII scrubbing."""
         async for session in acquire_org_async_session(organisation_id):
+            local_ids = await CRMSourceMappingHelper(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider="hubspot",
+            ).mark_external_ids_deleted(
+                object_type=CRMSourceObjectType.CONTACT,
+                external_ids=[external_id],
+            )
+            contact_id = local_ids.get(external_id.strip())
+            if contact_id is None:
+                return False
+
             statement = select(CRMContact).where(
                 col(CRMContact.organisation_id) == organisation_id,
                 col(CRMContact.integration_id) == integration_id,
-                col(CRMContact.external_id) == external_id,
+                col(CRMContact.contact_id) == contact_id,
                 col(CRMContact.is_deleted).is_(False),
             )
             contact = (await session.execute(statement)).scalars().first()

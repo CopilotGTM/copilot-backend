@@ -50,8 +50,6 @@ def _make_history_row(
     row = MagicMock()
     row.history_id = UUID("55555555-5555-5555-5555-555555555555")
     row.stage_id = UUID(stage_id)
-    row.stage_external_id = "ext-stage-1"
-    row.from_stage_external_id = "ext-stage-0"
     row.entered_at = entered_at
     row.exited_at = exited_at
     row.elapsed_seconds = elapsed_seconds
@@ -155,7 +153,7 @@ class TestGetDealChangeHistory:
 
     @pytest.mark.asyncio
     async def test_history_without_stage_enrichment(self, mock_context: MagicMock) -> None:
-        """When stage_id has no matching stage row, falls back to external_id."""
+        """When stage_id has no matching stage row, leaves stage names absent."""
         deal_row = _make_deal_row()
         history_row = _make_history_row()
 
@@ -173,7 +171,7 @@ class TestGetDealChangeHistory:
         assert result is not None
         change = result["stage_changes"][0]
         assert "stage_name" not in change
-        assert change["stage_external_id"] == "ext-stage-1"
+        assert "stage_external_id" not in change
 
     @pytest.mark.asyncio
     async def test_elapsed_days_calculation(self, mock_context: MagicMock) -> None:

@@ -20,6 +20,10 @@ Contacts enter the system from two sources:
 
 **Frontend Implementation**: Use the `source` field to show a badge or icon indicating origin (e.g., HubSpot logo for `"hubspot"`, "Manual" badge for `"manual"`).
 
+Canonical contact API payloads use local `contact_id` and `company_id` values.
+Provider identifiers are stored in `crm_source_object_mappings` and are not part
+of the contact response contract.
+
 ### Related APIs
 
 | API | Relationship | Documentation |
@@ -251,7 +255,6 @@ type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:
  */
 export interface ContactListItem {
   contact_id: UUID;
-  external_id: string;                // Provider ID. For internal contacts, equals contact_id
 
   // Name fields
   first_name: string | null;
@@ -462,7 +465,6 @@ Paginated contact list with computed `deal_count`, `source`, `company_id`, and `
     "items": [
       {
         "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-        "external_id": "hub_contact_456",
         "first_name": "John",
         "last_name": "Doe",
         "full_name": "John Doe",
@@ -582,7 +584,6 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
   "message": "Contact created",
   "data": {
     "contact_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-    "external_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
     "first_name": "John",
     "last_name": "Doe",
     "full_name": "John Doe",
@@ -604,7 +605,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 }
 ```
 
-**Note:** `external_id` equals `contact_id` for internally-created contacts. `company_id` and `company_domain` are `null` in the create response (not computed — these are resolved at query time in list/detail endpoints). `company_name` may be populated via auto-resolution.
+**Note:** `company_id` and `company_domain` are `null` in the create response when they are not resolved during the write. These are resolved at query time in list/detail endpoints. `company_name` may be populated via auto-resolution.
 
 #### Error Responses
 
@@ -640,7 +641,6 @@ Full contact detail including extended profile fields, research content, and dea
   "message": "Contact retrieved",
   "data": {
     "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "external_id": "hub_contact_456",
     "first_name": "John",
     "last_name": "Doe",
     "full_name": "John Doe",
@@ -1151,9 +1151,7 @@ Consolidated reference of all error responses across all endpoints.
 | Index | Columns | Purpose |
 |-------|---------|---------|
 | `ix_crm_contact_org_email` | `organisation_id, email` | Email lookups and duplicate checks |
-| `ix_crm_contact_owner` | `organisation_id, owner_external_id` | Owner filtering |
 | `ix_crm_contact_lifecycle` | `organisation_id, lifecycle_stage` | Lifecycle filtering |
-| `uq_crm_contact_external` | `integration_id, external_id` | Uniqueness per integration |
 
 **Migration:** Research fields (`contact_research`, `last_researched_at`, `research_status`) added in migration `3c7f79637798_030_add_contact_company_research_fields`.
 
@@ -1214,4 +1212,3 @@ This means enrichment requires a stakeholder linkage. A standalone contact resea
 
 - **Email uniqueness**: Checked via case-insensitive query (`func.lower(email) == input.lower()`) against non-deleted contacts in the same organisation
 - **Not globally unique**: The same email can exist across different organisations (multi-tenant isolation)
-- **CRM-synced contacts**: Uniqueness is enforced per integration via `uq_crm_contact_external` (integration_id + external_id)

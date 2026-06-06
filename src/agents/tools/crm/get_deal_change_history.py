@@ -115,8 +115,7 @@ async def get_deal_change_history(
             select(
                 col(CRMDealStageHistory.history_id),
                 col(CRMDealStageHistory.stage_id),
-                col(CRMDealStageHistory.stage_external_id),
-                col(CRMDealStageHistory.from_stage_external_id),
+                col(CRMDealStageHistory.from_stage_id),
                 col(CRMDealStageHistory.entered_at),
                 col(CRMDealStageHistory.exited_at),
                 col(CRMDealStageHistory.elapsed_seconds),
@@ -166,7 +165,7 @@ async def get_deal_change_history(
             change_entry: dict[str, Any] = {
                 "entered_at": row.entered_at.isoformat() if row.entered_at else None,
                 "exited_at": row.exited_at.isoformat() if row.exited_at else None,
-                "from_stage_external_id": row.from_stage_external_id,
+                "from_stage_id": str(row.from_stage_id) if row.from_stage_id else None,
                 "elapsed_seconds": row.elapsed_seconds,
                 "elapsed_days": round(row.elapsed_seconds / 86400, 1)
                 if row.elapsed_seconds
@@ -186,10 +185,6 @@ async def get_deal_change_history(
                     else stage_info.stage_state
                 )
                 change_entry["is_closed"] = stage_info.is_closed
-            else:
-                # Fallback to external_id if stage not resolved
-                change_entry["stage_external_id"] = row.stage_external_id
-
             changes.append(change_entry)
 
         # Calculate summary statistics

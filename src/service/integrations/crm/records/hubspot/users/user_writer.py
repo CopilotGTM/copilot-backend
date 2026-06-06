@@ -17,14 +17,14 @@ both tables share one UUID without a renumbering pass.
 Two passes:
 
   Pass A — upsert every match result
-    - existing row (keyed by external_id)      → update, mark active
+    - existing row (keyed by source mapping)  → update, mark active
     - no existing row                          → insert with resolved or
                                                  freshly minted user_id
     - duplicate user_id collision (two owners → same already-claimed id) →
       skip, count, WARNING log
 
   Pass B — active-snapshot deactivation
-    - any prior row whose external_id isn't in the HubSpot snapshot
+    - any prior mapped row whose provider id isn't in the HubSpot snapshot
       (matched + unmatched) gets is_active=false.
 """
 
@@ -37,8 +37,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.users.user_types import (
     NormalizedHubSpotOwner,
     OwnerMatchResult,
@@ -61,6 +65,12 @@ class HubSpotUserWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="hubspot",
+        )
 
     async def apply(
         self,
@@ -85,12 +95,15 @@ class HubSpotUserWriter:
 
             if existing is not None:
                 was_active = bool(existing.is_active)
+                was_deleted = bool(existing.is_deleted)
                 self._apply_updates(existing, owner, now=now)
-                if was_active:
-                    result.users_updated += 1
-                else:
+                existing.is_deleted = False
+                await self._upsert_source_mapping(owner, existing.user_id, now=now)
+                if was_deleted or not was_active:
                     existing.is_active = True
                     result.users_reactivated += 1
+                else:
+                    result.users_updated += 1
                 continue
 
             user_id, came_from_public = self._resolve_user_id(match, claimed_user_ids)
@@ -109,6 +122,7 @@ class HubSpotUserWriter:
 
             row = self._new_row(owner, user_id, now=now)
             self.session.add(row)
+            await self._upsert_source_mapping(owner, row.user_id, now=now)
             claimed_user_ids.add(user_id)
             result.users_created += 1
             if came_from_public:
@@ -126,6 +140,10 @@ class HubSpotUserWriter:
             if row.is_active:
                 row.is_active = False
                 result.users_deactivated += 1
+        await self.source_mappings.mark_missing_deleted(
+            object_type=CRMSourceObjectType.USER,
+            seen_external_ids=snapshot_external_ids,
+        )
 
         await self.session.flush()
         logger.info(
@@ -169,14 +187,43 @@ class HubSpotUserWriter:
     # ── Loading ──────────────────────────────────────────────────────────
 
     async def _load_existing_rows(self) -> dict[str, CRMUser]:
-        """Every non-deleted crm_users row for this integration, keyed by external_id."""
+        """Every mapped crm_users row for this integration, keyed by provider id."""
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.USER,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
             col(CRMUser.integration_id) == self.integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712 — SQL boolean
+            col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {r.external_id: r for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.user_id]: row for row in rows if row.user_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        owner: NormalizedHubSpotOwner,
+        local_user_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.USER,
+            external_id=owner.external_id,
+            local_object_type=CRMSourceObjectType.USER,
+            local_object_id=local_user_id,
+            data_payload=owner.data_payload,
+            source_created_at=owner.source_created_at,
+            source_modified_at=owner.source_modified_at,
+            synced_at=now,
+        )
 
     # ── Row construction ─────────────────────────────────────────────────
 
@@ -191,7 +238,6 @@ class HubSpotUserWriter:
             user_id=app_user_id,
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=owner.external_id,
             email=owner.email,
             first_name=owner.first_name,
             last_name=owner.last_name,
@@ -205,7 +251,6 @@ class HubSpotUserWriter:
             synced_at=now,
             last_seen_at=now,
             properties=owner.properties,
-            data_payload=owner.data_payload,
         )
 
     def _apply_updates(
@@ -231,4 +276,3 @@ class HubSpotUserWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = owner.properties
-        row.data_payload = owner.data_payload

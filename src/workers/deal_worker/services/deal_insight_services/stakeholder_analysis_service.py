@@ -118,7 +118,6 @@ class StakeholderAnalysisService:
         stage_tokens = self._normalize_stage_tokens(
             deal.stage_label,
             deal.stage_name,
-            deal.stage_external_id,
             deal.forecast_category,
         )
 

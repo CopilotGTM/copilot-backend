@@ -45,6 +45,10 @@ All endpoints return the shared `GenericResponse` envelope.
 - `company`
 - `user`
 
+Participants use local IDs only. Request `related_id` is the local contact,
+company, or user UUID, and responses expose `related_local_id`; provider IDs are
+tracked through `crm_source_object_mappings`.
+
 ---
 
 ## 1) Add Participants
@@ -88,7 +92,6 @@ Success response (201):
         "participant_id": "6e8c5d2a-8a2f-40f1-9e3e-2f67a945f0e7",
         "deal_id": "3f5bfc3a-3b3b-4e89-8f0c-7a4d3b55f011",
         "participant_type": "contact",
-        "related_external_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
         "related_local_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
         "related_name": "Rita Singh",
         "related_email": "rita@acme.com",
@@ -129,7 +132,6 @@ Success response (200):
     "participant_id": "6e8c5d2a-8a2f-40f1-9e3e-2f67a945f0e7",
     "deal_id": "3f5bfc3a-3b3b-4e89-8f0c-7a4d3b55f011",
     "participant_type": "contact",
-    "related_external_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
     "related_local_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
     "related_name": "Rita Singh",
     "related_email": null,
@@ -168,7 +170,6 @@ Success response (200):
     "participant_id": "6e8c5d2a-8a2f-40f1-9e3e-2f67a945f0e7",
     "deal_id": "3f5bfc3a-3b3b-4e89-8f0c-7a4d3b55f011",
     "participant_type": "user",
-    "related_external_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
     "related_local_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
     "related_name": "Saksham Bhutani",
     "related_email": "saksham@example.com",

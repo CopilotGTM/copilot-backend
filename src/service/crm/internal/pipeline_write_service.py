@@ -195,7 +195,6 @@ class PipelineWriteService:
             pipeline_id=pipeline_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(pipeline_id),
             name=request.name,
             label=request.label or request.name,
             object_type="deals",
@@ -345,7 +344,6 @@ class PipelineWriteService:
             stage_id=stage_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(stage_id),
             name=stage_def.name,
             label=stage_def.label or stage_def.name,
             stage_key=_slugify(stage_def.name),
@@ -357,7 +355,6 @@ class PipelineWriteService:
             pipeline_id=pipeline.pipeline_id,
             synced_at=now,
             last_seen_at=now,
-            data_payload=None,
         )
         self.session.add(stage)
         return stage

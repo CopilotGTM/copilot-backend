@@ -14,12 +14,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.activities import CRMActivity, CRMActivityType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.workers.integrations_worker.providers.crm.hubspot.reconciliation.batch_object_existence_fetcher import (
@@ -35,6 +37,20 @@ _MODEL_BY_OBJECT: dict[str, Any] = {
     "contacts": CRMContact,
     "tasks": CRMActivity,
     "notes": CRMActivity,
+}
+_SOURCE_OBJECT_BY_OBJECT: dict[str, CRMSourceObjectType] = {
+    "deals": CRMSourceObjectType.DEAL,
+    "companies": CRMSourceObjectType.COMPANY,
+    "contacts": CRMSourceObjectType.CONTACT,
+    "tasks": CRMSourceObjectType.TASK,
+    "notes": CRMSourceObjectType.NOTE,
+}
+_ID_COLUMN_BY_OBJECT: dict[str, Any] = {
+    "deals": CRMDeal.deal_id,
+    "companies": CRMCompany.company_id,
+    "contacts": CRMContact.contact_id,
+    "tasks": CRMActivity.activity_id,
+    "notes": CRMActivity.activity_id,
 }
 _DEFAULT_OBJECT_KEYS = ("deals", "companies", "contacts", "tasks", "notes")
 
@@ -180,13 +196,26 @@ class HubSpotDeletionReconciliationService:
         integration_id,
         object_key: str,
     ) -> list[str]:
-        model = _MODEL_BY_OBJECT[object_key]
         async for session in acquire_org_async_session(organisation_id):
-            stmt = select(model.external_id).where(
+            helper = CRMSourceMappingHelper(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider="hubspot",
+            )
+            source_ids = await helper.load_local_id_map(
+                object_type=_SOURCE_OBJECT_BY_OBJECT[object_key],
+            )
+            if not source_ids:
+                return []
+
+            model = _MODEL_BY_OBJECT[object_key]
+            id_column = _ID_COLUMN_BY_OBJECT[object_key]
+            stmt = select(id_column).where(
                 col(model.organisation_id) == organisation_id,
                 col(model.integration_id) == integration_id,
                 col(model.is_deleted).is_(False),
-                col(model.external_id).is_not(None),
+                col(id_column).in_(set(source_ids.values())),
             )
             if object_key == "companies":
                 stmt = stmt.where(col(CRMCompany.is_active).is_(True))
@@ -199,7 +228,12 @@ class HubSpotDeletionReconciliationService:
             elif object_key == "notes":
                 stmt = stmt.where(col(CRMActivity.activity_type) == CRMActivityType.NOTE.value)
             result = await session.execute(stmt)
-            return [str(row[0]) for row in result.all() if row[0] is not None]
+            live_local_ids = {row[0] for row in result.all() if row[0] is not None}
+            return [
+                external_id
+                for external_id, local_id in source_ids.items()
+                if local_id in live_local_ids
+            ]
         return []
 
     async def _soft_delete_external_ids(
@@ -213,13 +247,28 @@ class HubSpotDeletionReconciliationService:
         if not external_ids:
             return 0
         model = _MODEL_BY_OBJECT[object_key]
+        id_column = _ID_COLUMN_BY_OBJECT[object_key]
         now = datetime.now(UTC)
         async for session in acquire_org_async_session(organisation_id):
+            helper = CRMSourceMappingHelper(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider="hubspot",
+            )
+            external_to_local = await helper.mark_external_ids_deleted(
+                object_type=_SOURCE_OBJECT_BY_OBJECT[object_key],
+                external_ids=external_ids,
+            )
+            if not external_to_local:
+                await session.commit()
+                return 0
+
             stmt = select(model).where(
                 col(model.organisation_id) == organisation_id,
                 col(model.integration_id) == integration_id,
                 col(model.is_deleted).is_(False),
-                col(model.external_id).in_(external_ids),
+                col(id_column).in_(set(external_to_local.values())),
             )
             if object_key == "tasks":
                 stmt = stmt.where(

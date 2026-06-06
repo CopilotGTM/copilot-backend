@@ -71,7 +71,6 @@ export interface NoteAuthor {
 }
 
 export interface NoteMetadata {
-  external_id: string | null;     // provider note id for CRM-synced notes
   synced_at: string | null;       // ISO8601
 }
 
@@ -155,7 +154,6 @@ GET /{deal_id}/notes
           "email": "john.smith@company.com"
         },
         "metadata": {
-          "external_id": null,
           "synced_at": null
         }
       },
@@ -174,7 +172,6 @@ GET /{deal_id}/notes
           "email": "rep@company.com"
         },
         "metadata": {
-          "external_id": "hs_note_987654321",
           "synced_at": "2025-12-20T15:00:00Z"
         }
       }
@@ -290,7 +287,6 @@ POST /{deal_id}/notes
       "email": null
     },
     "metadata": {
-      "external_id": null,
       "synced_at": null
     }
   }
@@ -318,7 +314,6 @@ POST /{deal_id}/notes
       "email": null
     },
     "metadata": {
-      "external_id": null,
       "synced_at": null
     }
   }
@@ -423,7 +418,6 @@ PATCH /{deal_id}/notes/{note_id}
       "email": null
     },
     "metadata": {
-      "external_id": null,
       "synced_at": null
     }
   }
@@ -481,7 +475,6 @@ DELETE /{deal_id}/notes/{note_id}
       "email": null
     },
     "metadata": {
-      "external_id": null,
       "synced_at": null
     }
   }

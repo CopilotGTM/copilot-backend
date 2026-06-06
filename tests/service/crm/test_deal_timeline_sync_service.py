@@ -57,6 +57,7 @@ class MockEmail:
 
     def __init__(
         self,
+        email_id=None,
         subject="Test Email",
         received_at=None,
         from_name="John Doe",
@@ -66,6 +67,7 @@ class MockEmail:
         has_attachments=False,
         thread_id="thread-123",
     ):
+        self.email_id = email_id or uuid4()
         self.subject = subject
         self.received_at = received_at or datetime.now(UTC)
         self.from_name = from_name
@@ -145,6 +147,12 @@ class MockCRMDeal:
         pipeline_name="Sales Pipeline",
         owner_id=None,
         amount=10000.0,
+        currency="USD",
+        company_name="Acme Corp",
+        company_domain="acme.example",
+        owner_name="Owner User",
+        primary_contact_name="Primary Contact",
+        primary_contact_email="primary@example.com",
         source_created_at=None,
         created_at=None,
     ):
@@ -154,6 +162,12 @@ class MockCRMDeal:
         self.pipeline_name = pipeline_name
         self.owner_id = owner_id
         self.amount = amount
+        self.currency = currency
+        self.company_name = company_name
+        self.company_domain = company_domain
+        self.owner_name = owner_name
+        self.primary_contact_name = primary_contact_name
+        self.primary_contact_email = primary_contact_email
         self.source_created_at = source_created_at
         self.created_at = created_at or datetime.now(UTC)
 
@@ -469,9 +483,9 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "history-123",
-            "from_stage_external_id": "stage-1",
-            "stage_external_id": "stage-2",
+            "history_id": "history-123",
+            "from_stage_id": "stage-1",
+            "stage_id": "stage-2",
             "entered_at": datetime.now(UTC),
         }
 
@@ -491,9 +505,11 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "from_stage_external_id": "Discovery",
-            "stage_external_id": "Proposal",
+            "history_id": "h1",
+            "from_stage_id": "stage-1",
+            "stage_id": "stage-2",
+            "from_stage_label": "Discovery",
+            "stage_label": "Proposal",
             "entered_at": datetime.now(UTC),
         }
 
@@ -512,9 +528,10 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "from_stage_external_id": None,
-            "stage_external_id": "Discovery",
+            "history_id": "h1",
+            "from_stage_id": None,
+            "stage_id": "stage-1",
+            "stage_label": "Discovery",
             "entered_at": datetime.now(UTC),
         }
 
@@ -532,9 +549,9 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "from_stage_external_id": "id-1",
-            "stage_external_id": "id-2",
+            "history_id": "h1",
+            "from_stage_id": "id-1",
+            "stage_id": "id-2",
             "from_stage_label": "Initial Contact",
             "stage_label": "Qualified Lead",
             "entered_at": datetime.now(UTC),
@@ -554,8 +571,8 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "stage_external_id": "stage-1",
+            "history_id": "h1",
+            "stage_id": "stage-1",
             "entered_at": datetime.now(UTC),
         }
 
@@ -573,8 +590,8 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "stage_external_id": "stage-1",
+            "history_id": "h1",
+            "stage_id": "stage-1",
             "entered_at": datetime.now(UTC),
         }
 
@@ -591,9 +608,9 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "from_stage_external_id": "old-stage",
-            "stage_external_id": "new-stage",
+            "history_id": "h1",
+            "from_stage_id": "old-stage",
+            "stage_id": "new-stage",
             "from_stage_label": "Old Label",
             "stage_label": "New Label",
             "entered_at": datetime.now(UTC),
@@ -605,8 +622,8 @@ class TestBuildStageChangeTimelineEvent:
             history_entry=history_entry,
         )
 
-        assert event.event_metadata["old_stage"] == "old-stage"
-        assert event.event_metadata["new_stage"] == "new-stage"
+        assert event.event_metadata["old_stage_id"] == "old-stage"
+        assert event.event_metadata["new_stage_id"] == "new-stage"
         assert event.event_metadata["old_stage_label"] == "Old Label"
         assert event.event_metadata["new_stage_label"] == "New Label"
 
@@ -615,8 +632,8 @@ class TestBuildStageChangeTimelineEvent:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "stage_external_id": "stage-1",
+            "history_id": "h1",
+            "stage_id": "stage-1",
             "entered_at": datetime.now(UTC),
         }
 
@@ -827,8 +844,8 @@ class TestTitleTruncation:
         org_id = uuid4()
         deal_id = uuid4()
         history_entry = {
-            "external_id": "h1",
-            "stage_external_id": "C" * 600,
+            "history_id": "h1",
+            "stage_label": "C" * 600,
             "entered_at": datetime.now(UTC),
         }
 

@@ -4,6 +4,10 @@
 
 Deal participants represent all people and organizations involved in a deal. This includes contacts, companies, and internal team members (users/owners). The system syncs participants from HubSpot and enriches them with additional data from related CRM entities.
 
+Current CRM identity contract: canonical participant rows use local IDs for
+relationships and uniqueness. Provider object IDs and payloads are tracked in
+`crm_source_object_mappings`, not on the public participant contract.
+
 ## Participant Types
 
 | Type | Description | Source |
@@ -21,9 +25,7 @@ crm_deal_participants
 ├── participant_id (UUID, PK)
 ├── deal_id (UUID, FK → crm_deals)
 ├── organisation_id (UUID)
-├── external_id (String) - Unique identifier for the participant record
 ├── participant_type (Enum) - CONTACT, COMPANY, or USER
-├── related_external_id (String) - HubSpot ID of the related entity
 ├── related_local_id (UUID) - Local ID from CRMContact/CRMCompany/CRMUser
 ├── related_name (String) - Enriched name
 ├── related_email (String) - Enriched email (or domain for companies)
@@ -34,10 +36,11 @@ crm_deal_participants
 ### Unique Constraint
 
 ```sql
-UNIQUE (deal_id, participant_type, related_external_id, relationship_role)
+UNIQUE (deal_id, participant_type, related_local_id, relationship_role)
 ```
 
-This ensures no duplicate participants for the same deal with the same type, entity, and role.
+This ensures no duplicate participants for the same deal with the same local entity and role.
+Provider association IDs are resolved through `crm_source_object_mappings` during ingestion.
 
 ## HubSpot Data Sources
 
@@ -233,7 +236,7 @@ SELECT
     p.relationship_role,
     p.related_name,
     p.related_email,
-    p.related_external_id
+    p.related_local_id
 FROM crm_deal_participants p
 JOIN crm_deals d ON p.deal_id = d.deal_id
 WHERE d.name = 'My Deal'
@@ -303,9 +306,9 @@ WHERE p.participant_type = 'CONTACT'
 1. **Check related entity exists:**
 
    ```sql
-   SELECT * FROM crm_contacts WHERE external_id = '<contact_external_id>';
-   SELECT * FROM crm_companies WHERE external_id = '<company_external_id>';
-   SELECT * FROM crm_users WHERE external_id = '<user_external_id>';
+   SELECT * FROM crm_contacts WHERE contact_id = '<contact_id>';
+   SELECT * FROM crm_companies WHERE company_id = '<company_id>';
+   SELECT * FROM crm_users WHERE user_id = '<user_id>';
    ```
 
 2. **Run enrichment manually:**
@@ -316,10 +319,10 @@ WHERE p.participant_type = 'CONTACT'
 
 ### Duplicate Key Errors
 
-The system uses a unique constraint on `(deal_id, participant_type, related_external_id, relationship_role)`. If you see duplicate key violations:
+The system uses a unique constraint on `(deal_id, participant_type, related_local_id, relationship_role)`. If you see duplicate key violations:
 
 1. Check for duplicate associations in HubSpot
-2. Verify deduplication logic for unlabeled associations
+2. Verify provider associations resolve to the expected local entity through `crm_source_object_mappings`
 3. Check the `relationship_role` is being set correctly
 
 ## Best Practices

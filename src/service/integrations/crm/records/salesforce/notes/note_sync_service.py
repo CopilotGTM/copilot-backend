@@ -11,12 +11,14 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.notes.note_normalizer import normalize_notes
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
@@ -269,29 +271,34 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
     ) -> list[str]:
         async for session in acquire_org_async_session(organisation_id):
-            deal_stmt = select(CRMDeal.external_id).where(
-                col(CRMDeal.organisation_id) == organisation_id,
-                col(CRMDeal.integration_id) == integration_id,
-                col(CRMDeal.is_deleted) == False,  # noqa: E712
+            deal_ids = await _load_live_external_ids(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider=self.PROVIDER,
+                object_type=CRMSourceObjectType.DEAL,
+                model=CRMDeal,
+                id_column=CRMDeal.deal_id,
             )
-            contact_stmt = select(CRMContact.external_id).where(
-                col(CRMContact.organisation_id) == organisation_id,
-                col(CRMContact.integration_id) == integration_id,
-                col(CRMContact.is_deleted) == False,  # noqa: E712
+            contact_ids = await _load_live_external_ids(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider=self.PROVIDER,
+                object_type=CRMSourceObjectType.CONTACT,
+                model=CRMContact,
+                id_column=CRMContact.contact_id,
             )
-            company_stmt = select(CRMCompany.external_id).where(
-                col(CRMCompany.organisation_id) == organisation_id,
-                col(CRMCompany.integration_id) == integration_id,
-                col(CRMCompany.is_deleted) == False,  # noqa: E712
+            company_ids = await _load_live_external_ids(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider=self.PROVIDER,
+                object_type=CRMSourceObjectType.COMPANY,
+                model=CRMCompany,
+                id_column=CRMCompany.company_id,
             )
-            deal_rows = (await session.execute(deal_stmt)).all()
-            contact_rows = (await session.execute(contact_stmt)).all()
-            company_rows = (await session.execute(company_stmt)).all()
-            linked_entity_ids: list[str] = []
-            linked_entity_ids.extend(external_id for (external_id,) in deal_rows if external_id)
-            linked_entity_ids.extend(external_id for (external_id,) in contact_rows if external_id)
-            linked_entity_ids.extend(external_id for (external_id,) in company_rows if external_id)
-            return linked_entity_ids
+            return deal_ids + contact_ids + company_ids
         raise SalesforceNoteSyncConfigurationError(
             "Could not acquire org session for Salesforce note sync scope"
         )
@@ -364,23 +371,32 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        if not external_ids:
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+            object_type=CRMSourceObjectType.USER,
+            external_ids=external_ids,
+        )
+        if not external_to_local:
             return {}
-        stmt = select(CRMUser.external_id, CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
+        stmt = select(CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
-            col(CRMUser.external_id).in_(external_ids),
+            col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).all()
+        local_to_external = _local_to_external(external_to_local)
         return {
-            external_id: ActivityDimensionHit(
+            local_to_external[user_id]: ActivityDimensionHit(
                 internal_id=user_id,
                 name=full_name,
                 email=email,
             )
-            for external_id, user_id, full_name, email in rows
-            if external_id is not None
+            for user_id, full_name, email in rows
+            if user_id in local_to_external
         }
 
     async def _load_deal_map(
@@ -390,19 +406,28 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        if not external_ids:
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+            object_type=CRMSourceObjectType.DEAL,
+            external_ids=external_ids,
+        )
+        if not external_to_local:
             return {}
-        stmt = select(CRMDeal.external_id, CRMDeal.deal_id, CRMDeal.name).where(
+        stmt = select(CRMDeal.deal_id, CRMDeal.name).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
-            col(CRMDeal.external_id).in_(external_ids),
+            col(CRMDeal.deal_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).all()
+        local_to_external = _local_to_external(external_to_local)
         return {
-            external_id: ActivityDimensionHit(internal_id=deal_id, name=name)
-            for external_id, deal_id, name in rows
-            if external_id is not None
+            local_to_external[deal_id]: ActivityDimensionHit(internal_id=deal_id, name=name)
+            for deal_id, name in rows
+            if deal_id in local_to_external
         }
 
     async def _load_contact_map(
@@ -412,10 +437,17 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        if not external_ids:
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+            object_type=CRMSourceObjectType.CONTACT,
+            external_ids=external_ids,
+        )
+        if not external_to_local:
             return {}
         stmt = select(
-            CRMContact.external_id,
             CRMContact.contact_id,
             CRMContact.full_name,
             CRMContact.email,
@@ -423,17 +455,18 @@ class SalesforceNoteRecordSyncService:
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
-            col(CRMContact.external_id).in_(external_ids),
+            col(CRMContact.contact_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).all()
+        local_to_external = _local_to_external(external_to_local)
         return {
-            external_id: ActivityDimensionHit(
+            local_to_external[contact_id]: ActivityDimensionHit(
                 internal_id=contact_id,
                 name=full_name,
                 email=email,
             )
-            for external_id, contact_id, full_name, email in rows
-            if external_id is not None
+            for contact_id, full_name, email in rows
+            if contact_id in local_to_external
         }
 
     async def _load_company_map(
@@ -443,20 +476,84 @@ class SalesforceNoteRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, ActivityDimensionHit]:
-        if not external_ids:
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+            object_type=CRMSourceObjectType.COMPANY,
+            external_ids=external_ids,
+        )
+        if not external_to_local:
             return {}
-        stmt = select(CRMCompany.external_id, CRMCompany.company_id, CRMCompany.name).where(
+        stmt = select(CRMCompany.company_id, CRMCompany.name).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
-            col(CRMCompany.external_id).in_(external_ids),
+            col(CRMCompany.company_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).all()
+        local_to_external = _local_to_external(external_to_local)
         return {
-            external_id: ActivityDimensionHit(internal_id=company_id, name=name)
-            for external_id, company_id, name in rows
-            if external_id is not None
+            local_to_external[company_id]: ActivityDimensionHit(internal_id=company_id, name=name)
+            for company_id, name in rows
+            if company_id in local_to_external
         }
+
+
+async def _load_live_external_ids(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    provider: str,
+    object_type: CRMSourceObjectType,
+    model,
+    id_column,
+) -> list[str]:
+    external_to_local = await _load_mapping_ids(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider=provider,
+        object_type=object_type,
+        external_ids=None,
+    )
+    if not external_to_local:
+        return []
+    stmt = select(id_column).where(
+        col(model.organisation_id) == organisation_id,
+        col(model.integration_id) == integration_id,
+        col(model.is_deleted) == False,  # noqa: E712
+        col(id_column).in_(set(external_to_local.values())),
+    )
+    rows = (await session.execute(stmt)).all()
+    live_ids = {local_id for (local_id,) in rows}
+    return [
+        external_id for external_id, local_id in external_to_local.items() if local_id in live_ids
+    ]
+
+
+async def _load_mapping_ids(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    provider: str,
+    object_type: CRMSourceObjectType,
+    external_ids: set[str] | None,
+) -> dict[str, UUID]:
+    helper = CRMSourceMappingHelper(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider=provider,
+    )
+    return await helper.load_local_id_map(object_type=object_type, external_ids=external_ids)
+
+
+def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
+    return {local_id: external_id for external_id, local_id in external_to_local.items()}
 
 
 def _compact_str_set(values) -> set[str]:

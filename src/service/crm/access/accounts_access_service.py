@@ -44,9 +44,8 @@ class AccountsAccessServiceError(Exception):
 class AccountsAccessService:
     """Service for accessing CRM accounts (companies) with filtering, pagination, and stats.
 
-    Contacts are linked to accounts via email domain matching (ILIKE '%@domain'),
-    not an explicit FK. Deals prefer the explicit company_id link and only fall
-    back to company_external_id for older synced rows that have not been backfilled.
+    Contacts are linked to accounts via explicit FK or email domain matching
+    (ILIKE '%@domain'). Deals are linked by the local company_id FK.
     All queries enforce multi-tenant isolation via organisation_id.
     """
 
@@ -177,20 +176,13 @@ class AccountsAccessService:
             .scalar_subquery()
         )
 
-        # Count deals per company by explicit company_id first, then external fallback
+        # Count deals per company by explicit company_id.
         deal_count_sub = (
             select(func.count(d.deal_id))
             .where(
                 d.organisation_id == self.organisation_id,
                 d.is_deleted.is_(False),
-                or_(
-                    d.company_id == c.company_id,
-                    and_(
-                        d.company_id.is_(None),
-                        d.company_external_id.is_not(None),
-                        d.company_external_id == c.external_id,
-                    ),
-                ),
+                d.company_id == c.company_id,
             )
             .correlate(company_table)
             .scalar_subquery()
@@ -202,14 +194,7 @@ class AccountsAccessService:
             .where(
                 d.organisation_id == self.organisation_id,
                 d.is_deleted.is_(False),
-                or_(
-                    d.company_id == c.company_id,
-                    and_(
-                        d.company_id.is_(None),
-                        d.company_external_id.is_not(None),
-                        d.company_external_id == c.external_id,
-                    ),
-                ),
+                d.company_id == c.company_id,
                 d.deal_status == CRMDealStatus.OPEN.value,
             )
             .correlate(company_table)
@@ -379,7 +364,7 @@ class AccountsAccessService:
         return [{"contact": row[0], "deal_count": row[1] or 0} for row in res.all()]
 
     async def get_account_deals(self, company_id: UUID) -> list[CRMDeal]:
-        """Return deals linked to the account by company_id, with external fallback."""
+        """Return deals linked to the account by company_id."""
         # Resolve company first to verify org ownership
         c = cast(Any, CRMCompany).__table__.c
         comp_stmt = select(CRMCompany).where(
@@ -396,14 +381,7 @@ class AccountsAccessService:
         stmt = select(CRMDeal).where(
             d.organisation_id == self.organisation_id,
             d.is_deleted.is_(False),
-            or_(
-                d.company_id == company.company_id,
-                and_(
-                    d.company_id.is_(None),
-                    d.company_external_id.is_not(None),
-                    d.company_external_id == company.external_id,
-                ),
-            ),
+            d.company_id == company.company_id,
         )
         res = await self.org_session.execute(stmt)
         return list(res.scalars().all())
@@ -414,7 +392,7 @@ class AccountsAccessService:
         Checks for duplicate by normalized domain. Uses the INTERNAL_CRM integration
         as the integration owner, creating it if not yet set up.
 
-        external_id is set to str(company_id), synced_at = now, is_deleted = False.
+        synced_at is set to now and is_deleted to False.
 
         Raises:
             AccountsAccessServiceError: 409 if a non-deleted account with the same domain
@@ -452,7 +430,6 @@ class AccountsAccessService:
             "industry",
             "company_type",
             "lifecycle_stage",
-            "owner_external_id",
             "owner_email",
             "owner_name",
             "owner_id",
@@ -475,7 +452,6 @@ class AccountsAccessService:
             company_id=company_id,
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
-            external_id=str(company_id),
             name=name,
             synced_at=now,
             is_deleted=False,
@@ -539,7 +515,6 @@ class AccountsAccessService:
             "industry",
             "company_type",
             "lifecycle_stage",
-            "owner_external_id",
             "owner_email",
             "owner_name",
             "owner_id",

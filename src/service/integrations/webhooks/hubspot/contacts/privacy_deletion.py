@@ -21,10 +21,12 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
+    CRMSourceObjectType,
     DealStakeholder,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.webhooks.hubspot.types import HubSpotWebhookEvent
 
 logger = get_logger(__name__)
@@ -72,7 +74,6 @@ class HubSpotContactPrivacyDeletionHandler:
         contact.timezone = None
         contact.properties = dict(_PRIVACY_DELETED_PAYLOAD)
         contact.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
-        contact.data_payload = dict(_PRIVACY_DELETED_PAYLOAD)
 
         for stakeholder in stakeholders:
             stakeholder.is_deleted = True
@@ -97,7 +98,6 @@ class HubSpotContactPrivacyDeletionHandler:
             activity.is_deleted = True
             activity.related_name = None
             activity.contact_id = None
-            activity.contact_external_id = None
             activity.subject = None
             activity.body = None
             activity.owner_name = None
@@ -107,19 +107,15 @@ class HubSpotContactPrivacyDeletionHandler:
             activity.attendees = []
             activity.properties = dict(_PRIVACY_DELETED_PAYLOAD)
             activity.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
-            activity.data_payload = dict(_PRIVACY_DELETED_PAYLOAD)
 
         for participant in deal_participants or []:
             participant.is_deleted = True
             participant.related_local_id = None
-            participant.related_external_id = None
             participant.related_name = None
             participant.related_email = None
-            participant.data_payload = dict(_PRIVACY_DELETED_PAYLOAD)
 
         for deal in deals or []:
             deal.primary_contact_id = None
-            deal.primary_contact_external_id = None
             deal.primary_contact_name = None
             deal.primary_contact_email = None
 
@@ -196,21 +192,18 @@ class HubSpotContactPrivacyDeletionHandler:
                     organisation_id=organisation_id,
                     integration_id=integration.integration_id,
                     contact_ids=contact_ids,
-                    object_id=object_id,
                 )
                 deal_participants = await cls._deal_participants_for_contacts(
                     org_session=org_session,
                     organisation_id=organisation_id,
                     integration_id=integration.integration_id,
                     contact_ids=contact_ids,
-                    object_id=object_id,
                 )
                 deals = await cls._deals_for_contacts(
                     org_session=org_session,
                     organisation_id=organisation_id,
                     integration_id=integration.integration_id,
                     contact_ids=contact_ids,
-                    object_id=object_id,
                 )
 
                 for contact in contacts:
@@ -225,19 +218,14 @@ class HubSpotContactPrivacyDeletionHandler:
                             activity
                             for activity in activities
                             if activity.contact_id == contact.contact_id
-                            or activity.contact_external_id == object_id
                         ],
                         deal_participants=[
                             participant
                             for participant in deal_participants
                             if participant.related_local_id == contact.contact_id
-                            or participant.related_external_id == object_id
                         ],
                         deals=[
-                            deal
-                            for deal in deals
-                            if deal.primary_contact_id == contact.contact_id
-                            or deal.primary_contact_external_id == object_id
+                            deal for deal in deals if deal.primary_contact_id == contact.contact_id
                         ],
                     )
                     org_session.add(contact)
@@ -290,12 +278,23 @@ class HubSpotContactPrivacyDeletionHandler:
         object_id: str,
     ) -> list[CRMContact]:
         """Load contacts matching the deleted HubSpot contact object id."""
+        local_ids = await CRMSourceMappingHelper(
+            session=org_session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="hubspot",
+        ).mark_external_ids_deleted(
+            object_type=CRMSourceObjectType.CONTACT,
+            external_ids=[object_id],
+        )
+        contact_id = local_ids.get(object_id.strip())
+        if contact_id is None:
+            return []
+
         statement = select(CRMContact).where(
-            # The external contact id is scoped by org and integration so a
-            # reused provider id cannot scrub another tenant's contact.
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
-            col(CRMContact.external_id) == object_id,
+            col(CRMContact.contact_id) == contact_id,
         )
         result = await org_session.execute(statement)
         return list(result.scalars().all())
@@ -324,16 +323,12 @@ class HubSpotContactPrivacyDeletionHandler:
         organisation_id: UUID,
         integration_id: UUID,
         contact_ids: list[UUID],
-        object_id: str,
     ) -> list[CRMActivity]:
         """Load activities that reference the deleted contact locally or externally."""
         statement = select(CRMActivity).where(
             col(CRMActivity.organisation_id) == organisation_id,
             col(CRMActivity.integration_id) == integration_id,
-            (
-                col(CRMActivity.contact_id).in_(contact_ids)
-                | (col(CRMActivity.contact_external_id) == object_id)
-            ),
+            col(CRMActivity.contact_id).in_(contact_ids),
         )
         result = await org_session.execute(statement)
         return list(result.scalars().all())
@@ -345,17 +340,13 @@ class HubSpotContactPrivacyDeletionHandler:
         organisation_id: UUID,
         integration_id: UUID,
         contact_ids: list[UUID],
-        object_id: str,
     ) -> list[CRMDealParticipant]:
         """Load deal participants that represent the deleted contact."""
         statement = select(CRMDealParticipant).where(
             col(CRMDealParticipant.organisation_id) == organisation_id,
             col(CRMDealParticipant.integration_id) == integration_id,
             col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
-            (
-                col(CRMDealParticipant.related_local_id).in_(contact_ids)
-                | (col(CRMDealParticipant.related_external_id) == object_id)
-            ),
+            col(CRMDealParticipant.related_local_id).in_(contact_ids),
         )
         result = await org_session.execute(statement)
         return list(result.scalars().all())
@@ -367,16 +358,12 @@ class HubSpotContactPrivacyDeletionHandler:
         organisation_id: UUID,
         integration_id: UUID,
         contact_ids: list[UUID],
-        object_id: str,
     ) -> list[CRMDeal]:
         """Load deals that use the deleted contact as their primary contact."""
         statement = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
-            (
-                col(CRMDeal.primary_contact_id).in_(contact_ids)
-                | (col(CRMDeal.primary_contact_external_id) == object_id)
-            ),
+            col(CRMDeal.primary_contact_id).in_(contact_ids),
         )
         result = await org_session.execute(statement)
         return list(result.scalars().all())

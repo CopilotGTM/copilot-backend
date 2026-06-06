@@ -192,7 +192,6 @@ class InternalCRMSetupService:
                 pipeline_id=pipeline_id,
                 organisation_id=self.organisation_id,
                 integration_id=integration_id,
-                external_id=str(pipeline_id),
                 name=DEFAULT_PIPELINE_NAME,
                 label=DEFAULT_PIPELINE_NAME,
                 object_type="deals",
@@ -229,7 +228,6 @@ class InternalCRMSetupService:
                 stage_id=stage_id,
                 organisation_id=self.organisation_id,
                 integration_id=integration_id,
-                external_id=str(stage_id),
                 name=stage_def["name"],
                 label=stage_def["label"],
                 stage_key=stage_def["stage_key"],
@@ -241,7 +239,6 @@ class InternalCRMSetupService:
                 pipeline_id=pipeline.pipeline_id,
                 synced_at=now,
                 last_seen_at=now,
-                data_payload=None,
             )
             self.session.add(stage)
             stages.append(stage)
@@ -281,7 +278,6 @@ class InternalCRMSetupService:
             pipeline_id=pipeline_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(pipeline_id),
             name=pipeline_name,
             label=pipeline_name,
             object_type="deals",
@@ -315,7 +311,6 @@ class InternalCRMSetupService:
                 stage_id=stage_id,
                 organisation_id=self.organisation_id,
                 integration_id=integration_id,
-                external_id=str(stage_id),
                 name=stage_name,
                 label=stage_name,
                 stage_key=stage_key,
@@ -327,7 +322,6 @@ class InternalCRMSetupService:
                 pipeline_id=pipeline_id,
                 synced_at=now,
                 last_seen_at=now,
-                data_payload=None,
             )
             self.session.add(stage)
             created_stages.append(stage)

@@ -12,7 +12,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DimensionHit,
     NormalizedSalesforceDealParticipant,
@@ -33,6 +37,12 @@ class SalesforceDealParticipantWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -79,7 +89,6 @@ class SalesforceDealParticipantWriter:
             if existing is None:
                 row = self._new_row(
                     participant=participant,
-                    external_id=external_id,
                     deal_id=deal_id,
                     related_local_id=related_local_id,
                     related_name=related_name,
@@ -88,14 +97,26 @@ class SalesforceDealParticipantWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    participant=participant,
+                    local_participant_id=row.participant_id,
+                    now=now,
+                )
                 result.participants_created += 1
             else:
                 self._apply_updates(
                     existing,
-                    participant=participant,
                     related_local_id=related_local_id,
                     related_name=related_name,
                     related_email=related_email,
+                    now=now,
+                )
+                existing.is_deleted = False
+                await self._upsert_source_mapping(
+                    external_id=external_id,
+                    participant=participant,
+                    local_participant_id=existing.participant_id,
                     now=now,
                 )
                 result.participants_updated += 1
@@ -133,23 +154,49 @@ class SalesforceDealParticipantWriter:
         self,
         external_ids: set[str] | None = None,
     ) -> dict[str, CRMDealParticipant]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.organisation_id) == self.organisation_id,
             col(CRMDealParticipant.integration_id) == self.integration_id,
-            col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
+            col(CRMDealParticipant.participant_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMDealParticipant.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = _local_to_external(external_to_local)
+        return {
+            local_to_external[row.participant_id]: row
+            for row in rows
+            if row.participant_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        *,
+        external_id: str,
+        participant: NormalizedSalesforceDealParticipant,
+        local_participant_id: UUID,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
+            external_id=external_id,
+            local_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
+            local_object_id=local_participant_id,
+            data_payload=participant.data_payload,
+            source_created_at=None,
+            source_modified_at=None,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
         *,
         participant: NormalizedSalesforceDealParticipant,
-        external_id: str,
         deal_id: UUID,
         related_local_id: UUID | None,
         related_name: str | None,
@@ -159,24 +206,20 @@ class SalesforceDealParticipantWriter:
         return CRMDealParticipant(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=external_id,
             deal_id=deal_id,
             participant_type=CRMParticipantType(participant.participant_type),
             relationship_role=participant.relationship_role,
-            related_external_id=participant.related_external_id,
             related_local_id=related_local_id,
             related_name=related_name,
             related_email=related_email,
             synced_at=now,
             last_seen_at=now,
-            data_payload=participant.data_payload,
         )
 
     def _apply_updates(
         self,
         row: CRMDealParticipant,
         *,
-        participant: NormalizedSalesforceDealParticipant,
         related_local_id: UUID | None,
         related_name: str | None,
         related_email: str | None,
@@ -187,7 +230,6 @@ class SalesforceDealParticipantWriter:
         row.related_email = related_email
         row.synced_at = now
         row.last_seen_at = now
-        row.data_payload = participant.data_payload
 
 
 def _synthetic_external_id(participant: NormalizedSalesforceDealParticipant) -> str:
@@ -196,3 +238,7 @@ def _synthetic_external_id(participant: NormalizedSalesforceDealParticipant) -> 
         f"{participant.deal_external_id}:{participant.participant_type}:"
         f"{participant.related_external_id}:{role}"
     )
+
+
+def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
+    return {local_id: external_id for external_id, local_id in external_to_local.items()}

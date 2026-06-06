@@ -222,7 +222,6 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
     existing_deal = SimpleNamespace(
         deal_id=deal_id,
         company_id=company_id,
-        company_external_id="company-ext-1",
         company_name="Acme",
         company_domain="acme.com",
         integration_id=uuid4(),
@@ -232,7 +231,6 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
     )
     resolved_company = SimpleNamespace(
         company_id=company_id,
-        external_id="company-ext-1",
         name="Acme",
         domain="acme.com",
     )
@@ -259,7 +257,6 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
     service._has_active_company_participant.assert_awaited_once_with(
         deal=existing_deal,
         company_id=company_id,
-        company_external_id="company-ext-1",
     )
 
 
@@ -281,7 +278,6 @@ async def test_update_primary_contact_clears_internal_link_when_only_fallback_va
         company_name="Acme",
         integration_id=uuid4(),
         primary_contact_id=uuid4(),
-        primary_contact_external_id="contact-ext-1",
         primary_contact_name="Old Contact",
         primary_contact_email="old@example.com",
         source_modified_at=None,
@@ -302,6 +298,5 @@ async def test_update_primary_contact_clears_internal_link_when_only_fallback_va
 
     assert result is existing_deal
     assert existing_deal.primary_contact_id is None
-    assert existing_deal.primary_contact_external_id is None
     assert existing_deal.primary_contact_name == "New Contact"
     assert existing_deal.primary_contact_email == "new@example.com"

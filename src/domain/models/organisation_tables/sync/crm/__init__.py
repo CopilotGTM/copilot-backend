@@ -47,6 +47,7 @@ from .leads import (
     CRMLeadStatus,
     CRMLeadStatusHistory,
 )
+from .source_mappings import CRMSourceKind, CRMSourceObjectMapping, CRMSourceObjectType
 from .stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -105,6 +106,10 @@ __all__ = [
     "LeadFormFieldTargetType",
     "LeadFormStatus",
     "LeadFormSubmission",
+    # Source mappings
+    "CRMSourceObjectMapping",
+    "CRMSourceKind",
+    "CRMSourceObjectType",
     # Companies
     "CRMCompany",
     # Users

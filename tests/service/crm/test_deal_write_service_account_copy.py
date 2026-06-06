@@ -35,7 +35,6 @@ async def test_selected_external_account_is_copied_to_internal_crm_company() -> 
         company_id=external_company_id,
         organisation_id=org_id,
         integration_id=external_integration_id,
-        external_id="hubspot-company-1",
         name="Acme Corp",
         domain="acme.com",
         website="https://acme.com",
@@ -90,7 +89,6 @@ async def test_selected_external_contact_participant_is_copied_before_linking(
         company_id=internal_company_id,
         organisation_id=org_id,
         integration_id=internal_integration_id,
-        external_id=str(internal_company_id),
         name="Acme Corp",
         domain="acme.com",
     )
@@ -98,7 +96,6 @@ async def test_selected_external_contact_participant_is_copied_before_linking(
         contact_id=external_contact_id,
         organisation_id=org_id,
         integration_id=external_integration_id,
-        external_id="hubspot-contact-1",
         first_name="Buyer",
         last_name="Person",
         full_name="Buyer Person",
@@ -115,10 +112,8 @@ async def test_selected_external_contact_participant_is_copied_before_linking(
         deal_id=uuid4(),
         organisation_id=org_id,
         integration_id=internal_integration_id,
-        external_id="internal-deal-1",
         name="Acme Renewal",
         company_id=internal_company_id,
-        company_external_id=internal_company.external_id,
         company_name="Acme Corp",
     )
     session = AsyncMock()

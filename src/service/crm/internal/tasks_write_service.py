@@ -108,9 +108,7 @@ class TasksWriteService:
         owner_user_id = (
             payload.get("owner_user_id") if "owner_user_id" in payload else self.actor_user_id
         )
-        owner_id, owner_external_id, owner_name, owner_email = await self._resolve_owner(
-            owner_user_id
-        )
+        owner_id, owner_name, owner_email = await self._resolve_owner(owner_user_id)
         due_date, is_all_day, due_properties = self._normalize_due_payload(payload)
         assignment_properties = (
             {"assigned_to_public_user_id": str(owner_user_id)} if owner_user_id else {}
@@ -134,7 +132,6 @@ class TasksWriteService:
             activity_id=task_id,
             organisation_id=self.organisation_id,
             integration_id=None,
-            external_id=str(task_id),
             activity_type=task_type,
             subject=payload.get("subject"),
             body=payload.get("body"),
@@ -144,12 +141,9 @@ class TasksWriteService:
             reminder_date=payload.get("reminder_date"),
             completed_date=completed_date,
             deal_id=deal.deal_id if deal else None,
-            deal_external_id=deal.external_id if deal else None,
             related_object_type=CRMActivityObjectType.DEAL.value if deal else None,
-            related_external_id=deal.external_id if deal else None,
             related_local_id=deal.deal_id if deal else None,
             related_name=deal.name if deal else None,
-            owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
             owner_id=owner_id,
@@ -242,11 +236,10 @@ class TasksWriteService:
             updated = True
 
         if "owner_user_id" in payload:
-            owner_id, owner_external_id, owner_name, owner_email = await self._resolve_owner(
+            owner_id, owner_name, owner_email = await self._resolve_owner(
                 payload.get("owner_user_id")
             )
             task.owner_id = owner_id
-            task.owner_external_id = owner_external_id
             task.owner_name = owner_name
             task.owner_email = owner_email
             properties = task.properties or {}
@@ -276,16 +269,12 @@ class TasksWriteService:
             if new_deal_id is not None:
                 deal = await self._load_deal(new_deal_id)
                 task.deal_id = deal.deal_id
-                task.deal_external_id = deal.external_id
                 task.related_object_type = CRMActivityObjectType.DEAL.value
-                task.related_external_id = deal.external_id
                 task.related_local_id = deal.deal_id
                 task.related_name = deal.name
             else:
                 task.deal_id = None
-                task.deal_external_id = None
                 task.related_object_type = None
-                task.related_external_id = None
                 task.related_local_id = None
                 task.related_name = None
             updated = True
@@ -703,9 +692,9 @@ class TasksWriteService:
 
     async def _resolve_owner(
         self, user_id: UUID | None
-    ) -> tuple[UUID | None, str | None, str | None, str | None]:
+    ) -> tuple[UUID | None, str | None, str | None]:
         if user_id is None:
-            return None, None, None, None
+            return None, None, None
 
         async with master_async_session_scope() as master_session:
             user = await master_session.get(User, user_id)
@@ -729,7 +718,6 @@ class TasksWriteService:
 
             return (
                 crm_user_id,
-                str(user.user_id),
                 build_user_display_name(user),
                 str(user.email),
             )

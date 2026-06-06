@@ -9,6 +9,10 @@
 
 This document describes how deal participants are structured and synced from HubSpot CRM to the `CRMDealParticipant` table, and subsequently to `DealStakeholder`.
 
+Current CRM identity contract: `CRMDealParticipant` links to local CRM entities
+with `related_local_id`. HubSpot object IDs and raw payloads are stored in
+`crm_source_object_mappings` for integration and migration lookup.
+
 ---
 
 ## Architecture: Normalized Data Layer
@@ -32,7 +36,7 @@ This document describes how deal participants are structured and synced from Hub
 │  - participant_type: CONTACT, USER, COMPANY                     │
 │  - related_email: email address                                 │
 │  - related_name: display name                                   │
-│  - related_external_id: provider's ID                           │
+│  - related_local_id: local CRM entity ID                        │
 │  - relationship_role: role in deal                              │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
@@ -64,7 +68,7 @@ class CRMDealParticipant(SQLModel, table=True):
 
     # Participant identification
     participant_type: CRMParticipantType  # CONTACT, COMPANY, USER
-    related_external_id: str          # HubSpot's ID for this entity
+    related_local_id: UUID | None     # Local CRM entity ID when resolved
     related_email: str | None         # Email address (for CONTACT type)
     related_name: str | None          # Display name
 
@@ -104,12 +108,12 @@ class CRMParticipantType(str, Enum):
 
 Based on actual synced data:
 
-| participant_type | related_external_id | related_email | related_name | relationship_role |
-|------------------|---------------------|---------------|--------------|-------------------|
-| `contact` | 123873927827 | alice@acme.com | Alice Acme | null |
-| `contact` | 987654321098 | bob@acme.com | Bob Smith | decision_maker |
-| `user` | 51 | owner@internal.com | Deal Owner | null |
-| `company` | 555666777 | null | Acme Corp | null |
+| participant_type | related_local_id | related_email | related_name | relationship_role |
+|------------------|------------------|---------------|--------------|-------------------|
+| `contact` | contact UUID | alice@acme.com | Alice Acme | null |
+| `contact` | contact UUID | bob@acme.com | Bob Smith | decision_maker |
+| `user` | user UUID | owner@internal.com | Deal Owner | null |
+| `company` | company UUID | null | Acme Corp | null |
 
 **Key observations:**
 - `CONTACT` has email and name → becomes stakeholder
@@ -134,7 +138,7 @@ GET /crm/v3/objects/deals/{dealId}/associations/companies
 
 | HubSpot Field | CRMDealParticipant Field |
 |---------------|--------------------------|
-| `associatedObjectId` | `related_external_id` |
+| `associatedObjectId` | `crm_source_object_mappings.external_id`, resolved to `related_local_id` |
 | Contact's `email` | `related_email` |
 | Contact's `firstname + lastname` | `related_name` |
 | Association label | `relationship_role` |
@@ -257,7 +261,7 @@ When a contact is removed from a deal in HubSpot:
   "integration_id": "hubspot-integration-uuid",
   "deal_id": "deal-uuid",
   "participant_type": "contact",
-  "related_external_id": "12345",
+  "related_local_id": "contact-uuid",
   "related_email": "alice@acme.com",
   "related_name": "Alice Johnson",
   "relationship_role": "decision_maker",

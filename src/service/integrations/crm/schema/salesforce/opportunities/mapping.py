@@ -12,8 +12,6 @@ _RAW_SALESFORCE_OPPORTUNITY_CANONICAL_FIELDS: dict[str, str] = {
     "Amount": "amount",
     "CurrencyIsoCode": "currency",
     "CloseDate": "close_date",
-    "StageName": "stage_external_id",
-    "OwnerId": "owner_external_id",
     "Type": "deal_type",
     "Description": "description",
     "ForecastCategoryName": "forecast_category",

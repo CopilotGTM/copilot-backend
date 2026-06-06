@@ -3,12 +3,12 @@
 Scoped to `(organisation_id, integration_id, is_deleted=false)` on every
 statement. Two passes:
 
-  Pass A — upsert every normalised company by `external_id`.
+  Pass A — upsert every normalised company by source mapping.
     - existing row → update fields, mark active
     - no existing row → insert with a fresh company_id UUID
 
   Pass B — active-snapshot deactivation.
-    - any prior row whose external_id is not in `all_external_ids` (the full
+    - any prior mapped row whose provider id is not in `all_external_ids` (the full
       HubSpot snapshot we just fetched) gets is_active=false.
 
 No hard delete. `company_id` PK is never rewritten — CRMDeal.company_id and
@@ -25,7 +25,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.companies.company_types import (
     CompanyWriteResult,
     NormalizedHubSpotCompany,
@@ -47,6 +51,12 @@ class HubSpotCompanyWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="hubspot",
+        )
 
     async def apply(
         self,
@@ -75,6 +85,7 @@ class HubSpotCompanyWriter:
                 )
                 row = self._new_row(company, resolved_owner_id, now=now)
                 self.session.add(row)
+                await self._upsert_source_mapping(company, row.company_id, now=now)
                 result.companies_created += 1
             elif _has_same_or_newer_source_modified(existing, company):
                 result.companies_skipped_stale += 1
@@ -86,6 +97,7 @@ class HubSpotCompanyWriter:
                 was_deleted = bool(existing.is_deleted)
                 was_active = bool(existing.is_active)
                 self._apply_updates(existing, company, resolved_owner_id, now=now)
+                await self._upsert_source_mapping(company, existing.company_id, now=now)
                 if was_deleted or not was_active:
                     existing.is_active = True
                     result.companies_reactivated += 1
@@ -99,6 +111,10 @@ class HubSpotCompanyWriter:
             if row.is_active:
                 row.is_active = False
                 result.companies_deactivated += 1
+        await self.source_mappings.mark_missing_deleted(
+            object_type=CRMSourceObjectType.COMPANY,
+            seen_external_ids=snapshot_external_ids,
+        )
 
         await self.session.flush()
         logger.info(
@@ -137,6 +153,7 @@ class HubSpotCompanyWriter:
             resolved_owner_id = self._resolve_owner_id(company.owner_external_id, owner_map, result)
             row = self._new_row(company, resolved_owner_id, now=now)
             self.session.add(row)
+            await self._upsert_source_mapping(company, row.company_id, now=now)
             result.companies_created += 1
         elif _has_same_or_newer_source_modified(existing, company):
             result.companies_skipped_stale += 1
@@ -146,6 +163,7 @@ class HubSpotCompanyWriter:
             was_deleted = bool(existing.is_deleted)
             was_active = bool(existing.is_active)
             self._apply_updates(existing, company, resolved_owner_id, now=now)
+            await self._upsert_source_mapping(company, existing.company_id, now=now)
             if was_deleted or not was_active:
                 existing.is_active = True
                 result.companies_reactivated += 1
@@ -183,18 +201,45 @@ class HubSpotCompanyWriter:
         return resolved
 
     async def _load_existing_rows(self) -> dict[str, CRMCompany]:
-        """Every crm_companies row for this integration, keyed by external_id.
-
-        Deletion webhooks soft-delete rows, but HubSpot can later restore or
-        emit updates for the same object id. Loading deleted rows prevents a
-        duplicate insert against the provider's unique external identity.
-        """
+        """Every mapped company row for this integration, keyed by provider id."""
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.COMPANY,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMCompany).where(
             col(CRMCompany.organisation_id) == self.organisation_id,
             col(CRMCompany.integration_id) == self.integration_id,
+            col(CRMCompany.company_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {r.external_id: r for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.company_id]: row
+            for row in rows
+            if row.company_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        company: NormalizedHubSpotCompany,
+        local_company_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.COMPANY,
+            external_id=company.external_id,
+            local_object_type=CRMSourceObjectType.COMPANY,
+            local_object_id=local_company_id,
+            data_payload=company.data_payload,
+            source_created_at=company.source_created_at,
+            source_modified_at=company.source_modified_at,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
@@ -206,7 +251,6 @@ class HubSpotCompanyWriter:
         return CRMCompany(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=company.external_id,
             name=company.name,
             domain=company.domain,
             website=company.website,
@@ -214,7 +258,6 @@ class HubSpotCompanyWriter:
             industry=company.industry,
             company_type=company.company_type,
             lifecycle_stage=company.lifecycle_stage,
-            owner_external_id=company.owner_external_id,
             owner_id=resolved_owner_id,
             number_of_employees=company.number_of_employees,
             annual_revenue=company.annual_revenue,
@@ -232,7 +275,6 @@ class HubSpotCompanyWriter:
             synced_at=now,
             last_seen_at=now,
             properties=company.properties,
-            data_payload=company.data_payload,
         )
 
     def _apply_updates(
@@ -254,7 +296,6 @@ class HubSpotCompanyWriter:
         row.industry = company.industry
         row.company_type = company.company_type
         row.lifecycle_stage = company.lifecycle_stage
-        row.owner_external_id = company.owner_external_id
         row.owner_id = resolved_owner_id
         row.number_of_employees = company.number_of_employees
         row.annual_revenue = company.annual_revenue
@@ -271,7 +312,6 @@ class HubSpotCompanyWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = company.properties
-        row.data_payload = company.data_payload
 
 
 def _has_same_or_newer_source_modified(

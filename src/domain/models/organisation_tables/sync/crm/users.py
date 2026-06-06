@@ -18,13 +18,6 @@ class CRMUser(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_users"
     __table_args__ = (
-        Index(
-            "uq_crm_user_external",
-            "integration_id",
-            "external_id",
-            unique=True,
-            postgresql_where=text("external_id IS NOT NULL"),
-        ),
         Index("ix_crm_user_org_email", "organisation_id", "email"),
         Index("ix_crm_user_active", "organisation_id", "is_active"),
     )
@@ -35,12 +28,6 @@ class CRMUser(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised user record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the user. Null for internal-only CRM users.",
-    )
-
     # Primary details
     email: str | None = Field(
         default=None,
@@ -113,11 +100,6 @@ class CRMUser(SyncedRecordMixin, table=True):
             server_default=text(EMPTY_JSONB_SQL),
         ),
         description="Raw provider properties captured for this user.",
-    )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload useful for debugging.",
     )
 
     @property

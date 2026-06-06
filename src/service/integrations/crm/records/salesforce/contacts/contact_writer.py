@@ -9,7 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.contacts.contact_types import (
     ContactWriteResult,
     NormalizedSalesforceContact,
@@ -29,6 +33,12 @@ class SalesforceContactWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -52,6 +62,7 @@ class SalesforceContactWriter:
             if existing is None:
                 row = self._new_row(contact, resolved_company_id, resolved_owner_id, now=now)
                 self.session.add(row)
+                await self._upsert_source_mapping(contact, row.contact_id, now=now)
                 result.contacts_created += 1
             else:
                 was_deleted = existing.is_deleted
@@ -62,6 +73,7 @@ class SalesforceContactWriter:
                     resolved_owner_id,
                     now=now,
                 )
+                await self._upsert_source_mapping(contact, existing.contact_id, now=now)
                 if was_deleted:
                     existing.is_deleted = False
                     result.contacts_reactivated += 1
@@ -114,16 +126,45 @@ class SalesforceContactWriter:
     async def _load_existing_rows(
         self, external_ids: set[str] | None = None
     ) -> dict[str, CRMContact]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.CONTACT,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.integration_id) == self.integration_id,
+            col(CRMContact.contact_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMContact.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.contact_id]: row
+            for row in rows
+            if row.contact_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        contact: NormalizedSalesforceContact,
+        local_contact_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.CONTACT,
+            external_id=contact.external_id,
+            local_object_type=CRMSourceObjectType.CONTACT,
+            local_object_id=local_contact_id,
+            data_payload=contact.data_payload,
+            source_created_at=contact.source_created_at,
+            source_modified_at=contact.source_modified_at,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
@@ -136,13 +177,11 @@ class SalesforceContactWriter:
         return CRMContact(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=contact.external_id,
             first_name=contact.first_name,
             last_name=contact.last_name,
             full_name=contact.full_name,
             job_title=contact.job_title,
             company_name=contact.company_name,
-            company_external_id=contact.company_external_id,
             company_id=resolved_company_id,
             email=contact.email,
             additional_emails=list(contact.additional_emails),
@@ -150,7 +189,6 @@ class SalesforceContactWriter:
             mobile_phone=contact.mobile_phone,
             fax=contact.fax,
             website=contact.website,
-            owner_external_id=contact.owner_external_id,
             owner_id=resolved_owner_id,
             lifecycle_stage=contact.lifecycle_stage,
             lead_status=contact.lead_status,
@@ -168,7 +206,6 @@ class SalesforceContactWriter:
             synced_at=now,
             last_seen_at=now,
             properties=contact.properties,
-            data_payload=contact.data_payload,
         )
 
     def _apply_updates(
@@ -185,7 +222,6 @@ class SalesforceContactWriter:
         row.full_name = contact.full_name
         row.job_title = contact.job_title
         row.company_name = contact.company_name
-        row.company_external_id = contact.company_external_id
         row.company_id = resolved_company_id
         row.email = contact.email
         row.additional_emails = list(contact.additional_emails)
@@ -193,7 +229,6 @@ class SalesforceContactWriter:
         row.mobile_phone = contact.mobile_phone
         row.fax = contact.fax
         row.website = contact.website
-        row.owner_external_id = contact.owner_external_id
         row.owner_id = resolved_owner_id
         row.lifecycle_stage = contact.lifecycle_stage
         row.lead_status = contact.lead_status
@@ -211,4 +246,3 @@ class SalesforceContactWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = contact.properties
-        row.data_payload = contact.data_payload

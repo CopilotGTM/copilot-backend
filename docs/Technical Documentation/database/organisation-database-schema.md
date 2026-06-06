@@ -52,15 +52,16 @@ Use this for any content you want to search semantically.
 
 ### 4) Integration sync pattern
 
-Principle: A connection owns sync history and downstream synced rows. All synced rows must be uniquely identified by `(integration_id, external_id)` and carry `organisation_id`.
+Principle: A connection owns sync history and downstream synced rows. Provider-owned rows must be attributable to their source within the organisation.
 
 Tables/mixins:
 
 - `knowledge_integrations` (connection): credentials, scope/type, state
 - `integration_sync_history`: runs/counters/status
 - `SyncedRecordMixin`: common columns for synced tables → `organisation_id`, `integration_id`, `external_id`, `data_payload`, `synced_at`, `source_modified_at`, `last_seen_at`, `is_deleted`
+- CRM canonical tables are the exception: provider and migration identities live in `crm_source_object_mappings`, while CRM tables expose local UUIDs and local foreign keys.
 
-Apply this to Calendar, CRM, or any provider data.
+Apply the mixin directly to Calendar or provider-native data. For CRM, use source mappings for provider identity and keep canonical CRM tables local-ID based.
 
 ### 5) Junction (many‑to‑many) pattern
 
@@ -104,7 +105,7 @@ class SyncedEntity(SyncedRecordMixin, table=True):
 - [ ] Add composite indexes for common filters (e.g., `(organisation_id, created_at)`)
 - [ ] Push volatile fields to JSONB; keep critical fields typed
 - [ ] For visibility: choose `is_org_wide` vs owner `user_id` pattern
-- [ ] For synced data: ensure `(integration_id, external_id)` uniqueness and provenance
+- [ ] For synced data: ensure source identity uniqueness and provenance; for CRM use `crm_source_object_mappings`
 - [ ] Add table/comment strings for clarity in migrations
 - [ ] Keep migrations reversible and constrain naming (`ix_`, `uq_`, `ck_` prefixes)
 
@@ -113,6 +114,7 @@ class SyncedEntity(SyncedRecordMixin, table=True):
 - Chat: conversation + message pattern; attachments via junction; jobs for async steps.
 - Knowledge: source → chunked document with embeddings; jobs for ingestion.
 - Integrations/Sync: connection + history + synced tables via `SyncedRecordMixin`.
-- Calendar/CRM: concrete examples of the sync pattern; avoid domain‑specific columns unless essential.
+- Calendar: concrete example of direct synced-record identity.
+- CRM: canonical local tables plus `crm_source_object_mappings` for HubSpot/Salesforce/migration identity.
 
 See `database-architecture.md` for big‑picture context.

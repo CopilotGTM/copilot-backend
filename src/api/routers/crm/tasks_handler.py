@@ -137,10 +137,6 @@ def _build_task_assignee(task) -> TaskAssignee | None:
     owner_name = getattr(task, "owner_name", None)
     public_user_id = _parse_uuid(properties.get("assigned_to_public_user_id"))
     crm_user_id = _parse_uuid(getattr(task, "owner_id", None))
-    owner_external_id = getattr(task, "owner_external_id", None)
-    owner_external_uuid = _parse_uuid(owner_external_id)
-    if public_user_id is None and crm_user_id is None:
-        public_user_id = owner_external_uuid
 
     if owner_email:
         filter_key = f"email:{owner_email}"
@@ -148,8 +144,6 @@ def _build_task_assignee(task) -> TaskAssignee | None:
         filter_key = f"public_user:{public_user_id}"
     elif crm_user_id:
         filter_key = f"crm_user:{crm_user_id}"
-    elif owner_external_id:
-        filter_key = f"owner_external:{owner_external_id}"
     elif owner_name:
         filter_key = f"name:{str(owner_name).strip().lower()}"
     else:
@@ -163,7 +157,6 @@ def _build_task_assignee(task) -> TaskAssignee | None:
         email=owner_email,
         public_user_id=public_user_id,
         crm_user_id=crm_user_id,
-        owner_external_id=owner_external_id,
     )
 
 

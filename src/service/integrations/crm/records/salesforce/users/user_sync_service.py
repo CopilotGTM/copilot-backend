@@ -8,13 +8,15 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.master_tables.user_models import User
 from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
@@ -24,6 +26,7 @@ from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.users.user_normalizer import (
     build_owner_backfill_mapping,
     normalize_email,
@@ -367,23 +370,28 @@ class SalesforceUserRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
     ) -> dict[str, UUID]:
-        from src.domain.models.organisation_tables.sync.crm.users import CRMUser
-
-        stmt = select(CRMUser).where(
+        helper = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+        external_to_local = await helper.load_local_id_map(object_type=CRMSourceObjectType.USER)
+        if not external_to_local:
+            return {}
+        stmt = select(CRMUser.user_id).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
-        rows = (await session.execute(stmt)).scalars().all()
-        return {row.external_id: row.user_id for row in rows if row.external_id is not None}
-
-
-_OWNER_BACKFILL_TABLES = (
-    "crm_companies",
-    "crm_contacts",
-    "crm_activities",
-)
-_SALESFORCE_OWNER_ACTIVITY_TYPES = ("TASK", "TODO", "NOTE")
+        rows = (await session.execute(stmt)).all()
+        live_ids = {user_id for (user_id,) in rows}
+        return {
+            external_id: user_id
+            for external_id, user_id in external_to_local.items()
+            if user_id in live_ids
+        }
 
 
 async def _backfill_owner_tables(
@@ -393,42 +401,9 @@ async def _backfill_owner_tables(
     integration_id: UUID,
     owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]],
 ) -> dict[str, int]:
-    per_table: dict[str, int] = {}
-    for table_name in _OWNER_BACKFILL_TABLES:
-        total = 0
-        for external_id, (owner_id, owner_name, _label, owner_email) in owner_mapping.items():
-            activity_scope = (
-                "AND activity_type IN :activity_types " if table_name == "crm_activities" else ""
-            )
-            sql = text(
-                f"UPDATE {table_name} SET "  # noqa: S608  # nosec B608 - table name allowlisted
-                "owner_id = :owner_id, owner_name = :owner_name, owner_email = :owner_email "
-                "WHERE organisation_id = :org "
-                "AND integration_id = :integration "
-                "AND is_deleted = false "
-                "AND owner_external_id = :external_id "
-                f"{activity_scope}"
-                "AND (owner_id IS NULL "
-                "OR owner_name IS DISTINCT FROM :owner_name "
-                "OR owner_email IS DISTINCT FROM :owner_email)"
-            ).bindparams(
-                bindparam("org"),
-                bindparam("integration"),
-                bindparam("owner_id"),
-            )
-            if table_name == "crm_activities":
-                sql = sql.bindparams(bindparam("activity_types", expanding=True))
-            params: dict[str, object] = {
-                "org": organisation_id,
-                "integration": integration_id,
-                "owner_id": owner_id,
-                "owner_name": owner_name,
-                "owner_email": owner_email,
-                "external_id": external_id,
-            }
-            if table_name == "crm_activities":
-                params["activity_types"] = _SALESFORCE_OWNER_ACTIVITY_TYPES
-            exec_result = await session.execute(sql, params)
-            total += getattr(exec_result, "rowcount", 0) or 0
-        per_table[f"{table_name}.owner_id"] = total
-    return per_table
+    del session, organisation_id, integration_id, owner_mapping
+    return {
+        "crm_companies.owner_id": 0,
+        "crm_contacts.owner_id": 0,
+        "crm_activities.owner_id": 0,
+    }

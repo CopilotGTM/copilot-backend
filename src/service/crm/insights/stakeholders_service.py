@@ -183,7 +183,6 @@ class StakeholdersService:
             contact_id=contact_id,
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
-            external_id=str(contact_id),
             email=email_normalized,
             full_name=name,
             job_title=job_title,
@@ -256,17 +255,15 @@ class StakeholdersService:
             participant_id=participant_id,
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
-            external_id=str(participant_id),
             deal_id=deal_id,
             participant_type=CRMParticipantType.CONTACT,
-            related_external_id=str(contact_id),
             related_local_id=contact_id,
             related_name=name,
             related_email=email_normalized,
             synced_at=now,
             source_modified_at=now,
             last_seen_at=now,
-            data_payload={"source": "manual_stakeholder"},
+            properties={"source": "manual_stakeholder"},
         )
         self.session.add(participant)
         return True
@@ -872,23 +869,25 @@ class StakeholdersService:
         result = await self.session.execute(stmt)
         contacts = list(result.scalars().all())
 
-        # Convert to AvailableContactItem with relevant information
-        return [
-            AvailableContactItem(
-                contact_id=c.contact_id,
-                external_id=c.external_id,
-                email=c.email,  # type: ignore - filtered above
-                first_name=c.first_name,
-                last_name=c.last_name,
-                full_name=c.full_name,
-                job_title=c.job_title,
-                company_name=c.company_name,
-                phone=c.phone,
-                lifecycle_stage=c.lifecycle_stage,
-                last_activity_at=c.last_activity_at,
+        available_contacts: list[AvailableContactItem] = []
+        for c in contacts:
+            if not c.email:
+                continue
+            available_contacts.append(
+                AvailableContactItem(
+                    contact_id=c.contact_id,
+                    email=c.email,
+                    first_name=c.first_name,
+                    last_name=c.last_name,
+                    full_name=c.full_name,
+                    job_title=c.job_title,
+                    company_name=c.company_name,
+                    phone=c.phone,
+                    lifecycle_stage=c.lifecycle_stage,
+                    last_activity_at=c.last_activity_at,
+                )
             )
-            for c in contacts
-        ]
+        return available_contacts
 
     async def add_contacts_as_stakeholders(
         self, deal_id: UUID, contact_ids: list[UUID]
@@ -1023,7 +1022,7 @@ class StakeholdersService:
 
     async def has_deal_owner_or_participants(self, deal_id: UUID) -> bool:
         """Return True if a deal has an owner or any active participants."""
-        deal_stmt = select(col(CRMDeal.owner_id), col(CRMDeal.owner_external_id)).where(
+        deal_stmt = select(col(CRMDeal.owner_id)).where(
             col(CRMDeal.deal_id) == deal_id,
             col(CRMDeal.organisation_id) == self.organisation_id,
         )
@@ -1032,8 +1031,7 @@ class StakeholdersService:
         if not deal_row:
             return False
 
-        owner_id, owner_external_id = deal_row
-        if owner_id or owner_external_id:
+        if deal_row[0]:
             return True
 
         participants_stmt = (
