@@ -8,14 +8,14 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-import urllib.parse
+import urllib.parse  # noqa: E402
 
-from dotenv import load_dotenv
-from migrations.migration_manager import migration_manager
-from sqlalchemy import create_engine
-from sqlmodel import Session, select
-from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.infra.utils.resource_naming import get_schema_name
+from dotenv import load_dotenv  # noqa: E402
+from migrations.migration_manager import migration_manager  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlmodel import Session, select  # noqa: E402
+from src.domain.models.master_tables import Organisation, OrganisationStatus  # noqa: E402
+from src.infra.utils.resource_naming import get_schema_name  # noqa: E402
 
 load_dotenv()
 
@@ -118,7 +118,7 @@ def list_organizations():
 
 def run_migrations_for_orgs(
     org_ids, target_version, migrate_all=False, precheck=False, fail_fast=False
-):
+) -> bool:
     """Run migrations for specified or all organizations.
 
     We derive schema names from organisation_id via get_schema_name; no schema column exists on master table.
@@ -132,14 +132,14 @@ def run_migrations_for_orgs(
     failed = []
 
     try:
-        target_orgs = []
+        target_orgs: list[Organisation] = []
         if migrate_all:
             print("Fetching all organizations (deriving schemas)...")
             stmt_all = select(Organisation).where(Organisation.status != OrganisationStatus.FAILED)
-            target_orgs = session.exec(stmt_all).all()
+            target_orgs = list(session.exec(stmt_all).all())
             if not target_orgs:
                 print("No organizations found.")
-                return
+                return True
         else:
             # Fetch each specified org
             for org_id in org_ids:
@@ -147,12 +147,13 @@ def run_migrations_for_orgs(
                 org = session.exec(stmt).one_or_none()
                 if not org:
                     print(f"[ERROR] Organization not found: {org_id}")
+                    failed.append(org_id)
                 else:
                     target_orgs.append(org)
 
         if not target_orgs:
             print("No target organizations resolved. Exiting.")
-            return
+            return not failed
 
         print(f"Resolved {len(target_orgs)} organization(s) to migrate.")
 
@@ -167,7 +168,7 @@ def run_migrations_for_orgs(
                     current = None
                     try:
                         res = conn.execute(
-                            sa_text(f"SELECT version_num FROM {schema}.alembic_version LIMIT 1")
+                            sa_text(f"SELECT version_num FROM {schema}.alembic_version LIMIT 1")  # noqa: S608
                         )
                         row = res.fetchone()
                         current = row[0] if row else None
@@ -175,7 +176,7 @@ def run_migrations_for_orgs(
                         current = f"error: {e}"  # show error but continue
                     print(f" - {schema}: current={current} target={target_version}")
             print("\n(No migrations executed due to --precheck flag.)")
-            return
+            return True
 
         from sqlalchemy import text as sa_text
 
@@ -235,8 +236,10 @@ def run_migrations_for_orgs(
             print("Succeeded:", ", ".join(str(i) for i in migrated))
         if failed:
             print("Failed:   ", ", ".join(str(i) for i in failed))
+        return not failed
     except Exception as e:
         print(f"[ERROR] Failed to run migrations: {str(e)}")
+        return False
     finally:
         session.close()
 
@@ -262,13 +265,15 @@ def main():
         print(f"[RUN] Running organization migrations for {len(args.org_ids)} organization(s)")
     print(f"  Target version: {args.target_version}")
 
-    run_migrations_for_orgs(
+    success = run_migrations_for_orgs(
         args.org_ids,
         args.target_version,
         migrate_all=migrate_all,
         precheck=args.precheck,
         fail_fast=args.fail_fast,
     )
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
