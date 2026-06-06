@@ -210,7 +210,9 @@ class MeetingsTabService:
         return MeetingDetail(
             **item.model_dump(),
             description=event.description,
-            organiser_name=resolve_attendee_display_name(event.organiser_name, event.organiser_email),
+            organiser_name=resolve_attendee_display_name(
+                event.organiser_name, event.organiser_email
+            ),
             organiser_email=event.organiser_email,
             linked_record_detail=self._linked_record_detail(assoc, deal),
             suggested_actions=self._suggested_actions(item.linked_record),
@@ -293,10 +295,14 @@ class MeetingsTabService:
         if start_at.tzinfo is None:
             start_at = start_at.replace(tzinfo=UTC)
         if start_at <= datetime.now(UTC):
-            raise MeetingsTabServiceError("Recording bot cannot be removed after meeting start", 409)
+            raise MeetingsTabServiceError(
+                "Recording bot cannot be removed after meeting start", 409
+            )
         await self.session.rollback()
         try:
-            return await CRMMeetingRecordingControlService(self.organisation_id).cancel_bot(event_id)
+            return await CRMMeetingRecordingControlService(self.organisation_id).cancel_bot(
+                event_id
+            )
         except CRMMeetingsAccessServiceError as exc:
             raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
 
@@ -480,7 +486,9 @@ class MeetingsTabService:
             )
         )
 
-    async def _attendees_for_create(self, request: CreateMeetingRequest) -> list[CalendarInviteAttendee]:
+    async def _attendees_for_create(
+        self, request: CreateMeetingRequest
+    ) -> list[CalendarInviteAttendee]:
         attendees = list(request.attendees)
         if request.link and request.link.record_type != MeetingLinkedRecordType.DEAL:
             raise MeetingsTabServiceError("Meetings V1 only supports deal links", 400)
@@ -670,7 +678,9 @@ class MeetingsTabService:
     def _conference_hostname(conference_link: str | None) -> str:
         if not conference_link:
             return ""
-        parsed = urlparse(conference_link if "://" in conference_link else f"https://{conference_link}")
+        parsed = urlparse(
+            conference_link if "://" in conference_link else f"https://{conference_link}"
+        )
         return (parsed.hostname or "").lower().removeprefix("www.")
 
     @staticmethod

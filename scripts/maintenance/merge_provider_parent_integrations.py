@@ -222,10 +222,7 @@ def build_merge_plans(
                     str(row.integration_id),
                 ),
             )
-            if (
-                len(group_rows) < 2
-                and survivor.integration_type == PROVIDER_PARENT[provider_name]
-            ):
+            if len(group_rows) < 2 and survivor.integration_type == PROVIDER_PARENT[provider_name]:
                 continue
             plans.append(
                 MergePlan(
@@ -488,7 +485,9 @@ def export_reference_rows(
     return exported
 
 
-def upsert_capability_state(connection: Connection, *, schema: str, payload: dict[str, Any]) -> None:
+def upsert_capability_state(
+    connection: Connection, *, schema: str, payload: dict[str, Any]
+) -> None:
     query = text(
         f"""
         INSERT INTO {_qualified(schema, "integration_sync_states")} AS state (
@@ -603,10 +602,14 @@ def load_existing_sync_state(
         LIMIT 1
         """
     )
-    row = connection.execute(
-        query,
-        {"integration_id": str(integration_id), "capability": capability},
-    ).mappings().first()
+    row = (
+        connection.execute(
+            query,
+            {"integration_id": str(integration_id), "capability": capability},
+        )
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -733,7 +736,9 @@ def discover_integration_references(
             """
         ).bindparams(bindparam("retired_ids", expanding=True))
         count = int(
-            connection.execute(query, {"retired_ids": [str(value) for value in retired_ids]}).scalar()
+            connection.execute(
+                query, {"retired_ids": [str(value) for value in retired_ids]}
+            ).scalar()
             or 0
         )
         if count:
@@ -787,7 +792,9 @@ def process_org(
 ) -> list[dict[str, Any]]:
     schema = get_schema_name(organisation_id)
     if not schema_exists(connection, schema):
-        return [{"organisation_id": str(organisation_id), "schema": schema, "status": "missing_schema"}]
+        return [
+            {"organisation_id": str(organisation_id), "schema": schema, "status": "missing_schema"}
+        ]
 
     lock_key = int(organisation_id.int % 2147483647)
     connection.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
@@ -1009,10 +1016,14 @@ def confirm(execute: bool, yes: bool, org_id: str | None, provider: str) -> None
     if not execute or yes:
         return
     scope = org_id or "ALL organisations"
-    response = input(
-        f"This will export, rewrite references, and delete retired {provider} rows for "
-        f"{scope}. Continue? [y/N]: "
-    ).strip().lower()
+    response = (
+        input(
+            f"This will export, rewrite references, and delete retired {provider} rows for "
+            f"{scope}. Continue? [y/N]: "
+        )
+        .strip()
+        .lower()
+    )
     if response not in {"y", "yes"}:
         print("Aborted.")
         sys.exit(0)
