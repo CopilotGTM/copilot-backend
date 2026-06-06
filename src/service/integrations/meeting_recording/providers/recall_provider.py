@@ -195,6 +195,23 @@ class RecallMeetingRecordingProvider:
         return None
 
     @staticmethod
+    def extract_video_mixed_download(bot_payload: dict[str, Any]) -> dict[str, str] | None:
+        """Return the first downloadable mixed-video artifact from a bot payload."""
+        for recording in bot_payload.get("recordings", []) or []:
+            media_shortcuts = recording.get("media_shortcuts") or {}
+            video = media_shortcuts.get("video_mixed") or {}
+            video_id = video.get("id")
+            data = video.get("data") or {}
+            download_url = data.get("download_url")
+            if video_id and download_url:
+                return {
+                    "recording_id": recording.get("id"),
+                    "video_id": video_id,
+                    "download_url": download_url,
+                }
+        return None
+
+    @staticmethod
     def _json_or_raise(
         response: httpx.Response,
         *,

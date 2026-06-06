@@ -34,6 +34,8 @@ CRM_WRITE_SCOPES = {
     "lead_ingestion_keys:create",
     "lead_ingestion_keys:update",
     "lead_ingestion_keys:delete",
+    "meetings:create",
+    "meetings:update",
     "pipelines:create",
     "pipelines:update",
     "pipelines:delete",

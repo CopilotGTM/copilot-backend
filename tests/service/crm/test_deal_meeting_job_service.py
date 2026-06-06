@@ -38,11 +38,15 @@ class _FakeSession:
     def __init__(self, *, event=None, meeting=None):
         self._event = event
         self._meeting = meeting
+        self._execute_count = 0
 
     async def get(self, _model, _id):
         return self._event
 
     async def execute(self, _stmt):
+        self._execute_count += 1
+        if self._execute_count == 1:
+            return _ScalarResult(self._event)
         return _ScalarResult(self._meeting)
 
 

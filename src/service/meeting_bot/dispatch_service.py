@@ -49,7 +49,12 @@ class MeetingRecordingDispatchService:
         self.organisation_id = organisation_id
         self._session_service = MeetingRecordingSessionService(organisation_id)
 
-    async def dispatch_event(self, calendar_event_id: UUID) -> dict[str, str]:
+    async def dispatch_event(
+        self,
+        calendar_event_id: UUID,
+        *,
+        allow_cancelled_reinvite: bool = False,
+    ) -> dict[str, str]:
         """Resolve an event and attempt one provider create call if it is eligible.
 
         This method is idempotent from the perspective of the caller because the
@@ -126,11 +131,30 @@ class MeetingRecordingDispatchService:
             join_at=join_at,
         )
         if self._is_cancelled_recording_status(getattr(session_record, "status", None)):
-            return {
-                "status": "skipped",
-                "reason": "recording_cancelled",
-                "calendar_event_id": str(calendar_event_id),
-            }
+            if not allow_cancelled_reinvite:
+                return {
+                    "status": "skipped",
+                    "reason": "recording_cancelled",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            if (session_record.provider_payload or {}).get("last_cancel_error"):
+                return {
+                    "status": "skipped",
+                    "reason": "cancel_cleanup_required",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            reset_record = await self._session_service.reset_cancelled_for_reinvite(
+                session_record.session_id,
+                meeting_url=meeting_url,
+                join_at=join_at,
+            )
+            if reset_record is None:
+                return {
+                    "status": "skipped",
+                    "reason": "recording_session_missing",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            session_record = reset_record
         dispatch_status = "sent"
         attempt_adopt_before_create = False
         provider: RecallMeetingRecordingProvider | None = None
@@ -217,10 +241,31 @@ class MeetingRecordingDispatchService:
                 "reason": "recording_session_missing",
                 "calendar_event_id": str(calendar_event_id),
             }
+        queued_status = self._status_value(getattr(queued_record, "status", None))
+        if queued_status in {
+            MeetingRecordingStatus.SENT.value,
+            MeetingRecordingStatus.JOINING.value,
+            MeetingRecordingStatus.IN_CALL.value,
+            MeetingRecordingStatus.COMPLETED.value,
+        }:
+            return {
+                "status": "already_sent",
+                "calendar_event_id": str(calendar_event_id),
+            }
         if self._is_cancelled_recording_status(getattr(queued_record, "status", None)):
             return {
                 "status": "skipped",
                 "reason": "recording_cancelled",
+                "calendar_event_id": str(calendar_event_id),
+            }
+        if (
+            queued_status == MeetingRecordingStatus.SEND_QUEUED.value
+            and "_send_claimed" in queued_record.__dict__
+            and not bool(queued_record.__dict__["_send_claimed"])
+        ):
+            return {
+                "status": "skipped",
+                "reason": "send_in_progress",
                 "calendar_event_id": str(calendar_event_id),
             }
 
@@ -812,6 +857,15 @@ class MeetingRecordingDispatchService:
         if hasattr(value, "value"):
             value = value.value
         return str(value) == MeetingRecordingStatus.CANCELLED.value
+
+    @staticmethod
+    def _status_value(value: Any) -> str | None:
+        """Normalize enum and string-backed status fields for branch checks."""
+        if value is None:
+            return None
+        if hasattr(value, "value"):
+            return str(value.value)
+        return str(value)
 
     @classmethod
     def _bot_matches(

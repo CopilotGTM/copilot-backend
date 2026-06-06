@@ -7,11 +7,11 @@ never update a session outside the tenant recovered from webhook metadata.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -32,6 +32,7 @@ class MeetingRecordingSessionService:
     def __init__(self, organisation_id: UUID) -> None:
         """Create a tenant-scoped session service."""
         self.organisation_id = organisation_id
+        self.send_queue_stale_after_seconds = 120
 
     @staticmethod
     def build_dedupe_key(
@@ -91,14 +92,69 @@ class MeetingRecordingSessionService:
         raise RuntimeError("Failed to acquire org session")
 
     async def mark_send_queued(self, session_id: UUID) -> MeetingRecordingSession | None:
-        """Move a session into the queued state before external provider call."""
+        """Atomically claim a session before the external provider create call.
+
+        Concurrent invite clicks and fallback retries can hit the same event. The
+        update below is the send lock: only one caller may move the row into
+        `SEND_QUEUED`, while stale queued rows are reclaimable after a crash.
+        """
+        async for session in acquire_org_async_session(self.organisation_id):
+            now = datetime.now(UTC)
+            stale_after_seconds = getattr(self, "send_queue_stale_after_seconds", 120)
+            stale_before = now - timedelta(seconds=stale_after_seconds)
+            stmt = (
+                update(MeetingRecordingSession)
+                .where(
+                    col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+                    col(MeetingRecordingSession.session_id) == session_id,
+                    or_(
+                        col(MeetingRecordingSession.status).in_(
+                            [
+                                MeetingRecordingStatus.PENDING_SEND,
+                                MeetingRecordingStatus.FAILED,
+                            ]
+                        ),
+                        (col(MeetingRecordingSession.status) == MeetingRecordingStatus.SEND_QUEUED)
+                        & (col(MeetingRecordingSession.updated_at) < stale_before),
+                    ),
+                )
+                .values(status=MeetingRecordingStatus.SEND_QUEUED, updated_at=now)
+                .returning(col(MeetingRecordingSession.session_id))
+            )
+            result = await session.execute(stmt)
+            claimed_session_id = result.scalar_one_or_none()
+            await session.commit()
+            record = await self._get_by_session_id(session, session_id)
+            if record is not None:
+                record.__dict__["_send_claimed"] = claimed_session_id is not None
+                if claimed_session_id is not None:
+                    record.status = MeetingRecordingStatus.SEND_QUEUED
+            return record
+        return None
+
+    async def reset_cancelled_for_reinvite(
+        self,
+        session_id: UUID,
+        *,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> MeetingRecordingSession | None:
+        """Reopen a user-cancelled row only for an explicit manual re-invite."""
         async for session in acquire_org_async_session(self.organisation_id):
             record = await self._get_by_session_id(session, session_id)
-            if not record:
-                return None
-            if self._is_cancelled_status(record.status):
+            if not record or not self._is_cancelled_status(record.status):
                 return record
-            record.status = MeetingRecordingStatus.SEND_QUEUED
+            record.meeting_url = meeting_url
+            record.join_at = join_at
+            record.status = MeetingRecordingStatus.PENDING_SEND
+            record.status_message = "Session reset after explicit user re-invite"
+            record.sent_to_provider_at = None
+            record.provider_session_id = None
+            record.provider_status = None
+            record.provider_payload = {}
+            record.last_webhook_at = None
+            record.transcript_ready_at = None
+            record.transcript_status = MeetingTranscriptStatus.NOT_REQUESTED
             session.add(record)
             await session.commit()
             return record
@@ -254,6 +310,12 @@ class MeetingRecordingSessionService:
         """
         async for session in acquire_org_async_session(self.organisation_id):
             return await self._get_by_event(session, calendar_event_id, provider)
+        return None
+
+    async def get_by_session_id(self, session_id: UUID) -> MeetingRecordingSession | None:
+        """Resolve a session by id after an atomic claim attempt."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            return await self._get_by_session_id(session, session_id)
         return None
 
     async def apply_webhook_update(

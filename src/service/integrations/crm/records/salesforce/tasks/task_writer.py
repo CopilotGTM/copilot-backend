@@ -178,7 +178,7 @@ class SalesforceTaskWriter:
         }
         update_columns["updated_at"] = datetime.now(UTC)
         stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[CRMActivity.activity_id],
+            index_elements=["activity_id"],
             set_=update_columns,
         )
         await self.session.execute(stmt)
