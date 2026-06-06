@@ -111,12 +111,12 @@ class DealTimelineSyncService:
         self._stage_lookup_cache: dict[str, dict[str, Any]] | None = None
 
     async def _get_stage_lookup(self, session: AsyncSession) -> dict[str, dict[str, Any]]:
-        """Build a lookup map of stage external_id -> stage info.
+        """Build a lookup map of local stage_id -> stage info.
 
         Args:
             session: Database session to use
 
-        Returns dict mapping external_id to:
+        Returns dict mapping stage_id to:
         {
             "stage_id": UUID (internal),
             "name": str (display name),
@@ -135,7 +135,7 @@ class DealTimelineSyncService:
         stages = result.scalars().all()
 
         self._stage_lookup_cache = {
-            stage.external_id: {
+            str(stage.stage_id): {
                 "stage_id": stage.stage_id,
                 "name": stage.name,
                 "label": stage.label,
@@ -147,26 +147,23 @@ class DealTimelineSyncService:
     def _resolve_stage_label(
         self,
         stage_lookup: dict[str, dict[str, Any]],
-        external_id: str | None,
+        stage_id: UUID | str | None,
     ) -> tuple[str | None, str | None]:
-        """Resolve stage external_id to (internal_stage_id, display_label).
+        """Resolve local stage_id to (internal_stage_id, display_label).
 
         Returns:
             Tuple of (stage_id as string, display_label)
-            Falls back to external_id if not found in lookup
         """
-        if not external_id:
+        if not stage_id:
             return None, None
 
-        stage_info = stage_lookup.get(external_id)
+        stage_key = str(stage_id)
+        stage_info = stage_lookup.get(stage_key)
         if stage_info:
-            # Use label if available, otherwise name
             display_label = stage_info.get("label") or stage_info.get("name")
-            stage_id = str(stage_info["stage_id"])
-            return stage_id, display_label
+            return str(stage_info["stage_id"]), display_label
 
-        # Fallback: return external_id as both ID and label
-        return None, external_id
+        return stage_key, None
 
     # -------------------------------------------------------------------------
     # Batch Sync Methods
@@ -657,7 +654,7 @@ class DealTimelineSyncService:
         """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        # Get stage lookup for resolving external_id -> name/label
+        # Get stage lookup for resolving local stage_id -> name/label
         stage_lookup = await self._get_stage_lookup(session)
 
         history_table: Table = _table(CRMDealStageHistory)
@@ -680,7 +677,7 @@ class DealTimelineSyncService:
 
         for history, integration in result:
             stats["synced"] += 1
-            key = (TimelineEventType.STAGE_CHANGE.value, str(history.external_id))
+            key = (TimelineEventType.STAGE_CHANGE.value, str(history.history_id))
 
             if key in existing_keys:
                 stats["skipped"] += 1
@@ -688,25 +685,19 @@ class DealTimelineSyncService:
 
             # Resolve stage names/labels from lookup
             new_stage_id, new_stage_label = self._resolve_stage_label(
-                stage_lookup, history.stage_external_id
+                stage_lookup, history.stage_id
             )
             old_stage_id, old_stage_label = self._resolve_stage_label(
-                stage_lookup, history.from_stage_external_id
+                stage_lookup, history.from_stage_id
             )
 
             # Build history entry dict for builder function with resolved labels
             history_entry = {
-                "external_id": history.external_id,
                 "history_id": str(history.history_id),
                 "deal_id": history.deal_id,
-                # Store internal stage IDs (UUIDs)
                 "stage_id": new_stage_id,
                 "from_stage_id": old_stage_id,
-                # Keep external IDs for reference
-                "stage_external_id": history.stage_external_id,
-                "from_stage_external_id": history.from_stage_external_id,
                 "entered_at": history.entered_at,
-                # Resolved display labels
                 "stage_label": new_stage_label,
                 "from_stage_label": old_stage_label,
             }
@@ -1171,11 +1162,9 @@ def build_stage_change_timeline_event(
         organisation_id: Org UUID
         deal_id: Deal UUID
         history_entry: Dictionary containing stage history data with keys:
-            - external_id or history_id: Unique identifier
+            - history_id: Unique identifier
             - stage_id: Internal UUID for new stage (preferred)
             - from_stage_id: Internal UUID for previous stage (preferred)
-            - stage_external_id: Provider's stage ID (fallback)
-            - from_stage_external_id: Provider's previous stage ID (fallback)
             - entered_at: Timestamp when stage was entered
             - stage_label: Display label for new stage
             - from_stage_label: Display label for previous stage
@@ -1196,19 +1185,14 @@ def build_stage_change_timeline_event(
     old_stage_id = history_entry.get("from_stage_id")
     new_stage_id = history_entry.get("stage_id")
 
-    # Fallback to external IDs if internal not available
-    old_stage_external = history_entry.get("from_stage_external_id")
-    new_stage_external = history_entry.get("stage_external_id")
-
-    # Use labels for display, fall back to external IDs if labels not resolved
-    old_display = old_stage_label or old_stage_external
-    new_display = new_stage_label or new_stage_external
+    # Use labels for display, fall back to local IDs if labels are not resolved.
+    old_display = old_stage_label or old_stage_id
+    new_display = new_stage_label or new_stage_id
 
     # Build title with human-readable labels
     title = f"Stage: {old_display} → {new_display}" if old_display else f"Stage: {new_display}"
 
-    # Build source_record_id from history_id or external_id
-    source_id = history_entry.get("history_id") or history_entry.get("external_id")
+    source_id = history_entry.get("history_id")
 
     resolved_source = event_source or TimelineEventSource.CRM_HUBSPOT
 
@@ -1217,10 +1201,6 @@ def build_stage_change_timeline_event(
         # Internal stage IDs (UUIDs) - use these for lookups
         "old_stage_id": old_stage_id,
         "new_stage_id": new_stage_id,
-        # External IDs for reference/debugging
-        "old_stage_external_id": old_stage_external,
-        "new_stage_external_id": new_stage_external,
-        # Display labels for frontend
         "old_stage_label": old_stage_label,
         "new_stage_label": new_stage_label,
     }

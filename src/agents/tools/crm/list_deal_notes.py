@@ -106,11 +106,9 @@ async def list_deal_notes(
 
             item: dict[str, Any] = {
                 "activity_id": str(n.activity_id),
-                "external_id": n.external_id,
                 "subject": n.subject,
                 "body": note_body,
                 "owner": {
-                    "external_id": n.owner_external_id,
                     "name": n.owner_name,
                     "email": n.owner_email,
                 },

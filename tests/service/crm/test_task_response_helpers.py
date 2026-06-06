@@ -14,7 +14,6 @@ def test_task_assignee_uses_email_filter_key_across_owner_id_sources() -> None:
 
     synced = SimpleNamespace(
         owner_id=crm_owner_id,
-        owner_external_id="hubspot-owner-1",
         owner_name="Nikhil Singhal",
         owner_email="Nikhil@Example.com",
         external_assignee_email=None,
@@ -23,7 +22,6 @@ def test_task_assignee_uses_email_filter_key_across_owner_id_sources() -> None:
     )
     manual = SimpleNamespace(
         owner_id=None,
-        owner_external_id=str(public_user_id),
         owner_name="Nikhil Singhal",
         owner_email="nikhil@example.com",
         external_assignee_email=None,
@@ -41,7 +39,6 @@ def test_task_assignee_prefers_external_assignee_when_present() -> None:
     owner_id = uuid4()
     task = SimpleNamespace(
         owner_id=owner_id,
-        owner_external_id="owner-1",
         owner_name="Owner",
         owner_email="owner@example.com",
         external_assignee_email="External@Example.com",

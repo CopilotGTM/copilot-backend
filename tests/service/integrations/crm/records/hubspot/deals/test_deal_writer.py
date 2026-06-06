@@ -10,6 +10,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.hubspot.deals.deal_types import (
     DealResolutionMaps,
     NormalizedHubSpotDeal,
@@ -71,6 +74,13 @@ def _empty_maps() -> DealResolutionMaps:
     )
 
 
+def _mock_source_mappings(writer: HubSpotDealWriter) -> MagicMock:
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    return mapping_helper
+
+
 @pytest.mark.asyncio
 async def test_writer_reactivates_soft_deleted_deal_instead_of_inserting_duplicate() -> None:
     """HubSpot upserts reactivate a soft-deleted row instead of duplicating it."""
@@ -97,6 +107,7 @@ async def test_writer_reactivates_soft_deleted_deal_instead_of_inserting_duplica
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    mapping_helper = _mock_source_mappings(writer)
 
     result = await writer.apply(
         normalized=[_normalized_deal(external_id="123")], maps=_empty_maps()
@@ -106,6 +117,10 @@ async def test_writer_reactivates_soft_deleted_deal_instead_of_inserting_duplica
     assert result.deals_updated == 1
     assert existing.is_deleted is False
     assert existing.name == "Acme renewal"
+    mapping_helper.upsert_integration_mapping.assert_awaited_once()
+    assert mapping_helper.upsert_integration_mapping.call_args.kwargs["external_object_type"] == (
+        CRMSourceObjectType.DEAL
+    )
     session.add.assert_not_called()
 
 
@@ -134,6 +149,7 @@ async def test_writer_skips_stale_active_deal_without_overwriting_local_snapshot
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     stale_payload = replace(
         _normalized_deal(external_id="123", name="Older incremental name"),
@@ -176,6 +192,7 @@ async def test_writer_reactivates_soft_deleted_deal_even_when_timestamp_matches(
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     result = await writer.apply(
         normalized=[

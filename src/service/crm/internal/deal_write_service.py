@@ -135,7 +135,6 @@ class DealWriteService:
         # Handle owner assignment
         owner_user_id = payload.get("owner_user_id")
         owner_id = None
-        owner_external_id = None
         owner_name = None
         owner_email = None
 
@@ -148,7 +147,6 @@ class DealWriteService:
             )
             crm_user = await user_service.ensure_crm_user(owner_user_id)
             owner_id = crm_user.user_id
-            owner_external_id = crm_user.external_id
             owner_name = crm_user.full_name
             owner_email = crm_user.email
 
@@ -171,21 +169,17 @@ class DealWriteService:
             deal_id=deal_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(deal_id),  # Use UUID as external_id for internal deals
             name=payload.get("name"),
             amount=payload.get("amount"),
             currency=payload.get("currency"),
             pipeline_id=pipeline_id,
-            pipeline_external_id=pipeline.external_id,
             pipeline_name=pipeline.name,
             stage_id=stage_id,
-            stage_external_id=stage.external_id,
             stage_name=stage.name,
             deal_status=deal_status,
             probability=payload.get("probability"),
             forecast_category=payload.get("forecast_category"),
             owner_id=owner_id,
-            owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
             close_date=payload.get("close_date"),
@@ -219,10 +213,8 @@ class DealWriteService:
             history_id=history_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(history_id),  # Use UUID as external_id for internal CRM
             deal_id=deal.deal_id,
             stage_id=stage.stage_id,
-            stage_external_id=stage.external_id,
             entered_at=now,
             source=created_via,
             synced_at=now,
@@ -595,14 +587,12 @@ class DealWriteService:
 
         now = datetime.now(UTC)
         previous_stage_id = deal.stage_id
-        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
         self._record_stage_history(
             deal=deal,
             stage=stage,
             now=now,
             from_stage_id=previous_stage_id,
-            from_stage_external_id=previous_stage_external_id,
             source="api",
         )
         await self.session.flush()
@@ -644,14 +634,12 @@ class DealWriteService:
             final_close_at = final_close_at.replace(tzinfo=UTC)
 
         previous_stage_id = deal.stage_id
-        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
         self._record_stage_history(
             deal=deal,
             stage=stage,
             now=now,
             from_stage_id=previous_stage_id,
-            from_stage_external_id=previous_stage_external_id,
             source="api",
         )
 
@@ -695,14 +683,12 @@ class DealWriteService:
         )
         now = datetime.now(UTC)
         previous_stage_id = deal.stage_id
-        previous_stage_external_id = deal.stage_external_id
         self._apply_stage_update(deal=deal, stage=stage, now=now)
         self._record_stage_history(
             deal=deal,
             stage=stage,
             now=now,
             from_stage_id=previous_stage_id,
-            from_stage_external_id=previous_stage_external_id,
             source="api",
         )
 
@@ -766,7 +752,6 @@ class DealWriteService:
 
     def _apply_stage_update(self, *, deal: CRMDeal, stage: CRMDealStage, now: datetime) -> None:
         deal.stage_id = stage.stage_id
-        deal.stage_external_id = stage.external_id
         deal.stage_name = stage.name
         deal.stage_entered_at = now
         deal.stage_updated_at = now
@@ -782,7 +767,6 @@ class DealWriteService:
         stage: CRMDealStage,
         now: datetime,
         from_stage_id: UUID | None = None,
-        from_stage_external_id: str | None = None,
         source: str | None = None,
     ) -> None:
         history_id = uuid4()
@@ -790,12 +774,9 @@ class DealWriteService:
             history_id=history_id,
             organisation_id=self.organisation_id,
             integration_id=deal.integration_id,
-            external_id=str(history_id),
             deal_id=deal.deal_id,
             stage_id=stage.stage_id,
             from_stage_id=from_stage_id,
-            stage_external_id=stage.external_id,
-            from_stage_external_id=from_stage_external_id,
             entered_at=now,
             source=source,
             synced_at=now,
@@ -833,13 +814,11 @@ class DealWriteService:
             crm_user = await user_service.ensure_crm_user(owner_user_id)
 
             deal.owner_id = crm_user.user_id
-            deal.owner_external_id = crm_user.external_id
             deal.owner_name = crm_user.full_name
             deal.owner_email = crm_user.email
         else:
             # Clear owner
             deal.owner_id = None
-            deal.owner_external_id = None
             deal.owner_name = None
             deal.owner_email = None
 
@@ -880,10 +859,8 @@ class DealWriteService:
             field not in account_payload
             for field in ("website", "linkedin_url", "industry", "country")
         )
-        if (deal.company_id or deal.company_external_id) and needs_company_field_backfill:
-            existing_company = await self._get_current_company(
-                deal.company_id, deal.company_external_id, deal.integration_id
-            )
+        if deal.company_id and needs_company_field_backfill:
+            existing_company = await self._get_current_company(deal.company_id, deal.integration_id)
             if existing_company:
                 for field in ("website", "linkedin_url", "industry", "country"):
                     if field not in account_payload and getattr(existing_company, field, None):
@@ -895,14 +872,11 @@ class DealWriteService:
             )
             if company:
                 same_company = (
-                    deal.company_id == company.company_id
-                    if deal.company_id is not None
-                    else deal.company_external_id == company.external_id
+                    deal.company_id == company.company_id if deal.company_id is not None else False
                 )
                 if same_company and await self._has_active_company_participant(
                     deal=deal,
                     company_id=company.company_id,
-                    company_external_id=company.external_id,
                 ):
                     # Fast path for import replays: avoid participant-service churn when
                     # the company link is already present and only company fields changed.
@@ -946,7 +920,6 @@ class DealWriteService:
             await self._replace_primary_contact_participant(deal, contact, now)
         else:
             deal.primary_contact_id = None
-            deal.primary_contact_external_id = None
             if fallback_name:
                 deal.primary_contact_name = fallback_name
             if fallback_email:
@@ -1061,7 +1034,6 @@ class DealWriteService:
                 contact_id=contact_id,
                 organisation_id=self.organisation_id,
                 integration_id=integration_id,
-                external_id=str(contact_id),
                 full_name=contact_name,
                 email=contact_email,
                 company_name=company_name_clean,
@@ -1112,7 +1084,6 @@ class DealWriteService:
             contact_id=contact_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(contact_id),
             full_name=contact_name,
             email=None,
             company_name=company_name_clean,
@@ -1208,7 +1179,6 @@ class DealWriteService:
                 company_id=company_id,
                 organisation_id=self.organisation_id,
                 integration_id=integration_id,
-                external_id=str(company_id),
                 name=name,
                 domain=None,
                 website=website,
@@ -1272,7 +1242,6 @@ class DealWriteService:
             company_id=company_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(company_id),
             name=name or domain,
             domain=domain,
             website=website,
@@ -1335,7 +1304,6 @@ class DealWriteService:
             company_id=company_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(company_id),
             name=source_company.name,
             domain=domain,
             website=source_company.website,
@@ -1360,7 +1328,6 @@ class DealWriteService:
                 "created_via": "deal_create",
                 "copied_from_company_id": str(source_company.company_id),
                 "copied_from_integration_id": str(source_company.integration_id),
-                "copied_from_external_id": source_company.external_id,
             },
         )
         self.session.add(company)
@@ -1388,7 +1355,6 @@ class DealWriteService:
         await participant_service.add_participants(deal.deal_id, payloads)
 
         deal.company_id = company.company_id
-        deal.company_external_id = company.external_id
         deal.company_name = company.name
         deal.company_domain = company.domain
         deal.source_modified_at = now
@@ -1426,7 +1392,6 @@ class DealWriteService:
         *,
         deal: CRMDeal,
         company_id: UUID | None,
-        company_external_id: str | None,
     ) -> bool:
         filters = [
             col(CRMDealParticipant.organisation_id) == self.organisation_id,
@@ -1437,8 +1402,6 @@ class DealWriteService:
         ]
         if company_id is not None:
             filters.append(col(CRMDealParticipant.related_local_id) == company_id)
-        elif company_external_id is not None:
-            filters.append(col(CRMDealParticipant.related_external_id) == company_external_id)
         else:
             return False
 
@@ -1452,9 +1415,6 @@ class DealWriteService:
         changed = False
         if deal.company_id != company.company_id:
             deal.company_id = company.company_id
-            changed = True
-        if deal.company_external_id != company.external_id:
-            deal.company_external_id = company.external_id
             changed = True
         if deal.company_name != company.name:
             deal.company_name = company.name
@@ -1510,16 +1470,6 @@ class DealWriteService:
             )
             result = await self.session.execute(stmt)
             company = result.scalars().first()
-        elif deal.company_external_id:
-            stmt = select(CRMCompany).where(
-                col(CRMCompany.organisation_id) == self.organisation_id,
-                col(CRMCompany.integration_id) == deal.integration_id,
-                col(CRMCompany.external_id) == deal.company_external_id,
-                col(CRMCompany.is_deleted).is_(False),
-            )
-            result = await self.session.execute(stmt)
-            company = result.scalars().first()
-
         if company:
             if company.name != fallback_name:
                 company.name = fallback_name
@@ -1588,7 +1538,6 @@ class DealWriteService:
             if source_contact.integration_id != deal.integration_id and not current_company_loaded:
                 current_company = await self._get_current_company(
                     deal.company_id,
-                    deal.company_external_id,
                     deal.integration_id,
                 )
                 current_company_loaded = True
@@ -1646,14 +1595,12 @@ class DealWriteService:
             contact_id=contact_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
-            external_id=str(contact_id),
             first_name=source_contact.first_name,
             last_name=source_contact.last_name,
             full_name=self._build_contact_display_name(source_contact),
             job_title=source_contact.job_title,
             company_name=company_name,
             company_id=company.company_id if company else None,
-            company_external_id=company.external_id if company else None,
             email=email,
             additional_emails=list(source_contact.additional_emails or []),
             phone=source_contact.phone,
@@ -1673,7 +1620,6 @@ class DealWriteService:
                 "created_via": "deal_create",
                 "copied_from_contact_id": str(source_contact.contact_id),
                 "copied_from_integration_id": str(source_contact.integration_id),
-                "copied_from_external_id": source_contact.external_id,
             },
         )
         self.session.add(contact)
@@ -1701,7 +1647,6 @@ class DealWriteService:
         await participant_service.add_participants(deal.deal_id, payloads)
 
         deal.primary_contact_id = contact.contact_id
-        deal.primary_contact_external_id = contact.external_id
         deal.primary_contact_name = contact.full_name or deal.primary_contact_name
         deal.primary_contact_email = contact.email or deal.primary_contact_email
         deal.source_modified_at = now
@@ -1785,7 +1730,6 @@ class DealWriteService:
     async def _get_current_company(
         self,
         company_id: UUID | None,
-        company_external_id: str | None,
         integration_id: UUID,
     ) -> CRMCompany | None:
         """Fetch the company currently associated with a deal."""
@@ -1796,8 +1740,6 @@ class DealWriteService:
         ]
         if company_id is not None:
             filters.append(col(CRMCompany.company_id) == company_id)
-        elif company_external_id is not None:
-            filters.append(col(CRMCompany.external_id) == company_external_id)
         else:
             return None
         stmt = select(CRMCompany).where(*filters)

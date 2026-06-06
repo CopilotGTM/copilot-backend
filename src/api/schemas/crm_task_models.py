@@ -29,7 +29,6 @@ class TaskAssignee(BaseModel):
     email: str | None = None
     public_user_id: UUID | None = None
     crm_user_id: UUID | None = None
-    owner_external_id: str | None = None
 
 
 class TaskAssigneeOption(BaseModel):

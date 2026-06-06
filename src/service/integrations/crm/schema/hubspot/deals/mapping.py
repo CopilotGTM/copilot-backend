@@ -26,9 +26,6 @@ _RAW_HUBSPOT_DEAL_CANONICAL_FIELDS: dict[str, str] = {
     "deal_currency_code": "currency",
     "amount_in_home_currency": "amount_home_currency",
     "closedate": "close_date",
-    "dealstage": "stage_external_id",
-    "pipeline": "pipeline_external_id",
-    "hubspot_owner_id": "owner_external_id",
     "dealtype": "deal_type",
     "description": "description",
     "hs_forecast_category": "forecast_category",
@@ -49,6 +46,9 @@ _RAW_HUBSPOT_DEAL_CANONICAL_FIELDS: dict[str, str] = {
 _RAW_HUBSPOT_DEAL_IGNORED_FIELDS: set[str] = {
     "closed_won_date",
     "closed_lost_date",
+    "dealstage",
+    "hubspot_owner_id",
+    "pipeline",
 }
 
 

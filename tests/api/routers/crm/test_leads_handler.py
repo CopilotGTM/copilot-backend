@@ -112,7 +112,6 @@ class FakeLeadParticipant:
         self.relationship_role = "primary_contact"
         self.is_primary = True
         self.related_local_id = None
-        self.related_external_id = None
         self.name = "Jane Buyer"
         self.email = "jane@example.com"
         self.phone = None

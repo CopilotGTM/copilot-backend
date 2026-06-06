@@ -3,7 +3,7 @@
 ## Purpose
 
 - Represent CRM-side activities (tasks, calls, meetings, emails, notes) in a single canonical table.
-- Support linking activities to deals (and other CRM objects) while keeping provider-specific payloads.
+- Support linking activities to deals (and other CRM objects) by local IDs.
 - Replace the legacy deal task storage (`crm_deal_tasks`) with the generalized activities table (`crm_activities`).
 
 ## Canonical Model
@@ -18,15 +18,15 @@
 
 | Concept | Column(s) | Notes |
 | :--- | :--- | :--- |
-| Identity | `activity_id`, `external_id` | `activity_id` is internal UUID; `external_id` is provider identifier |
-| Deal linkage | `deal_id`, `deal_external_id` | Backwards compatible deal-focused query path |
-| Generic linkage | `related_object_type`, `related_external_id`, `related_local_id` | Polymorphic link to DEAL/CONTACT/COMPANY/etc |
+| Identity | `activity_id` | Internal UUID used by API and services |
+| Deal linkage | `deal_id` | Local deal FK |
+| Generic linkage | `related_object_type`, `related_local_id` | Polymorphic link to DEAL/CONTACT/COMPANY/etc |
 | Type | `activity_type`, `activity_subtype` | Canonical type plus provider subtype |
 | Status/Priority | `status`, `priority` | Canonicalized across CRMs |
-| Owner | `owner_external_id`, `owner_name`, `owner_email`, `owner_id` | Assignment/ownership |
+| Owner | `owner_id`, `owner_name`, `owner_email` | Assignment/ownership |
 | Scheduling | `due_date`, `end_date`, `completed_date`, `reminder_date` | Time fields are timezone-aware |
 | Soft delete | `is_deleted` | Reflects provider deletion state |
-| Metadata | `properties`, `metrics`, `data_payload` | Flattened, derived, and raw payloads |
+| Metadata | `properties`, `metrics` | Flattened and derived metadata; provider payloads live in source mappings |
 
 ### Backwards-Compatible Aliases
 

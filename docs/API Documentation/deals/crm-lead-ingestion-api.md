@@ -14,6 +14,11 @@ Lead `status = "converted"` is reserved for
 private ingestion reject `converted` because conversion must also stamp
 `converted_deal_id` and `converted_at`.
 
+Canonical lead APIs do not expose or accept provider external IDs. Provider and
+migration identities for leads and lead participants are stored in
+`crm_source_object_mappings`; direct lead ingestion uses dedicated replay columns
+for idempotency and may store caller diagnostics in `properties`.
+
 ## Authenticated Lead Form Management
 
 Base path: `/users/crm`
@@ -230,7 +235,6 @@ Request:
 
 ```json
 {
-  "external_id": "leadgen-98765",
   "source_type": "api",
   "source_channel": "meta_ads",
   "source_name": "Q2 demo campaign",
@@ -240,9 +244,7 @@ Request:
   "company_name": "ExampleCo",
   "company_domain": "example.com",
   "properties": {
-    "lead_temperature": "warm"
-  },
-  "data_payload": {
+    "lead_temperature": "warm",
     "raw_source_reference": "meta-leadgen-98765"
   }
 }
@@ -264,6 +266,8 @@ Rules:
   the same key return the existing accepted lead.
 - Idempotency is enforced by dedicated database columns and unique indexes; the
   replay token is immutable and is not freed by later soft deletion.
+- `external_id`, `owner_external_id`, `related_external_id`, and `data_payload`
+  are not accepted on canonical lead payloads.
 - Unknown top-level fields are rejected.
 - At least one of `email`, `phone`, `full_name`, or `company_name` is required.
 - `source_type = "form"` is rejected.

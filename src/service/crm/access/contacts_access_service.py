@@ -360,8 +360,6 @@ class ContactsAccessService:
         contact_id = uuid4()
         contact = CRMContact(
             contact_id=contact_id,
-            # external_id mirrors the internal UUID for internally-created contacts
-            external_id=str(contact_id),
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
             email=email.strip().lower(),

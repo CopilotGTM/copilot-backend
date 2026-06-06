@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -18,11 +18,8 @@ class CRMContact(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_contacts"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_contact_external"),
         Index("ix_crm_contact_org_email", "organisation_id", "email"),
-        Index("ix_crm_contact_owner", "organisation_id", "owner_external_id"),
         Index("ix_crm_contact_lifecycle", "organisation_id", "lifecycle_stage"),
-        Index("ix_crm_contact_company_external", "organisation_id", "company_external_id"),
         Index("ix_crm_contact_company_id", "organisation_id", "company_id"),
     )
 
@@ -32,12 +29,6 @@ class CRMContact(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised contact record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the contact. Null for internal-only contact records.",
-    )
-
     # Core profile
     first_name: str | None = Field(default=None, description="Contact given name.")
     last_name: str | None = Field(default=None, description="Contact family name.")
@@ -47,11 +38,6 @@ class CRMContact(SyncedRecordMixin, table=True):
     )
     company_name: str | None = Field(
         default=None, description="Company string stored on the contact."
-    )
-    company_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider identifier for the linked company/account when supplied by the CRM.",
     )
     # Explicit FK to the linked account — takes precedence over domain matching
     company_id: UUID | None = Field(
@@ -81,11 +67,6 @@ class CRMContact(SyncedRecordMixin, table=True):
     website: str | None = Field(default=None, description="Website associated with the contact.")
 
     # Owner & segmentation
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider identifier for the user who owns the contact.",
-    )
     owner_email: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
@@ -172,9 +153,4 @@ class CRMContact(SyncedRecordMixin, table=True):
             server_default=text(EMPTY_JSONB_SQL),
         ),
         description="Derived numeric fields or usage counters for analytics.",
-    )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload useful for debugging.",
     )

@@ -62,13 +62,6 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
 
     __tablename__ = "crm_leads"
     __table_args__ = (
-        Index(
-            "uq_crm_lead_provider_external",
-            "integration_id",
-            "external_id",
-            unique=True,
-            postgresql_where=text("integration_id IS NOT NULL AND external_id IS NOT NULL"),
-        ),
         Index("ix_crm_lead_org_status_captured", "organisation_id", "status", "captured_at"),
         Index("ix_crm_lead_org_owner_status", "organisation_id", "owner_id", "status"),
         Index(
@@ -122,11 +115,6 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
         default_factory=uuid4,
         primary_key=True,
         description="Internal UUID for the lead.",
-    )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider lead ID when synced from an external CRM.",
     )
 
     # For private API ingestions, enforce replay safety on first-write rows only:
@@ -280,11 +268,6 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
         index=True,
         description="Resolved internal CRM user currently assigned to the lead.",
     )
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider owner ID when the lead is synced from an external CRM.",
-    )
     owner_name: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
@@ -393,11 +376,6 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
         description="Lead scoring, enrichment, and engagement metrics.",
     )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Raw source/provider/form payload for replay and troubleshooting.",
-    )
     crm_url: str | None = Field(
         default=None,
         sa_column=Column(String(500), nullable=True),
@@ -475,13 +453,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
     __tablename__ = "crm_lead_participants"
     __table_args__ = (
         Index(
-            "uq_crm_lead_participant_external",
-            "integration_id",
-            "external_id",
-            unique=True,
-            postgresql_where=text("integration_id IS NOT NULL AND external_id IS NOT NULL"),
-        ),
-        Index(
             "uq_crm_lead_participant_local_role",
             "lead_id",
             "participant_type",
@@ -489,15 +460,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
             "relationship_role",
             unique=True,
             postgresql_where=text("related_local_id IS NOT NULL AND is_deleted = false"),
-        ),
-        Index(
-            "uq_crm_lead_participant_external_role",
-            "lead_id",
-            "participant_type",
-            "related_external_id",
-            "relationship_role",
-            unique=True,
-            postgresql_where=text("related_external_id IS NOT NULL AND is_deleted = false"),
         ),
         Index(
             "uq_crm_lead_participant_primary_role",
@@ -522,7 +484,7 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
         ),
         Index("ix_crm_lead_participant_related_local", "related_local_id"),
         CheckConstraint(
-            "related_external_id IS NOT NULL OR related_local_id IS NOT NULL OR email IS NOT NULL",
+            "related_local_id IS NOT NULL OR email IS NOT NULL",
             name="ck_crm_lead_participant_has_identity",
         ),
     )
@@ -531,11 +493,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
         default_factory=uuid4,
         primary_key=True,
         description="Internal UUID for the lead participant relationship.",
-    )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider association/participant ID when synced from an external CRM.",
     )
 
     lead_id: UUID = Field(
@@ -559,11 +516,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
         description="Whether this participant is primary for its role/type on the lead.",
     )
 
-    related_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider ID of the related contact/company/user.",
-    )
     related_local_id: UUID | None = Field(
         default=None,
         index=True,
@@ -616,11 +568,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
         description="Additional metadata for this lead participant relationship.",
-    )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Raw provider/form/import payload for the participant link.",
     )
 
     source_created_at: datetime | None = Field(

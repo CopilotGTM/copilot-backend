@@ -13,8 +13,6 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
-    String,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -30,10 +28,8 @@ class CRMCompany(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_companies"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_company_external"),
         Index("ix_crm_company_org_domain", "organisation_id", "domain"),
         Index("ix_crm_company_org_name", "organisation_id", "name"),
-        Index("ix_crm_company_owner", "organisation_id", "owner_external_id"),
         Index("ix_crm_company_lifecycle", "organisation_id", "lifecycle_stage"),
         Index("ix_crm_company_synced", "organisation_id", "synced_at"),
     )
@@ -42,11 +38,6 @@ class CRMCompany(SyncedRecordMixin, table=True):
         default_factory=uuid4,
         primary_key=True,
         description="Internal UUID for the normalised company record.",
-    )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the company. Null for internal-only company records.",
     )
     # Core details
     name: str | None = Field(default=None, description="Company name as stored in the CRM.")
@@ -60,11 +51,6 @@ class CRMCompany(SyncedRecordMixin, table=True):
     )
 
     # Owner information
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider identifier for the owner of the company.",
-    )
     owner_email: str | None = Field(default=None, description="Email of the account owner.")
     owner_name: str | None = Field(default=None, description="Display name of the account owner.")
     owner_id: UUID | None = Field(
@@ -142,9 +128,4 @@ class CRMCompany(SyncedRecordMixin, table=True):
             server_default=text(EMPTY_JSONB_SQL),
         ),
         description="Derived metrics for analytics (e.g., ARR, deal counts).",
-    )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload useful for debugging.",
     )

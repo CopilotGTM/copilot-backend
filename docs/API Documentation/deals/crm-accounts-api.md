@@ -17,14 +17,14 @@ All account records include an implicit origin via their `integration_id`:
 - **Internal accounts** (created via this API): Owned by the `INTERNAL_CRM` integration. Fully editable — users can update all fields, trigger enrichment, and manage relationships.
 - **CRM-synced accounts** (imported from HubSpot, Salesforce, etc.): Owned by the corresponding CRM integration. Editable through this API (updates are local only — they do **not** sync back to the external CRM).
 
-**Frontend Implementation**: Check the `source` or `external_id` pattern to determine origin. Internally-created accounts have `external_id` equal to their `company_id` (UUID format). CRM-synced accounts have provider-specific external IDs (e.g., numeric HubSpot IDs).
+**Frontend Implementation**: Use the `source` field and local `company_id` to render and navigate accounts. Provider identifiers are stored in `crm_source_object_mappings` and are not part of canonical account API payloads.
 
 ### Related APIs
 
 | API | Relationship | Documentation |
 |-----|-------------|---------------|
 | **CRM Contacts** | Contacts linked to accounts via email domain matching | `crm-contacts-api.md` |
-| **CRM Deals** | Deals linked to accounts via `company_external_id` | `crm-deals-api.md` |
+| **CRM Deals** | Deals linked to accounts via `company_id` | `crm-deals-api.md` |
 | **Stakeholders** | Stakeholders linked to contacts, which link to accounts | `stakeholders-api.md` |
 | **Deal Participants** | Participants may reference contacts from an account | `crm-participants-api.md` |
 
@@ -128,14 +128,12 @@ Contact (company_id: "bbb...", email: "x@acme.com")  ← matched to account "bbb
 - A contact with no email, no `company_id`, and a non-matching domain won't appear under any account
 - The domain matching is case-insensitive
 
-### Account → Deals (External ID Matching)
-
-Deals are linked to accounts via `CRMDeal.company_external_id` matching `CRMCompany.external_id`.
+### Account -> Deals
 
 ```
-Account (external_id: "hub_12345")
-  ↕ company_external_id = external_id
-Deal (company_external_id: "hub_12345")  ← matched
+Account (company_id: "bbb...")
+  -> Deal.company_id
+Deal (company_id: "bbb...")  <- matched
 ```
 
 ### Computed Metrics
@@ -145,7 +143,7 @@ These fields are calculated at query time, **not stored** in the database:
 | Field | Computation |
 |-------|------------|
 | `contact_count` | Count of non-deleted contacts whose email domain matches the account's domain |
-| `deal_count` | Count of non-deleted deals whose `company_external_id` matches the account's `external_id` |
+| `deal_count` | Count of non-deleted deals whose `company_id` matches the account |
 | `pipeline_value` | Sum of `amount` from matched deals where `deal_status = 'open'` only |
 
 **Note on `deal_count` in nested contacts:** The `deal_count` on each `AccountContactItem` counts only **approved** stakeholder relationships (`approval_status = APPROVED`). Removed, rejected, and pending stakeholders are excluded.
@@ -215,7 +213,6 @@ type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:
  */
 export interface AccountListItem {
   company_id: UUID;
-  external_id: string;               // Provider ID. For internal accounts, equals company_id
   name: string | null;
   domain: string | null;              // Normalised: lowercase, no protocol/www
   website: string | null;             // Full URL (may include protocol)
@@ -231,7 +228,7 @@ export interface AccountListItem {
 
   // Computed metrics (calculated per request, not stored)
   contact_count: number;              // Contacts with email domain matching account domain
-  deal_count: number;                 // Deals linked via company_external_id
+  deal_count: number;                 // Deals linked via company_id
   pipeline_value: number;             // Sum of open deal amounts (0.0 if no open deals)
 
   // Research/enrichment
@@ -261,7 +258,7 @@ export interface AccountDetail extends AccountListItem {
   /** Contacts whose email domain matches this account's domain */
   contacts: AccountContactItem[];
 
-  /** Deals linked via company_external_id */
+  /** Deals linked via company_id */
   deals: AccountDealItem[];
 }
 
@@ -350,20 +347,6 @@ export interface EnrichAccountResponse {
 }
 ```
 
-### Frontend Utility: Check if Account is Internally Created
-
-```ts
-/**
- * Internal accounts have external_id equal to their company_id (both UUIDs).
- * CRM-synced accounts have provider-specific external IDs (e.g., numeric).
- */
-function isInternalAccount(account: AccountListItem): boolean {
-  return account.external_id === account.company_id;
-}
-```
-
----
-
 ## Endpoints
 
 ### 1. List Accounts
@@ -399,7 +382,6 @@ Paginated account list with computed `contact_count`, `deal_count`, and `pipelin
     "items": [
       {
         "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
-        "external_id": "hub_12345",
         "name": "Acme Corp",
         "domain": "acme.com",
         "website": "https://acme.com",
@@ -565,7 +547,6 @@ The `domain` field is automatically cleaned before storage:
   "message": "Account created successfully",
   "data": {
     "company_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "external_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "Acme Corp",
     "domain": "acme.com",
     "website": "https://acme.com",
@@ -589,7 +570,7 @@ The `domain` field is automatically cleaned before storage:
 }
 ```
 
-**Note:** `external_id` equals `company_id` for internally-created accounts. `contact_count`, `deal_count`, and `pipeline_value` are always `0` in the create response (they're computed from relationships that don't exist yet).
+**Note:** `contact_count`, `deal_count`, and `pipeline_value` are always `0` in the create response because relationships are computed at query time.
 
 #### Error Responses
 
@@ -636,7 +617,6 @@ Full account detail including nested contacts array, deals array, and all extend
   "message": "Account detail retrieved successfully",
   "data": {
     "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
-    "external_id": "hub_12345",
     "name": "Acme Corp",
     "domain": "acme.com",
     "website": "https://acme.com",
@@ -849,7 +829,7 @@ Returns contacts whose email domain matches the account's `domain`. If the accou
 GET /users/crm/accounts/{company_id}/deals
 ```
 
-Returns deals linked to the account via `company_external_id`. If the account has no `external_id`, returns an empty array.
+Returns deals linked to the account via local `company_id`.
 
 #### Path Parameters
 
@@ -881,8 +861,7 @@ Returns deals linked to the account via `company_external_id`. If the account ha
 
 **Empty results:** Returns `data: []` when:
 
-- The account has no `external_id`
-- No deals have a matching `company_external_id`
+- No deals have a matching `company_id`
 - The account doesn't exist (no error — just empty array)
 
 #### Error Responses
@@ -965,10 +944,8 @@ Consolidated reference of all error responses across all endpoints.
 |-------|---------|---------|
 | `ix_crm_company_org_domain` | `organisation_id, domain` | Domain-based lookups and duplicate checks |
 | `ix_crm_company_org_name` | `organisation_id, name` | Name search and sorting |
-| `ix_crm_company_owner` | `organisation_id, owner_external_id` | Owner filtering |
 | `ix_crm_company_lifecycle` | `organisation_id, lifecycle_stage` | Lifecycle filtering |
 | `ix_crm_company_synced` | `organisation_id, synced_at` | Sync recency queries |
-| `uq_crm_company_external` | `integration_id, external_id` | Uniqueness per integration |
 
 **Migration:** Research fields (`company_research`, `last_researched_at`, `research_status`) added in migration `3c7f79637798_030_add_contact_company_research_fields`.
 

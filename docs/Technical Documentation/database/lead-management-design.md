@@ -1,7 +1,7 @@
 # Lead Management Backend Design
 
 **Date:** April 30, 2026
-**Status:** Design proposal
+**Status:** Implemented design notes
 **Scope:** Organisation-schema backend tables, services, APIs, form-ingestion links, and lead-to-deal conversion.
 
 ## Decision
@@ -14,7 +14,7 @@ Leads should still share the CRM foundations already present in this repo:
 
 - org-schema isolation with `organisation_id`
 - nullable `integration_id` for internal/form-created records and provider-backed records
-- provider identity through `(integration_id, external_id)` where present
+- provider identity through `crm_source_object_mappings` where present
 - `properties` JSONB for custom field values
 - `crm_custom_field_definitions` extended from deal-only to lead + deal
 - conversion into existing `crm_deals`, `crm_contacts`, and `crm_companies`
@@ -55,8 +55,6 @@ Columns:
 | Column | Type | Notes |
 | --- | --- | --- |
 | `lead_id` | UUID PK | Internal lead ID |
-| `external_id` | string nullable | Provider lead ID; null for internal-only leads |
-| `lead_number` | string nullable | Optional human-readable sequence like `L-000123`; useful for support/search |
 | `source_type` | enum/string | `form`, `manual`, `import`, `api`, `provider_sync`, `chat`, `workflow` |
 | `source_channel` | string nullable | `website`, `linkedin`, `event`, `partner`, `outbound`, etc. |
 | `source_name` | string nullable | Campaign/form/import/provider display name |
@@ -83,7 +81,6 @@ Columns:
 | `budget_amount` | numeric nullable | Optional qualification signal, not deal amount |
 | `budget_currency` | string nullable | ISO currency for budget |
 | `owner_id` | UUID nullable FK `crm_users.user_id` | Resolved internal CRM owner |
-| `owner_external_id` | string nullable | Provider owner ID |
 | `owner_name` | string nullable | Display snapshot |
 | `owner_email` | string nullable | Display snapshot |
 | `assigned_at` | timestamptz nullable | Assignment timestamp |
@@ -104,7 +101,6 @@ Columns:
 | `consent` | JSONB not null default `{}` | Marketing consent, privacy acceptance, capture timestamp, policy version |
 | `properties` | JSONB not null default `{}` | Custom column values keyed by `crm_custom_field_definitions.key` |
 | `metrics` | JSONB not null default `{}` | Lead scoring inputs, enrichment scores, engagement counters |
-| `data_payload` | JSONB nullable | Raw provider/import/form payload for replay/debug |
 | `crm_url` | string nullable | Provider UI URL if synced from external CRM |
 | `source_created_at` | timestamptz nullable | Creation time from source/provider |
 | `captured_at` | timestamptz not null | When our system captured the lead |
@@ -119,10 +115,18 @@ Columns:
 | `created_by_user_id` | UUID nullable FK `crm_users.user_id` | Internal actor where applicable |
 | `updated_by_user_id` | UUID nullable FK `crm_users.user_id` | Internal actor where applicable |
 
+Provider identity:
+
+- Provider/migration lead IDs are stored in `crm_source_object_mappings` with
+  `external_object_type = 'lead'` and `local_object_type = 'lead'`.
+- Raw provider payloads for synced leads are stored on the mapping row, not on
+  `crm_leads`.
+- Product-owned direct-ingestion metadata is stored in `crm_leads.properties`
+  under reserved `_copilotgtm_*` keys. Form submissions keep their raw payload in
+  `lead_form_submissions`.
+
 Recommended constraints:
 
-- Unique provider identity where external:
-  - partial unique index on `(integration_id, external_id)` where `integration_id is not null and external_id is not null`
 - Conversion invariant:
   - if `status = 'converted'`, `converted_deal_id is not null and converted_at is not null`
 - Email/domain normalization should happen in service code; do not enforce email required because forms can be partially configured.
@@ -140,6 +144,40 @@ Recommended indexes:
 - `(organisation_id, form_id, captured_at desc)` where `form_id is not null`
 - `(organisation_id, converted_deal_id)` where `converted_deal_id is not null`
 - GIN index on `properties` only if lead custom-field filtering becomes a real list-view requirement. Add it when needed, because JSONB GIN indexes are not free.
+
+### `crm_lead_participants`
+
+Purpose: contact, company, owner, or custom participant linked to a lead before
+conversion.
+
+Provider identity does not live on `crm_lead_participants`. Provider participant
+or association IDs are stored in `crm_source_object_mappings` with
+`external_object_type = 'lead_participant'` and
+`local_object_type = 'lead_participant'`.
+
+Columns:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `participant_id` | UUID PK | Internal participant relationship ID |
+| `lead_id` | UUID FK `crm_leads.lead_id` | Owning lead |
+| `participant_type` | enum/string | `contact`, `company`, `user`, or `custom` |
+| `relationship_role` | string | Role such as `primary_contact`, `participant`, `primary_company`, or `owner` |
+| `is_primary` | boolean | Primary relationship marker for its role/type |
+| `related_local_id` | UUID nullable | Local contact/company/user UUID when resolved |
+| `name` / `email` / `phone` | strings nullable | Display or matching identity when no local row exists |
+| `job_title` / `company_name` / `company_domain` | strings nullable | Denormalized participant context |
+| `source` | string nullable | `form`, `manual`, `import`, `provider_sync`, etc. |
+| `source_reference_id` | UUID nullable | Product source row that created this participant link |
+| `properties` | JSONB not null default `{}` | Additional participant metadata |
+
+Recommended constraints:
+
+- A participant must have `related_local_id` or `email`.
+- Active locally-resolved participants are unique by
+  `(lead_id, participant_type, related_local_id, relationship_role)`.
+- Active primary roles are unique by
+  `(lead_id, participant_type, relationship_role)` where `is_primary = true`.
 
 ### `crm_lead_status_history`
 
@@ -167,7 +205,7 @@ Indexes:
 
 ### `crm_lead_activities`
 
-Do not create a separate table if `CRMActivity` can support lead associations cleanly. Extend `CRMActivityObjectType` with `LEAD = "lead"` and add nullable `lead_id` / `lead_external_id` columns only if activity-to-lead becomes first-class. This is better than creating a lead-only activity model.
+Do not create a separate table if `CRMActivity` can support lead associations cleanly. Extend `CRMActivityObjectType` with `LEAD = "lead"` and add nullable `lead_id` only if activity-to-lead becomes first-class. Provider lead activity identity should still resolve through `crm_source_object_mappings`.
 
 ## Custom Columns
 
@@ -214,7 +252,7 @@ Lead creation from a form should store:
 - `form_submission_id`
 - common fields mapped to typed lead columns
 - unmapped lead custom fields in `properties`
-- raw submission in `data_payload` or linked from `FormSubmission`
+- raw submission in `LeadFormSubmission.raw_payload` / `context`
 - attribution and consent metadata separately from arbitrary `properties`
 
 The form builder should allow fields to map to:

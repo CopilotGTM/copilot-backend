@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
     NormalizedSalesforceTask,
@@ -75,6 +76,9 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"00T1": reactivated, "00T2": stale}
     )
@@ -110,6 +114,11 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
     assert stale.is_deleted is False
+    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
+    assert [call.kwargs["external_id"] for call in mapping_calls] == ["00T1"]
+    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.TASK
+    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.ACTIVITY
+    assert mapping_calls[0].kwargs["local_object_id"] == reactivated.activity_id
 
 
 @pytest.mark.asyncio
@@ -164,6 +173,9 @@ async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -208,8 +220,7 @@ async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None
 
     sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
     assert "ON CONFLICT" in sql
-    assert "ON CONFLICT (integration_id, external_id)" in sql
-    assert "WHERE integration_id IS NOT NULL" in sql
+    assert "ON CONFLICT (activity_id)" in sql
     assert "ON CONSTRAINT" not in sql
     assert result.tasks_created == 1
 

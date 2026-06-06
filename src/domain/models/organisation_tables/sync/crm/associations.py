@@ -82,20 +82,14 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
 
     __tablename__ = "crm_object_associations"
     __table_args__ = (
-        # Uniqueness for synced associations (provider-supplied external_id)
-        UniqueConstraint(
-            "integration_id",
-            "external_id",
-            name="uq_crm_object_association_external",
-        ),
         # Uniqueness for logical association (prevent duplicates)
         UniqueConstraint(
             "organisation_id",
             "integration_id",
             "from_object_type",
-            "from_external_id",
+            "from_local_id",
             "to_object_type",
-            "to_external_id",
+            "to_local_id",
             "association_type_id",
             name="uq_crm_object_association_logical",
         ),
@@ -104,13 +98,13 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
             "ix_crm_assoc_from_object",
             "organisation_id",
             "from_object_type",
-            "from_external_id",
+            "from_local_id",
         ),
         Index(
             "ix_crm_assoc_to_object",
             "organisation_id",
             "to_object_type",
-            "to_external_id",
+            "to_local_id",
         ),
         # Find all associations for an org by type
         Index(
@@ -134,23 +128,12 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the association record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied identifier for the association, if any.",
-    )
-
     # ==========================================================================
     # From Object (source of the relationship)
     # ==========================================================================
     from_object_type: CRMObjectType = Field(
         sa_column=Column(String(32), nullable=False),
         description="Type of the source object (deal, contact, company, etc.).",
-    )
-    from_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider ID of the source object. Null for internal-only associations resolved by local IDs.",
     )
     from_local_id: UUID | None = Field(
         default=None,
@@ -164,11 +147,6 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
     to_object_type: CRMObjectType = Field(
         sa_column=Column(String(32), nullable=False),
         description="Type of the target object (deal, contact, company, etc.).",
-    )
-    to_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider ID of the target object. Null for internal-only associations resolved by local IDs.",
     )
     to_local_id: UUID | None = Field(
         default=None,
@@ -243,15 +221,6 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent time this association was observed during sync.",
-    )
-
-    # ==========================================================================
-    # Raw Payload
-    # ==========================================================================
-    data_payload: dict | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload for debugging and replay.",
     )
 
 

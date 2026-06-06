@@ -99,7 +99,6 @@ def _deal(*, organisation_id):
     return SimpleNamespace(
         deal_id=uuid4(),
         organisation_id=organisation_id,
-        external_id="deal-ext-1",
         name="Acme Expansion",
         is_deleted=False,
     )
@@ -111,7 +110,6 @@ def _task(*, organisation_id, deal_id, integration_id=None, status="NOT_STARTED"
         activity_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id=str(uuid4()),
         activity_type=CRMActivityType.TASK.value,
         status=status,
         subject="Send pricing proposal",
@@ -189,8 +187,11 @@ async def test_create_ai_meeting_task_with_resolved_owner() -> None:
     assert task.deal_id == deal.deal_id
     assert task.related_local_id == deal.deal_id
     assert task.related_name == deal.name
-    assert task.owner_id is None
-    assert task.owner_external_id == str(owner_id)
+    assert not hasattr(task, "external_id")
+    assert not hasattr(task, "deal_external_id")
+    assert not hasattr(task, "related_external_id")
+    assert task.owner_id == owner_id
+    assert not hasattr(task, "owner_external_id")
     assert task.owner_name == "Alex Morgan"
     assert task.owner_email == "alex@example.com"
     assert task.properties["created_via"] == "deal_task_agent"
@@ -228,7 +229,7 @@ async def test_create_ai_meeting_task_without_assignee_still_creates_deal_task()
     assert result.created is True
     assert result.task.deal_id == deal.deal_id
     assert result.task.owner_id is None
-    assert result.task.owner_external_id is None
+    assert not hasattr(result.task, "owner_external_id")
     assert result.task.owner_name is None
     assert result.task.owner_email is None
     assert result.task.properties["assignee_resolution"] == {"status": "not_provided"}

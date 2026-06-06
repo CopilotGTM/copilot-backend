@@ -71,18 +71,20 @@ class PrivateLeadIngestionService:
         now = datetime.now(UTC)
         lead_payload = payload.model_dump(exclude_unset=True)
         source_payload = lead_payload.pop("data_payload", {}) or {}
+        existing_properties = lead_payload.get("properties") or {}
         lead_payload["email"] = self._normalize_email(lead_payload.get("email"))
         lead_payload["owner_email"] = self._normalize_email(lead_payload.get("owner_email"))
         lead_payload["company_domain"] = self._normalize_domain(lead_payload.get("company_domain"))
         lead_payload["source_type"] = lead_payload.get("source_type") or CRMLeadSourceType.API
         lead_payload["captured_at"] = now
-        lead_payload["data_payload"] = {
-            "ingestion": {
+        lead_payload["properties"] = {
+            **existing_properties,
+            "_copilotgtm_ingestion": {
                 "key_id": key_id,
                 "idempotency_key": idempotency_key,
                 "received_at": now.isoformat(),
             },
-            "source_payload": source_payload,
+            **({"_source_payload": source_payload} if source_payload else {}),
         }
         lead = CRMLead(
             **lead_payload,

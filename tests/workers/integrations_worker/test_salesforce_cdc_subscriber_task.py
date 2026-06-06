@@ -6,6 +6,15 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivity,
+    CRMActivityType,
+    CRMCompany,
+    CRMContact,
+    CRMDeal,
+    CRMSourceObjectType,
+    CRMUser,
+)
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_client import (
     SalesforcePubSubReplayIdError,
 )
@@ -18,6 +27,54 @@ def _run(coro):
 
 async def _acquire_session(_organisation_id):
     yield AsyncMock()
+
+
+class _FakeDeleteExecuteResult:
+    def __init__(self, row: object) -> None:
+        self.row = row
+
+    def scalar_one_or_none(self) -> object:
+        return self.row
+
+
+class _FakeDeleteSession:
+    def __init__(self, row: object) -> None:
+        self.row = row
+        self.statements: list[object] = []
+        self.committed = False
+
+    async def execute(self, statement):  # noqa: ANN001
+        self.statements.append(statement)
+        return _FakeDeleteExecuteResult(self.row)
+
+    def add(self, _row) -> None:  # noqa: ANN001
+        return None
+
+    async def commit(self) -> None:
+        self.committed = True
+
+
+class _FakeDeleteMappingHelper:
+    calls: list[dict[str, object]] = []
+    local_id: UUID
+
+    def __init__(self, **kwargs) -> None:  # noqa: ANN003
+        self.kwargs = kwargs
+
+    async def mark_external_ids_deleted(self, *, object_type, external_ids):  # noqa: ANN001
+        external_id = list(external_ids)[0]
+        self.calls.append(
+            {
+                "provider": self.kwargs["provider"],
+                "object_type": object_type,
+                "external_id": external_id,
+            }
+        )
+        return {external_id: self.local_id}
+
+
+async def _acquire_delete_session(session: _FakeDeleteSession):
+    yield session
 
 
 def test_completed_salesforce_cdc_run_releases_lease_before_requeue(
@@ -178,6 +235,164 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
 
     assert result["status"] == "replay_expired_repair_queued"
     assert operations == ["clear", "release", "enqueue"]
+
+
+@pytest.mark.parametrize(
+    (
+        "function_name",
+        "id_kwarg",
+        "row_factory",
+        "object_type",
+        "expected_column",
+        "expected_state",
+    ),
+    [
+        (
+            "_soft_delete_deal",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMDeal(
+                organisation_id=org_id,
+                integration_id=int_id,
+                deal_id=local_id,
+                external_id="provider-id",
+            ),
+            CRMSourceObjectType.DEAL,
+            "crm_deals.deal_id",
+            ("is_deleted", True),
+        ),
+        (
+            "_deactivate_company",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMCompany(
+                organisation_id=org_id,
+                integration_id=int_id,
+                company_id=local_id,
+                external_id="provider-id",
+                is_active=True,
+            ),
+            CRMSourceObjectType.COMPANY,
+            "crm_companies.company_id",
+            ("is_active", False),
+        ),
+        (
+            "_soft_delete_contact",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMContact(
+                organisation_id=org_id,
+                integration_id=int_id,
+                contact_id=local_id,
+                external_id="provider-id",
+            ),
+            CRMSourceObjectType.CONTACT,
+            "crm_contacts.contact_id",
+            ("is_deleted", True),
+        ),
+        (
+            "_soft_delete_task",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMActivity(
+                organisation_id=org_id,
+                integration_id=int_id,
+                activity_id=local_id,
+                external_id="provider-id",
+                activity_type=CRMActivityType.TASK.value,
+            ),
+            CRMSourceObjectType.TASK,
+            "crm_activities.activity_id",
+            ("is_deleted", True),
+        ),
+        (
+            "_deactivate_user",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMUser(
+                organisation_id=org_id,
+                integration_id=int_id,
+                user_id=local_id,
+                external_id="provider-id",
+                is_active=True,
+            ),
+            CRMSourceObjectType.USER,
+            "crm_users.user_id",
+            ("is_active", False),
+        ),
+        (
+            "_soft_delete_note",
+            "external_id",
+            lambda org_id, int_id, local_id: CRMActivity(
+                organisation_id=org_id,
+                integration_id=int_id,
+                activity_id=local_id,
+                external_id="provider-id",
+                activity_type=CRMActivityType.NOTE.value,
+            ),
+            CRMSourceObjectType.NOTE,
+            "crm_activities.activity_id",
+            ("is_deleted", True),
+        ),
+        (
+            "_soft_delete_note_by_content_document_link_id",
+            "content_document_link_id",
+            lambda org_id, int_id, local_id: CRMActivity(
+                organisation_id=org_id,
+                integration_id=int_id,
+                activity_id=local_id,
+                external_id="provider-id",
+                activity_type=CRMActivityType.NOTE.value,
+            ),
+            CRMSourceObjectType.NOTE_LINK,
+            "crm_activities.activity_id",
+            ("is_deleted", True),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_salesforce_cdc_delete_helpers_resolve_source_mapping_before_local_update(
+    monkeypatch: pytest.MonkeyPatch,
+    function_name: str,
+    id_kwarg: str,
+    row_factory,
+    object_type: CRMSourceObjectType,
+    expected_column: str,
+    expected_state: tuple[str, object],
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    local_id = uuid4()
+    row = row_factory(organisation_id, integration_id, local_id)
+    session = _FakeDeleteSession(row)
+    _FakeDeleteMappingHelper.calls = []
+    _FakeDeleteMappingHelper.local_id = local_id
+
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "CRMSourceMappingHelper",
+        _FakeDeleteMappingHelper,
+    )
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "acquire_org_async_session",
+        lambda _org_id: _acquire_delete_session(session),
+    )
+
+    await getattr(salesforce_cdc_subscriber_task, function_name)(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        **{id_kwarg: "provider-id"},
+    )
+
+    where_clause = str(session.statements[0]).partition("WHERE")[2]
+    state_attr, state_value = expected_state
+    assert _FakeDeleteMappingHelper.calls == [
+        {
+            "provider": "salesforce",
+            "object_type": object_type,
+            "external_id": "provider-id",
+        }
+    ]
+    assert expected_column in where_clause
+    assert ".external_id" not in where_clause
+    assert getattr(row, state_attr) is state_value
+    assert session.committed is True
 
 
 @pytest.mark.asyncio

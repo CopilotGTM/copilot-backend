@@ -5,6 +5,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.salesforce.companies.company_types import (
     NormalizedSalesforceCompany,
 )
@@ -79,6 +82,10 @@ async def test_writer_reactivates_present_rows_creates_new_rows_and_deactivates_
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"001A": existing_inactive, "001B": stale_missing}
     )
@@ -101,5 +108,15 @@ async def test_writer_reactivates_present_rows_creates_new_rows_and_deactivates_
     assert stale_missing.is_active is False
     created_rows = [call.args[0] for call in session.add.call_args_list]
     assert len(created_rows) == 1
-    assert created_rows[0].external_id == "001C"
+    assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].owner_id == owner_id
+    mapped_external_ids = [
+        call.kwargs["external_id"]
+        for call in mapping_helper.upsert_integration_mapping.call_args_list
+    ]
+    assert mapped_external_ids == ["001A", "001C"]
+    assert (
+        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
+        == CRMSourceObjectType.COMPANY
+    )
+    mapping_helper.mark_missing_deleted.assert_awaited_once()

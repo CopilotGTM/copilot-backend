@@ -13,9 +13,11 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.companies.company_sync_service import (
     HubSpotCompanyRecordSyncService,
 )
@@ -109,12 +111,23 @@ class HubSpotCompanyWebhookHandler:
     ) -> bool:
         """Mark one org-scoped HubSpot company deleted without cascading deals."""
         async for session in acquire_org_async_session(organisation_id):
+            local_ids = await CRMSourceMappingHelper(
+                session=session,
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+                provider="hubspot",
+            ).mark_external_ids_deleted(
+                object_type=CRMSourceObjectType.COMPANY,
+                external_ids=[external_id],
+            )
+            company_id = local_ids.get(external_id.strip())
+            if company_id is None:
+                return False
+
             statement = select(CRMCompany).where(
-                # The external object id is not trusted by itself; org and
-                # integration filters are the tenant boundary for this write.
                 col(CRMCompany.organisation_id) == organisation_id,
                 col(CRMCompany.integration_id) == integration_id,
-                col(CRMCompany.external_id) == external_id,
+                col(CRMCompany.company_id) == company_id,
                 col(CRMCompany.is_deleted).is_(False),
             )
             company = (await session.execute(statement)).scalars().first()

@@ -20,12 +20,16 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.companies.company_normalizer import (
     normalize_companies,
 )
@@ -312,13 +316,29 @@ class HubSpotCompanyRecordSyncService:
             CRMCompany,
         )
 
+        external_to_local = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.COMPANY,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMCompany).where(
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.company_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).scalars().all()
-        return {r.external_id: r.company_id for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.company_id]: row.company_id
+            for row in rows
+            if row.company_id in local_to_external
+        }
 
     async def _load_owner_map(
         self,
@@ -330,10 +350,42 @@ class HubSpotCompanyRecordSyncService:
         """`{owner_external_id → crm_users.user_id}` for write-time owner_id resolution."""
         from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 
+        external_to_local = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.USER,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).scalars().all()
-        return {r.external_id: r.user_id for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.user_id]: row.user_id
+            for row in rows
+            if row.user_id in local_to_external
+        }
+
+    async def _load_external_to_local(
+        self,
+        *,
+        session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        object_type: CRMSourceObjectType,
+    ) -> dict[UUID, str]:
+        helper = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+        return await helper.load_local_id_map(object_type=object_type)

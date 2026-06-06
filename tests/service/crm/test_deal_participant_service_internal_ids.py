@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
 from src.service.crm.internal.deal_participant_service import DealParticipantService
 
 
@@ -46,7 +45,6 @@ async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
         company_id=company_id,
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="company-ext-1",
         name="Acme",
         domain="acme.com",
         is_deleted=False,
@@ -55,7 +53,6 @@ async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
 
     deal = SimpleNamespace(
         company_id=None,
-        company_external_id=None,
         company_name=None,
         company_domain=None,
         source_modified_at=None,
@@ -74,48 +71,9 @@ async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
         deal=deal,
         integration_id=integration_id,
         related_local_id=company_id,
-        related_external_id="company-ext-1",
         updated_at=now,
     )
 
     assert deal.company_id == company_id
-    assert deal.company_external_id == "company-ext-1"
     assert deal.company_name == "Acme"
     assert deal.company_domain == "acme.com"
-
-
-def test_build_participant_external_id_uses_internal_related_id_when_available() -> None:
-    deal_id = uuid4()
-    related_id = uuid4()
-
-    first = DealParticipantService._build_participant_external_id(
-        deal_id,
-        CRMParticipantType.CONTACT,
-        related_id,
-        "contact-ext-1",
-        "primary_contact",
-    )
-    second = DealParticipantService._build_participant_external_id(
-        deal_id,
-        CRMParticipantType.CONTACT,
-        related_id,
-        "contact-ext-2",
-        "primary_contact",
-    )
-
-    assert first == second
-
-
-def test_build_participant_external_id_allows_missing_external_id_when_local_id_exists() -> None:
-    deal_id = uuid4()
-    related_id = uuid4()
-
-    generated = DealParticipantService._build_participant_external_id(
-        deal_id,
-        CRMParticipantType.COMPANY,
-        related_id,
-        None,
-        "decision_maker",
-    )
-
-    assert isinstance(generated, str)

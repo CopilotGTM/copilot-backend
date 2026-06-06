@@ -18,6 +18,13 @@ All deal response objects include an `is_internal` boolean field:
 
 **Frontend Implementation**: Use the `is_internal` field to conditionally show edit/delete buttons and actions. Only enable these for internal deals.
 
+### Identifier Contract
+
+CRM API payloads expose canonical local IDs such as `deal_id`, `company_id`,
+`contact_id`, `pipeline_id`, `stage_id`, and `owner_id`. Provider identifiers from
+HubSpot, Salesforce, or migration imports are stored in `crm_source_object_mappings`
+and are not part of canonical deal API responses.
+
 ---
 
 ## 1. Create Deal
@@ -131,7 +138,7 @@ POST /users/crm/deals
     "priority": "High",
     "lead_source": "Inbound",
     "description": "Enterprise deal for 100 seats",
-    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+    "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "created_at": "2026-01-22T10:00:00Z"
@@ -168,7 +175,6 @@ GET /users/crm/deals
 | `statuses` | array[enum] | - | Filter by deal statuses (`open`, `won`, `lost`, `closed`) |
 | `pipeline_ids` | array[uuid] | - | Filter by **pipeline_id** values from `/users/crm/pipelines` |
 | `owner_ids` | array[uuid] | - | Filter by internal owner IDs from `/users/crm/deals/owners` (not page-scoped) |
-| `owner_external_ids` | array[string] | - | Deprecated. Filter by CRM owner external IDs |
 | `min_amount` | number | - | Minimum deal amount |
 | `max_amount` | number | - | Maximum deal amount |
 | `min_close_date` | string | - | Minimum close date (ISO 8601) |
@@ -195,7 +201,6 @@ GET /users/crm/deals
         "owner_details": [
           {
             "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
-            "external_id": "83275159",
             "name": "John Doe",
             "email": "john@example.com"
           }
@@ -252,7 +257,6 @@ GET /users/crm/deals/{deal_id}
   "message": "Deal retrieved successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "amount": 50000,
     "currency": "USD",
@@ -260,28 +264,23 @@ GET /users/crm/deals/{deal_id}
     "predicted_amount": 5000,
     "probability": 10,
     "forecast_category": "Commit",
-    "pipeline_external_id": "default_pipeline",
     "pipeline_name": "Default Pipeline",
     "pipeline_label": "Default Pipeline",
-    "stage_external_id": "qualification",
     "stage_name": "Qualification",
     "stage_label": "Qualification",
     "deal_status": "open",
     "owner_details": [
       {
         "owner_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-        "external_id": "83275159",
         "name": "John Doe",
         "email": "john@example.com"
       }
     ],
     "deal_team": [],
-    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "company_industry": "Manufacturing",
     "company_country": "United States",
-    "primary_contact_external_id": "contact_123",
     "primary_contact_name": "Jane Buyer",
     "primary_contact_email": "jane@acme.com",
     "close_date": "2026-03-15T00:00:00Z",
@@ -509,7 +508,6 @@ Update all editable fields:
   "message": "Deal updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise Plus",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
@@ -578,7 +576,6 @@ POST /users/crm/deals/{deal_id}/stage
   "message": "Deal stage updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9",
@@ -648,7 +645,6 @@ POST /users/crm/deals/{deal_id}/close
   "message": "Deal closed successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9",
@@ -704,7 +700,6 @@ POST /users/crm/deals/{deal_id}/reopen
   "message": "Deal reopened successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
@@ -780,7 +775,6 @@ Assigned:
   "message": "Deal owner assigned successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
@@ -862,13 +856,11 @@ PATCH /users/crm/deals/{deal_id}/account
   "message": "Deal account updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "deal_status": "open",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "created_at": "2026-01-22T10:00:00Z",
@@ -906,13 +898,11 @@ At least one of the two fields must be provided.
   "message": "Deal primary contact updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "deal_status": "open",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "created_at": "2026-01-22T10:00:00Z",
@@ -953,7 +943,6 @@ DELETE /users/crm/deals/{deal_id}
   "message": "Deal deleted successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
-    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",

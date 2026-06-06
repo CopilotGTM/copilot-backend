@@ -12,6 +12,10 @@ Pipelines define the sales process structure for an organisation. Each pipeline 
 
 Each pipeline is a normalised `CRMPipeline` record stored in the tenant-scoped `crm_pipelines` table. Its stages are `CRMDealStage` records in `crm_deal_stages`, linked by `pipeline_id`.
 
+Provider and migration identifiers are not exposed on pipeline or stage API payloads.
+External CRM source identity is tracked in `crm_source_object_mappings`; clients should use
+`pipeline_id` and `stage_id` for all API interactions.
+
 ### Internal-only scope
 
 **Important**: This API operates **only on the internal CRM integration** (`INTERNAL_CRM`). Pipelines imported from external CRM providers (HubSpot, Salesforce, Pipedrive) are read-only here — they are managed by their source system and kept in sync via the integration worker. Attempting to mutate an externally-synced pipeline through these endpoints results in a `404`.
@@ -263,7 +267,6 @@ type UUID = string;
  */
 export interface PipelineStageItem {
   stage_id: UUID;
-  external_id: string;                // Provider ID. For internal stages, equals stage_id
   name: string;                       // Display name (e.g., "Qualification")
   label: string | null;               // Human-friendly label (defaults to name if not set)
   stage_state: 'open' | 'won' | 'lost';
@@ -280,7 +283,6 @@ export interface PipelineStageItem {
  */
 export interface PipelineItem {
   pipeline_id: UUID;
-  external_id: string;                // Provider ID. For internal pipelines, equals pipeline_id
   name: string;                       // Display name (e.g., "Default Pipeline")
   label: string | null;               // Human-friendly label (defaults to name if not set)
   is_default: boolean;                // Exactly one pipeline per org has this true
@@ -433,7 +435,6 @@ GET /users/crm/pipelines?include_stages=true
   "data": [
     {
       "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
-      "external_id": "550e8400-e29b-41d4-a716-446655440000",
       "name": "Default Pipeline",
       "label": "Default Pipeline",
       "is_default": true,
@@ -442,7 +443,6 @@ GET /users/crm/pipelines?include_stages=true
       "stages": [
         {
           "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-          "external_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
           "name": "Qualification",
           "label": "Qualification",
           "stage_state": "open",
@@ -452,7 +452,6 @@ GET /users/crm/pipelines?include_stages=true
         },
         {
           "stage_id": "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
-          "external_id": "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
           "name": "Closed Won",
           "label": "Closed Won",
           "stage_state": "won",
@@ -511,7 +510,6 @@ GET /users/crm/pipelines/550e8400-e29b-41d4-a716-446655440000/stages
   "data": [
     {
       "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-      "external_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
       "name": "Qualification",
       "label": "Qualification",
       "stage_state": "open",
@@ -572,7 +570,7 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
 #### Auto-resolution behaviours
 
 - **`stage_key`** (not in the request body) is derived from `name` via lowercase-and-slugify: `re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")`. For `"Closed Won"` the key becomes `"closed_won"`.
-- **`external_id`** is set to `str(pipeline_id)` for internally-created pipelines, and `str(stage_id)` for internally-created stages. These are UUID strings, not provider IDs.
+- Pipeline and stage responses use local `pipeline_id` and `stage_id`. Provider IDs are stored only in `crm_source_object_mappings`.
 - **`is_closed`** is derived: `stage_state in ("won", "lost")` → `true`.
 
 #### Example Request — empty pipeline
@@ -609,7 +607,6 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
   "message": "Pipeline created",
   "data": {
     "pipeline_id": "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
-    "external_id": "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
     "name": "Enterprise Pipeline",
     "label": "Enterprise Deals",
     "is_default": true,
@@ -618,7 +615,6 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
     "stages": [
       {
         "stage_id": "d2e3f4a5-b6c7-8901-defa-234567890abc",
-        "external_id": "d2e3f4a5-b6c7-8901-defa-234567890abc",
         "name": "Intro Call",
         "label": "Intro Call",
         "stage_state": "open",
@@ -723,7 +719,6 @@ Returns the updated `PipelineItem`. The `stages` array is empty `[]` in this res
   "message": "Pipeline updated",
   "data": {
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
-    "external_id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Sales Funnel",
     "label": "Sales Funnel",
     "is_default": true,
@@ -851,7 +846,6 @@ Same shape as `StageInput` (see Request Models).
   "message": "Stage created",
   "data": {
     "stage_id": "e3f4a5b6-c7d8-9012-efab-3456789abcde",
-    "external_id": "e3f4a5b6-c7d8-9012-efab-3456789abcde",
     "name": "Contract Review",
     "label": "Contract Review",
     "stage_state": "open",
@@ -930,7 +924,6 @@ All fields optional.
   "message": "Stage updated",
   "data": {
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-    "external_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "name": "Lead Qualification",
     "label": "Lead Qualification",
     "stage_state": "open",
@@ -1140,14 +1133,12 @@ Consolidated reference of all error responses across all 8 endpoints.
 
 | Index | Columns | Purpose |
 |-------|---------|---------|
-| `uq_crm_pipeline_external` | `integration_id, external_id` | Uniqueness per integration |
 | `ix_crm_pipeline_org_name` | `organisation_id, name` | Fast name lookup and duplicate check |
 
 **Key indexes on `crm_deal_stages`:**
 
 | Index | Columns | Purpose |
 |-------|---------|---------|
-| `uq_crm_stage_external` | `integration_id, external_id` | Uniqueness per integration |
 | `ix_crm_stage_pipeline_order` | `pipeline_id, display_order` | Ordered stage listing per pipeline |
 | `ix_crm_stage_org_name` | `organisation_id, name` | Fast name lookup |
 | `ck_crm_stage_probability` | CHECK `probability` in `[0, 100]` or NULL | Probability bounds |

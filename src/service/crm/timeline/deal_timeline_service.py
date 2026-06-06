@@ -294,9 +294,6 @@ class DealTimelineService:
                 # Display labels for frontend
                 "old_stage_label": metadata.get("old_stage_label"),
                 "new_stage_label": metadata.get("new_stage_label"),
-                # Legacy keys for backwards compatibility (external IDs)
-                "old_stage": metadata.get("old_stage") or metadata.get("old_stage_external_id"),
-                "new_stage": metadata.get("new_stage") or metadata.get("new_stage_external_id"),
                 # Deal context
                 "deal_name": metadata.get("deal_name"),
                 "company_name": metadata.get("company_name"),
@@ -852,30 +849,21 @@ class DealTimelineService:
         resolved_source = event_source
         if resolved_source is None and event is not None:
             calendar_integration_type = None
-            if getattr(event, "integration_id", None):
+            state_table: Table = _table(CalendarEventUserState)
+            state_stmt = (
+                select(state_table.c.integration_id)
+                .where(state_table.c.event_id == event.event_id)
+                .limit(1)
+            )
+            state_result = await self.session.execute(state_stmt)
+            integration_id = state_result.scalar_one_or_none()
+            if integration_id is not None:
                 it_stmt = select(KnowledgeIntegration).where(
-                    _table(KnowledgeIntegration).c.integration_id == event.integration_id
+                    _table(KnowledgeIntegration).c.integration_id == integration_id
                 )
                 it_result = await self.session.execute(it_stmt)
                 integration = it_result.scalar_one_or_none()
                 calendar_integration_type = getattr(integration, "integration_type", None)
-            else:
-                # Fallback for shared calendar events: pick any user-state integration.
-                state_table: Table = _table(CalendarEventUserState)
-                state_stmt = (
-                    select(state_table.c.integration_id)
-                    .where(state_table.c.event_id == event.event_id)
-                    .limit(1)
-                )
-                state_result = await self.session.execute(state_stmt)
-                integration_id = state_result.scalar_one_or_none()
-                if integration_id is not None:
-                    it_stmt = select(KnowledgeIntegration).where(
-                        _table(KnowledgeIntegration).c.integration_id == integration_id
-                    )
-                    it_result = await self.session.execute(it_stmt)
-                    integration = it_result.scalar_one_or_none()
-                    calendar_integration_type = getattr(integration, "integration_type", None)
 
             resolved_source = resolve_meeting_event_source(event, calendar_integration_type)
         resolved_source = resolved_source or TimelineEventSource.CALENDAR_GOOGLE

@@ -9,6 +9,9 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
     CRMStageState,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.salesforce.pipelines.pipeline_types import (
     NormalizedPipeline,
     NormalizedStage,
@@ -118,6 +121,10 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_pipelines = AsyncMock(  # type: ignore[method-assign]
         return_value={"012A": existing_pipeline, "012STALE": stale_pipeline}
     )
@@ -145,3 +152,15 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     assert existing_stage.pipeline_id == pipeline_id
     assert stale_pipeline.is_active is False
     assert stale_stage.is_active is False
+    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
+    assert [call.kwargs["external_id"] for call in mapping_calls] == [
+        "012A",
+        "012A:Prospecting",
+    ]
+    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.PIPELINE
+    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.PIPELINE
+    assert mapping_calls[1].kwargs["external_object_type"] == CRMSourceObjectType.STAGE
+    assert mapping_calls[1].kwargs["local_object_type"] == CRMSourceObjectType.STAGE
+    assert [
+        call.kwargs["object_type"] for call in mapping_helper.mark_missing_deleted.call_args_list
+    ] == [CRMSourceObjectType.PIPELINE, CRMSourceObjectType.STAGE]

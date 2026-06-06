@@ -106,11 +106,10 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
 
     Key features:
     - Generic activity types covering all major CRM activity concepts
-    - Polymorphic relationships via `related_object_type` + `related_external_id`
-    - Backwards-compatible `deal_id`/`deal_external_id` for deal-specific queries
+    - Polymorphic relationships via `related_object_type` + `related_local_id`
+    - Backwards-compatible `deal_id` for deal-specific queries
     - Attendee/participant storage in `attendees` JSONB
-    - Rich metadata in `properties`, `metrics`, `data_payload`
-    - Internal-only activities may leave `external_id` null until mirrored to a provider
+    - Rich metadata in `properties` and `metrics`
 
     Migration note: This replaces the former `crm_deal_tasks` table, with the
     table renamed to `crm_activities` and new polymorphic columns added.
@@ -118,28 +117,11 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
 
     __tablename__: ClassVar[str] = "crm_activities"
     __table_args__ = (
-        # Unique constraint for CRM-synced activities (integration_id NOT NULL)
-        Index(
-            "uq_crm_activity_external",
-            "integration_id",
-            "external_id",
-            unique=True,
-            postgresql_where=text("integration_id IS NOT NULL"),
-        ),
-        # Unique constraint for internal/user-created activities when an external ID exists
-        Index(
-            "uq_crm_activity_external_user",
-            "organisation_id",
-            "external_id",
-            unique=True,
-            postgresql_where=text("integration_id IS NULL"),
-        ),
         # Legacy deal-focused indexes (renamed from deal_tasks)
         Index("ix_crm_activity_deal", "deal_id"),
         Index("ix_crm_activity_org_status", "organisation_id", "status"),
         Index("ix_crm_activity_org_type", "organisation_id", "activity_type"),
         Index("ix_crm_activity_org_priority", "organisation_id", "priority"),
-        Index("ix_crm_activity_owner", "owner_external_id"),
         Index("ix_crm_activity_due_date", "due_date"),
         Index("ix_crm_activity_org_due", "organisation_id", "due_date"),
         Index("ix_crm_activity_status_due", "status", "due_date"),
@@ -149,7 +131,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             "ix_crm_activity_related",
             "organisation_id",
             "related_object_type",
-            "related_external_id",
+            "related_local_id",
         ),
         Index("ix_crm_activity_related_local", "related_local_id"),
         # Contact/company specific lookups
@@ -168,12 +150,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the activity record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the activity. Null for internal-only activities.",
-    )
-
     # ─────────────────────────────────────────────────────────────────────────
     # Polymorphic relationship (generic - can link to any object)
     # ─────────────────────────────────────────────────────────────────────────
@@ -181,11 +157,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(32), nullable=True),
         description="Type of CRM object this activity is related to (DEAL, CONTACT, COMPANY, etc.).",
-    )
-    related_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider external ID of the related object.",
     )
     related_local_id: UUID | None = Field(
         default=None,
@@ -207,36 +178,18 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         index=True,
         description="Internal deal ID (FK) this activity is associated with.",
     )
-    deal_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider deal ID this activity is associated with.",
-    )
-
     # Contact linkage
     contact_id: UUID | None = Field(
         default=None,
         foreign_key="crm_contacts.contact_id",
         description="Internal contact ID (FK) this activity is associated with.",
     )
-    contact_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider contact ID this activity is associated with.",
-    )
-
     # Company linkage
     company_id: UUID | None = Field(
         default=None,
         foreign_key="crm_companies.company_id",
         description="Internal company ID (FK) this activity is associated with.",
     )
-    company_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider company ID this activity is associated with.",
-    )
-
     # ─────────────────────────────────────────────────────────────────────────
     # Core activity fields
     # ─────────────────────────────────────────────────────────────────────────
@@ -275,11 +228,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     # ─────────────────────────────────────────────────────────────────────────
     # Assignment / Ownership
     # ─────────────────────────────────────────────────────────────────────────
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True, index=True),
-        description="Provider identifier for the user/owner assigned to the activity.",
-    )
     owner_name: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
@@ -371,7 +319,7 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             nullable=False,
             server_default=text("'[]'::jsonb"),
         ),
-        description="List of attendees/participants [{email, name, external_id, response_status}].",
+        description="List of attendees/participants [{email, name, response_status}].",
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -445,11 +393,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             server_default=text(EMPTY_JSONB_SQL),
         ),
         description="Derived metrics for analytics (e.g., response time, overdue status).",
-    )
-    data_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload for troubleshooting.",
     )
 
     # ─────────────────────────────────────────────────────────────────────────

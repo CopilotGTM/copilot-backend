@@ -6,6 +6,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.salesforce.contacts.contact_types import (
     NormalizedSalesforceContact,
 )
@@ -78,6 +81,9 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"003A": existing})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -105,9 +111,18 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
     assert existing.owner_id is None
     created_rows = [call.args[0] for call in session.add.call_args_list]
     assert len(created_rows) == 1
-    assert created_rows[0].external_id == "003B"
+    assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].company_id == company_id
     assert created_rows[0].owner_id == owner_id
+    mapped_external_ids = [
+        call.kwargs["external_id"]
+        for call in mapping_helper.upsert_integration_mapping.call_args_list
+    ]
+    assert mapped_external_ids == ["003A", "003B"]
+    assert (
+        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
+        == CRMSourceObjectType.CONTACT
+    )
 
 
 @pytest.mark.asyncio
@@ -135,6 +150,9 @@ async def test_writer_reactivates_soft_deleted_contact_without_inserting_duplica
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"003A": existing})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -181,6 +199,9 @@ async def test_load_existing_rows_includes_soft_deleted_contacts() -> None:
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.load_local_id_map = AsyncMock(return_value={"003A": existing.contact_id})
+    writer.source_mappings = mapping_helper
 
     rows = await writer._load_existing_rows()
 
@@ -188,3 +209,8 @@ async def test_load_existing_rows_includes_soft_deleted_contacts() -> None:
     compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
     assert "crm_contacts.is_deleted = false" not in compiled
     assert rows == {"003A": existing}
+    mapping_helper.load_local_id_map.assert_awaited_once_with(
+        object_type=CRMSourceObjectType.CONTACT,
+        external_ids=None,
+        include_deleted=True,
+    )

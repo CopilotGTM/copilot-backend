@@ -30,6 +30,9 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
@@ -39,6 +42,7 @@ from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.users.user_normalizer import (
     normalize_email,
     normalize_owners,
@@ -287,10 +291,27 @@ class HubSpotUserRecordSyncService:
         for companies/contacts phases to resolve `owner_id` at write time."""
         from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 
+        helper = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+        external_to_local = await helper.load_local_id_map(object_type=CRMSourceObjectType.USER)
+        if not external_to_local:
+            return {}
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).scalars().all()
-        return {r.external_id: r.user_id for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.user_id]: row.user_id
+            for row in rows
+            if row.user_id in local_to_external
+        }

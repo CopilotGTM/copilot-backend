@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.companies.company_types import (
     CompanyWriteResult,
     NormalizedSalesforceCompany,
@@ -30,6 +34,12 @@ class SalesforceCompanyWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="salesforce",
+        )
 
     async def apply(
         self,
@@ -52,11 +62,18 @@ class SalesforceCompanyWriter:
             if existing is None:
                 row = self._new_row(company, resolved_owner_id, now=now)
                 self.session.add(row)
+                await self._upsert_source_mapping(company, row.company_id, now=now)
                 result.companies_created += 1
             else:
                 was_active = bool(existing.is_active)
+                was_deleted = bool(existing.is_deleted)
                 self._apply_updates(existing, company, resolved_owner_id, now=now)
-                if was_active:
+                await self._upsert_source_mapping(company, existing.company_id, now=now)
+                if was_deleted:
+                    existing.is_deleted = False
+                    existing.is_active = True
+                    result.companies_reactivated += 1
+                elif was_active:
                     result.companies_updated += 1
                 else:
                     existing.is_active = True
@@ -69,6 +86,10 @@ class SalesforceCompanyWriter:
                 if row.is_active:
                     row.is_active = False
                     result.companies_deactivated += 1
+            await self.source_mappings.mark_missing_deleted(
+                object_type=CRMSourceObjectType.COMPANY,
+                seen_external_ids=snapshot_external_ids,
+            )
 
         await self.session.flush()
         logger.info(
@@ -102,17 +123,45 @@ class SalesforceCompanyWriter:
     async def _load_existing_rows(
         self, external_ids: set[str] | None = None
     ) -> dict[str, CRMCompany]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.COMPANY,
+            external_ids=external_ids,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMCompany).where(
             col(CRMCompany.organisation_id) == self.organisation_id,
             col(CRMCompany.integration_id) == self.integration_id,
-            col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.company_id).in_(set(external_to_local.values())),
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMCompany.external_id).in_(external_ids))
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {row.external_id: row for row in rows if row.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.company_id]: row
+            for row in rows
+            if row.company_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        company: NormalizedSalesforceCompany,
+        local_company_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.COMPANY,
+            external_id=company.external_id,
+            local_object_type=CRMSourceObjectType.COMPANY,
+            local_object_id=local_company_id,
+            data_payload=company.data_payload,
+            source_created_at=company.source_created_at,
+            source_modified_at=company.source_modified_at,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
@@ -124,7 +173,6 @@ class SalesforceCompanyWriter:
         return CRMCompany(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=company.external_id,
             name=company.name,
             domain=company.domain,
             website=company.website,
@@ -132,7 +180,6 @@ class SalesforceCompanyWriter:
             industry=company.industry,
             company_type=company.company_type,
             lifecycle_stage=company.lifecycle_stage,
-            owner_external_id=company.owner_external_id,
             owner_id=resolved_owner_id,
             number_of_employees=company.number_of_employees,
             annual_revenue=company.annual_revenue,
@@ -150,7 +197,6 @@ class SalesforceCompanyWriter:
             synced_at=now,
             last_seen_at=now,
             properties=company.properties,
-            data_payload=company.data_payload,
         )
 
     def _apply_updates(
@@ -168,7 +214,6 @@ class SalesforceCompanyWriter:
         row.industry = company.industry
         row.company_type = company.company_type
         row.lifecycle_stage = company.lifecycle_stage
-        row.owner_external_id = company.owner_external_id
         row.owner_id = resolved_owner_id
         row.number_of_employees = company.number_of_employees
         row.annual_revenue = company.annual_revenue
@@ -185,4 +230,3 @@ class SalesforceCompanyWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = company.properties
-        row.data_payload = company.data_payload

@@ -35,10 +35,8 @@ def _make_note(
 ) -> MagicMock:
     n = MagicMock()
     n.activity_id = UUID(activity_id)
-    n.external_id = "ext-note-1"
     n.subject = subject
     n.body = body
-    n.owner_external_id = "ext-user-1"
     n.owner_name = "Jane Doe"
     n.owner_email = "jane@test.com"
     n.source_created_at = datetime(2026, 2, 15, 9, 0, 0)

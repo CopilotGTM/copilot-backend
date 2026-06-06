@@ -532,7 +532,6 @@ class TestListAvailableContacts:
             full_name="Jane Contact",
             job_title="Senior Manager",
             company_name="Acme Corp",
-            external_id="hubspot-123456",
         )
         fake_stakeholders_service.add_contact(contact)
 
@@ -544,7 +543,7 @@ class TestListAvailableContacts:
 
         data = body["data"][0]
         assert data["contact_id"] == str(contact.contact_id)
-        assert data["external_id"] == "hubspot-123456"
+        assert "external_id" not in data
         assert data["email"] == "contact@company.com"
         assert data["full_name"] == "Jane Contact"
         assert data["job_title"] == "Senior Manager"

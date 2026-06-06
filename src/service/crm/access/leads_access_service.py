@@ -178,13 +178,9 @@ class LeadsAccessService:
     ) -> CRMLeadParticipant:
         """Add a contact, company, user, or custom participant to a lead."""
         await self._get_lead_or_404(lead_id)
-        if not (
-            payload.get("related_local_id")
-            or payload.get("related_external_id")
-            or payload.get("email")
-        ):
+        if not (payload.get("related_local_id") or payload.get("email")):
             raise LeadsAccessServiceError(
-                "Participant requires related_local_id, related_external_id, or email",
+                "Participant requires related_local_id or email",
                 status_code=400,
             )
 
@@ -304,7 +300,7 @@ class LeadsAccessService:
     @staticmethod
     def _reject_direct_converted_status(payload: dict[str, Any]) -> None:
         status = payload.get("status")
-        status_value = status.value if hasattr(status, "value") else status
+        status_value = LeadsAccessService._enum_value(status)
         if status_value == CRMLeadStatus.CONVERTED.value:
             raise LeadsAccessServiceError(
                 "Use the lead conversion endpoint to set converted status",
@@ -370,29 +366,24 @@ class LeadsAccessService:
         copied_count = 0
         now = datetime.now(UTC)
         for participant in lead_participants:
-            related_external_id = (
-                participant.related_external_id
-                or (str(participant.related_local_id) if participant.related_local_id else None)
-                or participant.email
-            )
+            if participant.related_local_id is None:
+                continue
             self.org_session.add(
                 CRMDealParticipant(
                     organisation_id=self.organisation_id,
                     integration_id=deal_integration_id,
-                    external_id=f"lead:{participant.participant_id}:{deal_id}",
                     deal_id=deal_id,
                     participant_type=CRMParticipantType(
                         self._enum_value(participant.participant_type)
                     ),
                     relationship_role=participant.relationship_role,
-                    related_external_id=related_external_id,
                     related_local_id=participant.related_local_id,
                     related_name=participant.name,
                     related_email=participant.email,
                     synced_at=now,
                     source_modified_at=now,
                     last_seen_at=now,
-                    data_payload={
+                    properties={
                         "converted_from_lead_id": str(participant.lead_id),
                         "lead_participant_id": str(participant.participant_id),
                     },

@@ -9,6 +9,9 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.service.integrations.crm.records.hubspot.contacts.contact_types import (
     NormalizedHubSpotContact,
 )
@@ -56,6 +59,13 @@ def _normalized_contact(
     )
 
 
+def _mock_source_mappings(writer: HubSpotContactWriter) -> MagicMock:
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    return mapping_helper
+
+
 @pytest.mark.asyncio
 async def test_apply_reactivates_soft_deleted_contact() -> None:
     """HubSpot upserts revive a local contact tombstone instead of inserting a duplicate."""
@@ -79,6 +89,7 @@ async def test_apply_reactivates_soft_deleted_contact() -> None:
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    mapping_helper = _mock_source_mappings(writer)
 
     result = await writer.apply(
         normalized=[_normalized_contact(external_id="123", email="restored@example.com")],
@@ -92,6 +103,10 @@ async def test_apply_reactivates_soft_deleted_contact() -> None:
     assert existing.is_deleted is False
     assert existing.email == "restored@example.com"
     assert existing.full_name == "Alex Morgan"
+    mapping_helper.upsert_integration_mapping.assert_awaited_once()
+    assert mapping_helper.upsert_integration_mapping.call_args.kwargs["external_object_type"] == (
+        CRMSourceObjectType.CONTACT
+    )
     session.add.assert_not_called()
 
 
@@ -120,6 +135,7 @@ async def test_apply_reactivates_soft_deleted_contact_even_when_timestamp_matche
         integration_id=integration_id,
     )
     writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
 
     result = await writer.apply(
         normalized=[

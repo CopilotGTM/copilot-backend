@@ -35,7 +35,6 @@ def _task_assignee_filter_key(task: Any) -> str | None:
 
     owner_email = _normalize_email(getattr(task, "owner_email", None))
     owner_id = getattr(task, "owner_id", None)
-    owner_external_id = getattr(task, "owner_external_id", None)
     properties = getattr(task, "properties", None) or {}
     public_user_id = properties.get("assigned_to_public_user_id")
 
@@ -45,8 +44,6 @@ def _task_assignee_filter_key(task: Any) -> str | None:
         return f"public_user:{public_user_id}"
     if owner_id:
         return f"crm_user:{owner_id}"
-    if owner_external_id:
-        return f"owner_external:{owner_external_id}"
     owner_name = getattr(task, "owner_name", None)
     if owner_name:
         return f"name:{str(owner_name).strip().lower()}"
@@ -186,7 +183,6 @@ class TasksAccessService:
             stmt = stmt.where(
                 or_(
                     c.owner_id == owner_user_id,
-                    c.owner_external_id == owner_value,
                     c.properties["assigned_to_public_user_id"].as_string() == owner_value,
                 )
             )
@@ -265,19 +261,13 @@ class TasksAccessService:
             )
 
         if prefix == "public_user":
-            return or_(
-                c.owner_external_id == value,
-                c.properties["assigned_to_public_user_id"].as_string() == value,
-            )
+            return c.properties["assigned_to_public_user_id"].as_string() == value
 
         if prefix == "crm_user":
             try:
                 return c.owner_id == UUID(value)
             except ValueError:
                 return c.activity_id.is_(None)
-
-        if prefix == "owner_external":
-            return c.owner_external_id == value
 
         if prefix in {"name", "external_name"}:
             return or_(
@@ -296,7 +286,6 @@ class TasksAccessService:
         c = cast(Any, CRMActivity).__table__.c
         stmt = select(
             c.owner_id,
-            c.owner_external_id,
             c.owner_name,
             c.owner_email,
             c.external_assignee_email,
@@ -308,7 +297,6 @@ class TasksAccessService:
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
             or_(
                 c.owner_id.is_not(None),
-                c.owner_external_id.is_not(None),
                 c.owner_email.is_not(None),
                 c.owner_name.is_not(None),
                 c.external_assignee_email.is_not(None),
@@ -322,7 +310,6 @@ class TasksAccessService:
                 or_(
                     c.owner_name.ilike(like_expr),
                     c.owner_email.ilike(like_expr),
-                    c.owner_external_id.ilike(like_expr),
                     c.external_assignee_name.ilike(like_expr),
                     c.external_assignee_email.ilike(like_expr),
                 )
@@ -333,7 +320,6 @@ class TasksAccessService:
         for row in result.all():
             task = SimpleNamespace(
                 owner_id=row.owner_id,
-                owner_external_id=row.owner_external_id,
                 owner_name=row.owner_name,
                 owner_email=row.owner_email,
                 external_assignee_email=row.external_assignee_email,

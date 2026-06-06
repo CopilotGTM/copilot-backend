@@ -42,9 +42,13 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStage,
     CRMPipeline,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.deals.association_writer import (
     HubSpotDealAssociationWriter,
 )
@@ -450,13 +454,29 @@ class HubSpotDealRecordSyncService:
     ) -> dict[str, UUID]:
         """`{external_id → deal_id}` for sibling writers (stage history,
         participants, associations) that need to set the deal-side FK."""
+        external_to_local = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.DEAL,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == organisation_id,
             col(CRMDeal.integration_id) == integration_id,
             col(CRMDeal.is_deleted) == False,  # noqa: E712
+            col(CRMDeal.deal_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).scalars().all()
-        return {r.external_id: r.deal_id for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.deal_id]: row.deal_id
+            for row in rows
+            if row.deal_id in local_to_external
+        }
 
     async def _load_resolution_maps(
         self,
@@ -477,15 +497,49 @@ class HubSpotDealRecordSyncService:
         company_map: dict[str, DimensionHit] = {}
         contact_map: dict[str, DimensionHit] = {}
 
+        pipeline_ids = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.PIPELINE,
+        )
+        stage_ids = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.STAGE,
+        )
+        user_ids = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.USER,
+        )
+        company_ids = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.COMPANY,
+        )
+        contact_ids = await self._load_external_to_local(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.CONTACT,
+        )
+
         # Pipelines
         pipeline_stmt = select(CRMPipeline).where(
             col(CRMPipeline.organisation_id) == organisation_id,
             col(CRMPipeline.integration_id) == integration_id,
             col(CRMPipeline.is_deleted) == False,  # noqa: E712
+            col(CRMPipeline.pipeline_id).in_(set(pipeline_ids.values())),
         )
+        pipeline_local_to_external = _local_to_external(pipeline_ids)
         for pipeline in (await session.execute(pipeline_stmt)).scalars().all():
-            if pipeline.external_id:
-                pipeline_map[pipeline.external_id] = DimensionHit(
+            external_id = pipeline_local_to_external.get(pipeline.pipeline_id)
+            if external_id:
+                pipeline_map[external_id] = DimensionHit(
                     internal_id=pipeline.pipeline_id,
                     name=pipeline.name,
                     label=pipeline.label,
@@ -497,10 +551,13 @@ class HubSpotDealRecordSyncService:
             col(CRMDealStage.organisation_id) == organisation_id,
             col(CRMDealStage.integration_id) == integration_id,
             col(CRMDealStage.is_deleted) == False,  # noqa: E712
+            col(CRMDealStage.stage_id).in_(set(stage_ids.values())),
         )
+        stage_local_to_external = _local_to_external(stage_ids)
         for stage in (await session.execute(stage_stmt)).scalars().all():
-            if stage.external_id:
-                stage_map[stage.external_id] = DimensionHit(
+            external_id = stage_local_to_external.get(stage.stage_id)
+            if external_id:
+                stage_map[external_id] = DimensionHit(
                     internal_id=stage.stage_id,
                     name=stage.name,
                     label=stage.label,
@@ -514,10 +571,13 @@ class HubSpotDealRecordSyncService:
             col(CRMUser.organisation_id) == organisation_id,
             col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.user_id).in_(set(user_ids.values())),
         )
+        user_local_to_external = _local_to_external(user_ids)
         for user in (await session.execute(user_stmt)).scalars().all():
-            if user.external_id:
-                user_map[user.external_id] = DimensionHit(
+            external_id = user_local_to_external.get(user.user_id)
+            if external_id:
+                user_map[external_id] = DimensionHit(
                     internal_id=user.user_id,
                     name=user.full_name,
                     email=user.email,
@@ -528,10 +588,13 @@ class HubSpotDealRecordSyncService:
             col(CRMCompany.organisation_id) == organisation_id,
             col(CRMCompany.integration_id) == integration_id,
             col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.company_id).in_(set(company_ids.values())),
         )
+        company_local_to_external = _local_to_external(company_ids)
         for company in (await session.execute(company_stmt)).scalars().all():
-            if company.external_id:
-                company_map[company.external_id] = DimensionHit(
+            external_id = company_local_to_external.get(company.company_id)
+            if external_id:
+                company_map[external_id] = DimensionHit(
                     internal_id=company.company_id,
                     name=company.name,
                     domain=company.domain,
@@ -542,10 +605,13 @@ class HubSpotDealRecordSyncService:
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
+            col(CRMContact.contact_id).in_(set(contact_ids.values())),
         )
+        contact_local_to_external = _local_to_external(contact_ids)
         for contact in (await session.execute(contact_stmt)).scalars().all():
-            if contact.external_id:
-                contact_map[contact.external_id] = DimensionHit(
+            external_id = contact_local_to_external.get(contact.contact_id)
+            if external_id:
+                contact_map[external_id] = DimensionHit(
                     internal_id=contact.contact_id,
                     name=contact.full_name,
                     email=contact.email,
@@ -570,3 +636,23 @@ class HubSpotDealRecordSyncService:
             company_map=company_map,
             contact_map=contact_map,
         )
+
+    async def _load_external_to_local(
+        self,
+        *,
+        session,
+        organisation_id: UUID,
+        integration_id: UUID,
+        object_type: CRMSourceObjectType,
+    ) -> dict[str, UUID]:
+        helper = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+        return await helper.load_local_id_map(object_type=object_type)
+
+
+def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
+    return {local_id: external_id for external_id, local_id in external_to_local.items()}

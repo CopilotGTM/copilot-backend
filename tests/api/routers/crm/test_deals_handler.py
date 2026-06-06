@@ -109,7 +109,8 @@ def test_list_deals_empty(client: TestClient, deals_dependency_overrides):
     assert body["message"] == "Deals retrieved successfully"
     data = body["data"]
     assert data["items"] == []
-    assert data["cursor"] is None
+    assert data["total_count"] == 0
+    assert data["total_pages"] == 0
 
 
 def test_list_deals_success(client: TestClient, deals_dependency_overrides):
@@ -131,7 +132,7 @@ def test_list_deals_success(client: TestClient, deals_dependency_overrides):
 
 
 def test_list_deals_pagination(client: TestClient, deals_dependency_overrides):
-    """Test pagination with limit and cursor."""
+    """Test pagination with limit and page number."""
     deals_service = deals_dependency_overrides["deals_service"]
     org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
 
@@ -146,10 +147,11 @@ def test_list_deals_pagination(client: TestClient, deals_dependency_overrides):
     body1 = resp1.json()
     data1 = body1["data"]
     assert len(data1["items"]) == 2
-    assert data1["cursor"] is not None
+    assert data1["total_count"] == 5
+    assert data1["total_pages"] == 3
 
     # Second page
-    resp2 = client.get("/users/crm/deals", params={"limit": 2, "cursor": data1["cursor"]})
+    resp2 = client.get("/users/crm/deals", params={"limit": 2, "page": 2})
     assert resp2.status_code == 200
     body2 = resp2.json()
     data2 = body2["data"]
@@ -171,7 +173,7 @@ def test_list_deals_fetch_all(client: TestClient, deals_dependency_overrides):
     body = resp.json()
     data = body["data"]
     assert len(data["items"]) == 10
-    assert data["cursor"] is None  # No pagination in fetch_all mode
+    assert data["total_count"] == 10
 
 
 def test_list_deals_filter_by_status(client: TestClient, deals_dependency_overrides):
@@ -241,7 +243,7 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     deal = create_deal(
         org_id,
         name="Deal with Owner",
-        owner_external_id="owner_123",
+        owner_id=uuid4(),
         owner_name="John Sales",
         owner_email="john@example.com",
     )
@@ -477,7 +479,7 @@ def test_get_deal_with_owner(client: TestClient, deals_dependency_overrides):
     deal = create_deal(
         org_id,
         name="Deal with Owner",
-        owner_external_id="owner_456",
+        owner_id=uuid4(),
         owner_name="Jane Manager",
         owner_email="jane@example.com",
     )
@@ -504,7 +506,7 @@ def test_get_deal_with_team(client: TestClient, deals_dependency_overrides):
     deals_service.add_team_member(
         deal.deal_id,
         {
-            "external_id": "member_1",
+            "user_id": uuid4(),
             "name": "Team Member 1",
             "email": "member1@example.com",
             "role": "collaborator",
@@ -513,7 +515,7 @@ def test_get_deal_with_team(client: TestClient, deals_dependency_overrides):
     deals_service.add_team_member(
         deal.deal_id,
         {
-            "external_id": "member_2",
+            "user_id": uuid4(),
             "name": "Team Member 2",
             "email": "member2@example.com",
             "role": "split_owner",
@@ -724,7 +726,6 @@ def test_get_deal_with_company_industry(client: TestClient, deals_dependency_ove
     company = FakeCompany(
         company_id=uuid4(),
         organisation_id=org_id,
-        external_id="comp_123",
         name="Acme Corp",
         industry="Technology",
     )
@@ -734,7 +735,7 @@ def test_get_deal_with_company_industry(client: TestClient, deals_dependency_ove
     deal = create_deal(
         org_id,
         name="Company Deal",
-        company_external_id="comp_123",
+        company_id=company.company_id,
         company_name="Acme Corp",
     )
     deals_service.add_deal(deal)
@@ -764,7 +765,6 @@ def test_get_deal_with_summary_data(client: TestClient, deals_dependency_overrid
     body = resp.json()
     data = body["data"]
     assert data["deal_summary_data"] == summary_data
-    assert data["deal_summary_status"] == "COMPLETED"
 
 
 def test_get_deal_with_active_jobs(client: TestClient, deals_dependency_overrides):
@@ -800,10 +800,8 @@ def test_get_deal_with_active_jobs(client: TestClient, deals_dependency_override
     assert resp.status_code == 200
     body = resp.json()
     data = body["data"]
-    # Active jobs may not be populated if the fake service isn't properly integrated
-    # Just verify the response structure is correct
     assert "active_deal_jobs" in data
-    assert "deal_summary_status" in data
+    assert data["active_deal_jobs"]["deal_summary"]["status"] == "in_progress"
 
 
 def test_get_deal_with_active_stakeholder_processing_jobs(

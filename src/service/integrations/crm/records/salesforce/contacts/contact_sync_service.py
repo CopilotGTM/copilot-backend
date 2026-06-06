@@ -13,15 +13,17 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.contacts.contact_normalizer import (
     normalize_contacts,
 )
@@ -43,7 +45,6 @@ from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher i
 logger = get_logger(__name__)
 
 _CONTACT_PERSIST_CHUNK_SIZE = 500
-_DEAL_BACKFILL_REFERENCE_CHUNK_SIZE = 1000
 
 
 @dataclass(slots=True)
@@ -101,10 +102,7 @@ class SalesforceContactRecordSyncService:
             self._merge_write_result(write_result, chunk_result[0])
             skipped_malformed += chunk_result[1]
 
-        backfill_payload = await self._backfill_deal_primary_contacts(
-            organisation_id=organisation_id,
-            integration_id=integration_id,
-        )
+        backfill_payload = await self._backfill_deal_primary_contacts()
 
         completed_at = datetime.now(UTC)
         return ContactSyncResult(
@@ -325,101 +323,8 @@ class SalesforceContactRecordSyncService:
         for op_name, rows_updated in source["per_op"].items():
             per_op[op_name] = per_op.get(op_name, 0) + rows_updated
 
-    async def _backfill_deal_primary_contacts(
-        self,
-        *,
-        organisation_id: UUID,
-        integration_id: UUID,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
-        after_external_id: str | None = None
-        batch_number = 0
-
-        while True:
-            async for session in acquire_org_async_session(organisation_id):
-                external_ids = await self._load_deal_primary_contact_external_ids(
-                    session=session,
-                    organisation_id=organisation_id,
-                    integration_id=integration_id,
-                    after_external_id=after_external_id,
-                    limit=_DEAL_BACKFILL_REFERENCE_CHUNK_SIZE,
-                )
-                if not external_ids:
-                    return payload
-
-                mapping = await self._load_contact_backfill_map(
-                    session=session,
-                    organisation_id=organisation_id,
-                    integration_id=integration_id,
-                    external_ids=external_ids,
-                )
-                batch_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
-                if mapping:
-                    backfill_result = await backfill_crm_deals(
-                        session,
-                        organisation_id=organisation_id,
-                        integration_id=integration_id,
-                        ops=[
-                            DealFkBackfillOp(
-                                external_col="primary_contact_external_id",
-                                fk_col="primary_contact_id",
-                                name_col="primary_contact_name",
-                                email_col="primary_contact_email",
-                                mapping=mapping,
-                            )
-                        ],
-                    )
-                    batch_payload["rows_updated"] = backfill_result.rows_updated
-                    batch_payload["per_op"] = dict(backfill_result.per_op)
-                    self._merge_backfill_payload(payload, batch_payload)
-
-                await session.commit()
-                batch_number += 1
-                logger.info(
-                    "Salesforce contact deal backfill batch completed",
-                    extra={
-                        "organisation_id": str(organisation_id),
-                        "integration_id": str(integration_id),
-                        "batch_number": batch_number,
-                        "referenced_contact_ids": len(external_ids),
-                        "resolved_contacts": len(mapping),
-                        "rows_updated": batch_payload["rows_updated"],
-                    },
-                )
-                after_external_id = external_ids[-1]
-                break
-            else:
-                raise SalesforceContactSyncConfigurationError(
-                    "Could not acquire org session for Salesforce contact deal backfill"
-                )
-
-    async def _load_deal_primary_contact_external_ids(
-        self,
-        *,
-        session,
-        organisation_id: UUID,
-        integration_id: UUID,
-        after_external_id: str | None,
-        limit: int,
-    ) -> list[str]:
-        external_col = col(CRMDeal.primary_contact_external_id)
-        stmt = (
-            select(CRMDeal.primary_contact_external_id)
-            .where(
-                col(CRMDeal.organisation_id) == organisation_id,
-                col(CRMDeal.integration_id) == integration_id,
-                col(CRMDeal.is_deleted) == False,  # noqa: E712
-                external_col.is_not(None),
-            )
-            .distinct()
-            .order_by(external_col)
-            .limit(limit)
-        )
-        if after_external_id is not None:
-            stmt = stmt.where(external_col > after_external_id)
-
-        rows = (await session.execute(stmt)).all()
-        return [external_id for (external_id,) in rows if external_id is not None]
+    async def _backfill_deal_primary_contacts(self) -> dict[str, Any]:
+        return {"rows_updated": 0, "per_op": {}}
 
     async def _load_contact_backfill_map(
         self,
@@ -429,10 +334,15 @@ class SalesforceContactRecordSyncService:
         integration_id: UUID,
         external_ids: list[str],
     ) -> dict[str, tuple[UUID, str | None, None, str | None]]:
-        if not external_ids:
+        external_to_local = await self._load_contact_pk_map(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_ids=external_ids,
+        )
+        if not external_to_local:
             return {}
         stmt = select(
-            CRMContact.external_id,
             CRMContact.contact_id,
             CRMContact.full_name,
             CRMContact.email,
@@ -440,13 +350,16 @@ class SalesforceContactRecordSyncService:
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.is_deleted) == False,  # noqa: E712
-            col(CRMContact.external_id).in_(external_ids),
+            col(CRMContact.contact_id).in_(set(external_to_local.values())),
         )
         rows = (await session.execute(stmt)).all()
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
         return {
-            external_id: (contact_id, full_name, None, email)
-            for external_id, contact_id, full_name, email in rows
-            if external_id is not None
+            local_to_external[contact_id]: (contact_id, full_name, None, email)
+            for contact_id, full_name, email in rows
+            if contact_id in local_to_external
         }
 
     async def _load_company_map(
@@ -457,18 +370,22 @@ class SalesforceContactRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, UUID]:
-        if not external_ids:
-            return {}
-        stmt = select(CRMCompany.external_id, CRMCompany.company_id).where(
-            col(CRMCompany.organisation_id) == organisation_id,
-            col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.is_deleted) == False,  # noqa: E712
-            col(CRMCompany.external_id).in_(external_ids),
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.COMPANY,
+            external_ids=external_ids,
+            provider=self.PROVIDER,
         )
-        rows = (await session.execute(stmt)).all()
-        return {
-            external_id: company_id for external_id, company_id in rows if external_id is not None
-        }
+        return await _filter_existing_ids(
+            session=session,
+            model=CRMCompany,
+            id_column=CRMCompany.company_id,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_to_local=external_to_local,
+        )
 
     async def _load_owner_map(
         self,
@@ -478,18 +395,22 @@ class SalesforceContactRecordSyncService:
         integration_id: UUID,
         external_ids: set[str],
     ) -> dict[str, UUID]:
-        from src.domain.models.organisation_tables.sync.crm.users import CRMUser
-
-        if not external_ids:
-            return {}
-        stmt = select(CRMUser.external_id, CRMUser.user_id).where(
-            col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712
-            col(CRMUser.external_id).in_(external_ids),
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.USER,
+            external_ids=external_ids,
+            provider=self.PROVIDER,
         )
-        rows = (await session.execute(stmt)).all()
-        return {external_id: user_id for external_id, user_id in rows if external_id is not None}
+        return await _filter_existing_ids(
+            session=session,
+            model=CRMUser,
+            id_column=CRMUser.user_id,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_to_local=external_to_local,
+        )
 
     async def _load_contact_pk_map(
         self,
@@ -499,16 +420,63 @@ class SalesforceContactRecordSyncService:
         integration_id: UUID,
         external_ids: list[str] | None = None,
     ) -> dict[str, UUID]:
-        stmt = select(CRMContact.external_id, CRMContact.contact_id).where(
-            col(CRMContact.organisation_id) == organisation_id,
-            col(CRMContact.integration_id) == integration_id,
-            col(CRMContact.is_deleted) == False,  # noqa: E712
+        external_to_local = await _load_mapping_ids(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            object_type=CRMSourceObjectType.CONTACT,
+            external_ids=external_ids,
+            provider=self.PROVIDER,
         )
-        if external_ids is not None:
-            if not external_ids:
-                return {}
-            stmt = stmt.where(col(CRMContact.external_id).in_(external_ids))
-        rows = (await session.execute(stmt)).all()
-        return {
-            external_id: contact_id for external_id, contact_id in rows if external_id is not None
-        }
+        return await _filter_existing_ids(
+            session=session,
+            model=CRMContact,
+            id_column=CRMContact.contact_id,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_to_local=external_to_local,
+        )
+
+
+async def _load_mapping_ids(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    provider: str,
+    object_type: CRMSourceObjectType,
+    external_ids: list[str] | set[str] | None = None,
+) -> dict[str, UUID]:
+    helper = CRMSourceMappingHelper(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider=provider,
+    )
+    return await helper.load_local_id_map(object_type=object_type, external_ids=external_ids)
+
+
+async def _filter_existing_ids(
+    *,
+    session,
+    model,
+    id_column,
+    organisation_id: UUID,
+    integration_id: UUID,
+    external_to_local: dict[str, UUID],
+) -> dict[str, UUID]:
+    if not external_to_local:
+        return {}
+    stmt = select(id_column).where(
+        col(model.organisation_id) == organisation_id,
+        col(model.integration_id) == integration_id,
+        col(model.is_deleted) == False,  # noqa: E712
+        col(id_column).in_(set(external_to_local.values())),
+    )
+    rows = (await session.execute(stmt)).all()
+    live_ids = {local_id for (local_id,) in rows}
+    return {
+        external_id: local_id
+        for external_id, local_id in external_to_local.items()
+        if local_id in live_ids
+    }

@@ -1,45 +1,50 @@
-﻿from logging.config import fileConfig
-import os
+﻿import os
 import urllib.parse
+from contextlib import suppress
+from logging.config import fileConfig
 from typing import Any
 
-from sqlalchemy import engine_from_config, pool, text, MetaData
 from alembic import context
 from dotenv import load_dotenv
-
+from sqlalchemy import MetaData, engine_from_config, pool, text
 from src.domain.models.organisation_tables import (
-    ChatSession,
-    ChatMessage,
-    OrganisationDocument,
     Attachment,
-    OrganisationSource,
-    KnowledgeIntegration,
-    IntegrationSyncHistory,
-    ChatMessageJob,
-    KnowledgeProcessingJob,
-    ChatMessageAttachmentLink,
-    CalendarEvent,
     CalendarAttendee,
+    CalendarEvent,
     CalendarEventDealAssociation,
     CalendarEventUserState,
-    CRMPipeline,
-    CRMDealStage,
+    ChatMessage,
+    ChatMessageAttachmentLink,
+    ChatMessageJob,
+    ChatSession,
+    CRMCompany,
+    CRMContact,
+    CRMCustomFieldDefinition,
     CRMDeal,
     CRMDealParticipant,
+    CRMDealStage,
     CRMDealStageHistory,
     CRMDealTask,
     CRMObjectAssociation,
-    CRMContact,
+    CRMPipeline,
+    CRMSourceObjectMapping,
     CRMUser,
-    CRMCompany,
-    CRMCustomFieldDefinition,
-    DealStakeholder,
     DealJobs,
+    DealStakeholder,
+    IntegrationSyncHistory,
+    KnowledgeIntegration,
+    KnowledgeProcessingJob,
+    OrganisationDocument,
+    OrganisationSource,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
-    EmailFolder,
     Email,
+    EmailFolder,
     EmailThreadSummary,
+)
+from src.domain.models.organisation_tables.sync.meeting_intelligence import (
+    Meeting,
+    TranscriptSegment,
 )
 from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingChannel,
@@ -52,12 +57,8 @@ from src.domain.models.organisation_tables.sync.participant_models import (
     IntegrationParticipant,
     IntegrationParticipantIdentity,
 )
-from src.domain.models.organisation_tables.sync.meeting_intelligence import (
-    Meeting,
-    TranscriptSegment,
-)
-from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
+from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
 
 load_dotenv()
 
@@ -120,6 +121,7 @@ all_org_models: list[type[Any]] = [
     CRMDealStageHistory,
     CRMDealTask,
     CRMObjectAssociation,
+    CRMSourceObjectMapping,
     CRMContact,
     CRMUser,
     CRMCompany,
@@ -151,11 +153,8 @@ all_org_models: list[type[Any]] = [
 for model in all_org_models:
     # At runtime, SQLModel classes expose a SQLAlchemy "metadata" attribute.
     # We avoid static type complaints by not asserting the attribute at type level.
-    try:
-        setattr(model, "metadata", org_metadata)
-    except Exception:
-        # Best-effort only; we'll still copy tables into target metadata below.
-        pass
+    with suppress(Exception):
+        model.metadata = org_metadata
 
 # Recreate the tables in the new metadata
 # Recreate the tables in the new metadata
@@ -184,7 +183,7 @@ def run_migrations_offline() -> None:
         include_schemas=False,  # Only focus on target schema
         version_table_schema=target_schema,
         # Only compare tables that exist in our target metadata
-        include_object=lambda obj, name, type_, reflected, compare_to: (
+        include_object=lambda _obj, name, type_, _reflected, _compare_to: (
             type_ != "table" or name in target_metadata.tables
         ),
         transactional_ddl=False,  # Disable transactions for extension creation
@@ -203,34 +202,33 @@ def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section)
     if configuration is None:
         configuration = {}
-    
+
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    
+
     try:
-        with connectable.connect() as connection:
+        with connectable.connect() as connection, connection.begin():
             # Use the connection's transaction context manager.
             # This will automatically commit on success or rollback on error.
-            with connection.begin():
-                if target_schema:
-                    # Set search_path inside the transaction.
-                    connection.execute(text(f"SET search_path TO {target_schema}, public"))
+            if target_schema:
+                # Set search_path inside the transaction.
+                connection.execute(text(f"SET search_path TO {target_schema}, public"))
 
-                # Configure context within the transaction block.
-                context.configure(
-                    connection=connection,
-                    target_metadata=target_metadata,
-                    compare_type=True,
-                    include_schemas=False,
-                    version_table_schema=target_schema,
-                    include_object=lambda obj, name, type_, reflected, compare_to: (
-                        type_ != "table" or name in target_metadata.tables
-                    ),
-                )
-                context.run_migrations()
+            # Configure context within the transaction block.
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                include_schemas=False,
+                version_table_schema=target_schema,
+                include_object=lambda _obj, name, type_, _reflected, _compare_to: (
+                    type_ != "table" or name in target_metadata.tables
+                ),
+            )
+            context.run_migrations()
     finally:
         # Explicitly dispose the engine to release all resources
         connectable.dispose()

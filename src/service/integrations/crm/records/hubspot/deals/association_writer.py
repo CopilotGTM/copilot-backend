@@ -7,7 +7,7 @@ row with `from_object_type=DEAL`. Deal-centric consumers prefer
 many-to-many association graph (e.g. analytics, reporting, the
 associations agent tool) read this table.
 
-Synthesised external_id keeps the upsert idempotent across runs:
+Synthesised source mapping external_id keeps the upsert idempotent across runs:
 
     {from_external_id}:{from_object_type}:{to_object_type}:{to_external_id}:{type_id|''}
 
@@ -34,7 +34,11 @@ from src.domain.models.organisation_tables.sync.crm.associations import (
     CRMObjectAssociation,
     CRMObjectType,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.deals.deal_types import (
     AssociationWriteResult,
     DimensionHit,
@@ -57,6 +61,12 @@ class HubSpotDealAssociationWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.integration_id = integration_id
+        self.source_mappings = CRMSourceMappingHelper(
+            session=session,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider="hubspot",
+        )
 
     async def apply(
         self,
@@ -93,15 +103,14 @@ class HubSpotDealAssociationWriter:
             external_id = _synthetic_external_id(edge)
             existing = existing_by_external.get(external_id)
             if existing is None:
-                self.session.add(
-                    self._new_row(
-                        edge=edge,
-                        external_id=external_id,
-                        from_local_id=from_local_id,
-                        to_local_id=to_local_id,
-                        now=now,
-                    )
+                row = self._new_row(
+                    edge=edge,
+                    from_local_id=from_local_id,
+                    to_local_id=to_local_id,
+                    now=now,
                 )
+                self.session.add(row)
+                await self._upsert_source_mapping(edge, external_id, row.association_id, now=now)
                 result.associations_created += 1
             else:
                 self._apply_updates(
@@ -110,6 +119,10 @@ class HubSpotDealAssociationWriter:
                     from_local_id=from_local_id,
                     to_local_id=to_local_id,
                     now=now,
+                )
+                existing.is_deleted = False
+                await self._upsert_source_mapping(
+                    edge, external_id, existing.association_id, now=now
                 )
                 result.associations_updated += 1
 
@@ -143,20 +156,51 @@ class HubSpotDealAssociationWriter:
         return None
 
     async def _load_existing_rows(self) -> dict[str, CRMObjectAssociation]:
+        external_to_local = await self.source_mappings.load_local_id_map(
+            object_type=CRMSourceObjectType.ASSOCIATION,
+            include_deleted=True,
+        )
+        if not external_to_local:
+            return {}
         stmt = select(CRMObjectAssociation).where(
             col(CRMObjectAssociation.organisation_id) == self.organisation_id,
             col(CRMObjectAssociation.integration_id) == self.integration_id,
-            col(CRMObjectAssociation.is_deleted) == False,  # noqa: E712
             col(CRMObjectAssociation.from_object_type) == CRMObjectType.DEAL,
+            col(CRMObjectAssociation.association_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
-        return {r.external_id: r for r in rows if r.external_id is not None}
+        local_to_external = {
+            local_id: external_id for external_id, local_id in external_to_local.items()
+        }
+        return {
+            local_to_external[row.association_id]: row
+            for row in rows
+            if row.association_id in local_to_external
+        }
+
+    async def _upsert_source_mapping(
+        self,
+        edge: NormalizedDealAssociation,
+        external_id: str,
+        local_association_id: UUID,
+        *,
+        now: datetime,
+    ) -> None:
+        await self.source_mappings.upsert_integration_mapping(
+            external_object_type=CRMSourceObjectType.ASSOCIATION,
+            external_id=external_id,
+            local_object_type=CRMSourceObjectType.ASSOCIATION,
+            local_object_id=local_association_id,
+            data_payload=edge.data_payload,
+            source_created_at=None,
+            source_modified_at=None,
+            synced_at=now,
+        )
 
     def _new_row(
         self,
         *,
         edge: NormalizedDealAssociation,
-        external_id: str,
         from_local_id: UUID,
         to_local_id: UUID | None,
         now: datetime,
@@ -164,12 +208,9 @@ class HubSpotDealAssociationWriter:
         return CRMObjectAssociation(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            external_id=external_id,
             from_object_type=CRMObjectType(edge.from_object_type),
-            from_external_id=edge.from_external_id,
             from_local_id=from_local_id,
             to_object_type=CRMObjectType(edge.to_object_type),
-            to_external_id=edge.to_external_id,
             to_local_id=to_local_id,
             association_category=CRMAssociationCategory(edge.association_category),
             association_type_id=edge.association_type_id,
@@ -178,7 +219,6 @@ class HubSpotDealAssociationWriter:
             is_primary=edge.is_primary,
             synced_at=now,
             last_seen_at=now,
-            data_payload=edge.data_payload,
         )
 
     def _apply_updates(
@@ -199,7 +239,6 @@ class HubSpotDealAssociationWriter:
         row.is_primary = edge.is_primary
         row.synced_at = now
         row.last_seen_at = now
-        row.data_payload = edge.data_payload
 
 
 def _synthetic_external_id(edge: NormalizedDealAssociation) -> str:

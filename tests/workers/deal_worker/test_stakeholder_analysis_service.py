@@ -19,7 +19,6 @@ def _make_deal(*, stage_name: str, probability: float = 25.0):
         deal_id=uuid4(),
         stage_label=stage_name,
         stage_name=stage_name,
-        stage_external_id=stage_name.lower().replace(" ", "_"),
         forecast_category=None,
         probability=probability,
         deal_status=CRMDealStatus.OPEN,

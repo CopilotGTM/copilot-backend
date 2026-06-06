@@ -29,7 +29,7 @@ def test_list_tasks_empty(client: TestClient, tasks_dependency_overrides):
     body = resp.json()
     assert body["status"] == "SUCCESS"
     assert body["data"]["items"] == []
-    assert body["data"]["cursor"] is None
+    assert body["data"]["total_count"] == 0
 
 
 def test_list_tasks_success(client: TestClient, tasks_dependency_overrides):
@@ -63,7 +63,8 @@ def test_list_tasks_pagination_limit_1(client: TestClient, tasks_dependency_over
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body["data"]["items"]) == 1
-    assert body["data"]["cursor"] is not None  # More items available
+    assert body["data"]["total_count"] == 5
+    assert body["data"]["total_pages"] == 5
 
 
 def test_list_tasks_pagination_limit_max(client: TestClient, tasks_dependency_overrides):
@@ -189,23 +190,8 @@ def test_list_tasks_filter_non_task_types_returns_empty(
     assert len(body["data"]["items"]) == 0
 
 
-def test_list_tasks_invalid_cursor(client: TestClient, tasks_dependency_overrides):
-    """Test invalid cursor returns 400."""
-    service = tasks_dependency_overrides["service"]
-    org_id = tasks_dependency_overrides["user_ids"]["organisation_id"]
-    deal_id = uuid4()
-
-    service.add_task(create_task(deal_id, org_id))
-
-    resp = client.get(
-        f"/users/crm/deals/{deal_id}/tasks", params={"cursor": "invalid-cursor-string"}
-    )
-    # The service should catch this and return 400
-    assert resp.status_code == 400, resp.text
-
-
-def test_list_tasks_cursor_pagination(client: TestClient, tasks_dependency_overrides):
-    """Test multi-page cursor pagination works."""
+def test_list_tasks_page_pagination(client: TestClient, tasks_dependency_overrides):
+    """Test multi-page pagination works."""
     service = tasks_dependency_overrides["service"]
     org_id = tasks_dependency_overrides["user_ids"]["organisation_id"]
     deal_id = uuid4()
@@ -220,11 +206,11 @@ def test_list_tasks_cursor_pagination(client: TestClient, tasks_dependency_overr
     assert resp1.status_code == 200
     body1 = resp1.json()
     assert len(body1["data"]["items"]) == 2
-    cursor = body1["data"]["cursor"]
-    assert cursor is not None
+    assert body1["data"]["total_count"] == 5
+    assert body1["data"]["total_pages"] == 3
 
     # Get second page
-    resp2 = client.get(f"/users/crm/deals/{deal_id}/tasks", params={"limit": 2, "cursor": cursor})
+    resp2 = client.get(f"/users/crm/deals/{deal_id}/tasks", params={"limit": 2, "page": 2})
     assert resp2.status_code == 200
     body2 = resp2.json()
     assert len(body2["data"]["items"]) == 2
@@ -356,7 +342,7 @@ def test_get_task_includes_all_fields(client: TestClient, tasks_dependency_overr
 
     # Check key fields exist
     assert "task_id" in data
-    assert "external_id" in data
+    assert "external_id" not in data
     assert "subject" in data
     assert "body" in data
     assert "status" in data

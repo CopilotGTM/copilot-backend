@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.notes import note_sync_service
 from src.service.integrations.crm.records.salesforce.notes.note_sync_service import (
     SalesforceNoteRecordSyncService,
@@ -205,3 +208,110 @@ async def test_persist_loads_activity_maps_for_current_notes_only(
         "contact_external_ids": {"003A"},
         "company_external_ids": {"001A"},
     }
+
+
+@pytest.mark.asyncio
+async def test_dimension_maps_resolve_through_source_mappings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceNoteRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    company_id = uuid4()
+    mapping_calls: list[tuple[CRMSourceObjectType, set[str] | None]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def load_local_id_map(self, *, object_type, external_ids=None, **_kwargs):
+            mapping_calls.append((object_type, set(external_ids) if external_ids else None))
+            return {
+                CRMSourceObjectType.USER: {"005A": user_id},
+                CRMSourceObjectType.DEAL: {"006A": deal_id},
+                CRMSourceObjectType.CONTACT: {"003A": contact_id},
+                CRMSourceObjectType.COMPANY: {"001A": company_id},
+            }[object_type]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(all=lambda: [(user_id, "Owner", "owner@example.com")]),
+            SimpleNamespace(all=lambda: [(deal_id, "Big Deal")]),
+            SimpleNamespace(all=lambda: [(contact_id, "Alex Morgan", "alex@example.com")]),
+            SimpleNamespace(all=lambda: [(company_id, "Acme")]),
+        ]
+    )
+    monkeypatch.setattr(note_sync_service, "CRMSourceMappingHelper", FakeMappingHelper)
+
+    user_map = await service._load_user_map(session, organisation_id, integration_id, {"005A"})
+    deal_map = await service._load_deal_map(session, organisation_id, integration_id, {"006A"})
+    contact_map = await service._load_contact_map(
+        session, organisation_id, integration_id, {"003A"}
+    )
+    company_map = await service._load_company_map(
+        session, organisation_id, integration_id, {"001A"}
+    )
+
+    assert user_map["005A"].email == "owner@example.com"
+    assert deal_map["006A"].name == "Big Deal"
+    assert contact_map["003A"].name == "Alex Morgan"
+    assert company_map["001A"].internal_id == company_id
+    assert mapping_calls == [
+        (CRMSourceObjectType.USER, {"005A"}),
+        (CRMSourceObjectType.DEAL, {"006A"}),
+        (CRMSourceObjectType.CONTACT, {"003A"}),
+        (CRMSourceObjectType.COMPANY, {"001A"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_load_linked_entity_ids_uses_source_mappings_for_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceNoteRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    company_id = uuid4()
+    mapping_calls: list[tuple[CRMSourceObjectType, set[str] | None]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def load_local_id_map(self, *, object_type, external_ids=None, **_kwargs):
+            mapping_calls.append((object_type, set(external_ids) if external_ids else None))
+            return {
+                CRMSourceObjectType.DEAL: {"006A": deal_id, "006STALE": uuid4()},
+                CRMSourceObjectType.CONTACT: {"003A": contact_id},
+                CRMSourceObjectType.COMPANY: {"001A": company_id},
+            }[object_type]
+
+    class FakeSession:
+        execute = AsyncMock(
+            side_effect=[
+                SimpleNamespace(all=lambda: [(deal_id,)]),
+                SimpleNamespace(all=lambda: [(contact_id,)]),
+                SimpleNamespace(all=lambda: [(company_id,)]),
+            ]
+        )
+
+    async def fake_acquire_session(_organisation_id):
+        yield FakeSession()
+
+    monkeypatch.setattr(note_sync_service, "CRMSourceMappingHelper", FakeMappingHelper)
+    monkeypatch.setattr(note_sync_service, "acquire_org_async_session", fake_acquire_session)
+
+    linked_entity_ids = await service._load_linked_entity_ids(organisation_id, integration_id)
+
+    assert linked_entity_ids == ["006A", "003A", "001A"]
+    assert mapping_calls == [
+        (CRMSourceObjectType.DEAL, None),
+        (CRMSourceObjectType.CONTACT, None),
+        (CRMSourceObjectType.COMPANY, None),
+    ]

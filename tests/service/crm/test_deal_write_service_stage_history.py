@@ -40,7 +40,6 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
         pipeline_id=uuid4(),
         integration_id=uuid4(),
         stage_id=previous_stage_id,
-        stage_external_id="stage-old",
         stage_name="Discovery",
         stage_entered_at=previous_stage_entered_at,
         stage_updated_at=previous_stage_updated_at,
@@ -48,7 +47,7 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
         synced_at=None,
         last_seen_at=None,
     )
-    stage = SimpleNamespace(stage_id=next_stage_id, external_id="stage-new", name="Proposal")
+    stage = SimpleNamespace(stage_id=next_stage_id, name="Proposal")
 
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._load_stage = AsyncMock(return_value=stage)
@@ -57,7 +56,6 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
 
     assert updated is deal
     assert deal.stage_id == next_stage_id
-    assert deal.stage_external_id == "stage-new"
     assert deal.stage_name == "Proposal"
     assert deal.stage_entered_at is not None
     assert deal.stage_updated_at is not None
@@ -66,9 +64,10 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
 
     history = next(obj for obj in session.added if isinstance(obj, CRMDealStageHistory))
     assert history.stage_id == next_stage_id
-    assert history.stage_external_id == "stage-new"
+    assert not hasattr(history, "external_id")
+    assert not hasattr(history, "stage_external_id")
     assert history.from_stage_id == previous_stage_id
-    assert history.from_stage_external_id == "stage-old"
+    assert not hasattr(history, "from_stage_external_id")
     assert history.source == "api"
 
 
@@ -85,8 +84,8 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
     pipeline_id = uuid4()
     stage_id = uuid4()
     integration_id = uuid4()
-    pipeline = SimpleNamespace(pipeline_id=pipeline_id, external_id="pipe-1", name="Sales")
-    stage = SimpleNamespace(stage_id=stage_id, external_id="stage-1", name="Discovery")
+    pipeline = SimpleNamespace(pipeline_id=pipeline_id, name="Sales")
+    stage = SimpleNamespace(stage_id=stage_id, name="Discovery")
     integration = SimpleNamespace(integration_id=integration_id)
 
     service._get_default_pipeline = AsyncMock(return_value=pipeline)
@@ -99,14 +98,17 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
         deal = await service.create_deal({"name": "New Deal"})
 
     assert deal.stage_id == stage_id
-    assert deal.stage_external_id == "stage-1"
+    assert not hasattr(deal, "external_id")
+    assert not hasattr(deal, "pipeline_external_id")
+    assert not hasattr(deal, "stage_external_id")
     assert deal.stage_entered_at is not None
     assert deal.stage_updated_at is not None
     assert deal.stage_entered_at == deal.stage_updated_at
 
     history = next(obj for obj in session.added if isinstance(obj, CRMDealStageHistory))
     assert history.stage_id == stage_id
-    assert history.stage_external_id == "stage-1"
+    assert not hasattr(history, "external_id")
+    assert not hasattr(history, "stage_external_id")
     assert history.from_stage_id is None
-    assert history.from_stage_external_id is None
+    assert not hasattr(history, "from_stage_external_id")
     assert history.source == "api"

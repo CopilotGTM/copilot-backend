@@ -229,7 +229,7 @@ async def test_private_ingestion_persists_idempotency_columns(
     assert lead in session.added
     assert lead.ingestion_key_id == "skid_direct"
     assert lead.idempotency_key == "lead-123"
-    assert lead.data_payload["ingestion"]["idempotency_key"] == "lead-123"
+    assert lead.properties["_copilotgtm_ingestion"]["idempotency_key"] == "lead-123"
 
 
 @pytest.mark.asyncio

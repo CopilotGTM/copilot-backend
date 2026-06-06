@@ -246,8 +246,7 @@ class DealNotesService:
         Raises:
             DealNotesServiceError: If deal not found or access denied
         """
-        # Verify deal exists and get deal details
-        deal = await self._verify_deal_access(deal_id)
+        await self._verify_deal_access(deal_id)
 
         # Idempotency guard for double-submits/retries:
         # if an identical active user note already exists for this deal,
@@ -273,13 +272,10 @@ class DealNotesService:
             activity_id=note_id,
             organisation_id=self.organisation_id,
             integration_id=None,  # NULL indicates user-created
-            external_id=str(note_id),  # Use our UUID as external_id
             activity_type=CRMActivityType.NOTE.value,
             subject=subject,
             body=content,
             deal_id=deal_id,
-            deal_external_id=deal.external_id,
-            owner_external_id=str(user_id),  # Store user_id as string
             owner_name=user_name,
             owner_email=user_email,
             source=CRMActivitySource.MANUAL.value,
@@ -507,14 +503,6 @@ class DealNotesService:
             provider = provider_raw.strip().lower()
             if provider:
                 return provider
-
-        # Use external_id format as heuristic
-        # Salesforce IDs typically start with alphanumeric and are 15 or 18 chars
-        if note.external_id:
-            ext_id = note.external_id
-            # Salesforce IDs are 15 or 18 characters, alphanumeric
-            if len(ext_id) in (15, 18) and ext_id.isalnum():
-                return "salesforce"
 
         # Default to hubspot for CRM-synced notes
         return "hubspot"

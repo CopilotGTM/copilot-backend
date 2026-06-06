@@ -54,18 +54,9 @@ class CRMPipeline(SyncedRecordMixin, table=True):
     """CRM pipeline metadata (e.g., HubSpot deal pipeline)."""
 
     __tablename__ = "crm_pipelines"
-    __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_pipeline_external"),
-        Index("ix_crm_pipeline_org_name", "organisation_id", "name"),
-    )
+    __table_args__ = (Index("ix_crm_pipeline_org_name", "organisation_id", "name"),)
 
     pipeline_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the pipeline. Null for internal-only pipelines.",
-    )
-    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
     synced_at: datetime = Field(
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -111,7 +102,6 @@ class CRMDealStage(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_deal_stages"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_stage_external"),
         Index("ix_crm_stage_pipeline_order", "pipeline_id", "display_order"),
         Index("ix_crm_stage_org_name", "organisation_id", "name"),
         Index("ix_crm_deal_stage_pipeline_active", "pipeline_id", "is_active"),
@@ -127,12 +117,6 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the pipeline stage.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the stage. Null for internal-only stages.",
-    )
-
     # Labels
     name: str = Field(
         sa_column=Column(String(255), nullable=False, index=True),
@@ -202,13 +186,6 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         description="Most recent time this stage was observed during sync.",
     )
 
-    # Payload
-    data_payload: dict | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload for the stage.",
-    )
-
     pipeline: CRMPipeline | None = Relationship(back_populates="stages")
 
 
@@ -217,16 +194,12 @@ class CRMDeal(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_deals"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_deal_external"),
         Index("ix_crm_deal_org_stage", "organisation_id", "stage_id"),
         Index("ix_crm_deal_org_pipeline", "organisation_id", "pipeline_id"),
         Index("ix_crm_deal_created_by", "organisation_id", "created_by_user_id"),
         Index("ix_crm_deal_updated_by", "organisation_id", "updated_by_user_id"),
         Index("ix_crm_deal_company_id", "organisation_id", "company_id"),
         Index("ix_crm_deal_primary_contact_id", "organisation_id", "primary_contact_id"),
-        Index("ix_crm_deal_pipeline_external", "pipeline_external_id"),
-        Index("ix_crm_deal_stage_external", "stage_external_id"),
-        Index("ix_crm_deal_owner", "owner_external_id"),
         Index("ix_crm_deal_status", "organisation_id", "deal_status"),
         Index("ix_crm_deal_close_date", "close_date"),
         Index(
@@ -263,12 +236,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the normalised deal record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for the deal. Null for internal-only deals.",
-    )
-
     # Core business context
     name: str | None = Field(
         default=None,
@@ -335,11 +302,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
         description="Direct URL to the deal in the CRM provider portal.",
     )
     # Sales process snapshot
-    stage_external_id: str | None = Field(
-        default=None,
-        index=True,
-        description="Provider identifier for the stage the deal is currently in.",
-    )
     stage_name: str | None = Field(
         default=None,
         description="Provider stage name captured at sync time.",
@@ -347,11 +309,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
     stage_label: str | None = Field(
         default=None,
         description="Human-friendly stage label from the provider.",
-    )
-    pipeline_external_id: str | None = Field(
-        default=None,
-        index=True,
-        description="Provider identifier for the pipeline the deal belongs to.",
     )
     pipeline_name: str | None = Field(
         default=None,
@@ -395,11 +352,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
     )
 
     # Ownership & associations
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True, index=True),
-        description="Provider identifier for the user owning the deal.",
-    )
     owner_name: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
@@ -425,21 +377,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
         foreign_key="crm_users.user_id",
         description="Canonical internal CRM user ID for the actor that last updated this deal when resolved.",
     )
-    created_by_user_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Provider identifier for the user that originally created the deal.",
-    )
-    updated_by_user_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Provider identifier for the user that last updated the deal.",
-    )
-    company_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Associated company identifier provided by the CRM.",
-    )
     company_id: UUID | None = Field(
         default=None,
         foreign_key="crm_companies.company_id",
@@ -454,11 +391,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(255)),
         description="Domain/website of the associated company, if available.",
-    )
-    primary_contact_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Primary contact identifier linked to the deal.",
     )
     primary_contact_id: UUID | None = Field(
         default=None,
@@ -554,17 +486,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
         default=None,
         description="Number of notes logged on the deal as reported by the provider.",
     )
-    associations_payload: dict[str, Any] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Raw associations block from provider",
-    )
-    data_payload: dict | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload used for troubleshooting and replay.",
-    )
-
     # AI-generated content (not synced from CRM)
     deal_summary_data: dict | None = Field(
         default=None,
@@ -584,16 +505,15 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_deal_participants"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_deal_participant_external"),
         UniqueConstraint(
             "deal_id",
             "participant_type",
-            "related_external_id",
+            "related_local_id",
             "relationship_role",
             name="uq_crm_deal_participant_unique",
         ),
         Index("ix_crm_deal_participant_type", "participant_type"),
-        Index("ix_crm_deal_participant_related", "related_external_id"),
+        Index("ix_crm_deal_participant_related", "related_local_id"),
         Index("ix_crm_deal_participant_org", "organisation_id", "participant_type"),
         Index(
             "ix_crm_deal_participant_org_deal_type_active",
@@ -610,12 +530,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the deal participant record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider-supplied unique identifier for this participant link. Null for internal-only links.",
-    )
-
     # Linkage
     deal_id: UUID = Field(
         foreign_key="crm_deals.deal_id",
@@ -633,11 +547,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
     )
 
     # Related entity identifiers
-    related_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider ID of the related entity (e.g., contact or company). Null for internal-only related rows.",
-    )
     related_local_id: UUID | None = Field(
         default=None,
         index=True,
@@ -671,13 +580,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         description="Most recent time this link was observed during sync.",
     )
 
-    # Payload
-    data_payload: dict | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload for the participant link.",
-    )
-
     deal: CRMDeal | None = Relationship(back_populates="participants")
 
 
@@ -685,12 +587,7 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
     """Stage transition history for deals."""
 
     __tablename__ = "crm_deal_stage_history"
-    __table_args__ = (
-        UniqueConstraint(
-            "integration_id", "external_id", name="uq_crm_deal_stage_history_external"
-        ),
-        Index("ix_crm_stage_history_deal", "deal_id", "entered_at"),
-    )
+    __table_args__ = (Index("ix_crm_stage_history_deal", "deal_id", "entered_at"),)
 
     # Identity
     history_id: UUID = Field(
@@ -698,12 +595,6 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
         primary_key=True,
         description="Internal UUID for the stage transition record.",
     )
-    external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Provider unique identifier for the transition event, if any. Null for internal-only history rows.",
-    )
-
     # Deal and stage linkage
     deal_id: UUID = Field(
         foreign_key="crm_deals.deal_id",
@@ -722,17 +613,6 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
         index=True,
         description="Internal stage ID (FK) the deal exited from, when resolved.",
     )
-    stage_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Provider stage ID the deal entered.",
-    )
-    from_stage_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Provider stage ID the deal exited.",
-    )
-
     # Transition timing
     entered_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -781,13 +661,6 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent time this transition was observed during sync.",
-    )
-
-    # Payload
-    data_payload: dict | None = Field(
-        default=None,
-        sa_column=Column(JSONB),
-        description="Raw provider payload for the transition event.",
     )
 
     deal: CRMDeal | None = Relationship(back_populates="stage_history")

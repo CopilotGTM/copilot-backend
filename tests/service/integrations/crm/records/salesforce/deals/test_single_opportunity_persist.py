@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -8,6 +10,7 @@ from src.domain.models.organisation_tables.sync.crm.associations import (
     CRMObjectType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus, CRMParticipantType
+from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.deals import deal_sync_service
 from src.service.integrations.crm.records.salesforce.deals.deal_sync_service import (
     SalesforceDealRecordSyncService,
@@ -320,6 +323,110 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
         "company_external_ids": {"001A", "001B"},
         "contact_external_ids": {"003A", "003B"},
     }
+
+
+@pytest.mark.asyncio
+async def test_load_deal_pk_map_uses_source_mappings_and_filters_missing_local_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    live_deal_id = uuid4()
+    stale_deal_id = uuid4()
+    mapping_calls: list[tuple[CRMSourceObjectType, set[str] | None]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def load_local_id_map(self, *, object_type, external_ids=None, **_kwargs):
+            mapping_calls.append((object_type, set(external_ids) if external_ids else None))
+            return {"006A": live_deal_id, "006STALE": stale_deal_id}
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: [(live_deal_id,)]))
+    monkeypatch.setattr(
+        deal_sync_service,
+        "CRMSourceMappingHelper",
+        FakeMappingHelper,
+        raising=False,
+    )
+
+    result = await service._load_deal_pk_map(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_ids={"006A", "006STALE"},
+    )
+
+    assert result == {"006A": live_deal_id}
+    assert mapping_calls == [(CRMSourceObjectType.DEAL, {"006A", "006STALE"})]
+
+
+@pytest.mark.asyncio
+async def test_load_resolution_maps_uses_source_mappings_for_all_deal_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    user_id = uuid4()
+    company_id = uuid4()
+    contact_id = uuid4()
+    mapping_calls: list[tuple[CRMSourceObjectType, set[str] | None]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def load_local_id_map(self, *, object_type, external_ids=None, **_kwargs):
+            mapping_calls.append((object_type, set(external_ids) if external_ids else None))
+            return {
+                CRMSourceObjectType.PIPELINE: {"012A": pipeline_id},
+                CRMSourceObjectType.STAGE: {"012A:Prospecting": stage_id},
+                CRMSourceObjectType.USER: {"005A": user_id},
+                CRMSourceObjectType.COMPANY: {"001A": company_id},
+                CRMSourceObjectType.CONTACT: {"003A": contact_id},
+            }[object_type]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(all=lambda: [(pipeline_id, "Enterprise", "Enterprise")]),
+            SimpleNamespace(all=lambda: [(stage_id, "Prospecting", "Prospecting", pipeline_id)]),
+            SimpleNamespace(all=lambda: [(user_id, "Owner", "owner@example.com")]),
+            SimpleNamespace(all=lambda: [(company_id, "Acme", "acme.com")]),
+            SimpleNamespace(all=lambda: [(contact_id, "Alex Morgan", "alex@example.com")]),
+        ]
+    )
+    monkeypatch.setattr(deal_sync_service, "CRMSourceMappingHelper", FakeMappingHelper)
+
+    maps = await service._load_resolution_maps(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        pipeline_external_ids={"012A"},
+        stage_external_ids={"012A:Prospecting"},
+        user_external_ids={"005A"},
+        company_external_ids={"001A"},
+        contact_external_ids={"003A"},
+    )
+
+    assert maps.pipeline_map["012A"].internal_id == pipeline_id
+    assert maps.stage_map["012A:Prospecting"].pipeline_id == pipeline_id
+    assert maps.user_map["005A"].email == "owner@example.com"
+    assert maps.company_map["001A"].domain == "acme.com"
+    assert maps.contact_map["003A"].name == "Alex Morgan"
+    assert mapping_calls == [
+        (CRMSourceObjectType.PIPELINE, {"012A"}),
+        (CRMSourceObjectType.STAGE, {"012A:Prospecting"}),
+        (CRMSourceObjectType.USER, {"005A"}),
+        (CRMSourceObjectType.COMPANY, {"001A"}),
+        (CRMSourceObjectType.CONTACT, {"003A"}),
+    ]
 
 
 @pytest.mark.asyncio

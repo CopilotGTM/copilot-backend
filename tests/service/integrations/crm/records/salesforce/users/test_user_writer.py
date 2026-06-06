@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.integrations.crm.records.salesforce.users.user_sync_service import (
     _backfill_owner_tables,
@@ -48,7 +51,6 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
         user_id=matched_user_id,
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="005A",
         email="owner@acme.com",
         full_name="Alex Morgan",
         is_active=True,
@@ -63,6 +65,10 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005A": existing})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -101,8 +107,17 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
     assert result.users_minted_uuid == 1
     created_rows = [call.args[0] for call in session.add.call_args_list]
     assert len(created_rows) == 1
-    assert created_rows[0].external_id == "005C"
+    assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].is_active is False
+    mapped_external_ids = [
+        call.kwargs["external_id"]
+        for call in mapping_helper.upsert_integration_mapping.call_args_list
+    ]
+    assert mapped_external_ids == ["005A", "005C"]
+    assert (
+        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
+        == CRMSourceObjectType.USER
+    )
 
 
 @pytest.mark.asyncio
@@ -113,7 +128,6 @@ async def test_writer_deactivates_missing_rows_but_keeps_present_inactive_rows()
         user_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="005A",
         email="former@acme.com",
         full_name="Former Owner",
         is_active=False,
@@ -122,7 +136,6 @@ async def test_writer_deactivates_missing_rows_but_keeps_present_inactive_rows()
         user_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="005B",
         email="stale@acme.com",
         full_name="Stale Owner",
         is_active=True,
@@ -137,6 +150,10 @@ async def test_writer_deactivates_missing_rows_but_keeps_present_inactive_rows()
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"005A": existing_inactive, "005B": stale_missing}
     )
@@ -170,7 +187,6 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
         user_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="005B",
         email="stale@acme.com",
         full_name="Stale Owner",
         is_active=True,
@@ -185,6 +201,10 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005B": stale_missing})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -208,27 +228,23 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
 
 
 @pytest.mark.asyncio
-async def test_owner_activity_backfill_is_scoped_to_salesforce_tasks_and_notes() -> None:
+async def test_owner_table_backfill_is_disabled_after_provider_column_removal() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
     owner_id = uuid4()
     session = AsyncMock()
     session.execute = AsyncMock(return_value=MagicMock(rowcount=0))
 
-    await _backfill_owner_tables(
+    result = await _backfill_owner_tables(
         session=session,
         organisation_id=organisation_id,
         integration_id=integration_id,
         owner_mapping={"005A": (owner_id, "Alex Morgan", None, "owner@acme.com")},
     )
 
-    activity_statement = session.execute.call_args_list[-1].args[0]
-    sql_text = str(activity_statement)
-    assert "UPDATE crm_activities SET" in sql_text
-    assert "activity_type IN" in sql_text
-    assert "activity_types" in sql_text
-    assert session.execute.call_args_list[-1].args[1]["activity_types"] == (
-        "TASK",
-        "TODO",
-        "NOTE",
-    )
+    assert result == {
+        "crm_companies.owner_id": 0,
+        "crm_contacts.owner_id": 0,
+        "crm_activities.owner_id": 0,
+    }
+    session.execute.assert_not_called()

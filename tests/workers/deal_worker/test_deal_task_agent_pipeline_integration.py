@@ -127,7 +127,8 @@ async def test_task_sync_creates_task_with_no_assignee() -> None:
     )
 
     assert result.created is True
-    assert result.task.owner_external_id is None
+    assert not hasattr(result.task, "owner_external_id")
+    assert result.task.owner_id is None
     assert result.task.properties["assignee_resolution"]["status"] == "not_provided"
 
 
@@ -154,7 +155,8 @@ async def test_task_sync_creates_task_with_resolved_assignee() -> None:
     )
 
     assert result.created is True
-    assert result.task.owner_external_id == str(owner_id)
+    assert not hasattr(result.task, "owner_external_id")
+    assert result.task.owner_id == owner_id
     assert result.task.owner_name == "Alex Morgan"
 
 
