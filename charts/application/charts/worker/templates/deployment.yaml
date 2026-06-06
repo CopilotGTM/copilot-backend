@@ -147,12 +147,13 @@ spec:
                   - /bin/sh
                   - -c
                   - >-
-                    echo "[preStop] Draining Celery worker: stopping consumers for queues {{ join "," $drainQueues }}";
+                    WORKER_NODE="celery@$HOSTNAME";
+                    echo "[preStop] Draining Celery worker $WORKER_NODE: stopping consumers for queues {{ join "," $drainQueues }}";
                     {{- range $queue := $drainQueues }}
-                    celery -A {{ $workerApp }} control cancel_consumer {{ $queue }} || true;
+                    celery -A {{ $workerApp }} control cancel_consumer {{ $queue }} --destination "$WORKER_NODE" || true;
                     {{- end }}
                     {{- if .Values.shutdown.remoteShutdown }} echo "[preStop] Optional remote shutdown after drain"; celery -A \
-                    {{ $workerApp }} control shutdown || true; {{- end }}
+                    {{ $workerApp }} control shutdown --destination "$WORKER_NODE" || true; {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
