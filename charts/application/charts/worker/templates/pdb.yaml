@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "worker.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.pdb.minAvailable | default 1 }}
+  minAvailable: {{ if hasKey .Values.pdb "minAvailable" }}{{ .Values.pdb.minAvailable }}{{ else }}1{{ end }}
   selector:
     matchLabels:
       {{- include "worker.selectorLabels" . | nindent 6 }}

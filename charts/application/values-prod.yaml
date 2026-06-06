@@ -45,13 +45,15 @@ api:
       cpu: 1500m
       memory: 6Gi
     requests:
-      cpu: 1000m
-      memory: 3Gi
+      cpu: 500m
+      memory: 1Gi
 
 knowledge-upload-worker:
+  autoscaling:
+    minReplicas: 0
   resources:
     requests:
-      cpu: "500m"
+      cpu: "250m"
       memory: "1Gi"
     limits:
       cpu: "1500m"
@@ -74,8 +76,8 @@ chat-worker:
     maxMemoryPerChildKb: 700000
   resources:
     requests:
-      cpu: "500m"
-      memory: "1.5Gi"
+      cpu: "250m"
+      memory: "1Gi"
     limits:
       cpu: "1500m"
       memory: "2.5Gi"
@@ -110,7 +112,7 @@ deal-worker:
       minDeltaMb: 0
   resources:
     requests:
-      cpu: "500m"
+      cpu: "250m"
       memory: "1Gi"
     limits:
       cpu: "1000m"

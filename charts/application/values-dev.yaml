@@ -38,14 +38,14 @@ api:
     WHATSAPP_BOT_PHONE_NUMBER: "+15556300848"
   autoscaling:
     minReplicas: 1
-  # Actual usage: 6m CPU, 427Mi memory
+  # Actual usage: 4-8m CPU, ~500Mi memory; keep request above baseline so HPA does not scale dev API on idle memory.
   resources:
     limits:
       cpu: 500m
       memory: 1536Mi
     requests:
       cpu: 50m
-      memory: 512Mi
+      memory: 1Gi
 
 knowledge-upload-worker:
   # Actual usage: 3m CPU, 985Mi memory

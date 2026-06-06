@@ -27,10 +27,6 @@ variables:
   - name: PYTHON_VERSION
     value: '3.11'
 
-  # Flower UI (Celery monitoring)
-  - name: ENABLE_FLOWER
-    value: 'true'
-
   # Observability Stack (Loki + Promtail + Grafana)
   # DISABLED in prod - enable only for targeted debugging sessions
   - name: ENABLE_OBSERVABILITY
@@ -558,9 +554,6 @@ stages:
 
                 - script: |
                     EXTRA_HELM_ARGS=""
-                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
-                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
-                    fi
                     if [ "$(ENABLE_OBSERVABILITY)" = "true" ]; then
                       EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set loki.enabled=true --set promtail.enabled=true --set grafana.enabled=true"
                     fi
