@@ -153,13 +153,13 @@ def upgrade() -> None:
         ALTER TABLE crm_object_associations
         ADD CONSTRAINT uq_crm_object_association_logical
         UNIQUE (
+            organisation_id,
             integration_id,
             from_object_type,
             from_local_id,
             to_object_type,
             to_local_id,
-            association_type,
-            role_label
+            association_type_id
         )
         """
     )
