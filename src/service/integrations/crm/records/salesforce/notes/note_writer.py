@@ -19,6 +19,9 @@ from src.service.integrations.crm.records.salesforce.notes.note_types import (
 
 logger = get_logger(__name__)
 
+_ASYNC_PG_BIND_PARAMETER_LIMIT = 32_767
+_BULK_UPSERT_PARAMETER_BUDGET = 24_000
+
 
 class SalesforceNoteWriter:
     """Active-snapshot writer for Salesforce notes into crm_activities."""
@@ -135,6 +138,13 @@ class SalesforceNoteWriter:
         return result
 
     async def _bulk_upsert(self, rows: list[dict]) -> None:
+        if not rows:
+            return
+        max_rows_per_statement = max(1, _BULK_UPSERT_PARAMETER_BUDGET // len(rows[0]))
+        for offset in range(0, len(rows), max_rows_per_statement):
+            await self._bulk_upsert_chunk(rows[offset : offset + max_rows_per_statement])
+
+    async def _bulk_upsert_chunk(self, rows: list[dict]) -> None:
         insert_stmt = pg_insert(CRMActivity).values(rows)
         excluded = insert_stmt.excluded
         update_columns = {
