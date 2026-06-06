@@ -114,10 +114,7 @@ class MeetingRecordingSessionService:
                                 MeetingRecordingStatus.FAILED,
                             ]
                         ),
-                        (
-                            col(MeetingRecordingSession.status)
-                            == MeetingRecordingStatus.SEND_QUEUED
-                        )
+                        (col(MeetingRecordingSession.status) == MeetingRecordingStatus.SEND_QUEUED)
                         & (col(MeetingRecordingSession.updated_at) < stale_before),
                     ),
                 )

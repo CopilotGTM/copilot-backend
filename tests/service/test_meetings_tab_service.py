@@ -97,7 +97,9 @@ def test_platform_label_mapping_uses_provider_and_link_signals() -> None:
 
     assert (
         service._platform_label(  # noqa: SLF001
-            SimpleNamespace(online_meeting_provider="googleMeet", provider="google", conference_link=None)
+            SimpleNamespace(
+                online_meeting_provider="googleMeet", provider="google", conference_link=None
+            )
         )
         == "Google Meet"
     )
