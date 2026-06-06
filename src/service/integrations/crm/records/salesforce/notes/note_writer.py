@@ -154,7 +154,7 @@ class SalesforceNoteWriter:
         }
         update_columns["updated_at"] = datetime.now(UTC)
         stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[CRMActivity.integration_id, CRMActivity.external_id],
+            index_elements=["integration_id", "external_id"],
             index_where=col(CRMActivity.integration_id).is_not(None),
             set_=update_columns,
         )
