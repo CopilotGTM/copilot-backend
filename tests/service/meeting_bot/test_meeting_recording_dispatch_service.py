@@ -189,6 +189,109 @@ class TestMeetingRecordingDispatchService:
         service._build_provider.assert_not_awaited()  # noqa: SLF001
 
     @pytest.mark.asyncio
+    async def test_dispatch_event_reopens_cancelled_session_for_manual_reinvite(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only explicit user re-invite can reset a durable cancellation."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        cancelled = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            status=MeetingRecordingStatus.CANCELLED,
+            provider_payload={},
+            sent_to_provider_at=None,
+        )
+        reset = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            status=MeetingRecordingStatus.PENDING_SEND,
+            sent_to_provider_at=None,
+        )
+        queued = SimpleNamespace(
+            session_id=session_id,
+            status=MeetingRecordingStatus.SEND_QUEUED,
+            sent_to_provider_at=None,
+            _send_claimed=True,
+        )
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(return_value=cancelled),
+            reset_cancelled_for_reinvite=AsyncMock(return_value=reset),
+            mark_send_queued=AsyncMock(return_value=queued),
+            mark_sent=AsyncMock(return_value=queued),
+        )
+        provider = SimpleNamespace(
+            create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"})
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id, allow_cancelled_reinvite=True)
+
+        assert result["status"] == "sent"
+        service._session_service.reset_cancelled_for_reinvite.assert_awaited_once()  # noqa: SLF001
+        provider.create_session.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_blocks_reinvite_until_cancel_cleanup_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A previous provider-cancel failure blocks replacement bot creation."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=uuid4(),
+                    dedupe_key="meeting-recording-key",
+                    status=MeetingRecordingStatus.CANCELLED,
+                    provider_payload={"last_cancel_error": {"detail": "outage"}},
+                    sent_to_provider_at=None,
+                )
+            ),
+            reset_cancelled_for_reinvite=AsyncMock(),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        service._build_provider = AsyncMock()  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id, allow_cancelled_reinvite=True)
+
+        assert result == {
+            "status": "skipped",
+            "reason": "cancel_cleanup_required",
+            "calendar_event_id": str(event_id),
+        }
+        service._session_service.reset_cancelled_for_reinvite.assert_not_awaited()  # noqa: SLF001
+        service._build_provider.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
     async def test_dispatch_event_stops_when_session_cancelled_before_provider_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -282,6 +385,57 @@ class TestMeetingRecordingDispatchService:
         }
         service._build_provider.assert_not_awaited()  # noqa: SLF001
         service._session_service.mark_sent.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_does_not_call_provider_when_send_is_in_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A concurrent invite that loses the atomic claim cannot create a second bot."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    dedupe_key="meeting-recording-key",
+                    status=MeetingRecordingStatus.SEND_QUEUED,
+                    sent_to_provider_at=None,
+                )
+            ),
+            mark_send_queued=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    status=MeetingRecordingStatus.SEND_QUEUED,
+                    sent_to_provider_at=None,
+                    _send_claimed=False,
+                )
+            ),
+            mark_sent=AsyncMock(),
+        )
+        service._build_provider = AsyncMock()  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "skipped",
+            "reason": "send_in_progress",
+            "calendar_event_id": str(event_id),
+        }
+        service._build_provider.assert_not_awaited()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dispatch_event_cancels_provider_bot_when_session_cancelled_during_create(

@@ -200,7 +200,13 @@ class DealMeetingJobService:
             DealMeetingJobServiceError: If the event doesn't exist or a
                 fetch/processing job is already running (FETCHING/PROCESSING).
         """
-        event = await self.session.get(CalendarEvent, event_id)
+        # Event id is client-controlled through the API path, so the org filter
+        # remains the trust boundary even though event UUIDs are globally unique.
+        event_stmt = select(CalendarEvent).where(
+            col(CalendarEvent.organisation_id) == self.organisation_id,
+            col(CalendarEvent.event_id) == event_id,
+        )
+        event = (await self.session.execute(event_stmt)).scalars().first()
         if not event:
             raise DealMeetingJobServiceError("Calendar event not found.", status_code=404)
 

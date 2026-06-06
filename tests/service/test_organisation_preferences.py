@@ -18,6 +18,8 @@ def test_missing_preferences_default_to_internal_crm_and_all_channels():
     }
     assert "deals:create" in preferences["crm"]["write_policy"]["allowed_scopes"]
     assert "leads:create" in preferences["crm"]["write_policy"]["allowed_scopes"]
+    assert "meetings:create" in preferences["crm"]["write_policy"]["allowed_scopes"]
+    assert "meetings:update" in preferences["crm"]["write_policy"]["allowed_scopes"]
     assert preferences["channels"] == {
         "enabled": ["slack", "whatsapp", "teams", "google_chat"],
     }
@@ -123,3 +125,8 @@ def test_merge_organisation_app_settings_preserves_google_scope_preferences():
 
     assert preferences["integrations"]["google"] == {"gmail_read_enabled": True}
     assert preferences["integrations"]["microsoft"] == {"admin_consent": {"granted": True}}
+
+
+def test_meetings_write_scopes_are_allowed_for_internal_crm() -> None:
+    assert has_crm_write_scope({"crm": {"provider": "copilotgtm"}}, "meetings:create") is True
+    assert has_crm_write_scope({"crm": {"provider": "copilotgtm"}}, "meetings:update") is True

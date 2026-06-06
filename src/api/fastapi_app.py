@@ -75,6 +75,7 @@ from src.api.routers.knowledge_base.upload_handler import (
     upload_router as knowledge_upload_router,
 )
 from src.api.routers.meeting_bot import meeting_bot_router
+from src.api.routers.meetings_tab_handler import meetings_tab_router
 from src.api.routers.private import private_lead_ingestion_router
 from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
@@ -279,6 +280,10 @@ def create_fastapi_app():
 
     # Dashboard routers
     fastapp.include_router(sales_dashboard_router, prefix="/users/dashboard", tags=["dashboard"])
+
+    # Top-level Meetings tab. Deal-scoped meeting generation routes remain under
+    # `/users/crm/deals` so existing prep/summary/follow-up clients are unchanged.
+    fastapp.include_router(meetings_tab_router, prefix="/users/meetings", tags=["meetings"])
 
     # CRM routers
     fastapp.include_router(crm_meetings_router, prefix="/users/crm", tags=["crm-meetings"])
