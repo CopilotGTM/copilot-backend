@@ -75,6 +75,7 @@ target_metadata = master_metadata
 # grab the --x schema=org_id argument (if any)
 x_args = context.get_x_argument(as_dictionary=True)
 target_schema = x_args.get("schema")  # e.g. "org_123"
+version_table_schema = target_schema or "public"
 
 
 def include_object(object, name, type_, reflected, compare_to):
@@ -108,7 +109,7 @@ def run_migrations_offline() -> None:
         compare_type=True,
         include_schemas=False,  # Explicitly set to False
         include_object=include_object,  # Use the custom include_object function
-        version_table_schema=target_schema,
+        version_table_schema=version_table_schema,
     )
 
     # emit a CREATE SCHEMA if it doesn’t exist
@@ -139,7 +140,7 @@ def run_migrations_online() -> None:
                 compare_type=True,
                 include_schemas=False,  # Explicitly set to False
                 include_object=include_object,  # Use the custom include_object function
-                version_table_schema=target_schema,
+                version_table_schema=version_table_schema,
             )
 
             with context.begin_transaction():
