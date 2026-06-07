@@ -83,6 +83,7 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"003A": existing})  # type: ignore[method-assign]
 
@@ -114,15 +115,15 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
     assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].company_id == company_id
     assert created_rows[0].owner_id == owner_id
-    mapped_external_ids = [
-        call.kwargs["external_id"]
-        for call in mapping_helper.upsert_integration_mapping.call_args_list
-    ]
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    mapped_external_ids = [row.external_id for row in mapped_rows]
     assert mapped_external_ids == ["003A", "003B"]
-    assert (
-        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
-        == CRMSourceObjectType.CONTACT
-    )
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.CONTACT
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.CONTACT
+    assert mapped_rows[0].local_object_id == existing.contact_id
+    assert mapped_rows[1].local_object_id == created_rows[0].contact_id
 
 
 @pytest.mark.asyncio
@@ -152,6 +153,7 @@ async def test_writer_reactivates_soft_deleted_contact_without_inserting_duplica
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"003A": existing})  # type: ignore[method-assign]
 

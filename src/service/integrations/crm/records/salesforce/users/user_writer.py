@@ -14,7 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.users.user_types import (
     NormalizedSalesforceUser,
     UserMatchResult,
@@ -56,6 +59,7 @@ class SalesforceUserWriter:
 
         existing_by_external = await self._load_existing_rows()
         claimed_user_ids: set[UUID] = {row.user_id for row in existing_by_external.values()}
+        mapping_rows: list[IntegrationMappingUpsert] = []
 
         for match in matches:
             user = match.user
@@ -67,7 +71,7 @@ class SalesforceUserWriter:
                 was_deleted = bool(existing.is_deleted)
                 self._apply_updates(existing, user, now=now)
                 existing.is_deleted = False
-                await self._upsert_source_mapping(user, existing.user_id, now=now)
+                mapping_rows.append(self._source_mapping_row(user, existing.user_id, now=now))
                 if was_deleted or (incoming_active and not was_active):
                     result.users_reactivated += 1
                 else:
@@ -90,7 +94,7 @@ class SalesforceUserWriter:
 
             row = self._new_row(user, user_id, now=now)
             self.session.add(row)
-            await self._upsert_source_mapping(user, row.user_id, now=now)
+            mapping_rows.append(self._source_mapping_row(user, row.user_id, now=now))
             claimed_user_ids.add(user_id)
             result.users_created += 1
             if came_from_public:
@@ -111,6 +115,9 @@ class SalesforceUserWriter:
                 object_type=CRMSourceObjectType.USER,
                 seen_external_ids=snapshot_external_ids,
             )
+
+        if mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
         logger.info(
@@ -163,14 +170,14 @@ class SalesforceUserWriter:
             local_to_external[row.user_id]: row for row in rows if row.user_id in local_to_external
         }
 
-    async def _upsert_source_mapping(
+    def _source_mapping_row(
         self,
         user: NormalizedSalesforceUser,
         local_user_id: UUID,
         *,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.USER,
             external_id=user.external_id,
             local_object_type=CRMSourceObjectType.USER,

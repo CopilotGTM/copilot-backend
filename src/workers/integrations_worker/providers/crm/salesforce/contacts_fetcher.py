@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 _DEFAULT_TIMEOUT = 60.0
 _API_VERSION = "v61.0"
 _MAX_PAGES = 1_500_000
-_QUERY_BATCH_SIZE = 500
+_QUERY_BATCH_SIZE = 2_000
 _MAX_ERROR_BODY_CHARS = 500
 _REQUIRED_FIELDS = {"Id", "CreatedDate", "LastModifiedDate"}
 _EXCLUDED_FIELD_TYPES = {"address", "location", "base64"}
@@ -71,7 +71,7 @@ class SalesforceContactsFetcher:
         field_names = await self._fetch_field_names()
         # The field list comes only from Salesforce describe metadata after
         # filtering out known non-selectable field shapes; no user input reaches this SOQL.
-        soql = f"SELECT {', '.join(field_names)} FROM Contact ORDER BY LastName, FirstName"  # noqa: S608  # nosec B608
+        soql = f"SELECT {', '.join(field_names)} FROM Contact ORDER BY Id"  # noqa: S608  # nosec B608
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
         next_url: str | None = None
         page_count = 0

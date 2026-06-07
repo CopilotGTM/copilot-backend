@@ -13,7 +13,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DimensionHit,
     NormalizedSalesforceStageTransition,
@@ -57,6 +60,7 @@ class SalesforceDealStageHistoryWriter:
         existing_by_external = await self._load_existing_rows(
             external_ids={_synthetic_external_id(transition) for transition in transitions}
         )
+        mapping_rows: list[IntegrationMappingUpsert] = []
 
         for transition in transitions:
             deal_id = deal_pk_map.get(transition.deal_external_id)
@@ -90,11 +94,13 @@ class SalesforceDealStageHistoryWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
-                await self._upsert_source_mapping(
-                    external_id=external_id,
-                    transition=transition,
-                    local_history_id=row.history_id,
-                    now=now,
+                mapping_rows.append(
+                    self._source_mapping_row(
+                        external_id=external_id,
+                        transition=transition,
+                        local_history_id=row.history_id,
+                        now=now,
+                    )
                 )
                 result.stage_history_created += 1
             else:
@@ -106,13 +112,18 @@ class SalesforceDealStageHistoryWriter:
                     now=now,
                 )
                 existing.is_deleted = False
-                await self._upsert_source_mapping(
-                    external_id=external_id,
-                    transition=transition,
-                    local_history_id=existing.history_id,
-                    now=now,
+                mapping_rows.append(
+                    self._source_mapping_row(
+                        external_id=external_id,
+                        transition=transition,
+                        local_history_id=existing.history_id,
+                        now=now,
+                    )
                 )
                 result.stage_history_updated += 1
+
+        if mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
         logger.info(
@@ -152,15 +163,15 @@ class SalesforceDealStageHistoryWriter:
             if row.history_id in local_to_external
         }
 
-    async def _upsert_source_mapping(
+    def _source_mapping_row(
         self,
         *,
         external_id: str,
         transition: NormalizedSalesforceStageTransition,
         local_history_id: UUID,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.STAGE_HISTORY,
             external_id=external_id,
             local_object_type=CRMSourceObjectType.STAGE_HISTORY,

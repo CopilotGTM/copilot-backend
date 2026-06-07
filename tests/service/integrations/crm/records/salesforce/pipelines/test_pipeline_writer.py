@@ -123,6 +123,7 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_pipelines = AsyncMock(  # type: ignore[method-assign]
@@ -152,15 +153,16 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     assert existing_stage.pipeline_id == pipeline_id
     assert stale_pipeline.is_active is False
     assert stale_stage.is_active is False
-    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
-    assert [call.kwargs["external_id"] for call in mapping_calls] == [
-        "012A",
-        "012A:Prospecting",
-    ]
-    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.PIPELINE
-    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.PIPELINE
-    assert mapping_calls[1].kwargs["external_object_type"] == CRMSourceObjectType.STAGE
-    assert mapping_calls[1].kwargs["local_object_type"] == CRMSourceObjectType.STAGE
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    assert mapping_helper.bulk_upsert_integration_mappings.await_count == 2
+    pipeline_rows = mapping_helper.bulk_upsert_integration_mappings.await_args_list[0].args[0]
+    stage_rows = mapping_helper.bulk_upsert_integration_mappings.await_args_list[1].args[0]
+    assert [row.external_id for row in pipeline_rows] == ["012A"]
+    assert [row.external_id for row in stage_rows] == ["012A:Prospecting"]
+    assert pipeline_rows[0].external_object_type == CRMSourceObjectType.PIPELINE
+    assert pipeline_rows[0].local_object_type == CRMSourceObjectType.PIPELINE
+    assert stage_rows[0].external_object_type == CRMSourceObjectType.STAGE
+    assert stage_rows[0].local_object_type == CRMSourceObjectType.STAGE
     assert [
         call.kwargs["object_type"] for call in mapping_helper.mark_missing_deleted.call_args_list
     ] == [CRMSourceObjectType.PIPELINE, CRMSourceObjectType.STAGE]

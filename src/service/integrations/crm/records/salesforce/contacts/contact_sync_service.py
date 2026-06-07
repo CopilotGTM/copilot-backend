@@ -44,7 +44,7 @@ from src.workers.integrations_worker.providers.crm.salesforce.contacts_fetcher i
 
 logger = get_logger(__name__)
 
-_CONTACT_PERSIST_CHUNK_SIZE = 500
+_CONTACT_PERSIST_CHUNK_SIZE = 2_000
 
 
 @dataclass(slots=True)
@@ -343,9 +343,9 @@ class SalesforceContactRecordSyncService:
         if not external_to_local:
             return {}
         stmt = select(
-            CRMContact.contact_id,
-            CRMContact.full_name,
-            CRMContact.email,
+            col(CRMContact.contact_id),
+            col(CRMContact.full_name),
+            col(CRMContact.email),
         ).where(
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,

@@ -94,6 +94,9 @@ async def test_fetcher_describes_allowed_contact_fields_and_ignores_unused_custo
         ).fetch_all()
 
     assert rows == [{"Id": "003A", "Email": "a@example.com"}]
+    assert client.get.call_args_list[1].kwargs["headers"]["Sforce-Query-Options"] == (
+        "batchSize=2000"
+    )
     query_soql = client.get.call_args_list[1].kwargs["params"]["q"]
     assert "Id" in query_soql
     assert "Email" in query_soql
@@ -104,6 +107,9 @@ async def test_fetcher_describes_allowed_contact_fields_and_ignores_unused_custo
     assert "Unused_Custom__c" not in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
+    assert "ORDER BY LastName" not in query_soql
+    assert "ORDER BY FirstName" not in query_soql
+    assert query_soql.endswith("ORDER BY Id")
 
 
 @pytest.mark.asyncio

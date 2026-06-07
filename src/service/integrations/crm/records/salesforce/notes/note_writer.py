@@ -14,7 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
     NormalizedSalesforceNote,
@@ -67,6 +70,7 @@ class SalesforceNoteWriter:
         batch_external_ids = set(normalized_by_external)
         existing_by_external = await self._load_existing_rows(external_ids=batch_external_ids)
         rows: list[dict] = []
+        mapping_rows: list[IntegrationMappingUpsert] = []
 
         for note in batch:
             owner_hit = self._resolve_hit(
@@ -129,15 +133,17 @@ class SalesforceNoteWriter:
                 )
             )
             self._activity_ids_by_external[note.external_id] = activity_id
+            mapping_rows.extend(
+                self._source_mapping_rows(
+                    note=note,
+                    local_activity_id=activity_id,
+                    now=now,
+                )
+            )
 
         if rows:
             await self._bulk_upsert(rows)
-            for note in batch:
-                await self._upsert_source_mapping(
-                    note=note,
-                    local_activity_id=self._activity_ids_by_external[note.external_id],
-                    now=now,
-                )
+            await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         if deactivate_missing:
             result.notes_deactivated += await self._deactivate_missing(snapshot_time)
@@ -273,25 +279,27 @@ class SalesforceNoteWriter:
             if row.activity_id in local_to_external
         }
 
-    async def _upsert_source_mapping(
+    def _source_mapping_rows(
         self,
         *,
         note: NormalizedSalesforceNote,
         local_activity_id: UUID,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
-            external_object_type=CRMSourceObjectType.NOTE,
-            external_id=note.external_id,
-            local_object_type=CRMSourceObjectType.ACTIVITY,
-            local_object_id=local_activity_id,
-            data_payload=note.data_payload,
-            source_created_at=note.source_created_at,
-            source_modified_at=note.source_modified_at,
-            synced_at=now,
-        )
-        for link_id in _iter_content_document_link_ids(note.data_payload):
-            await self.source_mappings.upsert_integration_mapping(
+    ) -> list[IntegrationMappingUpsert]:
+        rows = [
+            IntegrationMappingUpsert(
+                external_object_type=CRMSourceObjectType.NOTE,
+                external_id=note.external_id,
+                local_object_type=CRMSourceObjectType.ACTIVITY,
+                local_object_id=local_activity_id,
+                data_payload=note.data_payload,
+                source_created_at=note.source_created_at,
+                source_modified_at=note.source_modified_at,
+                synced_at=now,
+            )
+        ]
+        rows.extend(
+            IntegrationMappingUpsert(
                 external_object_type=CRMSourceObjectType.NOTE_LINK,
                 external_id=link_id,
                 local_object_type=CRMSourceObjectType.ACTIVITY,
@@ -301,6 +309,9 @@ class SalesforceNoteWriter:
                 source_modified_at=note.source_modified_at,
                 synced_at=now,
             )
+            for link_id in _iter_content_document_link_ids(note.data_payload)
+        )
+        return rows
 
     def _new_row(
         self,

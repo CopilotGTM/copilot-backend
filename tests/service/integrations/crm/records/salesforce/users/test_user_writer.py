@@ -67,6 +67,7 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005A": existing})  # type: ignore[method-assign]
@@ -109,15 +110,14 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
     assert len(created_rows) == 1
     assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].is_active is False
-    mapped_external_ids = [
-        call.kwargs["external_id"]
-        for call in mapping_helper.upsert_integration_mapping.call_args_list
-    ]
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    mapped_external_ids = [row.external_id for row in mapped_rows]
     assert mapped_external_ids == ["005A", "005C"]
-    assert (
-        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
-        == CRMSourceObjectType.USER
-    )
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.USER
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.USER
+    assert mapped_rows[0].local_object_id == existing.user_id
 
 
 @pytest.mark.asyncio
@@ -152,6 +152,7 @@ async def test_writer_deactivates_missing_rows_but_keeps_present_inactive_rows()
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
@@ -203,6 +204,7 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005B": stale_missing})  # type: ignore[method-assign]
