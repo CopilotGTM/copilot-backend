@@ -16,6 +16,51 @@ from fastapi.testclient import TestClient
 from tests.api.routers.crm.conftest import create_task
 
 # =============================================================================
+# GET /tasks - Global Task List Scope Tests
+# =============================================================================
+
+
+def test_global_tasks_defaults_to_assigned_to_me(client: TestClient, tasks_dependency_overrides):
+    service = tasks_dependency_overrides["service"]
+
+    resp = client.get("/users/crm/tasks")
+
+    assert resp.status_code == 200, resp.text
+    assert service.list_tasks_calls
+    call = service.list_tasks_calls[-1]
+    assert call["scope"] == "assigned_to_me"
+    assert call["current_user_id"] == tasks_dependency_overrides["user_ids"]["user_id"]
+    assert call["current_user_email"] == "test@example.com"
+    assert call["assigned_to_key"] is None
+
+
+def test_global_tasks_rejects_user_scope_without_selected_assignee(
+    client: TestClient, tasks_dependency_overrides
+):
+    resp = client.get("/users/crm/tasks", params={"scope": "assigned_to_user"})
+
+    assert resp.status_code == 400, resp.text
+    assert "assigned_to_key is required" in resp.json()["message"]
+
+
+def test_global_tasks_all_scope_is_not_available(client: TestClient, tasks_dependency_overrides):
+    resp = client.get("/users/crm/tasks", params={"scope": "all"})
+
+    assert resp.status_code == 422, resp.text
+
+
+def test_current_user_task_assignees(client: TestClient, tasks_dependency_overrides):
+    resp = client.get("/users/crm/tasks/assignees/me")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assignees = body["data"]["assignees"]
+    assert assignees[0]["assigned_to"]["filter_key"] == "email:test@example.com"
+    assert assignees[0]["task_count"] == 3
+
+
+# =============================================================================
 # GET /deals/{deal_id}/tasks - List Tasks Tests
 # =============================================================================
 

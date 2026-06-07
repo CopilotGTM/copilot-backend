@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityStatus
+from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityStatus, CRMUser
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("tasks_access_service")
@@ -130,6 +130,9 @@ class TasksAccessService:
     async def list_tasks(
         self,
         *,
+        scope: str = "assigned_to_me",
+        current_user_id: UUID | None = None,
+        current_user_email: str | None = None,
         deal_id: UUID | None = None,
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
@@ -181,14 +184,38 @@ class TasksAccessService:
         if owner_user_id is not None:
             owner_value = str(owner_user_id)
             stmt = stmt.where(
-                or_(
-                    c.owner_id == owner_user_id,
-                    c.properties["assigned_to_public_user_id"].as_string() == owner_value,
+                and_(
+                    self._has_no_external_assignee_condition(),
+                    or_(
+                        c.owner_id == owner_user_id,
+                        c.properties["assigned_to_public_user_id"].as_string() == owner_value,
+                    ),
                 )
             )
 
         if assigned_to_key:
             stmt = stmt.where(self._assigned_to_key_condition(assigned_to_key))
+        elif owner_user_id is None:
+            if scope == "assigned_to_me":
+                if current_user_id is None:
+                    return [], 0
+                stmt = stmt.where(
+                    self._current_user_assignee_condition(
+                        user_id=current_user_id,
+                        user_email=current_user_email,
+                    )
+                )
+            elif scope == "assigned_by_me":
+                if current_user_id is None:
+                    return [], 0
+                stmt = stmt.where(c.created_by_user_id == current_user_id)
+            elif scope == "assigned_to_user":
+                raise TasksAccessServiceError(
+                    "assigned_to_key is required when scope=assigned_to_user",
+                    status_code=400,
+                )
+            else:
+                raise TasksAccessServiceError("Invalid task scope", status_code=400)
 
         if created_by_user_id is not None:
             stmt = stmt.where(c.created_by_user_id == created_by_user_id)
@@ -256,26 +283,178 @@ class TasksAccessService:
 
         if prefix == "email":
             return or_(
-                func.lower(c.owner_email) == lowered,
                 func.lower(c.external_assignee_email) == lowered,
+                and_(
+                    self._has_no_external_assignee_condition(),
+                    func.lower(c.owner_email) == lowered,
+                ),
             )
 
         if prefix == "public_user":
-            return c.properties["assigned_to_public_user_id"].as_string() == value
+            return and_(
+                self._has_no_external_assignee_condition(),
+                c.properties["assigned_to_public_user_id"].as_string() == value,
+            )
 
         if prefix == "crm_user":
             try:
-                return c.owner_id == UUID(value)
+                return and_(self._has_no_external_assignee_condition(), c.owner_id == UUID(value))
             except ValueError:
                 return c.activity_id.is_(None)
 
         if prefix in {"name", "external_name"}:
-            return or_(
-                func.lower(c.owner_name) == lowered,
-                func.lower(c.external_assignee_name) == lowered,
+            if prefix == "external_name":
+                return func.lower(c.external_assignee_name) == lowered
+            return and_(
+                self._has_no_external_assignee_condition(), func.lower(c.owner_name) == lowered
             )
 
         return c.activity_id.is_(None)
+
+    def _has_no_external_assignee_condition(self):
+        c = cast(Any, CRMActivity).__table__.c
+        return and_(c.external_assignee_email.is_(None), c.external_assignee_name.is_(None))
+
+    def _current_user_assignee_condition(self, *, user_id: UUID, user_email: str | None):
+        c = cast(Any, CRMActivity).__table__.c
+        crm_user_columns = cast(Any, CRMUser).__table__.c
+
+        internal_conditions = [
+            c.owner_id == user_id,
+            c.properties["assigned_to_public_user_id"].as_string() == str(user_id),
+        ]
+        if user_email:
+            email_lower = user_email.lower()
+            internal_conditions.append(func.lower(c.owner_email) == email_lower)
+            crm_user_conditions = or_(
+                crm_user_columns.user_id == user_id,
+                func.lower(crm_user_columns.email) == email_lower,
+            )
+            internal_conditions.append(
+                c.owner_id.in_(
+                    select(crm_user_columns.user_id).where(
+                        crm_user_columns.organisation_id == self.organisation_id,
+                        crm_user_columns.is_deleted.is_(False),
+                        crm_user_conditions,
+                    )
+                )
+            )
+
+        conditions = [
+            and_(
+                self._has_no_external_assignee_condition(),
+                or_(*internal_conditions),
+            )
+        ]
+        if user_email:
+            conditions.append(func.lower(c.external_assignee_email) == user_email.lower())
+
+        return or_(*conditions)
+
+    async def resolve_current_user_task_assignees(
+        self,
+        *,
+        user_id: UUID,
+        user_email: str | None,
+    ) -> list[dict[str, Any]]:
+        c = cast(Any, CRMActivity).__table__.c
+        base_conditions = [
+            c.organisation_id == self.organisation_id,
+            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+        ]
+        options: list[dict[str, Any]] = []
+
+        if user_email:
+            email = user_email.lower()
+            count = await self._count_tasks_for_condition(
+                *base_conditions,
+                self._assigned_to_key_condition(f"email:{email}"),
+            )
+            if count:
+                options.append(
+                    {
+                        "kind": "internal_user",
+                        "filter_key": f"email:{email}",
+                        "name": None,
+                        "email": email,
+                        "public_user_id": user_id,
+                        "crm_user_id": None,
+                        "task_count": count,
+                    }
+                )
+
+        crm_user_ids = await self._resolve_current_user_crm_user_ids(
+            user_id=user_id,
+            user_email=user_email,
+        )
+        for crm_user_id in crm_user_ids:
+            filter_key = f"crm_user:{crm_user_id}"
+            count = await self._count_tasks_for_condition(
+                *base_conditions,
+                self._assigned_to_key_condition(filter_key),
+            )
+            if count:
+                options.append(
+                    {
+                        "kind": "internal_user",
+                        "filter_key": filter_key,
+                        "name": None,
+                        "email": user_email.lower() if user_email else None,
+                        "public_user_id": user_id,
+                        "crm_user_id": crm_user_id,
+                        "task_count": count,
+                    }
+                )
+
+        if not options:
+            filter_key = f"public_user:{user_id}"
+            count = await self._count_tasks_for_condition(
+                *base_conditions,
+                self._assigned_to_key_condition(filter_key),
+            )
+            if count:
+                options.append(
+                    {
+                        "kind": "internal_user",
+                        "filter_key": filter_key,
+                        "name": None,
+                        "email": user_email.lower() if user_email else None,
+                        "public_user_id": user_id,
+                        "crm_user_id": None,
+                        "task_count": count,
+                    }
+                )
+
+        return options
+
+    async def _resolve_current_user_crm_user_ids(
+        self,
+        *,
+        user_id: UUID,
+        user_email: str | None,
+    ) -> list[UUID]:
+        crm_user_columns = cast(Any, CRMUser).__table__.c
+        conditions = [crm_user_columns.user_id == user_id]
+        if user_email:
+            conditions.append(func.lower(crm_user_columns.email) == user_email.lower())
+
+        result = await self.org_session.execute(
+            select(crm_user_columns.user_id)
+            .where(
+                crm_user_columns.organisation_id == self.organisation_id,
+                crm_user_columns.is_deleted.is_(False),
+                or_(*conditions),
+            )
+            .order_by(crm_user_columns.user_id)
+        )
+        return [cast(UUID, row[0]) for row in result.all()]
+
+    async def _count_tasks_for_condition(self, *conditions) -> int:
+        count = await self.org_session.scalar(
+            select(func.count()).select_from(CRMActivity).where(*conditions)
+        )
+        return int(count or 0)
 
     async def list_task_assignees(
         self,
@@ -284,54 +463,128 @@ class TasksAccessService:
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         c = cast(Any, CRMActivity).__table__.c
-        stmt = select(
-            c.owner_id,
-            c.owner_name,
-            c.owner_email,
-            c.external_assignee_email,
-            c.external_assignee_name,
-            c.properties,
-        ).where(
+        base_conditions = [
             c.organisation_id == self.organisation_id,
             c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
-            or_(
-                c.owner_id.is_not(None),
-                c.owner_email.is_not(None),
-                c.owner_name.is_not(None),
-                c.external_assignee_email.is_not(None),
-                c.external_assignee_name.is_not(None),
-            ),
-        )
+        ]
 
+        search_filter = None
         if q:
             like_expr = f"%{q.lower()}%"
-            stmt = stmt.where(
-                or_(
-                    c.owner_name.ilike(like_expr),
-                    c.owner_email.ilike(like_expr),
-                    c.external_assignee_name.ilike(like_expr),
-                    c.external_assignee_email.ilike(like_expr),
-                )
+            search_filter = or_(
+                c.owner_name.ilike(like_expr),
+                c.owner_email.ilike(like_expr),
+                c.external_assignee_name.ilike(like_expr),
+                c.external_assignee_email.ilike(like_expr),
             )
 
-        result = await self.org_session.execute(stmt.limit(2000))
+        owner_stmt = (
+            select(
+                c.owner_id,
+                func.max(c.owner_name).label("owner_name"),
+                func.max(c.owner_email).label("owner_email"),
+                func.count().label("task_count"),
+            )
+            .where(
+                *base_conditions,
+                self._has_no_external_assignee_condition(),
+                c.owner_id.is_not(None),
+            )
+            .group_by(c.owner_id)
+            .order_by(func.max(c.owner_name).asc().nulls_last(), c.owner_id.asc())
+            .limit(limit)
+        )
+        owner_email_stmt = (
+            select(
+                c.owner_email,
+                func.max(c.owner_name).label("owner_name"),
+                func.count().label("task_count"),
+            )
+            .where(
+                *base_conditions,
+                self._has_no_external_assignee_condition(),
+                c.owner_id.is_(None),
+                c.owner_email.is_not(None),
+            )
+            .group_by(c.owner_email)
+            .order_by(func.max(c.owner_name).asc().nulls_last(), c.owner_email.asc())
+            .limit(limit)
+        )
+        external_stmt = (
+            select(
+                c.external_assignee_email,
+                func.max(c.external_assignee_name).label("external_assignee_name"),
+                func.count().label("task_count"),
+            )
+            .where(
+                *base_conditions,
+                or_(
+                    c.external_assignee_email.is_not(None),
+                    c.external_assignee_name.is_not(None),
+                ),
+            )
+            .group_by(c.external_assignee_email, c.external_assignee_name)
+            .order_by(
+                func.max(c.external_assignee_name).asc().nulls_last(),
+                c.external_assignee_email.asc().nulls_last(),
+            )
+            .limit(limit)
+        )
+
+        if search_filter is not None:
+            owner_stmt = owner_stmt.where(search_filter)
+            owner_email_stmt = owner_email_stmt.where(search_filter)
+            external_stmt = external_stmt.where(search_filter)
+
         grouped: dict[str, dict[str, Any]] = {}
-        for row in result.all():
+        owner_result = await self.org_session.execute(owner_stmt)
+        for row in owner_result.all():
             task = SimpleNamespace(
                 owner_id=row.owner_id,
                 owner_name=row.owner_name,
                 owner_email=row.owner_email,
-                external_assignee_email=row.external_assignee_email,
-                external_assignee_name=row.external_assignee_name,
-                properties=row.properties or {},
+                external_assignee_email=None,
+                external_assignee_name=None,
+                properties={},
             )
             filter_key = _task_assignee_filter_key(task)
             if not filter_key:
                 continue
-            if filter_key not in grouped:
-                grouped[filter_key] = {"task": task, "task_count": 0}
-            grouped[filter_key]["task_count"] += 1
+            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
+            grouped[filter_key]["task_count"] += row.task_count
+
+        owner_email_result = await self.org_session.execute(owner_email_stmt)
+        for row in owner_email_result.all():
+            task = SimpleNamespace(
+                owner_id=None,
+                owner_name=row.owner_name,
+                owner_email=row.owner_email,
+                external_assignee_email=None,
+                external_assignee_name=None,
+                properties={},
+            )
+            filter_key = _task_assignee_filter_key(task)
+            if not filter_key:
+                continue
+            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
+            grouped[filter_key]["task_count"] += row.task_count
+
+        external_result = await self.org_session.execute(external_stmt)
+        for row in external_result.all():
+            task = SimpleNamespace(
+                owner_id=None,
+                owner_name=None,
+                owner_email=None,
+                external_assignee_email=row.external_assignee_email,
+                external_assignee_name=row.external_assignee_name,
+                properties={},
+            )
+            filter_key = _task_assignee_filter_key(task)
+            if not filter_key:
+                continue
+            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
+            grouped[filter_key]["task_count"] += row.task_count
 
         return sorted(
             grouped.values(),

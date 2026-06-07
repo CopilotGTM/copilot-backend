@@ -183,11 +183,13 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
 |-------|------|----------|---------|-------------|
 | `page` | number | No | 1 | Page number (1-indexed) |
 | `limit` | number | No | 50 | Items per page (1–100) |
+| `scope` | string | No | `assigned_to_me` | Task scope: `assigned_to_me`, `assigned_by_me`, or `assigned_to_user`. Normal users cannot request all organisation tasks. |
 | `deal_id` | UUID | No | — | Filter to a specific deal |
 | `statuses` | string[] | No | — | Filter by status (repeatable param) |
 | `priorities` | string[] | No | — | Filter by priority (repeatable param) |
 | `source` | string[] | No | — | Filter by source (repeatable param) |
 | `owner_user_id` | UUID | No | — | Filter by assigned owner |
+| `assigned_to_key` | string | No | — | Canonical assignee key from `GET /tasks/assignees`. Required when `scope=assigned_to_user`. |
 | `created_by_user_id` | UUID | No | — | Filter by task creator |
 | `due_from` | string | No | — | ISO8601 — tasks due on or after |
 | `due_to` | string | No | — | ISO8601 — tasks due on or before |
@@ -234,11 +236,49 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
 
 ### Notes
 
+- By default, the global task list is scoped to tasks assigned to the authenticated user. There is no normal-user "all tasks" scope.
+- Use `scope=assigned_by_me` to list tasks created by the authenticated user.
+- Use `scope=assigned_to_user&assigned_to_key=...` after selecting a specific assignee from `GET /tasks/assignees`.
 - By default, completed and cancelled tasks are excluded. Pass `include_completed=true` to include them.
 - `is_overdue` is computed server-side: `due_date < now AND status NOT IN (COMPLETED, CANCELLED)`.
 - `is_read_only` is computed server-side as `integration_id IS NOT NULL` and is the authoritative flag for whether a task can be edited. PATCH / DELETE / reminder / assign endpoints all return **409 "External CRM tasks are read-only"** when invoked on a read-only task. The frontend MUST gate edit affordances on `is_read_only` (do **not** use `source === "CRM_SYNC"` — `source` is nullable and can drift).
 - `deal_name` is resolved from the associated `crm_deals` row (null for standalone tasks).
 - Sorting by `due_date` places null due dates last regardless of sort order.
+- Assignee filtering follows display precedence: external assignee first, otherwise internal CRM/public owner. This prevents tasks assigned to an external person from appearing under the creator's "assigned to me" list.
+
+---
+
+## 1a. Resolve Current User Task Assignees
+
+```http
+GET /tasks/assignees/me
+```
+
+Returns assignee filter options that represent the authenticated app user. Frontend can use this to preselect or hydrate the "Assigned to me" scope without loading all CRM users.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Current user task assignees resolved successfully",
+  "data": {
+    "assignees": [
+      {
+        "assigned_to": {
+          "kind": "internal_user",
+          "filter_key": "email:jordan@example.com",
+          "name": "Jordan Lee",
+          "email": "jordan@example.com",
+          "public_user_id": "b1a7f9c0-...",
+          "crm_user_id": "b1a7f9c0-..."
+        },
+        "task_count": 12
+      }
+    ]
+  }
+}
+```
 
 ---
 
