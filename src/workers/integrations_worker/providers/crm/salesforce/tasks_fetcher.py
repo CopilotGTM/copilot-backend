@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 
 import httpx
 
@@ -20,6 +21,7 @@ _API_VERSION = "v61.0"
 _MAX_PAGES = 500_000
 _MAX_REQUEST_ATTEMPTS = 3
 _REQUEST_RETRY_DELAYS = (1.0, 3.0)
+_TASK_DEAL_SCOPE_BATCH_SIZE = 200
 
 
 class SalesforceTasksFetcher:
@@ -32,19 +34,35 @@ class SalesforceTasksFetcher:
         self.token_info = token_info
         self.instance_url = instance_url.rstrip("/")
 
-    async def fetch_all(self) -> list[dict[str, Any]]:
+    async def fetch_all(
+        self,
+        *,
+        deal_external_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        async for batch in self.iter_batches():
+        async for batch in self.iter_batches(deal_external_ids=deal_external_ids):
             records.extend(batch)
         return records
 
-    async def iter_batches(self):
-        soql = (
-            "SELECT Id, Subject, Description, Status, Priority, ActivityDate, "
-            "CompletedDateTime, OwnerId, WhoId, WhatId, AccountId, CreatedDate, "
-            "LastModifiedDate, IsDeleted "
-            "FROM Task WHERE IsDeleted = false ORDER BY LastModifiedDate, Id"
-        )
+    async def iter_batches(
+        self,
+        *,
+        deal_external_ids: list[str] | None = None,
+    ):
+        if deal_external_ids is None:
+            async for batch in self._iter_query_batches(_task_query_soql()):
+                yield batch
+            return
+
+        scoped_ids = [deal_id for deal_id in deal_external_ids if deal_id]
+        if not scoped_ids:
+            return
+
+        for scoped_batch in _chunked(scoped_ids, _TASK_DEAL_SCOPE_BATCH_SIZE):
+            async for batch in self._iter_query_batches(_task_query_soql(scoped_batch)):
+                yield batch
+
+    async def _iter_query_batches(self, soql: str):
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
         next_url: str | None = None
         page_count = 0
@@ -165,7 +183,7 @@ async def _call_with_transient_retry(
     last_error: Exception | None = None
     for attempt in range(_MAX_REQUEST_ATTEMPTS):
         try:
-            return await call_with_token_retry(token_info, request_fn)
+            return cast(httpx.Response, await call_with_token_retry(token_info, request_fn))
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             last_error = exc
         except httpx.HTTPStatusError as exc:
@@ -183,3 +201,30 @@ async def _call_with_transient_retry(
 
 def _escape_soql_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _task_query_soql(deal_external_ids: list[str] | None = None) -> str:
+    where_clause = "WHERE IsDeleted = false"
+    if deal_external_ids is not None:
+        where_clause += f" AND WhatId IN ({_quoted_csv(deal_external_ids)})"
+    return (
+        "SELECT Id, Subject, Description, Status, Priority, ActivityDate, "  # noqa: S608  # nosec B608
+        "CompletedDateTime, OwnerId, WhoId, WhatId, AccountId, CreatedDate, "
+        "LastModifiedDate, IsDeleted "
+        f"FROM Task {where_clause} ORDER BY LastModifiedDate, Id"
+    )
+
+
+def _chunked(values: Iterable[str], size: int) -> Iterable[list[str]]:
+    chunk: list[str] = []
+    for value in values:
+        chunk.append(value)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _quoted_csv(values: list[str]) -> str:
+    return ", ".join("'" + _escape_soql_literal(value) + "'" for value in values)

@@ -62,7 +62,8 @@ async def test_run_persists_tasks_page_by_page_before_final_deactivation(
         def __init__(self, **_kwargs) -> None:
             pass
 
-        async def iter_batches(self):
+        async def iter_batches(self, *, deal_external_ids=None):
+            assert deal_external_ids == ["006A", "006B"]
             yield [{"Id": "00T1"}]
             yield [{"Id": "00T2"}]
 
@@ -78,6 +79,9 @@ async def test_run_persists_tasks_page_by_page_before_final_deactivation(
             instance_url="https://acme.my.salesforce.com",
         )
 
+    async def fake_load_initial_sync_deal_external_ids(self, organisation_id, integration_id):
+        return ["006A", "006B"]
+
     def fake_normalize_tasks(raw_tasks):
         mapping = {"00T1": first_task, "00T2": second_task}
         return [mapping[row["Id"]] for row in raw_tasks], 0
@@ -88,6 +92,11 @@ async def test_run_persists_tasks_page_by_page_before_final_deactivation(
 
     monkeypatch.setattr(task_sync_service, "SalesforceTasksFetcher", FakeFetcher)
     monkeypatch.setattr(SalesforceTaskRecordSyncService, "_load_context", fake_load_context)
+    monkeypatch.setattr(
+        SalesforceTaskRecordSyncService,
+        "_load_initial_sync_deal_external_ids",
+        fake_load_initial_sync_deal_external_ids,
+    )
     monkeypatch.setattr(task_sync_service, "normalize_tasks", fake_normalize_tasks)
     monkeypatch.setattr(SalesforceTaskRecordSyncService, "_persist", fake_persist)
 
@@ -105,8 +114,62 @@ async def test_run_persists_tasks_page_by_page_before_final_deactivation(
     assert persist_calls[1]["deactivate_missing"] is False
     assert persist_calls[2]["normalized"] == []
     assert persist_calls[2]["deactivate_missing"] is True
+    assert persist_calls[2]["deactivate_deal_external_ids"] == ["006A", "006B"]
     assert "all_external_ids" not in persist_calls[2]
     assert persist_calls[0]["snapshot_started_at"] == persist_calls[2]["snapshot_started_at"]
+
+
+@pytest.mark.asyncio
+async def test_run_fetches_initial_sync_tasks_for_eligible_deals_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    passed_scope: list[str] | None = None
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def iter_batches(self, *, deal_external_ids=None):
+            nonlocal passed_scope
+            passed_scope = list(deal_external_ids or [])
+            return
+            yield  # pragma: no cover
+
+    async def fake_load_context(self, organisation_id, integration_id):
+        return SalesforceTaskSyncContext(
+            token_info=IntegrationTokenInfo(
+                access_token="token",
+                refresh_token="refresh",
+                integration_type="salesforce",
+                organisation_id=organisation_id,
+                integration_id=integration_id,
+            ),
+            instance_url="https://acme.my.salesforce.com",
+        )
+
+    async def fake_load_initial_sync_deal_external_ids(self, organisation_id, integration_id):
+        return ["006OPEN", "006RECENT"]
+
+    async def fake_persist(self, **_kwargs):
+        return TaskWriteResult()
+
+    monkeypatch.setattr(task_sync_service, "SalesforceTasksFetcher", FakeFetcher)
+    monkeypatch.setattr(SalesforceTaskRecordSyncService, "_load_context", fake_load_context)
+    monkeypatch.setattr(
+        SalesforceTaskRecordSyncService,
+        "_load_initial_sync_deal_external_ids",
+        fake_load_initial_sync_deal_external_ids,
+    )
+    monkeypatch.setattr(SalesforceTaskRecordSyncService, "_persist", fake_persist)
+
+    await SalesforceTaskRecordSyncService().run(
+        organisation_id=org_id,
+        integration_id=integration_id,
+    )
+
+    assert passed_scope == ["006OPEN", "006RECENT"]
 
 
 @pytest.mark.asyncio
@@ -138,6 +201,7 @@ async def test_persist_single_task_writes_only_the_changed_task(
     assert result.tasks_updated == 1
     assert persist_calls[0]["normalized"] == [task]
     assert persist_calls[0]["deactivate_missing"] is False
+    assert persist_calls[0].get("deactivate_deal_external_ids") is None
 
 
 @pytest.mark.asyncio

@@ -395,3 +395,70 @@ async def test_writer_deactivates_rows_older_than_snapshot() -> None:
     assert "last_seen_at <" in sql
     assert "last_seen_at IS NULL" in sql
     assert "is_deleted = false" in sql
+
+
+@pytest.mark.asyncio
+async def test_writer_deactivates_missing_rows_only_for_scoped_deals() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    scoped_deal_id = uuid4()
+    snapshot_started_at = datetime.now(UTC)
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    session.flush = AsyncMock()
+
+    writer = SalesforceNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[],
+        snapshot_started_at=snapshot_started_at,
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=True,
+        deactivate_deal_ids={scoped_deal_id},
+    )
+
+    assert result.notes_deactivated == 1
+    statement = session.execute.await_args_list[0].args[0]
+    sql = str(statement.compile(dialect=writer._pg_dialect()))
+    assert "crm_activities.deal_id IN" in sql
+
+
+@pytest.mark.asyncio
+async def test_writer_skips_deactivation_for_empty_scoped_deals() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    snapshot_started_at = datetime.now(UTC)
+
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceNoteWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[],
+        snapshot_started_at=snapshot_started_at,
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+        deactivate_missing=True,
+        deactivate_deal_ids=set(),
+    )
+
+    assert result.notes_deactivated == 0
+    session.execute.assert_not_called()

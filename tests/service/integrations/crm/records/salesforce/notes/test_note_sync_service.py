@@ -75,7 +75,7 @@ async def test_run_buffers_notes_before_persisting_and_then_deactivates(
             instance_url="https://acme.my.salesforce.com",
         )
 
-    async def fake_load_linked_entity_ids(self, organisation_id, integration_id):
+    async def fake_load_initial_sync_linked_entity_ids(self, organisation_id, integration_id):
         return ["006A", "006B"]
 
     def fake_normalize_notes(raw_notes):
@@ -90,8 +90,8 @@ async def test_run_buffers_notes_before_persisting_and_then_deactivates(
     monkeypatch.setattr(SalesforceNoteRecordSyncService, "_load_context", fake_load_context)
     monkeypatch.setattr(
         SalesforceNoteRecordSyncService,
-        "_load_linked_entity_ids",
-        fake_load_linked_entity_ids,
+        "_load_initial_sync_linked_entity_ids",
+        fake_load_initial_sync_linked_entity_ids,
     )
     monkeypatch.setattr(note_sync_service, "normalize_notes", fake_normalize_notes)
     monkeypatch.setattr(SalesforceNoteRecordSyncService, "_persist", fake_persist)
@@ -108,6 +108,7 @@ async def test_run_buffers_notes_before_persisting_and_then_deactivates(
     assert persist_calls[0]["deactivate_missing"] is False
     assert persist_calls[1]["normalized"] == []
     assert persist_calls[1]["deactivate_missing"] is True
+    assert persist_calls[1]["deactivate_deal_external_ids"] == ["006A", "006B"]
     assert "all_external_ids" not in persist_calls[1]
     assert persist_calls[0]["snapshot_started_at"] == persist_calls[1]["snapshot_started_at"]
 
@@ -141,6 +142,7 @@ async def test_persist_single_note_writes_only_the_changed_note(
     assert result.notes_reactivated == 1
     assert persist_calls[0]["normalized"] == [note]
     assert persist_calls[0]["deactivate_missing"] is False
+    assert persist_calls[0].get("deactivate_deal_external_ids") is None
 
 
 @pytest.mark.asyncio
@@ -269,7 +271,7 @@ async def test_dimension_maps_resolve_through_source_mappings(
 
 
 @pytest.mark.asyncio
-async def test_load_linked_entity_ids_uses_source_mappings_for_scope(
+async def test_load_linked_entity_ids_keeps_cdc_note_scope_broad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = SalesforceNoteRecordSyncService()
@@ -315,3 +317,30 @@ async def test_load_linked_entity_ids_uses_source_mappings_for_scope(
         (CRMSourceObjectType.CONTACT, None),
         (CRMSourceObjectType.COMPANY, None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_load_initial_sync_linked_entity_ids_scopes_notes_to_eligible_deals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceNoteRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    async def fake_load_initial_sync_deal_external_ids(**kwargs):
+        assert kwargs["organisation_id"] == organisation_id
+        assert kwargs["integration_id"] == integration_id
+        return ["006OPEN", "006RECENT"]
+
+    monkeypatch.setattr(
+        note_sync_service,
+        "load_initial_sync_deal_external_ids",
+        fake_load_initial_sync_deal_external_ids,
+    )
+
+    linked_entity_ids = await service._load_initial_sync_linked_entity_ids(
+        organisation_id,
+        integration_id,
+    )
+
+    assert linked_entity_ids == ["006OPEN", "006RECENT"]

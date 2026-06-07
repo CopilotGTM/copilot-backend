@@ -19,6 +19,9 @@ from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.salesforce.activity_scope import (
+    load_initial_sync_deal_external_ids,
+)
 from src.service.integrations.crm.records.salesforce.notes.note_normalizer import normalize_notes
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     ActivityDimensionHit,
@@ -59,7 +62,10 @@ class SalesforceNoteRecordSyncService:
         run_started = perf_counter()
 
         context = await self._load_context(organisation_id, integration_id)
-        linked_entity_ids = await self._load_linked_entity_ids(organisation_id, integration_id)
+        linked_entity_ids = await self._load_initial_sync_linked_entity_ids(
+            organisation_id,
+            integration_id,
+        )
         fetcher = SalesforceNotesFetcher(
             token_info=context.token_info,
             instance_url=context.instance_url,
@@ -160,6 +166,7 @@ class SalesforceNoteRecordSyncService:
             normalized=[],
             snapshot_started_at=snapshot_started_at,
             deactivate_missing=True,
+            deactivate_deal_external_ids=linked_entity_ids,
         )
         _add_write_result(write_result, final_result)
 
@@ -303,6 +310,17 @@ class SalesforceNoteRecordSyncService:
             "Could not acquire org session for Salesforce note sync scope"
         )
 
+    async def _load_initial_sync_linked_entity_ids(
+        self,
+        organisation_id: UUID,
+        integration_id: UUID,
+    ) -> list[str]:
+        return await load_initial_sync_deal_external_ids(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+
     async def _persist(
         self,
         *,
@@ -311,11 +329,14 @@ class SalesforceNoteRecordSyncService:
         normalized,
         snapshot_started_at: datetime | None,
         deactivate_missing: bool = True,
+        deactivate_deal_external_ids: list[str] | set[str] | None = None,
     ):
         persist_started = perf_counter()
         async for session in acquire_org_async_session(organisation_id):
             user_external_ids = _compact_str_set(note.owner_external_id for note in normalized)
             deal_external_ids = _compact_str_set(note.deal_external_id for note in normalized)
+            deactivate_deal_external_id_set = _compact_str_set(deactivate_deal_external_ids)
+            deal_external_ids.update(deactivate_deal_external_id_set)
             contact_external_ids = _compact_str_set(note.contact_external_id for note in normalized)
             company_external_ids = _compact_str_set(note.company_external_id for note in normalized)
             map_started = perf_counter()
@@ -331,6 +352,15 @@ class SalesforceNoteRecordSyncService:
             company_map = await self._load_company_map(
                 session, organisation_id, integration_id, company_external_ids
             )
+            deactivate_deal_ids = (
+                {
+                    hit.internal_id
+                    for external_id, hit in deal_map.items()
+                    if external_id in deactivate_deal_external_id_set
+                }
+                if deactivate_deal_external_ids is not None
+                else None
+            )
             map_elapsed = perf_counter() - map_started
             writer = SalesforceNoteWriter(
                 session=session,
@@ -345,6 +375,7 @@ class SalesforceNoteRecordSyncService:
                 contact_map=contact_map,
                 company_map=company_map,
                 deactivate_missing=deactivate_missing,
+                deactivate_deal_ids=deactivate_deal_ids,
             )
             await session.commit()
             logger.info(
@@ -557,6 +588,8 @@ def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
 
 
 def _compact_str_set(values) -> set[str]:
+    if values is None:
+        return set()
     return {value for value in values if isinstance(value, str) and value}
 
 
