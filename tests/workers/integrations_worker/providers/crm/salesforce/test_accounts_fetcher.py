@@ -105,6 +105,8 @@ async def test_fetcher_describes_allowed_account_fields_and_paginates() -> None:
     assert "Unused__c" not in query_soql
     assert "Deleted_Field__c" not in query_soql
     assert "Secret__c" not in query_soql
+    assert "ORDER BY Name" not in query_soql
+    assert query_soql.endswith("ORDER BY Id")
 
 
 @pytest.mark.asyncio

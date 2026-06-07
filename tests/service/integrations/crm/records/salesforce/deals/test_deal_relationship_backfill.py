@@ -37,7 +37,7 @@ async def test_company_relationship_chunks_skip_deal_fk_backfill(
             DealWriteResult(),
             StageHistoryWriteResult(),
             ParticipantWriteResult(participants_created=1),
-            AssociationWriteResult(associations_created=1),
+            AssociationWriteResult(),
             {"rows_updated": 0, "per_op": {}},
         )
 
@@ -55,7 +55,7 @@ async def test_company_relationship_chunks_skip_deal_fk_backfill(
 
     assert captured_backfill_values == [False]
     assert participant_result.participants_created == 1
-    assert association_result.associations_created == 1
+    assert association_result == AssociationWriteResult()
     assert backfill_payload == {"rows_updated": 0, "per_op": {}}
 
 
@@ -85,7 +85,7 @@ async def test_contact_role_chunks_keep_deal_fk_backfill(
             DealWriteResult(),
             StageHistoryWriteResult(),
             ParticipantWriteResult(participants_created=1),
-            AssociationWriteResult(associations_created=1),
+            AssociationWriteResult(),
             {"rows_updated": 1, "per_op": {"primary_contact_id": 1}},
         )
 

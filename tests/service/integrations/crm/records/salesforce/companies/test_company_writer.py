@@ -84,6 +84,7 @@ async def test_writer_reactivates_present_rows_creates_new_rows_and_deactivates_
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
@@ -110,13 +111,12 @@ async def test_writer_reactivates_present_rows_creates_new_rows_and_deactivates_
     assert len(created_rows) == 1
     assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].owner_id == owner_id
-    mapped_external_ids = [
-        call.kwargs["external_id"]
-        for call in mapping_helper.upsert_integration_mapping.call_args_list
-    ]
-    assert mapped_external_ids == ["001A", "001C"]
-    assert (
-        mapping_helper.upsert_integration_mapping.call_args_list[0].kwargs["external_object_type"]
-        == CRMSourceObjectType.COMPANY
-    )
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert [row.external_id for row in mapped_rows] == ["001A", "001C"]
+    assert {row.external_object_type for row in mapped_rows} == {CRMSourceObjectType.COMPANY}
+    assert {row.local_object_type for row in mapped_rows} == {CRMSourceObjectType.COMPANY}
+    assert mapped_rows[0].local_object_id == existing_inactive.company_id
+    assert mapped_rows[1].local_object_id == created_rows[0].company_id
     mapping_helper.mark_missing_deleted.assert_awaited_once()

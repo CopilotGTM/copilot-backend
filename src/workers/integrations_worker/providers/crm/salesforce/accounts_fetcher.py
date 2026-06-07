@@ -95,7 +95,7 @@ class SalesforceAccountsFetcher:
         field_names = await self._fetch_field_names()
         # The field list comes only from Salesforce describe metadata after
         # filtering out known non-selectable field shapes; no user input reaches this SOQL.
-        soql = f"SELECT {', '.join(field_names)} FROM Account ORDER BY Name"  # noqa: S608  # nosec B608
+        soql = f"SELECT {', '.join(field_names)} FROM Account ORDER BY Id"  # noqa: S608  # nosec B608
         url = f"{self.instance_url}/services/data/{_API_VERSION}/query"
         next_url: str | None = None
         page_count = 0

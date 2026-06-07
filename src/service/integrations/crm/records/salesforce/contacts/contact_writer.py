@@ -13,7 +13,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.contacts.contact_types import (
     ContactWriteResult,
     NormalizedSalesforceContact,
@@ -52,6 +55,7 @@ class SalesforceContactWriter:
         existing_by_external = await self._load_existing_rows(
             external_ids={contact.external_id for contact in normalized}
         )
+        mapping_rows: list[IntegrationMappingUpsert] = []
 
         for contact in normalized:
             resolved_company_id = self._resolve_company_id(
@@ -62,7 +66,7 @@ class SalesforceContactWriter:
             if existing is None:
                 row = self._new_row(contact, resolved_company_id, resolved_owner_id, now=now)
                 self.session.add(row)
-                await self._upsert_source_mapping(contact, row.contact_id, now=now)
+                mapping_rows.append(self._source_mapping_row(contact, row.contact_id, now=now))
                 result.contacts_created += 1
             else:
                 was_deleted = existing.is_deleted
@@ -73,12 +77,15 @@ class SalesforceContactWriter:
                     resolved_owner_id,
                     now=now,
                 )
-                await self._upsert_source_mapping(contact, existing.contact_id, now=now)
+                mapping_rows.append(self._source_mapping_row(contact, existing.contact_id, now=now))
                 if was_deleted:
                     existing.is_deleted = False
                     result.contacts_reactivated += 1
                 else:
                     result.contacts_updated += 1
+
+        if mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
         logger.info(
@@ -148,14 +155,14 @@ class SalesforceContactWriter:
             if row.contact_id in local_to_external
         }
 
-    async def _upsert_source_mapping(
+    def _source_mapping_row(
         self,
         contact: NormalizedSalesforceContact,
         local_contact_id: UUID,
         *,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.CONTACT,
             external_id=contact.external_id,
             local_object_type=CRMSourceObjectType.CONTACT,

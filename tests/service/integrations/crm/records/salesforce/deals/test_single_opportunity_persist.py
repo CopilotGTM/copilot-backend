@@ -232,13 +232,6 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
         async def apply(self, **_kwargs):
             return ParticipantWriteResult()
 
-    class FakeAssociationWriter:
-        def __init__(self, **_kwargs) -> None:
-            pass
-
-        async def apply(self, **_kwargs):
-            return AssociationWriteResult()
-
     monkeypatch.setattr(deal_sync_service, "acquire_org_async_session", fake_acquire_session)
     monkeypatch.setattr(service, "_load_resolution_maps", fake_load_resolution_maps)
     monkeypatch.setattr(service, "_load_deal_pk_map", fake_load_deal_pk_map)
@@ -248,7 +241,6 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
         deal_sync_service, "SalesforceDealStageHistoryWriter", FakeStageHistoryWriter
     )
     monkeypatch.setattr(deal_sync_service, "SalesforceDealParticipantWriter", FakeParticipantWriter)
-    monkeypatch.setattr(deal_sync_service, "SalesforceDealAssociationWriter", FakeAssociationWriter)
 
     participant_extraction = DealParticipantExtraction(
         participants=[
@@ -323,6 +315,98 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
         "company_external_ids": {"001A", "001B"},
         "contact_external_ids": {"003A", "003B"},
     }
+
+
+@pytest.mark.asyncio
+async def test_persist_skips_salesforce_association_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    persisted_participants: list[NormalizedSalesforceDealParticipant] = []
+
+    class FakeSession:
+        async def commit(self) -> None:
+            pass
+
+    async def fake_acquire_session(_organisation_id):
+        yield FakeSession()
+
+    async def fake_load_resolution_maps(**_kwargs):
+        return DealResolutionMaps()
+
+    async def fake_load_deal_pk_map(**_kwargs):
+        return {"006A": uuid4()}
+
+    class FakeDealWriter:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def apply(self, *, normalized, maps, preserve_relationship_fields=False):
+            return DealWriteResult()
+
+    class FakeStageHistoryWriter:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def apply(self, **_kwargs):
+            return StageHistoryWriteResult()
+
+    class FakeParticipantWriter:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def apply(self, *, participants, **_kwargs):
+            persisted_participants.extend(participants)
+            return ParticipantWriteResult(participants_created=len(participants))
+
+    participant = NormalizedSalesforceDealParticipant(
+        deal_external_id="006A",
+        participant_type=CRMParticipantType.CONTACT.value,
+        related_external_id="003A",
+        relationship_role="Decision Maker",
+        is_primary=False,
+        data_payload=None,
+    )
+    association = NormalizedSalesforceDealAssociation(
+        from_external_id="006A",
+        from_object_type=CRMObjectType.DEAL.value,
+        to_external_id="003A",
+        to_object_type=CRMObjectType.CONTACT.value,
+        association_category=CRMAssociationCategory.SALESFORCE_STANDARD.value,
+        association_type_id="OpportunityContactRole",
+        association_label="Opportunity Contact Role",
+        role_label="Decision Maker",
+        is_primary=False,
+        data_payload=None,
+    )
+
+    monkeypatch.setattr(deal_sync_service, "acquire_org_async_session", fake_acquire_session)
+    monkeypatch.setattr(service, "_load_resolution_maps", fake_load_resolution_maps)
+    monkeypatch.setattr(service, "_load_deal_pk_map", fake_load_deal_pk_map)
+    monkeypatch.setattr(service, "_backfill_deals", _fake_backfill_deals)
+    monkeypatch.setattr(deal_sync_service, "SalesforceDealWriter", FakeDealWriter)
+    monkeypatch.setattr(
+        deal_sync_service, "SalesforceDealStageHistoryWriter", FakeStageHistoryWriter
+    )
+    monkeypatch.setattr(deal_sync_service, "SalesforceDealParticipantWriter", FakeParticipantWriter)
+
+    _, _, participant_result, association_result, _ = await service._persist(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        opportunities=[],
+        transitions=[],
+        participant_extraction=DealParticipantExtraction(
+            participants=[participant],
+            associations=[association],
+        ),
+    )
+
+    assert persisted_participants == [participant]
+    assert participant_result.participants_created == 1
+    assert association_result == AssociationWriteResult()
+    assert not hasattr(deal_sync_service, "SalesforceDealAssociationWriter")
 
 
 @pytest.mark.asyncio
@@ -516,7 +600,7 @@ async def test_contact_role_sync_carries_last_deal_across_pages(
         return (
             0,
             ParticipantWriteResult(participants_created=1),
-            AssociationWriteResult(associations_created=1),
+            AssociationWriteResult(),
             {"rows_updated": 0, "per_op": {}},
         )
 
@@ -548,7 +632,7 @@ async def test_contact_role_sync_carries_last_deal_across_pages(
     assert fetched == 4
     assert skipped == 0
     assert participants.participants_created == 3
-    assert associations.associations_created == 3
+    assert associations == AssociationWriteResult()
     assert backfill == {"rows_updated": 0, "per_op": {}}
 
 

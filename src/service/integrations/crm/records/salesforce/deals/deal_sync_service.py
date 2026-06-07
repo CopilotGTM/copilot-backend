@@ -29,9 +29,6 @@ from src.service.integrations.crm.records.common.backfill import (
     backfill_crm_deals,
 )
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
-from src.service.integrations.crm.records.salesforce.deals.association_writer import (
-    SalesforceDealAssociationWriter,
-)
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     AssociationWriteResult,
     DealParticipantExtraction,
@@ -432,11 +429,7 @@ class SalesforceDealRecordSyncService:
             stage_history_result = StageHistoryWriteResult()
             participant_result = ParticipantWriteResult()
             association_result = AssociationWriteResult()
-            has_relationship_rows = bool(
-                transitions
-                or participant_extraction.participants
-                or participant_extraction.associations
-            )
+            has_relationship_rows = bool(transitions or participant_extraction.participants)
             if has_relationship_rows:
                 deal_pk_map = await self._load_deal_pk_map(
                     session=session,
@@ -468,17 +461,6 @@ class SalesforceDealRecordSyncService:
                     contact_map=maps.contact_map,
                     company_map=maps.company_map,
                     user_map=maps.user_map,
-                )
-
-                association_result = await SalesforceDealAssociationWriter(
-                    session=session,
-                    organisation_id=organisation_id,
-                    integration_id=integration_id,
-                ).apply(
-                    edges=participant_extraction.associations,
-                    deal_pk_map=deal_pk_map,
-                    contact_map=maps.contact_map,
-                    company_map=maps.company_map,
                 )
 
             backfill_payload = (
@@ -750,7 +732,7 @@ class SalesforceDealRecordSyncService:
             primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
             contact_count_by_deal=participant_extraction.contact_count_by_deal,
         )
-        if not participant_extraction.participants and not participant_extraction.associations:
+        if not participant_extraction.participants:
             return (
                 participant_extraction.skipped_malformed,
                 ParticipantWriteResult(),
@@ -790,7 +772,7 @@ class SalesforceDealRecordSyncService:
                 [],
                 company_external_id_by_deal=chunk_map,
             )
-            if not participant_extraction.participants and not participant_extraction.associations:
+            if not participant_extraction.participants:
                 continue
             _, _, chunk_participant, chunk_association, chunk_backfill = await self._persist(
                 organisation_id=organisation_id,
@@ -1275,9 +1257,9 @@ async def _load_pipeline_map(
     if not external_to_local:
         return {}
     stmt = select(
-        CRMPipeline.pipeline_id,
-        CRMPipeline.name,
-        CRMPipeline.label,
+        col(CRMPipeline.pipeline_id),
+        col(CRMPipeline.name),
+        col(CRMPipeline.label),
     ).where(
         col(CRMPipeline.organisation_id) == organisation_id,
         col(CRMPipeline.integration_id) == integration_id,
@@ -1316,10 +1298,10 @@ async def _load_stage_map(
     if not external_to_local:
         return {}
     stmt = select(
-        CRMDealStage.stage_id,
-        CRMDealStage.name,
-        CRMDealStage.label,
-        CRMDealStage.pipeline_id,
+        col(CRMDealStage.stage_id),
+        col(CRMDealStage.name),
+        col(CRMDealStage.label),
+        col(CRMDealStage.pipeline_id),
     ).where(
         col(CRMDealStage.organisation_id) == organisation_id,
         col(CRMDealStage.integration_id) == integration_id,
@@ -1359,9 +1341,9 @@ async def _load_user_map(
     if not external_to_local:
         return {}
     stmt = select(
-        CRMUser.user_id,
-        CRMUser.full_name,
-        CRMUser.email,
+        col(CRMUser.user_id),
+        col(CRMUser.full_name),
+        col(CRMUser.email),
     ).where(
         col(CRMUser.organisation_id) == organisation_id,
         col(CRMUser.integration_id) == integration_id,
@@ -1400,9 +1382,9 @@ async def _load_company_map(
     if not external_to_local:
         return {}
     stmt = select(
-        CRMCompany.company_id,
-        CRMCompany.name,
-        CRMCompany.domain,
+        col(CRMCompany.company_id),
+        col(CRMCompany.name),
+        col(CRMCompany.domain),
     ).where(
         col(CRMCompany.organisation_id) == organisation_id,
         col(CRMCompany.integration_id) == integration_id,
@@ -1441,9 +1423,9 @@ async def _load_contact_map(
     if not external_to_local:
         return {}
     stmt = select(
-        CRMContact.contact_id,
-        CRMContact.full_name,
-        CRMContact.email,
+        col(CRMContact.contact_id),
+        col(CRMContact.full_name),
+        col(CRMContact.email),
     ).where(
         col(CRMContact.organisation_id) == organisation_id,
         col(CRMContact.integration_id) == integration_id,

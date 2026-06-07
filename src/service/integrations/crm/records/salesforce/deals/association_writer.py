@@ -17,7 +17,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     AssociationWriteResult,
     DimensionHit,
@@ -62,6 +65,7 @@ class SalesforceDealAssociationWriter:
         existing_by_external = await self._load_existing_rows(
             external_ids={_synthetic_external_id(edge) for edge in edges}
         )
+        mapping_rows: list[IntegrationMappingUpsert] = []
 
         for edge in edges:
             from_local_id = deal_pk_map.get(edge.from_external_id)
@@ -87,11 +91,13 @@ class SalesforceDealAssociationWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
-                await self._upsert_source_mapping(
-                    external_id=external_id,
-                    edge=edge,
-                    local_association_id=row.association_id,
-                    now=now,
+                mapping_rows.append(
+                    self._source_mapping_row(
+                        external_id=external_id,
+                        edge=edge,
+                        local_association_id=row.association_id,
+                        now=now,
+                    )
                 )
                 result.associations_created += 1
             else:
@@ -103,13 +109,18 @@ class SalesforceDealAssociationWriter:
                     now=now,
                 )
                 existing.is_deleted = False
-                await self._upsert_source_mapping(
-                    external_id=external_id,
-                    edge=edge,
-                    local_association_id=existing.association_id,
-                    now=now,
+                mapping_rows.append(
+                    self._source_mapping_row(
+                        external_id=external_id,
+                        edge=edge,
+                        local_association_id=existing.association_id,
+                        now=now,
+                    )
                 )
                 result.associations_updated += 1
+
+        if mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
         logger.info(
@@ -164,15 +175,15 @@ class SalesforceDealAssociationWriter:
             if row.association_id in local_to_external
         }
 
-    async def _upsert_source_mapping(
+    def _source_mapping_row(
         self,
         *,
         external_id: str,
         edge: NormalizedSalesforceDealAssociation,
         local_association_id: UUID,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.ASSOCIATION,
             external_id=external_id,
             local_object_type=CRMSourceObjectType.ASSOCIATION,

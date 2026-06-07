@@ -14,7 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.common.source_mapping import (
+    CRMSourceMappingHelper,
+    IntegrationMappingUpsert,
+)
 from src.service.integrations.crm.records.salesforce.pipelines.pipeline_types import (
     NormalizedPipeline,
     NormalizedStage,
@@ -57,6 +60,7 @@ class SalesforcePipelineWriter:
         existing_pipelines = await self._load_existing_pipelines()
         incoming_pipeline_keys: set[str] = set()
         pipeline_map: dict[str, UUID] = {}
+        pipeline_mapping_rows: list[IntegrationMappingUpsert] = []
 
         for pipeline in pipelines:
             incoming_pipeline_keys.add(pipeline.external_id)
@@ -64,14 +68,18 @@ class SalesforcePipelineWriter:
             if existing is None:
                 row = self._new_pipeline_row(pipeline, now=now)
                 self.session.add(row)
-                await self._upsert_pipeline_mapping(pipeline, row.pipeline_id, now=now)
+                pipeline_mapping_rows.append(
+                    self._pipeline_mapping_row(pipeline, row.pipeline_id, now=now)
+                )
                 pipeline_map[pipeline.external_id] = row.pipeline_id
                 result.pipelines_created += 1
             else:
                 was_active = bool(existing.is_active)
                 was_deleted = bool(existing.is_deleted)
                 self._apply_pipeline_updates(existing, pipeline, now=now)
-                await self._upsert_pipeline_mapping(pipeline, existing.pipeline_id, now=now)
+                pipeline_mapping_rows.append(
+                    self._pipeline_mapping_row(pipeline, existing.pipeline_id, now=now)
+                )
                 if was_deleted:
                     existing.is_deleted = False
                     existing.is_active = True
@@ -85,6 +93,7 @@ class SalesforcePipelineWriter:
 
         existing_stages = await self._load_existing_stages()
         incoming_stage_keys: set[str] = set()
+        stage_mapping_rows: list[IntegrationMappingUpsert] = []
 
         for pipeline in pipelines:
             pipeline_id = pipeline_map[pipeline.external_id]
@@ -94,7 +103,9 @@ class SalesforcePipelineWriter:
                 if existing_stage is None:
                     stage_row = self._new_stage_row(stage, pipeline_id=pipeline_id, now=now)
                     self.session.add(stage_row)
-                    await self._upsert_stage_mapping(stage, stage_row.stage_id, now=now)
+                    stage_mapping_rows.append(
+                        self._stage_mapping_row(stage, stage_row.stage_id, now=now)
+                    )
                     result.stages_created += 1
                 else:
                     was_active = bool(existing_stage.is_active)
@@ -102,7 +113,9 @@ class SalesforcePipelineWriter:
                     self._apply_stage_updates(
                         existing_stage, stage, pipeline_id=pipeline_id, now=now
                     )
-                    await self._upsert_stage_mapping(stage, existing_stage.stage_id, now=now)
+                    stage_mapping_rows.append(
+                        self._stage_mapping_row(stage, existing_stage.stage_id, now=now)
+                    )
                     if was_deleted:
                         existing_stage.is_deleted = False
                         existing_stage.is_active = True
@@ -111,7 +124,10 @@ class SalesforcePipelineWriter:
                         result.stages_updated += 1
                     else:
                         existing_stage.is_active = True
-                        result.stages_reactivated += 1
+                    result.stages_reactivated += 1
+
+        if pipeline_mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(pipeline_mapping_rows)
 
         for external_id, existing in existing_pipelines.items():
             if existing.is_active and external_id not in incoming_pipeline_keys:
@@ -121,6 +137,9 @@ class SalesforcePipelineWriter:
             object_type=CRMSourceObjectType.PIPELINE,
             seen_external_ids=incoming_pipeline_keys,
         )
+
+        if stage_mapping_rows:
+            await self.source_mappings.bulk_upsert_integration_mappings(stage_mapping_rows)
 
         for external_id, existing_stage in existing_stages.items():
             if existing_stage.is_active and external_id not in incoming_stage_keys:
@@ -194,14 +213,14 @@ class SalesforcePipelineWriter:
             if row.stage_id in local_to_external
         }
 
-    async def _upsert_pipeline_mapping(
+    def _pipeline_mapping_row(
         self,
         pipeline: NormalizedPipeline,
         local_pipeline_id: UUID,
         *,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.PIPELINE,
             external_id=pipeline.external_id,
             local_object_type=CRMSourceObjectType.PIPELINE,
@@ -212,14 +231,14 @@ class SalesforcePipelineWriter:
             synced_at=now,
         )
 
-    async def _upsert_stage_mapping(
+    def _stage_mapping_row(
         self,
         stage: NormalizedStage,
         local_stage_id: UUID,
         *,
         now: datetime,
-    ) -> None:
-        await self.source_mappings.upsert_integration_mapping(
+    ) -> IntegrationMappingUpsert:
+        return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.STAGE,
             external_id=stage.external_id,
             local_object_type=CRMSourceObjectType.STAGE,

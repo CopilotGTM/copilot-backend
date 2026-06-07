@@ -59,6 +59,7 @@ async def test_stage_history_writer_upserts_source_mapping_for_existing_transiti
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={external_id: existing})  # type: ignore[method-assign]
 
@@ -82,10 +83,12 @@ async def test_stage_history_writer_upserts_source_mapping_for_existing_transiti
     )
 
     assert result.stage_history_updated == 1
-    mapping_call = mapping_helper.upsert_integration_mapping.call_args
-    assert mapping_call.kwargs["external_object_type"] == CRMSourceObjectType.STAGE_HISTORY
-    assert mapping_call.kwargs["local_object_type"] == CRMSourceObjectType.STAGE_HISTORY
-    assert mapping_call.kwargs["local_object_id"] == existing.history_id
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.STAGE_HISTORY
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.STAGE_HISTORY
+    assert mapped_rows[0].local_object_id == existing.history_id
 
 
 @pytest.mark.asyncio
@@ -114,6 +117,7 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={external_id: existing})  # type: ignore[method-assign]
 
@@ -135,10 +139,12 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
     )
 
     assert result.participants_updated == 1
-    mapping_call = mapping_helper.upsert_integration_mapping.call_args
-    assert mapping_call.kwargs["external_object_type"] == CRMSourceObjectType.DEAL_PARTICIPANT
-    assert mapping_call.kwargs["local_object_type"] == CRMSourceObjectType.DEAL_PARTICIPANT
-    assert mapping_call.kwargs["local_object_id"] == existing.participant_id
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.DEAL_PARTICIPANT
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.DEAL_PARTICIPANT
+    assert mapped_rows[0].local_object_id == existing.participant_id
 
 
 @pytest.mark.asyncio
@@ -167,6 +173,7 @@ async def test_association_writer_upserts_source_mapping_for_existing_associatio
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={external_id: existing})  # type: ignore[method-assign]
 
@@ -191,7 +198,9 @@ async def test_association_writer_upserts_source_mapping_for_existing_associatio
     )
 
     assert result.associations_updated == 1
-    mapping_call = mapping_helper.upsert_integration_mapping.call_args
-    assert mapping_call.kwargs["external_object_type"] == CRMSourceObjectType.ASSOCIATION
-    assert mapping_call.kwargs["local_object_type"] == CRMSourceObjectType.ASSOCIATION
-    assert mapping_call.kwargs["local_object_id"] == existing.association_id
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.ASSOCIATION
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.ASSOCIATION
+    assert mapped_rows[0].local_object_id == existing.association_id

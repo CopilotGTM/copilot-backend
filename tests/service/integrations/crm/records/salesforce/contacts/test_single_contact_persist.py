@@ -117,6 +117,65 @@ async def test_run_persists_contacts_in_chunks(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_run_defaults_to_two_thousand_contact_persist_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceContactRecordSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    persist_calls: list[int] = []
+
+    class FakeContactsFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def fetch_pages(self):
+            yield [{"Id": f"003A{i}", "Email": f"a{i}@example.com"} for i in range(500)]
+            yield [{"Id": f"003B{i}", "Email": f"b{i}@example.com"} for i in range(500)]
+            yield [{"Id": f"003C{i}", "Email": f"c{i}@example.com"} for i in range(500)]
+            yield [{"Id": f"003D{i}", "Email": f"d{i}@example.com"} for i in range(500)]
+            yield [{"Id": "003E", "Email": "e@example.com"}]
+
+    async def fake_load_context(*_args, **_kwargs):
+        return SalesforceContactSyncContext(
+            token_info=IntegrationTokenInfo(
+                integration_id=integration_id,
+                organisation_id=organisation_id,
+                access_token="token",
+                refresh_token=None,
+                access_token_expires_at=None,
+            ),
+            instance_url="https://example.my.salesforce.com",
+        )
+
+    async def fake_persist(*, organisation_id, integration_id, normalized, backfill_deals=True):
+        assert backfill_deals is False
+        persist_calls.append(len(normalized))
+        return (
+            ContactWriteResult(contacts_created=len(normalized)),
+            {"rows_updated": 0, "per_op": {}},
+        )
+
+    async def fake_backfill_deal_primary_contacts(**_kwargs):
+        return {"rows_updated": 0, "per_op": {}}
+
+    monkeypatch.setattr(contact_sync_service, "SalesforceContactsFetcher", FakeContactsFetcher)
+    monkeypatch.setattr(service, "_load_context", fake_load_context)
+    monkeypatch.setattr(service, "_persist", fake_persist)
+    monkeypatch.setattr(
+        service,
+        "_backfill_deal_primary_contacts",
+        fake_backfill_deal_primary_contacts,
+    )
+
+    result = await service.run(organisation_id=organisation_id, integration_id=integration_id)
+
+    assert persist_calls == [2000, 1]
+    assert result.fetched_contacts == 2001
+    assert result.contacts_created == 2001
+
+
+@pytest.mark.asyncio
 async def test_persist_loads_company_and_owner_maps_for_current_chunk_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -78,6 +78,7 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"00T1": reactivated, "00T2": stale}
@@ -114,11 +115,13 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert reactivated.related_local_id == deal_id
     assert reactivated.related_name == "Big Deal"
     assert stale.is_deleted is False
-    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
-    assert [call.kwargs["external_id"] for call in mapping_calls] == ["00T1"]
-    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.TASK
-    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.ACTIVITY
-    assert mapping_calls[0].kwargs["local_object_id"] == reactivated.activity_id
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert [row.external_id for row in mapped_rows] == ["00T1"]
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.TASK
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.ACTIVITY
+    assert mapped_rows[0].local_object_id == reactivated.activity_id
 
 
 @pytest.mark.asyncio
@@ -175,6 +178,7 @@ async def test_writer_chunk_mode_loads_only_current_external_ids() -> None:
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
 

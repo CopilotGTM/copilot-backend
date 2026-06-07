@@ -88,6 +88,7 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
     )
     mapping_helper = MagicMock()
     mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"006A": existing})  # type: ignore[method-assign]
 
@@ -134,7 +135,11 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
     assert len(created_rows) == 1
     assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].company_id is None
-    mapping_calls = mapping_helper.upsert_integration_mapping.call_args_list
-    assert [call.kwargs["external_id"] for call in mapping_calls] == ["006A", "006B"]
-    assert mapping_calls[0].kwargs["external_object_type"] == CRMSourceObjectType.DEAL
-    assert mapping_calls[0].kwargs["local_object_type"] == CRMSourceObjectType.DEAL
+    mapping_helper.upsert_integration_mapping.assert_not_awaited()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert [row.external_id for row in mapped_rows] == ["006A", "006B"]
+    assert mapped_rows[0].external_object_type == CRMSourceObjectType.DEAL
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.DEAL
+    assert mapped_rows[0].local_object_id == existing.deal_id
+    assert mapped_rows[0].mapping_metadata == {"associations_payload": {"contact_count": 1}}
