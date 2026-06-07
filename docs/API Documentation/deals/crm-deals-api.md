@@ -1037,6 +1037,13 @@ GET /users/crm/users?q={search}&limit=20
 GET /users/crm/deals/owners?limit=200&q={search}
 ```
 
+Optional `owner_ids` query values hydrate selected owners even if they do not match
+the current search term or fall outside the first `limit` results:
+
+```
+GET /users/crm/deals/owners?q=nikhil&owner_ids={owner_id}
+```
+
 **Response:**
 ```json
 {
@@ -1054,6 +1061,32 @@ GET /users/crm/deals/owners?limit=200&q={search}
 ```
 
 Use `owner_id` values from this endpoint with the `owner_ids` filter in `GET /users/crm/deals`.
+
+### Resolve Current User Deal Owners
+
+```
+GET /users/crm/deals/owners/me
+```
+
+Returns CRM deal-owner rows that match the authenticated app user by app user ID
+or email. Frontend should use this endpoint to preselect `owner_ids` on Deals
+page load when the product wants a personal owner view by default.
+
+**Response:**
+```json
+{
+  "status": "SUCCESS",
+  "data": {
+    "items": [
+      {
+        "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+        "name": "Jane Smith",
+        "email": "jane@example.com"
+      }
+    ]
+  }
+}
+```
 
 ### Get Pipelines (with Stages)
 

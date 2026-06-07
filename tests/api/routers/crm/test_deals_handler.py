@@ -12,6 +12,7 @@ from fastapi import Response as FastAPIResponse
 from fastapi.testclient import TestClient
 from src.api.routers.crm import deals_handler as deals_handler_module
 from src.api.schemas.crm_deal_write_models import DealCreateRequest
+from src.api.schemas.crm_models import DealsListParams
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 
 from tests.api.routers.crm.conftest import (
@@ -257,6 +258,143 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     item = data["items"][0]
     assert len(item["owner_details"]) == 1
     assert item["owner_details"][0]["name"] == "John Sales"
+
+
+@pytest.mark.asyncio
+async def test_list_deals_default_includes_crm_only_owner_deals(
+    fake_deals_service, test_user_ids, monkeypatch
+):
+    """Default Deals is a pipeline view, not current-app-user-only."""
+    org_id = test_user_ids["organisation_id"]
+
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="CRM-only Owner Deal",
+            owner_id=uuid4(),
+            owner_name="CRM Owner",
+            owner_email="crm-owner@example.com",
+        )
+    )
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        AsyncMock(return_value={}),
+    )
+
+    result = await deals_handler_module.list_deals(
+        response=FastAPIResponse(),
+        params=DealsListParams(
+            limit=40,
+            page=1,
+            statuses=None,
+            pipeline_ids=None,
+            owner_ids=None,
+            min_amount=None,
+            max_amount=None,
+            min_close_date=None,
+            max_close_date=None,
+            q=None,
+        ),
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert [item.name for item in result.data.items] == ["CRM-only Owner Deal"]
+
+
+@pytest.mark.asyncio
+async def test_list_deal_owners_hydrates_selected_owner_outside_search(
+    fake_deals_service, test_user_ids
+):
+    org_id = test_user_ids["organisation_id"]
+    selected_owner_id = uuid4()
+
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Selected Owner Deal",
+            owner_id=selected_owner_id,
+            owner_name="Selected Owner",
+            owner_email="selected@example.com",
+        )
+    )
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Search Match Deal",
+            owner_id=uuid4(),
+            owner_name="Search Match",
+            owner_email="match@example.com",
+        )
+    )
+
+    result = await deals_handler_module.list_deal_owners(
+        response=FastAPIResponse(),
+        limit=200,
+        q="match",
+        owner_ids=[selected_owner_id],
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    owners = result.data.items
+    owner_ids = {owner.owner_id for owner in owners}
+    assert selected_owner_id in owner_ids
+    assert any(owner.name == "Search Match" for owner in owners)
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_deal_owners_resolves_preselect_owner_ids(
+    fake_deals_service, test_user_ids
+):
+    org_id = test_user_ids["organisation_id"]
+    current_user_id = test_user_ids["user_id"]
+    id_owner_id = current_user_id
+    email_owner_id = uuid4()
+
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Owner ID Match",
+            owner_id=id_owner_id,
+            owner_name="Current User",
+            owner_email="other@example.com",
+        )
+    )
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Owner Email Match",
+            owner_id=email_owner_id,
+            owner_name="Email Bridge Owner",
+            owner_email="test@example.com",
+        )
+    )
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Unrelated Owner",
+            owner_id=uuid4(),
+            owner_email="other@example.com",
+        )
+    )
+
+    result = await deals_handler_module.get_current_user_deal_owners(
+        response=FastAPIResponse(),
+        user_ids=SimpleNamespace(
+            user_id=current_user_id,
+            organisation_id=org_id,
+            user_email="test@example.com",
+        ),
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    owner_ids = {owner.owner_id for owner in result.data.items}
+    assert owner_ids == {id_owner_id, email_owner_id}
 
 
 def test_list_deals_returns_currency_symbol_and_normalized_code(

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import cast as typing_cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
@@ -30,8 +30,10 @@ from src.domain.models.master_tables import (
     UserActionHistory,
     UserEventType,
 )
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import AdminUserErrors
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 
@@ -73,6 +75,12 @@ class UserAlreadyExistsError(AdminUserServiceError):
 
 class InvalidUserDataError(AdminUserServiceError):
     """Raised when user data is invalid."""
+
+    pass
+
+
+class UserIdentityConflictError(AdminUserServiceError):
+    """Raised when CRM identity cannot be deterministically linked."""
 
     pass
 
@@ -180,6 +188,18 @@ class AdminUserService:
                 error_code="USER_ALREADY_EXISTS",
             )
 
+        crm_user_id = await self._resolve_crm_user_id_for_new_user(
+            organisation_id=user_data.organisation_id,
+            email=user_data.email,
+        )
+        if crm_user_id is not None:
+            conflicting_user = await self._session.get(User, crm_user_id)
+            if conflicting_user is not None:
+                raise UserIdentityConflictError(
+                    "CRM user identity is already linked to another application user.",
+                    error_code="CRM_USER_ID_ALREADY_LINKED",
+                )
+
         # Create user in Supabase
         temp_password = user_auth.generate_temporary_password()
 
@@ -198,8 +218,11 @@ class AdminUserService:
             )
 
         # Create local user record
+        create_payload = user_data.model_dump(exclude_none=True)
+        if crm_user_id is not None:
+            create_payload["user_id"] = crm_user_id
         new_user = User(
-            **user_data.dict(exclude_none=True),
+            **create_payload,
             supabase_user_id=supabase_user_id,
             created_by_auth_user_id=str(admin_id),
         )
@@ -220,6 +243,44 @@ class AdminUserService:
 
         logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
         return CreateUserResult(new_user, temp_password=temp_password)
+
+    async def _resolve_crm_user_id_for_new_user(
+        self,
+        *,
+        organisation_id: UUID,
+        email: str,
+    ) -> UUID | None:
+        """Return the matching CRM user id when the email maps to one active identity."""
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return None
+
+        async for org_session in acquire_org_async_session(organisation_id):
+            stmt = (
+                select(CRMUser.user_id)
+                .where(
+                    col(CRMUser.organisation_id) == organisation_id,
+                    col(CRMUser.is_deleted).is_not(True),
+                    col(CRMUser.is_active).is_(True),
+                    func.lower(CRMUser.email) == normalized_email,
+                )
+                .distinct()
+            )
+            rows = (await org_session.execute(stmt)).all()
+            crm_user_ids = {row[0] for row in rows}
+
+            if len(crm_user_ids) == 0:
+                return None
+            if len(crm_user_ids) == 1:
+                return next(iter(crm_user_ids))
+
+            raise UserIdentityConflictError(
+                "Multiple CRM users with this email exist in the organisation. "
+                "Resolve the CRM identity before creating the application user.",
+                error_code="CRM_USER_EMAIL_AMBIGUOUS",
+            )
+
+        return None
 
     async def get_user(self, user_id: UUID) -> UserResponse:
         """Get a user by ID.

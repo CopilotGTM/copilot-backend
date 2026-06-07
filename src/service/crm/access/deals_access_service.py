@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("deals_access_service")
@@ -602,19 +603,23 @@ class DealsAccessService:
         self,
         q: str | None = None,
         limit: int = 200,
+        owner_ids: Iterable[UUID] | None = None,
     ) -> list[DealOwnerFilterRow]:
         """Return distinct deal owners for filter dropdowns.
 
         Args:
             q: Optional search term for owner name/email/external ID.
             limit: Maximum number of owners to return.
+            owner_ids: Optional owner IDs to hydrate even when they do not match q.
 
         Returns:
             List of distinct owners with owner_id, name, and email.
         """
         try:
             c = cast(Any, CRMDeal).__table__.c
-            stmt = (
+            selected_owner_ids = list(dict.fromkeys(owner_ids or []))
+
+            base_stmt = (
                 select(
                     c.owner_id.label("owner_id"),
                     func.max(c.owner_name).label("name"),
@@ -628,6 +633,21 @@ class DealsAccessService:
                 .group_by(c.owner_id)
             )
 
+            owners_by_id: dict[UUID, DealOwnerFilterRow] = {}
+            if selected_owner_ids:
+                selected_stmt = base_stmt.where(c.owner_id.in_(selected_owner_ids)).order_by(
+                    func.max(c.owner_name).asc().nulls_last(),
+                    c.owner_id.asc(),
+                )
+                selected_result = await self.org_session.execute(selected_stmt)
+                for row in selected_result.all():
+                    owners_by_id[cast(UUID, row.owner_id)] = {
+                        "owner_id": cast(UUID, row.owner_id),
+                        "name": cast(str | None, row.name),
+                        "email": cast(str | None, row.email),
+                    }
+
+            stmt = base_stmt
             if q:
                 like_expr = f"%{q.lower()}%"
                 conditions = [
@@ -638,6 +658,9 @@ class DealsAccessService:
                     conditions.append(c.owner_id == UUID(q))
                 stmt = stmt.where(or_(*conditions))
 
+            if selected_owner_ids:
+                stmt = stmt.where(c.owner_id.not_in(selected_owner_ids))
+
             stmt = stmt.order_by(
                 func.max(c.owner_name).asc().nulls_last(),
                 c.owner_id.asc(),
@@ -646,19 +669,73 @@ class DealsAccessService:
             result = await self.org_session.execute(stmt)
             rows = result.all()
 
-            owners: list[DealOwnerFilterRow] = []
             for row in rows:
-                owners.append(
+                owners_by_id.setdefault(
+                    cast(UUID, row.owner_id),
                     {
                         "owner_id": cast(UUID, row.owner_id),
                         "name": cast(str | None, row.name),
                         "email": cast(str | None, row.email),
-                    }
+                    },
                 )
-            return owners
+            return list(owners_by_id.values())
         except Exception as exc:
             logger.error("Failed to list deal owners: %s", exc, exc_info=True)
             raise DealsAccessServiceError("Failed to retrieve deal owners") from exc
+
+    async def resolve_current_user_deal_owners(
+        self,
+        *,
+        user_id: UUID,
+        user_email: str | None,
+    ) -> list[DealOwnerFilterRow]:
+        """Return deal-owner rows that map to the current app user."""
+        try:
+            deal_columns = cast(Any, CRMDeal).__table__.c
+            crm_user_columns = cast(Any, CRMUser).__table__.c
+
+            crm_user_conditions = [crm_user_columns.user_id == user_id]
+            owner_conditions = [deal_columns.owner_id == user_id]
+            if user_email:
+                email_lower = user_email.lower()
+                crm_user_conditions.append(func.lower(crm_user_columns.email) == email_lower)
+                owner_conditions.append(func.lower(deal_columns.owner_email) == email_lower)
+
+            crm_user_id_stmt = select(crm_user_columns.user_id).where(
+                crm_user_columns.organisation_id == self.organisation_id,
+                crm_user_columns.is_deleted.is_(False),
+                or_(*crm_user_conditions),
+            )
+            owner_conditions.append(deal_columns.owner_id.in_(crm_user_id_stmt))
+
+            stmt = (
+                select(
+                    deal_columns.owner_id.label("owner_id"),
+                    func.max(deal_columns.owner_name).label("name"),
+                    func.max(deal_columns.owner_email).label("email"),
+                )
+                .where(
+                    deal_columns.organisation_id == self.organisation_id,
+                    deal_columns.is_deleted.is_(False),
+                    deal_columns.owner_id.is_not(None),
+                    or_(*owner_conditions),
+                )
+                .group_by(deal_columns.owner_id)
+                .order_by(func.max(deal_columns.owner_name).asc().nulls_last())
+            )
+
+            result = await self.org_session.execute(stmt)
+            return [
+                {
+                    "owner_id": cast(UUID, row.owner_id),
+                    "name": cast(str | None, row.name),
+                    "email": cast(str | None, row.email),
+                }
+                for row in result.all()
+            ]
+        except Exception as exc:
+            logger.error("Failed to resolve current user deal owners: %s", exc, exc_info=True)
+            raise DealsAccessServiceError("Failed to resolve current user deal owners") from exc
 
 
 def extract_deal_health(deal_summary_data: dict | None) -> str | None:
