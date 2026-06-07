@@ -26,6 +26,10 @@ from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.users.user_normalizer import (
     build_owner_backfill_mapping,
@@ -379,13 +383,15 @@ class SalesforceUserRecordSyncService:
         external_to_local = await helper.load_local_id_map(object_type=CRMSourceObjectType.USER)
         if not external_to_local:
             return {}
-        stmt = select(CRMUser.user_id).where(
-            col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712
-            col(CRMUser.user_id).in_(set(external_to_local.values())),
-        )
-        rows = (await session.execute(stmt)).all()
+        rows = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMUser.user_id).where(
+                col(CRMUser.organisation_id) == organisation_id,
+                col(CRMUser.integration_id) == integration_id,
+                col(CRMUser.is_deleted) == False,  # noqa: E712
+                col(CRMUser.user_id).in_(local_ids),
+            )
+            rows.extend((await session.execute(stmt)).all())
         live_ids = {user_id for (user_id,) in rows}
         return {
             external_id: user_id

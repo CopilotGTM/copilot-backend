@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDea
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
+from src.service.integrations.crm.records.salesforce.deals import deal_writer
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealResolutionMaps,
     DimensionHit,
@@ -143,3 +145,44 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
     assert mapped_rows[0].local_object_type == CRMSourceObjectType.DEAL
     assert mapped_rows[0].local_object_id == existing.deal_id
     assert mapped_rows[0].mapping_metadata == {"associations_payload": {"contact_count": 1}}
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_chunks_local_id_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    rows = [
+        CRMDeal(
+            deal_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            name=f"Deal {index}",
+        )
+        for index in range(3)
+    ]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[:2])),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[2:])),
+        ]
+    )
+
+    writer = SalesforceDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer.source_mappings = MagicMock()
+    writer.source_mappings.load_local_id_map = AsyncMock(
+        return_value={f"006{index}": row.deal_id for index, row in enumerate(rows)}
+    )
+    monkeypatch.setattr(deal_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    existing = await writer._load_existing_rows(external_ids=None)
+
+    assert existing == {f"006{index}": row for index, row in enumerate(rows)}
+    assert session.execute.await_count == 2

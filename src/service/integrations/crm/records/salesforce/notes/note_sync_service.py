@@ -18,6 +18,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.activity_scope import (
     load_initial_sync_deal_external_ids,
@@ -412,13 +416,15 @@ class SalesforceNoteRecordSyncService:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
-            col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
-            col(CRMUser.is_deleted) == False,  # noqa: E712
-            col(CRMUser.user_id).in_(set(external_to_local.values())),
-        )
-        rows = (await session.execute(stmt)).all()
+        rows = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMUser.user_id, CRMUser.full_name, CRMUser.email).where(
+                col(CRMUser.organisation_id) == organisation_id,
+                col(CRMUser.integration_id) == integration_id,
+                col(CRMUser.is_deleted) == False,  # noqa: E712
+                col(CRMUser.user_id).in_(local_ids),
+            )
+            rows.extend((await session.execute(stmt)).all())
         local_to_external = _local_to_external(external_to_local)
         return {
             local_to_external[user_id]: ActivityDimensionHit(
@@ -447,13 +453,15 @@ class SalesforceNoteRecordSyncService:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMDeal.deal_id, CRMDeal.name).where(
-            col(CRMDeal.organisation_id) == organisation_id,
-            col(CRMDeal.integration_id) == integration_id,
-            col(CRMDeal.is_deleted) == False,  # noqa: E712
-            col(CRMDeal.deal_id).in_(set(external_to_local.values())),
-        )
-        rows = (await session.execute(stmt)).all()
+        rows = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMDeal.deal_id, CRMDeal.name).where(
+                col(CRMDeal.organisation_id) == organisation_id,
+                col(CRMDeal.integration_id) == integration_id,
+                col(CRMDeal.is_deleted) == False,  # noqa: E712
+                col(CRMDeal.deal_id).in_(local_ids),
+            )
+            rows.extend((await session.execute(stmt)).all())
         local_to_external = _local_to_external(external_to_local)
         return {
             local_to_external[deal_id]: ActivityDimensionHit(internal_id=deal_id, name=name)
@@ -478,17 +486,19 @@ class SalesforceNoteRecordSyncService:
         )
         if not external_to_local:
             return {}
-        stmt = select(
-            CRMContact.contact_id,
-            CRMContact.full_name,
-            CRMContact.email,
-        ).where(
-            col(CRMContact.organisation_id) == organisation_id,
-            col(CRMContact.integration_id) == integration_id,
-            col(CRMContact.is_deleted) == False,  # noqa: E712
-            col(CRMContact.contact_id).in_(set(external_to_local.values())),
-        )
-        rows = (await session.execute(stmt)).all()
+        rows = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(
+                CRMContact.contact_id,
+                CRMContact.full_name,
+                CRMContact.email,
+            ).where(
+                col(CRMContact.organisation_id) == organisation_id,
+                col(CRMContact.integration_id) == integration_id,
+                col(CRMContact.is_deleted) == False,  # noqa: E712
+                col(CRMContact.contact_id).in_(local_ids),
+            )
+            rows.extend((await session.execute(stmt)).all())
         local_to_external = _local_to_external(external_to_local)
         return {
             local_to_external[contact_id]: ActivityDimensionHit(
@@ -517,13 +527,15 @@ class SalesforceNoteRecordSyncService:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMCompany.company_id, CRMCompany.name).where(
-            col(CRMCompany.organisation_id) == organisation_id,
-            col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.is_deleted) == False,  # noqa: E712
-            col(CRMCompany.company_id).in_(set(external_to_local.values())),
-        )
-        rows = (await session.execute(stmt)).all()
+        rows = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMCompany.company_id, CRMCompany.name).where(
+                col(CRMCompany.organisation_id) == organisation_id,
+                col(CRMCompany.integration_id) == integration_id,
+                col(CRMCompany.is_deleted) == False,  # noqa: E712
+                col(CRMCompany.company_id).in_(local_ids),
+            )
+            rows.extend((await session.execute(stmt)).all())
         local_to_external = _local_to_external(external_to_local)
         return {
             local_to_external[company_id]: ActivityDimensionHit(internal_id=company_id, name=name)
@@ -552,13 +564,15 @@ async def _load_live_external_ids(
     )
     if not external_to_local:
         return []
-    stmt = select(id_column).where(
-        col(model.organisation_id) == organisation_id,
-        col(model.integration_id) == integration_id,
-        col(model.is_deleted) == False,  # noqa: E712
-        col(id_column).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(id_column).where(
+            col(model.organisation_id) == organisation_id,
+            col(model.integration_id) == integration_id,
+            col(model.is_deleted) == False,  # noqa: E712
+            col(id_column).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     live_ids = {local_id for (local_id,) in rows}
     return [
         external_id for external_id, local_id in external_to_local.items() if local_id in live_ids

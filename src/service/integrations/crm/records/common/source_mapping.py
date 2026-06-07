@@ -15,6 +15,10 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMSourceObjectMapping,
     CRMSourceObjectType,
 )
+from src.service.integrations.crm.records.common.query_chunks import (
+    EXTERNAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 
 _BULK_UPSERT_PARAMETER_BUDGET = 24_000
 
@@ -59,22 +63,28 @@ class CRMSourceMappingHelper:
         if external_ids is not None and not external_id_set:
             return {}
 
-        stmt = select(
-            col(CRMSourceObjectMapping.external_id),
-            col(CRMSourceObjectMapping.local_object_id),
-        ).where(
-            col(CRMSourceObjectMapping.organisation_id) == self.organisation_id,
-            col(CRMSourceObjectMapping.integration_id) == self.integration_id,
-            col(CRMSourceObjectMapping.source_kind) == CRMSourceKind.INTEGRATION,
-            col(CRMSourceObjectMapping.provider) == self.provider,
-            col(CRMSourceObjectMapping.external_object_type) == object_type,
+        rows = []
+        external_id_batches = (
+            [None]
+            if external_id_set is None
+            else list(iter_chunks(external_id_set, EXTERNAL_ID_QUERY_CHUNK_SIZE))
         )
-        if not include_deleted:
-            stmt = stmt.where(col(CRMSourceObjectMapping.is_deleted) == False)  # noqa: E712
-        if external_id_set is not None:
-            stmt = stmt.where(col(CRMSourceObjectMapping.external_id).in_(external_id_set))
-
-        rows = (await self.session.execute(stmt)).all()
+        for external_id_batch in external_id_batches:
+            stmt = select(
+                col(CRMSourceObjectMapping.external_id),
+                col(CRMSourceObjectMapping.local_object_id),
+            ).where(
+                col(CRMSourceObjectMapping.organisation_id) == self.organisation_id,
+                col(CRMSourceObjectMapping.integration_id) == self.integration_id,
+                col(CRMSourceObjectMapping.source_kind) == CRMSourceKind.INTEGRATION,
+                col(CRMSourceObjectMapping.provider) == self.provider,
+                col(CRMSourceObjectMapping.external_object_type) == object_type,
+            )
+            if not include_deleted:
+                stmt = stmt.where(col(CRMSourceObjectMapping.is_deleted) == False)  # noqa: E712
+            if external_id_batch is not None:
+                stmt = stmt.where(col(CRMSourceObjectMapping.external_id).in_(external_id_batch))
+            rows.extend((await self.session.execute(stmt)).all())
         return {
             external_id: local_object_id
             for external_id, local_object_id in rows
@@ -293,16 +303,18 @@ class CRMSourceMappingHelper:
         if not external_id_set:
             return {}
 
-        stmt = select(CRMSourceObjectMapping).where(
-            col(CRMSourceObjectMapping.organisation_id) == self.organisation_id,
-            col(CRMSourceObjectMapping.integration_id) == self.integration_id,
-            col(CRMSourceObjectMapping.source_kind) == CRMSourceKind.INTEGRATION,
-            col(CRMSourceObjectMapping.provider) == self.provider,
-            col(CRMSourceObjectMapping.external_object_type) == object_type,
-            col(CRMSourceObjectMapping.external_id).in_(external_id_set),
-            col(CRMSourceObjectMapping.is_deleted) == False,  # noqa: E712
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows = []
+        for external_id_batch in iter_chunks(external_id_set, EXTERNAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMSourceObjectMapping).where(
+                col(CRMSourceObjectMapping.organisation_id) == self.organisation_id,
+                col(CRMSourceObjectMapping.integration_id) == self.integration_id,
+                col(CRMSourceObjectMapping.source_kind) == CRMSourceKind.INTEGRATION,
+                col(CRMSourceObjectMapping.provider) == self.provider,
+                col(CRMSourceObjectMapping.external_object_type) == object_type,
+                col(CRMSourceObjectMapping.external_id).in_(external_id_batch),
+                col(CRMSourceObjectMapping.is_deleted) == False,  # noqa: E712
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         deleted: dict[str, UUID] = {}
         for mapping in rows:
             mapping.is_deleted = True

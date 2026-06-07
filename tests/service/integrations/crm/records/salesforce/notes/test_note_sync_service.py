@@ -5,11 +5,13 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.notes import note_sync_service
 from src.service.integrations.crm.records.salesforce.notes.note_sync_service import (
     SalesforceNoteRecordSyncService,
     SalesforceNoteSyncContext,
+    _load_live_external_ids,
 )
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
     NormalizedSalesforceNote,
@@ -344,3 +346,38 @@ async def test_load_initial_sync_linked_entity_ids_scopes_notes_to_eligible_deal
     )
 
     assert linked_entity_ids == ["006OPEN", "006RECENT"]
+
+
+@pytest.mark.asyncio
+async def test_load_live_external_ids_chunks_local_id_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    local_ids = [uuid4(), uuid4(), uuid4()]
+
+    async def fake_load_mapping_ids(**_kwargs):
+        return {f"006{index}": local_id for index, local_id in enumerate(local_ids)}
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(all=lambda: [(local_ids[0],), (local_ids[1],)]),
+            SimpleNamespace(all=lambda: [(local_ids[2],)]),
+        ]
+    )
+    monkeypatch.setattr(note_sync_service, "_load_mapping_ids", fake_load_mapping_ids)
+    monkeypatch.setattr(note_sync_service, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    external_ids = await _load_live_external_ids(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider="salesforce",
+        object_type=CRMSourceObjectType.DEAL,
+        model=CRMDeal,
+        id_column=CRMDeal.deal_id,
+    )
+
+    assert external_ids == ["0060", "0061", "0062"]
+    assert session.execute.await_count == 2

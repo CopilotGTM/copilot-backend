@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
 from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
+from src.service.integrations.crm.records.salesforce.tasks import task_writer
 from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
     NormalizedSalesforceTask,
@@ -399,3 +401,71 @@ async def test_writer_skips_deactivation_for_empty_scoped_deals() -> None:
 
     assert result.tasks_deactivated == 0
     session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_chunks_local_id_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    rows = [
+        CRMActivity(
+            activity_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            external_id=f"00T{index}",
+            activity_type=CRMActivityType.TASK.value,
+            is_deleted=False,
+        )
+        for index in range(3)
+    ]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[:2])),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[2:])),
+        ]
+    )
+
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer.source_mappings = MagicMock()
+    writer.source_mappings.load_local_id_map = AsyncMock(
+        return_value={f"00T{index}": row.activity_id for index, row in enumerate(rows)}
+    )
+    monkeypatch.setattr(task_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    existing = await writer._load_existing_rows(external_ids=None)
+
+    assert existing == {f"00T{index}": row for index, row in enumerate(rows)}
+    assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_deactivate_missing_chunks_scoped_deal_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[MagicMock(rowcount=2), MagicMock(rowcount=1)])
+    writer = SalesforceTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    monkeypatch.setattr(task_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    deactivated = await writer._deactivate_missing(
+        datetime.now(UTC),
+        deal_ids={uuid4(), uuid4(), uuid4()},
+    )
+
+    assert deactivated == 3
+    assert session.execute.await_count == 2

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
+from src.service.integrations.crm.records.salesforce.users import user_writer
 from src.service.integrations.crm.records.salesforce.users.user_sync_service import (
     _backfill_owner_tables,
 )
@@ -250,3 +252,46 @@ async def test_owner_table_backfill_is_disabled_after_provider_column_removal() 
         "crm_activities.owner_id": 0,
     }
     session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_chunks_local_id_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    rows = [
+        CRMUser(
+            user_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            email=f"owner{index}@acme.com",
+            full_name=f"Owner {index}",
+            is_active=True,
+        )
+        for index in range(3)
+    ]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[:2])),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows[2:])),
+        ]
+    )
+
+    writer = SalesforceUserWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer.source_mappings = MagicMock()
+    writer.source_mappings.load_local_id_map = AsyncMock(
+        return_value={f"005{index}": row.user_id for index, row in enumerate(rows)}
+    )
+    monkeypatch.setattr(user_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    existing = await writer._load_existing_rows()
+
+    assert existing == {f"005{index}": row for index, row in enumerate(rows)}
+    assert session.execute.await_count == 2

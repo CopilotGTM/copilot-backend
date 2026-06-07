@@ -13,6 +13,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import (
     CRMSourceMappingHelper,
     IntegrationMappingUpsert,
@@ -150,12 +154,14 @@ class SalesforceDealStageHistoryWriter:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMDealStageHistory).where(
-            col(CRMDealStageHistory.organisation_id) == self.organisation_id,
-            col(CRMDealStageHistory.integration_id) == self.integration_id,
-            col(CRMDealStageHistory.history_id).in_(set(external_to_local.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows: list[CRMDealStageHistory] = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMDealStageHistory).where(
+                col(CRMDealStageHistory.organisation_id) == self.organisation_id,
+                col(CRMDealStageHistory.integration_id) == self.integration_id,
+                col(CRMDealStageHistory.history_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = _local_to_external(external_to_local)
         return {
             local_to_external[row.history_id]: row

@@ -28,6 +28,10 @@ from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     AssociationWriteResult,
@@ -526,27 +530,27 @@ class SalesforceDealRecordSyncService:
                     external_ids=set(primary_contact_by_deal.values()),
                 )
                 if contact_local_map:
-                    contact_rows = (
-                        (
-                            await session.execute(
-                                select(CRMContact).where(
-                                    col(CRMContact.organisation_id) == organisation_id,
-                                    col(CRMContact.integration_id) == integration_id,
-                                    col(CRMContact.contact_id).in_(set(contact_local_map.values())),
-                                )
-                            )
+                    contact_rows = []
+                    for contact_ids in iter_chunks(
+                        set(contact_local_map.values()),
+                        LOCAL_ID_QUERY_CHUNK_SIZE,
+                    ):
+                        stmt = select(CRMContact).where(
+                            col(CRMContact.organisation_id) == organisation_id,
+                            col(CRMContact.integration_id) == integration_id,
+                            col(CRMContact.contact_id).in_(contact_ids),
                         )
-                        .scalars()
-                        .all()
-                    )
+                        contact_rows.extend((await session.execute(stmt)).scalars().all())
                     contacts_by_id = {contact.contact_id: contact for contact in contact_rows}
-            stmt = select(CRMDeal).where(
-                col(CRMDeal.organisation_id) == organisation_id,
-                col(CRMDeal.integration_id) == integration_id,
-                col(CRMDeal.is_deleted) == False,  # noqa: E712
-                col(CRMDeal.deal_id).in_(set(deal_pk_map.values())),
-            )
-            rows = (await session.execute(stmt)).scalars().all()
+            rows = []
+            for deal_ids in iter_chunks(set(deal_pk_map.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+                stmt = select(CRMDeal).where(
+                    col(CRMDeal.organisation_id) == organisation_id,
+                    col(CRMDeal.integration_id) == integration_id,
+                    col(CRMDeal.is_deleted) == False,  # noqa: E712
+                    col(CRMDeal.deal_id).in_(deal_ids),
+                )
+                rows.extend((await session.execute(stmt)).scalars().all())
             local_to_external = _local_to_external(deal_pk_map)
             for row in rows:
                 external_id = local_to_external.get(row.deal_id)
@@ -1223,13 +1227,15 @@ async def _filter_existing_ids(
 ) -> dict[str, UUID]:
     if not external_to_local:
         return {}
-    stmt = select(id_column).where(
-        col(model.organisation_id) == organisation_id,
-        col(model.integration_id) == integration_id,
-        col(model.is_deleted) == False,  # noqa: E712
-        col(id_column).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(id_column).where(
+            col(model.organisation_id) == organisation_id,
+            col(model.integration_id) == integration_id,
+            col(model.is_deleted) == False,  # noqa: E712
+            col(id_column).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     live_ids = {local_id for (local_id,) in rows}
     return {
         external_id: local_id
@@ -1256,17 +1262,19 @@ async def _load_pipeline_map(
     )
     if not external_to_local:
         return {}
-    stmt = select(
-        col(CRMPipeline.pipeline_id),
-        col(CRMPipeline.name),
-        col(CRMPipeline.label),
-    ).where(
-        col(CRMPipeline.organisation_id) == organisation_id,
-        col(CRMPipeline.integration_id) == integration_id,
-        col(CRMPipeline.is_deleted) == False,  # noqa: E712
-        col(CRMPipeline.pipeline_id).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(
+            col(CRMPipeline.pipeline_id),
+            col(CRMPipeline.name),
+            col(CRMPipeline.label),
+        ).where(
+            col(CRMPipeline.organisation_id) == organisation_id,
+            col(CRMPipeline.integration_id) == integration_id,
+            col(CRMPipeline.is_deleted) == False,  # noqa: E712
+            col(CRMPipeline.pipeline_id).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     local_to_external = _local_to_external(external_to_local)
     return {
         local_to_external[pipeline_id]: DimensionHit(
@@ -1297,18 +1305,20 @@ async def _load_stage_map(
     )
     if not external_to_local:
         return {}
-    stmt = select(
-        col(CRMDealStage.stage_id),
-        col(CRMDealStage.name),
-        col(CRMDealStage.label),
-        col(CRMDealStage.pipeline_id),
-    ).where(
-        col(CRMDealStage.organisation_id) == organisation_id,
-        col(CRMDealStage.integration_id) == integration_id,
-        col(CRMDealStage.is_deleted) == False,  # noqa: E712
-        col(CRMDealStage.stage_id).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(
+            col(CRMDealStage.stage_id),
+            col(CRMDealStage.name),
+            col(CRMDealStage.label),
+            col(CRMDealStage.pipeline_id),
+        ).where(
+            col(CRMDealStage.organisation_id) == organisation_id,
+            col(CRMDealStage.integration_id) == integration_id,
+            col(CRMDealStage.is_deleted) == False,  # noqa: E712
+            col(CRMDealStage.stage_id).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     local_to_external = _local_to_external(external_to_local)
     return {
         local_to_external[stage_id]: DimensionHit(
@@ -1340,17 +1350,19 @@ async def _load_user_map(
     )
     if not external_to_local:
         return {}
-    stmt = select(
-        col(CRMUser.user_id),
-        col(CRMUser.full_name),
-        col(CRMUser.email),
-    ).where(
-        col(CRMUser.organisation_id) == organisation_id,
-        col(CRMUser.integration_id) == integration_id,
-        col(CRMUser.is_deleted) == False,  # noqa: E712
-        col(CRMUser.user_id).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(
+            col(CRMUser.user_id),
+            col(CRMUser.full_name),
+            col(CRMUser.email),
+        ).where(
+            col(CRMUser.organisation_id) == organisation_id,
+            col(CRMUser.integration_id) == integration_id,
+            col(CRMUser.is_deleted) == False,  # noqa: E712
+            col(CRMUser.user_id).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     local_to_external = _local_to_external(external_to_local)
     return {
         local_to_external[user_id]: DimensionHit(
@@ -1381,17 +1393,19 @@ async def _load_company_map(
     )
     if not external_to_local:
         return {}
-    stmt = select(
-        col(CRMCompany.company_id),
-        col(CRMCompany.name),
-        col(CRMCompany.domain),
-    ).where(
-        col(CRMCompany.organisation_id) == organisation_id,
-        col(CRMCompany.integration_id) == integration_id,
-        col(CRMCompany.is_deleted) == False,  # noqa: E712
-        col(CRMCompany.company_id).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(
+            col(CRMCompany.company_id),
+            col(CRMCompany.name),
+            col(CRMCompany.domain),
+        ).where(
+            col(CRMCompany.organisation_id) == organisation_id,
+            col(CRMCompany.integration_id) == integration_id,
+            col(CRMCompany.is_deleted) == False,  # noqa: E712
+            col(CRMCompany.company_id).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     local_to_external = _local_to_external(external_to_local)
     return {
         local_to_external[company_id]: DimensionHit(
@@ -1422,17 +1436,19 @@ async def _load_contact_map(
     )
     if not external_to_local:
         return {}
-    stmt = select(
-        col(CRMContact.contact_id),
-        col(CRMContact.full_name),
-        col(CRMContact.email),
-    ).where(
-        col(CRMContact.organisation_id) == organisation_id,
-        col(CRMContact.integration_id) == integration_id,
-        col(CRMContact.is_deleted) == False,  # noqa: E712
-        col(CRMContact.contact_id).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(
+            col(CRMContact.contact_id),
+            col(CRMContact.full_name),
+            col(CRMContact.email),
+        ).where(
+            col(CRMContact.organisation_id) == organisation_id,
+            col(CRMContact.integration_id) == integration_id,
+            col(CRMContact.is_deleted) == False,  # noqa: E712
+            col(CRMContact.contact_id).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     local_to_external = _local_to_external(external_to_local)
     return {
         local_to_external[contact_id]: DimensionHit(
