@@ -106,6 +106,12 @@ _BASELINE_HISTORY_PROPERTIES: tuple[str, ...] = (
     "hs_forecast_amount",
 )
 
+_BASELINE_STATUS_PROPERTIES: tuple[str, ...] = (
+    "hs_is_closed",
+    "hs_is_closed_won",
+    "hs_is_closed_lost",
+)
+
 
 class DealSyncConfigurationError(ValueError):
     """Integration not usable for deals record sync (missing, wrong type, inactive)."""
@@ -297,7 +303,11 @@ class HubSpotDealRecordSyncService:
         """
         discovered = await self._fetch_property_names_with_retry(token_info=token_info)
 
-        baseline = set(HUBSPOT_DEAL_CANONICAL_FIELDS.keys()) | set(_BASELINE_HISTORY_PROPERTIES)
+        baseline = (
+            set(HUBSPOT_DEAL_CANONICAL_FIELDS.keys())
+            | set(_BASELINE_HISTORY_PROPERTIES)
+            | set(_BASELINE_STATUS_PROPERTIES)
+        )
         merged = sorted(discovered | baseline)
         logger.info(
             "Built HubSpot deal property list",
