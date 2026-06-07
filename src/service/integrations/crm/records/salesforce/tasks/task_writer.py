@@ -61,6 +61,7 @@ class SalesforceTaskWriter:
         contact_map: dict[str, ActivityDimensionHit],
         company_map: dict[str, ActivityDimensionHit],
         deactivate_missing: bool = True,
+        deactivate_deal_ids: Set[UUID] | None = None,
     ) -> TaskWriteResult:
         result = TaskWriteResult()
         now = datetime.now(UTC)
@@ -146,7 +147,10 @@ class SalesforceTaskWriter:
             await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         if deactivate_missing:
-            result.tasks_deactivated += await self._deactivate_missing(snapshot_time)
+            result.tasks_deactivated += await self._deactivate_missing(
+                snapshot_time,
+                deal_ids=deactivate_deal_ids,
+            )
 
         await self.session.flush()
         logger.info(
@@ -189,23 +193,30 @@ class SalesforceTaskWriter:
         )
         await self.session.execute(stmt)
 
-    async def _deactivate_missing(self, snapshot_started_at: datetime) -> int:
-        stmt = (
-            update(CRMActivity)
-            .where(
-                col(CRMActivity.organisation_id) == self.organisation_id,
-                col(CRMActivity.integration_id) == self.integration_id,
-                col(CRMActivity.activity_type).in_(
-                    [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-                ),
-                col(CRMActivity.is_deleted) == False,  # noqa: E712
-                or_(
-                    col(CRMActivity.last_seen_at).is_(None),
-                    col(CRMActivity.last_seen_at) < snapshot_started_at,
-                ),
-            )
-            .values(is_deleted=True, updated_at=datetime.now(UTC))
+    async def _deactivate_missing(
+        self,
+        snapshot_started_at: datetime,
+        *,
+        deal_ids: Set[UUID] | None = None,
+    ) -> int:
+        if deal_ids is not None and not deal_ids:
+            return 0
+
+        stmt = update(CRMActivity).where(
+            col(CRMActivity.organisation_id) == self.organisation_id,
+            col(CRMActivity.integration_id) == self.integration_id,
+            col(CRMActivity.activity_type).in_(
+                [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
+            ),
+            col(CRMActivity.is_deleted) == False,  # noqa: E712
+            or_(
+                col(CRMActivity.last_seen_at).is_(None),
+                col(CRMActivity.last_seen_at) < snapshot_started_at,
+            ),
         )
+        if deal_ids is not None:
+            stmt = stmt.where(col(CRMActivity.deal_id).in_(deal_ids))
+        stmt = stmt.values(is_deleted=True, updated_at=datetime.now(UTC))
         result = await self.session.execute(stmt)
         rowcount = getattr(result, "rowcount", 0)
         return rowcount if isinstance(rowcount, int) else 0

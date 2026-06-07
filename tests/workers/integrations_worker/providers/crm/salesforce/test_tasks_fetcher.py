@@ -72,6 +72,59 @@ async def test_fetcher_paginates_salesforce_tasks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetcher_scopes_initial_sync_tasks_to_eligible_deals() -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://acme.my.salesforce.com/services/data/v61.0/query"),
+        json={"records": [{"Id": "00T1", "WhatId": "006A"}]},
+    )
+
+    async def _fake_retry(token_info: IntegrationTokenInfo, request_fn):
+        return await request_fn("access-token")
+
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with (
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.call_with_token_retry",
+            side_effect=_fake_retry,
+        ),
+        patch(
+            "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.httpx.AsyncClient",
+            return_value=client,
+        ),
+    ):
+        rows = await SalesforceTasksFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_all(deal_external_ids=["006A", "006B"])
+
+    assert [row["Id"] for row in rows] == ["00T1"]
+    soql = client.get.call_args.kwargs["params"]["q"]
+    assert "WHERE IsDeleted = false AND WhatId IN ('006A', '006B')" in soql
+
+
+@pytest.mark.asyncio
+async def test_fetcher_does_not_fetch_all_tasks_for_empty_initial_sync_scope() -> None:
+    client = AsyncMock()
+
+    with patch(
+        "src.workers.integrations_worker.providers.crm.salesforce.tasks_fetcher.httpx.AsyncClient",
+        return_value=client,
+    ):
+        rows = await SalesforceTasksFetcher(
+            token_info=_token_info(),
+            instance_url="https://acme.my.salesforce.com",
+        ).fetch_all(deal_external_ids=[])
+
+    assert rows == []
+    client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_fetch_one_escapes_task_id_and_returns_first_record() -> None:
     response = httpx.Response(
         200,

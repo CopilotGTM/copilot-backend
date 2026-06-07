@@ -19,6 +19,9 @@ from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
+from src.service.integrations.crm.records.salesforce.activity_scope import (
+    load_initial_sync_deal_external_ids,
+)
 from src.service.integrations.crm.records.salesforce.tasks.task_normalizer import normalize_tasks
 from src.service.integrations.crm.records.salesforce.tasks.task_types import (
     ActivityDimensionHit,
@@ -63,12 +66,16 @@ class SalesforceTaskRecordSyncService:
             token_info=context.token_info,
             instance_url=context.instance_url,
         )
+        deal_external_ids = await self._load_initial_sync_deal_external_ids(
+            organisation_id,
+            integration_id,
+        )
         fetched_tasks = 0
         skipped_malformed = 0
         write_result = TaskWriteResult()
         batch_count = 0
 
-        async for raw_batch in fetcher.iter_batches():
+        async for raw_batch in fetcher.iter_batches(deal_external_ids=deal_external_ids):
             batch_count += 1
             batch_started = perf_counter()
             fetched_tasks += len(raw_batch)
@@ -123,6 +130,7 @@ class SalesforceTaskRecordSyncService:
             normalized=[],
             snapshot_started_at=snapshot_started_at,
             deactivate_missing=True,
+            deactivate_deal_external_ids=deal_external_ids,
         )
         _add_write_result(write_result, final_result)
 
@@ -181,6 +189,17 @@ class SalesforceTaskRecordSyncService:
             deactivate_missing=False,
         )
 
+    async def _load_initial_sync_deal_external_ids(
+        self,
+        organisation_id: UUID,
+        integration_id: UUID,
+    ) -> list[str]:
+        return await load_initial_sync_deal_external_ids(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider=self.PROVIDER,
+        )
+
     def _is_in_scope(self, task) -> bool:
         return (
             task.deal_external_id is not None
@@ -236,11 +255,14 @@ class SalesforceTaskRecordSyncService:
         normalized,
         snapshot_started_at: datetime | None,
         deactivate_missing: bool = True,
+        deactivate_deal_external_ids: list[str] | set[str] | None = None,
     ):
         persist_started = perf_counter()
         async for session in acquire_org_async_session(organisation_id):
             user_external_ids = _compact_str_set(task.owner_external_id for task in normalized)
             deal_external_ids = _compact_str_set(task.deal_external_id for task in normalized)
+            deactivate_deal_external_id_set = _compact_str_set(deactivate_deal_external_ids)
+            deal_external_ids.update(deactivate_deal_external_id_set)
             contact_external_ids = _compact_str_set(task.contact_external_id for task in normalized)
             company_external_ids = _compact_str_set(task.company_external_id for task in normalized)
             map_started = perf_counter()
@@ -256,6 +278,15 @@ class SalesforceTaskRecordSyncService:
             company_map = await self._load_company_map(
                 session, organisation_id, integration_id, company_external_ids
             )
+            deactivate_deal_ids = (
+                {
+                    hit.internal_id
+                    for external_id, hit in deal_map.items()
+                    if external_id in deactivate_deal_external_id_set
+                }
+                if deactivate_deal_external_ids is not None
+                else None
+            )
             map_elapsed = perf_counter() - map_started
             writer = SalesforceTaskWriter(
                 session=session,
@@ -270,6 +301,7 @@ class SalesforceTaskRecordSyncService:
                 contact_map=contact_map,
                 company_map=company_map,
                 deactivate_missing=deactivate_missing,
+                deactivate_deal_ids=deactivate_deal_ids,
             )
             await session.commit()
             logger.info(
@@ -449,6 +481,8 @@ def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:
 
 
 def _compact_str_set(values) -> set[str]:
+    if values is None:
+        return set()
     return {value for value in values if isinstance(value, str) and value}
 
 
