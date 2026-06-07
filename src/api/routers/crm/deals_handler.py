@@ -558,12 +558,23 @@ async def list_deal_owners(
     response: FastAPIResponse,
     limit: int = Query(200, ge=1, le=1000, description="Maximum owners to return"),
     q: str | None = Query(None, description="Search by owner name, email, or external ID"),
+    owner_ids: list[UUID] | None = Query(
+        None,
+        description="Owner IDs to hydrate even if they are outside the current search result.",
+    ),
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealOwnerFilters]:
     """List distinct deal owners for filter dropdowns."""
     try:
-        owners = await service.list_deal_owners(q=q, limit=limit)
+        if owner_ids and len(owner_ids) > 100:
+            return Response.error_response(
+                message="A maximum of 100 owner_ids can be hydrated at once",
+                status_code=400,
+                response=response,
+            )
+
+        owners = await service.list_deal_owners(q=q, limit=limit, owner_ids=owner_ids)
         items = [
             DealOwnerFilterItem(
                 owner_id=owner["owner_id"],
@@ -583,6 +594,59 @@ async def list_deal_owners(
         )
     except Exception as e:
         logger.error("Unexpected error listing deal owners: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
+    "/deals/owners/me",
+    response_model=GenericResponse[DealOwnerFilters],
+    tags=["crm", "deals"],
+    summary="Resolve current app user to CRM deal owners",
+    description="""
+    Resolve the authenticated app user to one or more CRM deal owner IDs.
+
+    Frontend can call this once on Deals page load and preselect the returned
+    `owner_id` values in `/users/crm/deals?owner_ids=...`.
+    """,
+)
+async def get_current_user_deal_owners(
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    service: DealsAccessService = Depends(get_deals_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[DealOwnerFilters]:
+    """Resolve current app user to CRM owner filter options."""
+    try:
+        owners = await service.resolve_current_user_deal_owners(
+            user_id=user_ids.user_id,
+            user_email=user_ids.user_email,
+        )
+        items = [
+            DealOwnerFilterItem(
+                owner_id=owner["owner_id"],
+                name=owner.get("name"),
+                email=owner.get("email"),
+            )
+            for owner in owners
+        ]
+        payload = DealOwnerFilters(items=items)
+        return Response.success_response(
+            message="Current user deal owners resolved successfully",
+            data=payload,
+        )
+    except DealsAccessServiceError as e:
+        logger.warning("Current user deal owner resolution error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            response=response,
+        )
+    except Exception as e:
+        logger.error("Unexpected error resolving current user deal owners: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,

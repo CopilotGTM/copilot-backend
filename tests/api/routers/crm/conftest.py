@@ -1229,6 +1229,66 @@ class FakeDealsAccessService:
         """Get team members for multiple deals."""
         return {did: self._team_members.get(did, []) for did in deal_ids}
 
+    async def list_deal_owners(
+        self,
+        q: str | None = None,
+        limit: int = 200,
+        owner_ids: list[UUID] | None = None,
+    ) -> list[dict]:
+        """Return distinct owners from seeded deals, with selected-owner hydration."""
+        selected_ids = set(owner_ids or [])
+        q_lower = q.lower() if q else None
+        owners: dict[UUID, dict] = {}
+        for deal in self._deals.values():
+            if not deal.owner_id:
+                continue
+            matches_query = (
+                not q_lower
+                or (deal.owner_name and q_lower in deal.owner_name.lower())
+                or (deal.owner_email and q_lower in deal.owner_email.lower())
+                or str(deal.owner_id) == q
+            )
+            if not matches_query and deal.owner_id not in selected_ids:
+                continue
+            owners.setdefault(
+                deal.owner_id,
+                {
+                    "owner_id": deal.owner_id,
+                    "name": deal.owner_name,
+                    "email": deal.owner_email,
+                },
+            )
+        selected = [owner for owner in owners.values() if owner["owner_id"] in selected_ids]
+        searched = [owner for owner in owners.values() if owner["owner_id"] not in selected_ids]
+        searched.sort(key=lambda owner: (owner["name"] or "", str(owner["owner_id"])))
+        return selected + searched[:limit]
+
+    async def resolve_current_user_deal_owners(
+        self,
+        *,
+        user_id: UUID,
+        user_email: str | None,
+    ) -> list[dict]:
+        """Resolve current app user to seeded owner rows by ID or email."""
+        email_lower = user_email.lower() if user_email else None
+        owners: dict[UUID, dict] = {}
+        for deal in self._deals.values():
+            if not deal.owner_id:
+                continue
+            if deal.owner_id != user_id and (
+                not email_lower or not deal.owner_email or deal.owner_email.lower() != email_lower
+            ):
+                continue
+            owners.setdefault(
+                deal.owner_id,
+                {
+                    "owner_id": deal.owner_id,
+                    "name": deal.owner_name,
+                    "email": deal.owner_email,
+                },
+            )
+        return list(owners.values())
+
 
 class FakeDealJobService:
     """Fake DealJobService for testing."""
