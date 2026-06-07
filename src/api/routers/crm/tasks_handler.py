@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -318,6 +319,10 @@ async def _get_reminder_dict(session: AsyncSession, activity_id: UUID) -> dict |
 )
 async def list_tasks(
     response: FastAPIResponse,
+    scope: Literal["assigned_to_me", "assigned_by_me", "assigned_to_user"] = Query(
+        "assigned_to_me",
+        description="Required task scope. Normal users cannot request all organisation tasks.",
+    ),
     deal_id: UUID | None = Query(None, description="Filter by deal"),
     statuses: list[str] | None = Query(None, description="Filter by statuses"),
     priorities: list[str] | None = Query(None, description="Filter by priorities"),
@@ -337,6 +342,7 @@ async def list_tasks(
     sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Page size"),
+    user_ids: UserIDs = Depends(get_current_user),
     service: TasksAccessService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TasksPage]:
@@ -344,6 +350,9 @@ async def list_tasks(
 
     try:
         tasks, total_count = await service.list_tasks(
+            scope=scope,
+            current_user_id=user_ids.user_id,
+            current_user_email=user_ids.user_email,
             deal_id=deal_id,
             statuses=statuses,
             priorities=priorities,
@@ -425,6 +434,59 @@ async def list_task_assignees(
         )
     except Exception as exc:
         logger.error("Unexpected error listing task assignees: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@tasks_router.get(
+    "/tasks/assignees/me",
+    response_model=GenericResponse[TaskAssigneesResponse],
+    tags=["crm", "tasks"],
+    summary="Resolve current app user to task assignees",
+    description="Return assignee filter options that represent the authenticated user.",
+)
+async def get_current_user_task_assignees(
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    service: TasksAccessService = Depends(get_tasks_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[TaskAssigneesResponse]:
+    try:
+        rows = await service.resolve_current_user_task_assignees(
+            user_id=user_ids.user_id,
+            user_email=user_ids.user_email,
+        )
+        options = [
+            TaskAssigneeOption(
+                assigned_to=TaskAssignee(
+                    kind=row["kind"],
+                    filter_key=row["filter_key"],
+                    name=row.get("name"),
+                    email=row.get("email"),
+                    public_user_id=row.get("public_user_id"),
+                    crm_user_id=row.get("crm_user_id"),
+                ),
+                task_count=row["task_count"],
+            )
+            for row in rows
+        ]
+        payload = TaskAssigneesResponse(assignees=options)
+        return Response.success_response(
+            message="Current user task assignees resolved successfully",
+            data=payload,
+        )
+    except TasksAccessServiceError as exc:
+        logger.warning(
+            "Current user task assignee resolution error: %s", exc.message, exc_info=True
+        )
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error resolving current user task assignees: %s", exc, exc_info=True
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

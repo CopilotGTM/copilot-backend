@@ -140,6 +140,33 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         # Source and creator tracking
         Index("ix_crm_activity_source", "organisation_id", "source"),
         Index("ix_crm_activity_created_by", "organisation_id", "created_by_user_id"),
+        Index(
+            "ix_crm_activity_task_owner_due",
+            "organisation_id",
+            "owner_id",
+            "due_date",
+            postgresql_where=text(
+                "is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO') "
+                "AND external_assignee_email IS NULL AND external_assignee_name IS NULL"
+            ),
+        ),
+        Index(
+            "ix_crm_activity_task_created_by_due",
+            "organisation_id",
+            "created_by_user_id",
+            "due_date",
+            postgresql_where=text("is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO')"),
+        ),
+        Index(
+            "ix_crm_activity_task_external_email_due",
+            "organisation_id",
+            "external_assignee_email",
+            "due_date",
+            postgresql_where=text(
+                "is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO') "
+                "AND external_assignee_email IS NOT NULL"
+            ),
+        ),
     )
 
     # ─────────────────────────────────────────────────────────────────────────

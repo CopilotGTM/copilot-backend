@@ -479,6 +479,10 @@ class UpdateTaskRequest(BaseModel):
 class GlobalTaskListParams(BaseModel):
     """Query parameters for global task listing."""
 
+    scope: str = Field(
+        default="assigned_to_me",
+        description="Task scope: assigned_to_me, assigned_by_me, or assigned_to_user.",
+    )
     deal_id: UUID | None = Field(default=None, description="Filter by deal")
     statuses: list[str] | None = Field(default=None, description="Filter by statuses")
     priorities: list[str] | None = Field(default=None, description="Filter by priorities")
@@ -486,7 +490,10 @@ class GlobalTaskListParams(BaseModel):
     owner_user_id: UUID | None = Field(default=None, description="Filter by assignee")
     assigned_to_key: str | None = Field(
         default=None,
-        description="Canonical assignee filter key returned by /tasks/assignees.",
+        description=(
+            "Canonical assignee filter key returned by /tasks/assignees. "
+            "Required when scope=assigned_to_user."
+        ),
     )
     created_by_user_id: UUID | None = Field(default=None, description="Filter by creator")
     due_from: datetime | None = Field(default=None, description="Due date range start")

@@ -50,6 +50,7 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightType,
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.service.crm.access.tasks_access_service import TasksAccessServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -2548,6 +2549,9 @@ class FakeTask:
         owner_id: UUID | None = None,
         owner_name: str | None = None,
         owner_email: str | None = None,
+        external_assignee_email: str | None = None,
+        external_assignee_name: str | None = None,
+        created_by_user_id: UUID | None = None,
         related_name: str | None = None,
         is_deleted: bool = False,
         is_deleted_remote: bool = False,
@@ -2575,6 +2579,9 @@ class FakeTask:
         self.owner_id = owner_id
         self.owner_name = owner_name
         self.owner_email = owner_email
+        self.external_assignee_email = external_assignee_email
+        self.external_assignee_name = external_assignee_name
+        self.created_by_user_id = created_by_user_id
         self.related_name = related_name
         self.is_deleted = is_deleted
         self.is_deleted_remote = is_deleted_remote
@@ -2599,6 +2606,7 @@ class FakeTasksAccessService:
         self.organisation_id = organisation_id
         self.session = FakeAsyncSession()
         self._tasks: dict[UUID, list[FakeTask]] = {}  # deal_id -> tasks
+        self.list_tasks_calls: list[dict] = []
 
     def add_task(self, task: FakeTask):
         """Add a task to the fake store."""
@@ -2650,6 +2658,43 @@ class FakeTasksAccessService:
         total_count = len(tasks)
         offset = max(page - 1, 0) * limit
         return tasks[offset : offset + limit], total_count
+
+    async def list_tasks(
+        self,
+        **kwargs,
+    ) -> tuple[list[FakeTask], int]:
+        self.list_tasks_calls.append(kwargs)
+        if kwargs.get("scope") == "assigned_to_user" and not kwargs.get("assigned_to_key"):
+            raise TasksAccessServiceError(
+                "assigned_to_key is required when scope=assigned_to_user",
+                status_code=400,
+            )
+        tasks = [
+            task
+            for tasks_list in self._tasks.values()
+            for task in tasks_list
+            if not task.is_deleted and task.activity_type in {"TASK", "TODO"}
+        ]
+        total_count = len(tasks)
+        return tasks[: kwargs.get("limit", 50)], total_count
+
+    async def resolve_current_user_task_assignees(
+        self,
+        *,
+        user_id: UUID,
+        user_email: str | None,
+    ) -> list[dict]:
+        return [
+            {
+                "kind": "internal_user",
+                "filter_key": f"email:{user_email.lower()}",
+                "name": "Test User",
+                "email": user_email.lower() if user_email else None,
+                "public_user_id": user_id,
+                "crm_user_id": user_id,
+                "task_count": 3,
+            }
+        ]
 
     async def get_task_by_id(self, task_id: UUID) -> FakeTask | None:
         """Get a task by ID."""
