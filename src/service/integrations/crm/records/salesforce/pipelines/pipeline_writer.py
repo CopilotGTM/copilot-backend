@@ -14,6 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import (
     CRMSourceMappingHelper,
     IntegrationMappingUpsert,
@@ -175,13 +179,15 @@ class SalesforcePipelineWriter:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMPipeline).where(
-            col(CRMPipeline.organisation_id) == self.organisation_id,
-            col(CRMPipeline.integration_id) == self.integration_id,
-            col(CRMPipeline.object_type) == _OBJECT_TYPE,
-            col(CRMPipeline.pipeline_id).in_(set(external_to_local.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows: list[CRMPipeline] = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMPipeline).where(
+                col(CRMPipeline.organisation_id) == self.organisation_id,
+                col(CRMPipeline.integration_id) == self.integration_id,
+                col(CRMPipeline.object_type) == _OBJECT_TYPE,
+                col(CRMPipeline.pipeline_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = {
             local_id: external_id for external_id, local_id in external_to_local.items()
         }
@@ -198,12 +204,14 @@ class SalesforcePipelineWriter:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMDealStage).where(
-            col(CRMDealStage.organisation_id) == self.organisation_id,
-            col(CRMDealStage.integration_id) == self.integration_id,
-            col(CRMDealStage.stage_id).in_(set(external_to_local.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows: list[CRMDealStage] = []
+        for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMDealStage).where(
+                col(CRMDealStage.organisation_id) == self.organisation_id,
+                col(CRMDealStage.integration_id) == self.integration_id,
+                col(CRMDealStage.stage_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = {
             local_id: external_id for external_id, local_id in external_to_local.items()
         }

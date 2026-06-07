@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
+from src.service.integrations.crm.records.salesforce.companies import company_writer
 from src.service.integrations.crm.records.salesforce.companies.company_types import (
     NormalizedSalesforceCompany,
 )
@@ -120,3 +122,46 @@ async def test_writer_reactivates_present_rows_creates_new_rows_and_deactivates_
     assert mapped_rows[0].local_object_id == existing_inactive.company_id
     assert mapped_rows[1].local_object_id == created_rows[0].company_id
     mapping_helper.mark_missing_deleted.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_chunks_local_id_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    companies = [
+        CRMCompany(
+            company_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            name=f"Company {index}",
+        )
+        for index in range(3)
+    ]
+
+    monkeypatch.setattr(company_writer, "_LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    scalars = [MagicMock(), MagicMock()]
+    scalars[0].all.return_value = companies[:2]
+    scalars[1].all.return_value = companies[2:]
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalars=lambda index=index: scalars[index]) for index in range(2)
+        ]
+    )
+
+    writer = SalesforceCompanyWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.load_local_id_map = AsyncMock(
+        return_value={f"001{index}": company.company_id for index, company in enumerate(companies)}
+    )
+    writer.source_mappings = mapping_helper
+
+    rows = await writer._load_existing_rows()
+
+    assert session.execute.await_count == 2
+    assert rows == {f"001{index}": company for index, company in enumerate(companies)}

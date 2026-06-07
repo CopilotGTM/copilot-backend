@@ -10,6 +10,10 @@ from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.infra.database.sessions import acquire_org_async_session
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 
 INITIAL_SYNC_CLOSED_DEAL_LOOKBACK_DAYS = 180
@@ -39,21 +43,23 @@ async def load_initial_sync_deal_external_ids(
             local_id: external_id for external_id, local_id in external_to_local.items()
         }
         cutoff = datetime.now(UTC) - timedelta(days=INITIAL_SYNC_CLOSED_DEAL_LOOKBACK_DAYS)
-        stmt = select(col(CRMDeal.deal_id)).where(
-            col(CRMDeal.organisation_id) == organisation_id,
-            col(CRMDeal.integration_id) == integration_id,
-            col(CRMDeal.is_deleted) == False,  # noqa: E712
-            col(CRMDeal.deal_id).in_(set(local_to_external)),
-            or_(
-                col(CRMDeal.deal_status) == CRMDealStatus.OPEN.value,
-                col(CRMDeal.close_date) >= cutoff,
-                and_(
-                    col(CRMDeal.close_date).is_(None),
-                    col(CRMDeal.source_modified_at) >= cutoff,
+        rows = []
+        for local_ids in iter_chunks(set(local_to_external), LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(col(CRMDeal.deal_id)).where(
+                col(CRMDeal.organisation_id) == organisation_id,
+                col(CRMDeal.integration_id) == integration_id,
+                col(CRMDeal.is_deleted) == False,  # noqa: E712
+                col(CRMDeal.deal_id).in_(local_ids),
+                or_(
+                    col(CRMDeal.deal_status) == CRMDealStatus.OPEN.value,
+                    col(CRMDeal.close_date) >= cutoff,
+                    and_(
+                        col(CRMDeal.close_date).is_(None),
+                        col(CRMDeal.source_modified_at) >= cutoff,
+                    ),
                 ),
-            ),
-        )
-        rows = (await session.execute(stmt)).all()
+            )
+            rows.extend((await session.execute(stmt)).all())
         eligible_local_ids = {deal_id for (deal_id,) in rows}
         return [
             external_id

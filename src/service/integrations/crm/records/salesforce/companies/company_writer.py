@@ -14,6 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE as _DEFAULT_LOCAL_ID_QUERY_CHUNK_SIZE,
+)
+from src.service.integrations.crm.records.common.query_chunks import iter_chunks
 from src.service.integrations.crm.records.common.source_mapping import (
     CRMSourceMappingHelper,
     IntegrationMappingUpsert,
@@ -24,6 +28,8 @@ from src.service.integrations.crm.records.salesforce.companies.company_types imp
 )
 
 logger = get_logger(__name__)
+
+_LOCAL_ID_QUERY_CHUNK_SIZE = _DEFAULT_LOCAL_ID_QUERY_CHUNK_SIZE
 
 
 class SalesforceCompanyWriter:
@@ -137,12 +143,14 @@ class SalesforceCompanyWriter:
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMCompany).where(
-            col(CRMCompany.organisation_id) == self.organisation_id,
-            col(CRMCompany.integration_id) == self.integration_id,
-            col(CRMCompany.company_id).in_(set(external_to_local.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows: list[CRMCompany] = []
+        for local_ids in iter_chunks(set(external_to_local.values()), _LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == self.integration_id,
+                col(CRMCompany.company_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = {
             local_id: external_id for external_id, local_id in external_to_local.items()
         }

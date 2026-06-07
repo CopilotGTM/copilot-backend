@@ -14,6 +14,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import (
     CRMSourceMappingHelper,
     IntegrationMappingUpsert,
@@ -202,7 +206,7 @@ class SalesforceNoteWriter:
         if deal_ids is not None and not deal_ids:
             return 0
 
-        stmt = update(CRMActivity).where(
+        base_stmt = update(CRMActivity).where(
             col(CRMActivity.organisation_id) == self.organisation_id,
             col(CRMActivity.integration_id) == self.integration_id,
             col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
@@ -212,12 +216,19 @@ class SalesforceNoteWriter:
                 col(CRMActivity.last_seen_at) < snapshot_started_at,
             ),
         )
-        if deal_ids is not None:
-            stmt = stmt.where(col(CRMActivity.deal_id).in_(deal_ids))
-        stmt = stmt.values(is_deleted=True, updated_at=datetime.now(UTC))
-        result = await self.session.execute(stmt)
-        rowcount = getattr(result, "rowcount", 0)
-        return rowcount if isinstance(rowcount, int) else 0
+        total = 0
+        deal_id_batches = (
+            [None] if deal_ids is None else iter_chunks(deal_ids, LOCAL_ID_QUERY_CHUNK_SIZE)
+        )
+        for deal_id_batch in deal_id_batches:
+            stmt = base_stmt
+            if deal_id_batch is not None:
+                stmt = stmt.where(col(CRMActivity.deal_id).in_(deal_id_batch))
+            stmt = stmt.values(is_deleted=True, updated_at=datetime.now(UTC))
+            result = await self.session.execute(stmt)
+            rowcount = getattr(result, "rowcount", 0)
+            total += rowcount if isinstance(rowcount, int) else 0
+        return total
 
     def _pg_dialect(self):
         return pg_dialect()
@@ -273,13 +284,18 @@ class SalesforceNoteWriter:
         )
         if not self._activity_ids_by_external:
             return {}
-        stmt = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == self.organisation_id,
-            col(CRMActivity.integration_id) == self.integration_id,
-            col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
-            col(CRMActivity.activity_id).in_(set(self._activity_ids_by_external.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows: list[CRMActivity] = []
+        for activity_ids in iter_chunks(
+            set(self._activity_ids_by_external.values()),
+            LOCAL_ID_QUERY_CHUNK_SIZE,
+        ):
+            stmt = select(CRMActivity).where(
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                col(CRMActivity.integration_id) == self.integration_id,
+                col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
+                col(CRMActivity.activity_id).in_(activity_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = {
             local_id: external_id
             for external_id, local_id in self._activity_ids_by_external.items()

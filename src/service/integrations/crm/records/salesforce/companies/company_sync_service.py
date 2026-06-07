@@ -23,6 +23,10 @@ from src.service.integrations.crm.records.common.backfill import (
     DealFkBackfillOp,
     backfill_crm_deals,
 )
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE as _DEFAULT_LOCAL_ID_QUERY_CHUNK_SIZE,
+)
+from src.service.integrations.crm.records.common.query_chunks import iter_chunks
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.companies.company_normalizer import (
     normalize_accounts,
@@ -45,6 +49,7 @@ from src.workers.integrations_worker.providers.crm.salesforce.accounts_fetcher i
 logger = get_logger(__name__)
 
 _COMPANY_PERSIST_CHUNK_SIZE = 2_000
+_LOCAL_ID_QUERY_CHUNK_SIZE = _DEFAULT_LOCAL_ID_QUERY_CHUNK_SIZE
 
 
 @dataclass(slots=True)
@@ -473,13 +478,15 @@ async def _filter_existing_ids(
 ) -> dict[str, UUID]:
     if not external_to_local:
         return {}
-    stmt = select(id_column).where(
-        col(model.organisation_id) == organisation_id,
-        col(model.integration_id) == integration_id,
-        col(model.is_deleted) == False,  # noqa: E712
-        col(id_column).in_(set(external_to_local.values())),
-    )
-    rows = (await session.execute(stmt)).all()
+    rows = []
+    for local_ids in iter_chunks(set(external_to_local.values()), _LOCAL_ID_QUERY_CHUNK_SIZE):
+        stmt = select(id_column).where(
+            col(model.organisation_id) == organisation_id,
+            col(model.integration_id) == integration_id,
+            col(model.is_deleted) == False,  # noqa: E712
+            col(id_column).in_(local_ids),
+        )
+        rows.extend((await session.execute(stmt)).all())
     live_ids = {local_id for (local_id,) in rows}
     return {
         external_id: local_id

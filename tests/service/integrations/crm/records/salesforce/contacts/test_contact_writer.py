@@ -9,6 +9,7 @@ from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
+from src.service.integrations.crm.records.salesforce.contacts import contact_writer
 from src.service.integrations.crm.records.salesforce.contacts.contact_types import (
     NormalizedSalesforceContact,
 )
@@ -216,3 +217,46 @@ async def test_load_existing_rows_includes_soft_deleted_contacts() -> None:
         external_ids=None,
         include_deleted=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_load_existing_rows_chunks_local_id_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    contacts = [
+        CRMContact(
+            contact_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            email=f"contact{index}@example.com",
+        )
+        for index in range(3)
+    ]
+
+    monkeypatch.setattr(contact_writer, "_LOCAL_ID_QUERY_CHUNK_SIZE", 2)
+
+    scalars = [MagicMock(), MagicMock()]
+    scalars[0].all.return_value = contacts[:2]
+    scalars[1].all.return_value = contacts[2:]
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalars=lambda index=index: scalars[index]) for index in range(2)
+        ]
+    )
+
+    writer = SalesforceContactWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.load_local_id_map = AsyncMock(
+        return_value={f"003{index}": contact.contact_id for index, contact in enumerate(contacts)}
+    )
+    writer.source_mappings = mapping_helper
+
+    rows = await writer._load_existing_rows()
+
+    assert session.execute.await_count == 2
+    assert rows == {f"003{index}": contact for index, contact in enumerate(contacts)}
