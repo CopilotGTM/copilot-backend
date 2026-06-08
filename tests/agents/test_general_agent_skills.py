@@ -42,15 +42,21 @@ def test_general_prompt_has_skills_assessment_section() -> None:
     from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 
     prompt = get_general_prompt("TestOrg")
-    # Section exists before tool selection section
     assert "## Skills" in prompt
-    skills_pos = prompt.index("## Skills")
-    tools_pos = prompt.index("## Tool Selection")
-    assert skills_pos < tools_pos, "Skills section must appear before Tool Selection"
-    # Tells the model to load skill as first tool call
+    assert "## Tool Selection" not in prompt
+    assert "analytical, action, workflow, writing, scheduling, or structured-assessment" in prompt
     assert "FIRST tool call must be `get_skill_instructions(skill_name)`" in prompt
-    # Links to the Agno-injected block
     assert "<skills_system>" in prompt
+
+
+def test_general_prompt_has_compact_datetime_grounding_rule() -> None:
+    """The prompt should ground local dates without hardcoding workflow details."""
+    from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
+
+    prompt = get_general_prompt("TestOrg")
+    assert "## Date And Time Grounding" in prompt
+    assert "user timezone" in prompt
+    assert "Do not manually convert local times to UTC" in prompt
 
 
 def test_general_prompt_does_not_contain_hardcoded_call_analysis_playbook() -> None:

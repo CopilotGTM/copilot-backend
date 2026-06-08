@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.infra.utils.agent_datetime import parse_agent_datetime
+from src.infra.utils.timezone import get_context_anchor_local, resolve_timezone_name
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -177,51 +179,23 @@ def _fix_date_typos(expr: str) -> str:
 def _resolve_due_date(
     due_date_expr: str,
     timezone_name: str,
+    metadata: dict[str, Any] | None = None,
 ) -> datetime | None:
     """Parse a due date expression into a UTC datetime.
 
     Unlike reminder trigger times, due dates CAN be in the past (overdue tasks).
     Handles common typos like "mrach" → "march" before parsing.
     """
-    from zoneinfo import ZoneInfo
-
     # Fix common month misspellings
     due_date_expr = _fix_date_typos(due_date_expr)
-
-    # Fast path: ISO 8601
-    try:
-        dt = datetime.fromisoformat(due_date_expr)
-        if dt.tzinfo is None:
-            try:
-                tz = ZoneInfo(timezone_name)
-            except (KeyError, ValueError):
-                tz = UTC
-            dt = dt.replace(tzinfo=tz)
-        return dt.astimezone(UTC)
-    except (ValueError, TypeError):
-        pass
-
-    # Slow path: natural language via dateparser
-    try:
-        import dateparser
-
-        settings: dict[str, Any] = {
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DATES_FROM": "future",
-        }
-        if timezone_name and timezone_name != "UTC":
-            settings["TIMEZONE"] = timezone_name
-            settings["TO_TIMEZONE"] = "UTC"
-
-        parsed = dateparser.parse(due_date_expr, settings=settings)
-        if parsed:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-    except Exception:
-        logger.debug("dateparser failed for due_date: %s", due_date_expr, exc_info=True)
-
-    return None
+    parsed = parse_agent_datetime(
+        due_date_expr,
+        timezone_name=timezone_name,
+        metadata=metadata,
+    )
+    if parsed is None:
+        logger.debug("dateparser failed for due_date: %s", due_date_expr)
+    return parsed
 
 
 async def _resolve_user_by_name(
@@ -822,10 +796,18 @@ async def create_task(
             "message": "A due date is required before creating a task-linked reminder.",
         }
 
-    timezone_name = context.metadata.get("user_timezone") or "UTC"
+    metadata = context.metadata or {}
+    metadata_timezone = metadata.get("user_timezone")
+    timezone_name = (
+        resolve_timezone_name(
+            metadata_timezone if isinstance(metadata_timezone, str) else None,
+            default="UTC",
+        )
+        or "UTC"
+    )
     due_dt: datetime | None = None
     if due_date:
-        due_dt = _resolve_due_date(due_date, timezone_name)
+        due_dt = _resolve_due_date(due_date, timezone_name, metadata)
         if not due_dt:
             return {
                 "status": "error",
@@ -978,12 +960,20 @@ async def create_task_form(
         }
 
     channel = (context.channel or "teams").lower()
-    timezone_name = context.metadata.get("user_timezone") or "UTC"
+    metadata = context.metadata or {}
+    metadata_timezone = metadata.get("user_timezone")
+    timezone_name = (
+        resolve_timezone_name(
+            metadata_timezone if isinstance(metadata_timezone, str) else None,
+            default="UTC",
+        )
+        or "UTC"
+    )
 
     # Resolve due date — default to tomorrow if not mentioned
     due_dt: datetime | None = None
     if due_date:
-        due_dt = _resolve_due_date(due_date, timezone_name)
+        due_dt = _resolve_due_date(due_date, timezone_name, metadata)
         if not due_dt:
             return {
                 "status": "error",
@@ -994,13 +984,9 @@ async def create_task_form(
             }
     else:
         # No due date specified — default to tomorrow end of day in user's timezone
-        from zoneinfo import ZoneInfo
-
-        try:
-            tz = ZoneInfo(timezone_name)
-        except (KeyError, ValueError):
-            tz = UTC
-        tomorrow_local = datetime.now(tz).replace(
+        tomorrow_local = get_context_anchor_local(
+            {**metadata, "user_timezone": timezone_name}
+        ).replace(
             hour=17,
             minute=0,
             second=0,

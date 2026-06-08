@@ -38,6 +38,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     UserReminder,
 )
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import resolve_timezone_name
 from src.service.reminders.reminder_service import ReminderService, ReminderServiceError
 
@@ -253,6 +254,7 @@ def _strip_recurrence_prefix(expr: str) -> str:
 def _resolve_trigger_time(
     trigger_time_expr: str,
     timezone_name: str,
+    metadata: dict[str, Any] | None = None,
 ) -> datetime | None:
     """Parse a time expression into a UTC datetime.
 
@@ -260,45 +262,16 @@ def _resolve_trigger_time(
     then falls back to dateparser for natural language ("in 5 minutes",
     "at 3 PM", "tomorrow 9 AM").
     """
-    from zoneinfo import ZoneInfo
-
-    # Fast path: ISO 8601
-    try:
-        dt = datetime.fromisoformat(trigger_time_expr)
-        if dt.tzinfo is None:
-            try:
-                tz = ZoneInfo(timezone_name)
-            except (KeyError, ValueError):
-                tz = UTC
-            dt = dt.replace(tzinfo=tz)
-        return dt.astimezone(UTC)
-    except (ValueError, TypeError):
-        pass
-
-    # Strip recurrence prefixes that confuse dateparser
     cleaned_expr = _strip_recurrence_prefix(trigger_time_expr)
-
-    # Slow path: natural language via dateparser
-    try:
-        import dateparser
-
-        settings: dict[str, Any] = {
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DATES_FROM": "future",
-        }
-        if timezone_name and timezone_name != "UTC":
-            settings["TIMEZONE"] = timezone_name
-            settings["TO_TIMEZONE"] = "UTC"
-
-        parsed = dateparser.parse(cleaned_expr, settings=settings)
-        if parsed:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-    except Exception:
-        logger.debug("dateparser failed for: %s", trigger_time_expr, exc_info=True)
-
-    return None
+    parsed = parse_agent_datetime(
+        cleaned_expr,
+        timezone_name=timezone_name,
+        metadata=metadata,
+        require_time=True,
+    )
+    if parsed is None:
+        logger.debug("dateparser failed for: %s", trigger_time_expr)
+    return parsed
 
 
 def _resolve_effective_timezone(context: AgentContext, timezone_name: str | None) -> str:
@@ -306,8 +279,8 @@ def _resolve_effective_timezone(context: AgentContext, timezone_name: str | None
     metadata_timezone = metadata.get("user_timezone")
     return (
         resolve_timezone_name(
-            timezone_name,
             metadata_timezone if isinstance(metadata_timezone, str) else None,
+            timezone_name,
             default="UTC",
         )
         or "UTC"
@@ -766,7 +739,7 @@ async def create_reminder(
         )
 
     effective_timezone = _resolve_effective_timezone(context, timezone_name)
-    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone)
+    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone, context.metadata)
     if not trigger_dt:
         return {
             "status": "error",
@@ -906,7 +879,7 @@ async def create_reminder_form(
 
     # Resolve trigger time server-side (hybrid: ISO 8601 → dateparser)
     effective_timezone = _resolve_effective_timezone(context, timezone_name)
-    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone)
+    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone, context.metadata)
     if not trigger_dt:
         return {
             "status": "error",

@@ -39,7 +39,7 @@ There are two types. Classify based on user intent:
    - Missing time: "When should I remind you?"
    - Generic intent/title such as "set a reminder": ask what the reminder is about.
 
-3. **Call `CreateReminder`** once the mandatory fields are known. Do not ask the user for their timezone — it is detected automatically.
+3. **Call `CreateReminder`** once the mandatory fields are known. Do not ask the user for their timezone — the tool resolves relative dates from the stored user timezone and current datetime.
 
 4. **Confirm to the user** that the reminder was created. No preview confirmation card is required in the normal path.
 
@@ -70,7 +70,8 @@ There are two types. Classify based on user intent:
 ## Critical rules
 
 - **Never convert time to UTC** — pass the user's expression verbatim. The server resolves it.
-- **Never ask for timezone** — it is auto-detected from the channel context.
+- **Never ask for timezone when context has one** — it is auto-detected from the channel context.
+- **Preserve local weekday intent** — phrases like "Saturday 10 PM" mean the user's local Saturday, not a UTC day boundary.
 - **Always include content** — static needs `message`, agentic needs `agent_prompt`. Tool will error without them.
 - **Create directly** — once mandatory fields are known, call `CreateReminder`; the reminder is active immediately.
 - **Agentic prompts must be self-contained** — at trigger time, the agent runs independently. Include enough context (deal name, what to analyze) in the `agent_prompt`.

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from src.domain.models.master_tables.super_admin_models import AdminUserStatus
+from src.domain.models.master_tables.user_models import SupabaseUserStatus, User, UserAppRole
 from src.service.calendar_invites.attendee_resolver import (
     AttendeeCandidate,
     CalendarInviteAttendeeResolver,
@@ -83,6 +85,34 @@ async def test_resolver_marks_multiple_name_matches_ambiguous() -> None:
     assert result.ambiguous[0]["input"] == "Saksham"
     assert len(result.ambiguous[0]["options"]) == 2
     assert not result.resolved
+
+
+@pytest.mark.asyncio
+async def test_resolver_searches_active_approved_internal_users() -> None:
+    """Named attendees can resolve to internal org users for calendar invites."""
+    session = MagicMock()
+    db_result = MagicMock()
+    db_result.scalars.return_value.all.return_value = [
+        User(
+            organisation_id=ORG_ID,
+            first_name="Saksham",
+            last_name="Bhutani",
+            email="saksham@copilotgtm.com",
+            user_role=UserAppRole.MEMBER,
+            organisation_role="Sales",
+            status=SupabaseUserStatus.ACTIVE,
+            admin_status=AdminUserStatus.APPROVED,
+        )
+    ]
+    session.execute = AsyncMock(return_value=db_result)
+    resolver = CalendarInviteAttendeeResolver(session, organisation_id=ORG_ID)
+
+    result = await resolver._search_internal_users("Saksham Bhutani")  # noqa: SLF001
+
+    assert result[0].email == "saksham@copilotgtm.com"
+    assert result[0].name == "Saksham Bhutani"
+    assert result[0].source == "internal_user"
+    assert result[0].confidence == "exact_name"
 
 
 @pytest.mark.asyncio

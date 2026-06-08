@@ -226,6 +226,41 @@ async def test_create_reminder_resolves_local_time_phrases_in_user_timezone(
 
 
 @pytest.mark.asyncio
+async def test_create_reminder_resolves_weekday_time_from_anchored_user_local_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.service.reminders.reminder_service.schedule_reminder",
+        lambda *_args, **_kwargs: None,
+    )
+    context = _FakeContext(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        channel="slack",
+        metadata={
+            "team_id": "T123",
+            "channel_id": "C123",
+            "user_timezone": "Asia/Kolkata",
+            "current_datetime": "2030-06-07T20:30:00+00:00",
+        },
+    )
+
+    result = await create_reminder(
+        context=context,
+        title="Follow up with Acme",
+        trigger_time="Saturday 10 AM",
+        reminder_type="static",
+        message="Follow up with Acme",
+        recurrence="none",
+    )
+
+    assert result["status"] == "created"
+    reminder = context.session.added[0]
+    assert reminder.next_trigger_at == datetime(2030, 6, 8, 4, 30, tzinfo=UTC)
+    assert reminder.user_timezone == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
 async def test_create_reminder_direct_call_uses_context_timezone_when_timezone_not_passed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -251,6 +286,41 @@ async def test_create_reminder_direct_call_uses_context_timezone_when_timezone_n
         reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
+    )
+
+    assert result["status"] == "created"
+    reminder = context.session.added[0]
+    assert reminder.next_trigger_at == datetime(2030, 5, 15, 4, 30, tzinfo=UTC)
+    assert reminder.user_timezone == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
+async def test_create_reminder_prefers_context_timezone_over_accidental_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.service.reminders.reminder_service.schedule_reminder",
+        lambda *_args, **_kwargs: None,
+    )
+    context = _FakeContext(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        channel="slack",
+        metadata={
+            "team_id": "T123",
+            "channel_id": "C123",
+            "user_timezone": "Asia/Kolkata",
+        },
+    )
+
+    result = await create_reminder(
+        context=context,
+        title="Follow up with Acme",
+        trigger_time="May 15 2030 10 AM",
+        reminder_type="static",
+        message="Follow up with Acme",
+        recurrence="none",
+        timezone_name="UTC",
     )
 
     assert result["status"] == "created"

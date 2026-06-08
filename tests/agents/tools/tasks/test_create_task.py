@@ -347,6 +347,34 @@ async def test_create_task_creates_reminder_only_when_requested_with_due_date() 
 
 
 @pytest.mark.asyncio
+async def test_create_task_due_date_uses_anchored_user_local_weekday_for_reminder() -> None:
+    context = _direct_context(channel="slack")
+    context.metadata = {
+        "user_timezone": "Asia/Kolkata",
+        "current_datetime": "2030-06-07T20:30:00+00:00",
+    }
+    task = _created_task(due_date=datetime(2030, 6, 8, 16, 30, tzinfo=UTC))
+
+    with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
+        service = MagicMock()
+        service.create_task = AsyncMock(return_value=task)
+        service_cls = MagicMock(return_value=service)
+        loader.return_value = (service_cls, _FakeTasksWriteServiceError)
+
+        await create_task(
+            context=context,
+            title="Send proposal",
+            due_date="Saturday 10 PM",
+            reminder="1h_before",
+        )
+
+    payload = service.create_task.await_args.args[0]
+    assert payload["due_date"] == datetime(2030, 6, 8, 16, 30, tzinfo=UTC)
+    assert payload["reminder"]["trigger_time"] == datetime(2030, 6, 8, 15, 30, tzinfo=UTC)
+    assert payload["reminder"]["timezone"] == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
 async def test_create_task_preserves_whatsapp_channel_for_reminder_delivery() -> None:
     context = _direct_context(channel="whatsapp")
     context.metadata = {"user_timezone": "UTC"}

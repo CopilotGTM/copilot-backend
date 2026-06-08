@@ -85,6 +85,7 @@ async def test_linked_user_enqueues_chat_processing(monkeypatch: pytest.MonkeyPa
         organisation_id=uuid4(),
         user_id=uuid4(),
         email="test@example.com",
+        timezone="Asia/Kolkata",
     )
     captured: dict[str, object] = {}
 
@@ -115,6 +116,7 @@ async def test_linked_user_enqueues_chat_processing(monkeypatch: pytest.MonkeyPa
     }
     assert captured["kwargs"]["bot_context"]["conversation_type"] == "personal"
     assert captured["kwargs"]["bot_context"]["external_user_id"] == "15551234567"
+    assert captured["kwargs"]["bot_context"]["user_timezone"] == "Asia/Kolkata"
 
 
 @pytest.mark.asyncio

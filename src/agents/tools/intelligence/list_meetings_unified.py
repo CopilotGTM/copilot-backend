@@ -35,6 +35,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import get_context_anchor_utc
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
@@ -61,23 +62,31 @@ def normalize_meeting_limit(limit: int | None) -> int:
     return max(1, min(limit, 50))
 
 
-def _parse_datetime(value: str | datetime | None) -> datetime | None:
+def _parse_datetime(
+    value: str | datetime | None,
+    metadata: dict[str, Any] | None = None,
+) -> datetime | None:
     """Parse tool datetime inputs into UTC-aware values.
 
     Agents may pass ISO strings or already-parsed datetimes. Naive datetimes are
-    treated as UTC because higher-level agent context is responsible for
-    resolving user-local phrases like "today at 4pm" before calling this tool.
+    treated as user-local when timezone metadata is available.
     """
-    if value is None:
-        return None
     if isinstance(value, datetime):
-        parsed = value
-    else:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            timezone_name = (metadata or {}).get("user_timezone")
+            return parse_agent_datetime(
+                value,
+                timezone_name=timezone_name if isinstance(timezone_name, str) else None,
+                metadata=metadata,
+            )
+        return value.astimezone(UTC)
 
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    timezone_name = (metadata or {}).get("user_timezone")
+    return parse_agent_datetime(
+        value,
+        timezone_name=timezone_name if isinstance(timezone_name, str) else None,
+        metadata=metadata,
+    )
 
 
 def _parse_uuid(value: str | None) -> UUID | None:
@@ -117,8 +126,10 @@ async def list_meetings(
         return []
 
     try:
-        start_dt = _parse_datetime(start_datetime) or get_context_anchor_utc(context.metadata)
-        end_dt = _parse_datetime(end_datetime)
+        start_dt = _parse_datetime(start_datetime, context.metadata) or get_context_anchor_utc(
+            context.metadata
+        )
+        end_dt = _parse_datetime(end_datetime, context.metadata)
         parsed_deal_id = _parse_uuid(deal_id)
     except ValueError as exc:
         logger.warning("list_meetings: invalid input: %s", exc)

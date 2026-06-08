@@ -102,3 +102,29 @@ async def test_list_meetings_query_is_scoped_to_current_users_calendar_integrati
     assert "calendar_event_user_states.is_deleted" in sql
     assert "calendar_events.organisation_id" in sql
     assert "calendar_events.start_at >= " in sql
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_interprets_naive_bounds_in_user_timezone() -> None:
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "current_datetime": "2026-04-10T20:30:00+00:00",
+        },
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(
+        context=context,
+        start_datetime="2026-04-11T10:00:00",
+        end_datetime="2026-04-11T11:00:00",
+        limit=2,
+    )
+
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+    assert "2026-04-11 04:30:00+00:00" in sql
+    assert "2026-04-11 05:30:00+00:00" in sql

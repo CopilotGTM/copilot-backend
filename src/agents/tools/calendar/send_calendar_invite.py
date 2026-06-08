@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from datetime import UTC, datetime
-from importlib import import_module
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
+from src.infra.utils.agent_datetime import parse_agent_datetime
+from src.infra.utils.timezone import resolve_timezone_name
 from src.service.calendar_invites.attendee_resolver import CalendarInviteAttendeeResolver
 from src.service.calendar_invites.models import (
     CalendarInviteCreateRequest,
@@ -20,39 +22,17 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 
-def _parse_datetime(value: str, timezone_name: str) -> datetime | None:
-    # Parse with timezone-aware behavior first, then fall back to natural-language
-    # parsing. This keeps strict ISO inputs fast and lets users pass friendly
-    # inputs from chat without breaking invite creation.
-    from zoneinfo import ZoneInfo
-
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        try:
-            dateparser: Any = import_module("dateparser")
-            parsed = dateparser.parse(
-                value,
-                settings={
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                    "PREFER_DATES_FROM": "future",
-                    "TIMEZONE": timezone_name,
-                    "TO_TIMEZONE": "UTC",
-                },
-            )
-        except Exception:
-            return None
-
-    if not parsed:
-        return None
-    if parsed.tzinfo is None:
-        try:
-            # Localize naïve values to sender timezone so downstream comparisons
-            # and Graph conversion are done against an explicit offset.
-            parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
-        except (KeyError, ValueError):
-            parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+def _parse_datetime(
+    value: str,
+    timezone_name: str,
+    metadata: dict[str, Any] | None,
+) -> datetime | None:
+    return parse_agent_datetime(
+        value,
+        timezone_name=timezone_name,
+        metadata=metadata,
+        require_time=True,
+    )
 
 
 def _build_confirmation_payload(
@@ -82,6 +62,42 @@ def _build_confirmation_payload(
     }
 
 
+def _available_sender_accounts(message: str) -> list[str]:
+    """Extract human-facing sender emails from resolver guidance."""
+    marker = "Available sender accounts:"
+    if marker not in message:
+        return []
+    account_text = message.split(marker, 1)[1]
+    return [
+        match.group(0).rstrip(".")
+        for match in re.finditer(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", account_text)
+    ]
+
+
+def _resolve_invite_timezone(
+    *,
+    timezone: str | None,
+    metadata: dict[str, Any],
+    confirmed: bool,
+) -> tuple[str, dict[str, Any] | None]:
+    metadata_timezone = metadata.get("user_timezone")
+    context_timezone = resolve_timezone_name(
+        metadata_timezone if isinstance(metadata_timezone, str) else None,
+        default=None,
+    )
+    requested_timezone = resolve_timezone_name(timezone, default=None)
+
+    if context_timezone and requested_timezone and context_timezone != requested_timezone:
+        if not confirmed:
+            return context_timezone, {
+                "requested_timezone": requested_timezone,
+                "context_timezone": context_timezone,
+            }
+        return requested_timezone, None
+
+    return context_timezone or requested_timezone or "UTC", None
+
+
 async def send_calendar_invite(
     *,
     context: AgentContext,
@@ -108,13 +124,53 @@ async def send_calendar_invite(
     if not user_id:
         return {"status": "error", "message": "Cannot send invite: user not identified."}
 
-    timezone_name = timezone or context.metadata.get("user_timezone") or "UTC"
-    start_at = _parse_datetime(start_time, timezone_name)
-    end_at = _parse_datetime(end_time, timezone_name)
-    if not start_at or not end_at:
+    metadata = context.metadata or {}
+    timezone_name, timezone_conflict = _resolve_invite_timezone(
+        timezone=timezone,
+        metadata=metadata,
+        confirmed=confirmed,
+    )
+    if timezone_conflict:
+        confirmation_reasons = ["timezone_conflicts_with_user_timezone"]
+        confirmation_payload = _build_confirmation_payload(
+            title=title,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_name=timezone_name,
+            attendees=[],
+            body=body,
+            location=location,
+            deal_id=deal_id,
+            sender_email=sender_email,
+            confirmation_reasons=confirmation_reasons,
+        )
+        confirmation_payload["requested_timezone"] = timezone_conflict["requested_timezone"]
+        confirmation_payload["context_timezone"] = timezone_conflict["context_timezone"]
         return {
-            "status": "error",
+            "status": "confirmation_required",
+            "code": "calendar_invite_timezone_confirmation_required",
+            "message": (
+                "The requested timezone differs from your app timezone. Please confirm "
+                "which timezone to use before I send the calendar invite."
+            ),
+            "resolved_attendees": [],
+            "confirmation_payload": confirmation_payload,
+            "confirmation_reasons": confirmation_reasons,
+        }
+
+    start_at = _parse_datetime(start_time, timezone_name, metadata)
+    end_at = _parse_datetime(end_time, timezone_name, metadata)
+    if not start_at or not end_at:
+        missing_fields = []
+        if not start_at:
+            missing_fields.append("start_time")
+        if not end_at:
+            missing_fields.append("end_time")
+        return {
+            "status": "needs_clarification",
+            "code": "calendar_invite_time_required",
             "message": "Could not understand the meeting start or end time.",
+            "missing_fields": missing_fields,
         }
     if end_at <= start_at:
         return {"status": "error", "message": "Meeting end time must be after start time."}
@@ -133,6 +189,7 @@ async def send_calendar_invite(
                 "message": (
                     "I need the exact attendee emails before I can send this calendar invite."
                 ),
+                "missing_fields": ["attendees"],
                 "resolved_attendees": resolution.public_resolved(),
                 "ambiguous_attendees": resolution.ambiguous,
                 "missing_attendees": resolution.missing,
@@ -142,8 +199,10 @@ async def send_calendar_invite(
         confirmation_reasons = list(resolution.confirmation_reasons)
         if not sender_email:
             confirmation_reasons.append("sender_not_explicit")
+        if "final_send_confirmation" not in confirmation_reasons:
+            confirmation_reasons.append("final_send_confirmation")
 
-        if confirmation_reasons and not confirmed:
+        if not confirmed:
             resolved_attendees = resolution.public_resolved()
             return {
                 "status": "confirmation_required",
@@ -199,6 +258,14 @@ async def send_calendar_invite(
         try:
             result = await service.create_invite(request)
         except CalendarInviteError as exc:
+            if exc.code == "calendar_sender_selection_required":
+                return {
+                    "status": "needs_clarification",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "missing_fields": ["sender_email"],
+                    "available_sender_accounts": _available_sender_accounts(exc.message),
+                }
             return {"status": "error", "message": exc.message, "code": exc.code}
 
     return {
@@ -242,14 +309,20 @@ def create_send_calendar_invite(
 
         Pass exact attendee emails when known. For names like "Saksham Bhutani"
         or group phrases like "all stakeholders", pass the user's raw attendee
-        text and deal_id when available; the tool will return
+        text and deal_id when available instead of asking the user for email
+        first. The tool searches deal stakeholders, CRM contacts, CRM users when
+        synced, and active approved internal users; it will return
         confirmation_required or needs_clarification instead of sending if there
         is any identity doubt. If the user confirms a confirmation_payload, call
         again with those resolved attendee emails and confirmed=True.
 
-        If the user has multiple connected Calendar accounts, ask which sender
-        email to use and pass it as sender_email. Provide concrete start and end
-        times; ask a follow-up if either time or attendee email is missing.
+        Only pass timezone when the user explicitly names a timezone different
+        from their app timezone. Otherwise omit timezone; the backend uses the
+        captured app timezone from context. If the user has multiple connected
+        Calendar accounts, the tool returns missing_fields=["sender_email"] and
+        available_sender_accounts; ask for sender together with any other missing
+        fields. Provide concrete start and end times; ask one bundled follow-up
+        if any required title, time, attendee, or sender field is missing.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),

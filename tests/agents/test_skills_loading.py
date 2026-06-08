@@ -413,6 +413,188 @@ def test_reminders_skill_covers_classification_and_parameters() -> None:
     assert "CancelReminder" in skill.instructions
 
 
+def test_reminders_skill_preserves_user_local_time_contract() -> None:
+    """The reminders skill must stop the model from doing UTC math itself."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "reminders")
+    assert "Do NOT convert to UTC" in skill.instructions
+    assert "stored user timezone and current datetime" in skill.instructions
+    assert "Saturday 10 PM" in skill.instructions
+
+
+def test_crm_change_workflow_skill_loads() -> None:
+    """The crm-change-workflow skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "crm-change-workflow" in skill_names
+
+
+def test_crm_change_workflow_skill_has_description() -> None:
+    """The crm-change-workflow skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_crm_change_workflow_skill_has_instructions() -> None:
+    """The crm-change-workflow skill must cover CRM changes and pending actions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    assert "CRM Change Workflow" in skill.instructions
+    assert "pending action" in skill.instructions
+    assert "CRM change" in skill.instructions
+
+
+def test_crm_change_workflow_skill_biases_toward_confirmation_when_uncertain() -> None:
+    """The crm-change-workflow skill must require creation logic review before mutation."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    instructions = skill.instructions.lower()
+    assert "required creation logic" in instructions
+    assert "bias toward confirmation" in instructions
+    assert "if there are no doubts" in instructions
+
+
+def test_crm_deal_analysis_workflow_skill_loads() -> None:
+    """The crm-deal-analysis-workflow skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "crm-deal-analysis-workflow" in skill_names
+
+
+def test_crm_deal_analysis_workflow_skill_has_description() -> None:
+    """The crm-deal-analysis-workflow skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-deal-analysis-workflow")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_crm_deal_analysis_workflow_skill_has_instructions() -> None:
+    """The crm-deal-analysis-workflow skill must cover read-only deal evidence."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-deal-analysis-workflow")
+    assert "CRM Deal Analysis Workflow" in skill.instructions
+    assert "read-only CRM and deal intelligence" in skill.instructions
+    assert "Evidence Strategy" in skill.instructions
+
+
+def test_email_meeting_workflow_skill_loads() -> None:
+    """The email-meeting-workflow skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "email-meeting-workflow" in skill_names
+
+
+def test_email_meeting_workflow_skill_has_description() -> None:
+    """The email-meeting-workflow skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_email_meeting_workflow_skill_has_instructions() -> None:
+    """The email-meeting-workflow skill must cover recipient resolution and sends."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    assert "Email Meeting Workflow" in skill.instructions
+    assert "all stakeholders" in skill.instructions
+    assert "send_calendar_invite" in skill.instructions
+    assert "send_email" in skill.instructions
+
+
+def test_email_meeting_workflow_skill_lists_email_context_sources() -> None:
+    """The email-meeting-workflow skill must name the deal evidence it can reference."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions.lower()
+    assert "deal memory" in instructions
+    assert "risks and blockers" in instructions
+    assert "stakeholder pain points" in instructions
+    assert "deal notes" in instructions
+
+
+def test_email_meeting_workflow_skill_preserves_user_local_meeting_times() -> None:
+    """Meeting invites should use local expressions and tool-side parsing."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    assert "do not convert them to UTC" in skill.instructions
+    assert "Saturday 10 PM" in skill.instructions
+
+
+def test_email_meeting_workflow_skill_batches_meeting_clarifications() -> None:
+    """Meeting flows should avoid one-field-at-a-time clarification loops."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "ask for them together in one message" in instructions
+    assert "Do not ask sequentially" in instructions
+    assert "title first, then attendee email, then date" in instructions
+    assert "one concise clarification" in instructions
+    assert "sender mailbox" in instructions
+
+
+def test_email_meeting_workflow_skill_documents_attendee_resolution_sources() -> None:
+    """Meeting invite examples must steer agents toward available lookup sources."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions.lower()
+    assert "deal stakeholders" in instructions
+    assert "crm contacts" in instructions
+    assert "crm users" in instructions
+    assert "active approved internal users" in instructions
+    assert 'attendees=["saksham"]' in instructions
+    assert 'attendees=["all stakeholders"]' in instructions
+    assert "if saksham resolves to an internal user" in instructions
+
+
+def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> None:
+    """Meeting requests with enough intent should not block only on title."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "Meeting with Saksham" in instructions
+    assert "Do not ask for a title first" in instructions
+    assert "show it in the confirmation" in instructions
+
+
+def test_email_meeting_workflow_skill_requires_final_confirmation_after_details() -> None:
+    """Providing missing details is not the same as approving the invite send."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "do not treat that as approval" in instructions
+    assert "confirmed=False" in instructions
+    assert "final confirmation card" in instructions
+
+
+def test_email_meeting_workflow_skill_has_email_writing_reference() -> None:
+    """The email-meeting-workflow skill must include sales email writing guidance."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    assert "sales-email-writing.md" in skill.references
+
+
 def test_skills_system_prompt_snippet_mentions_call_analysis() -> None:
     """Skills prompt snippet should include call-analysis."""
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
@@ -453,3 +635,18 @@ def test_skills_system_prompt_snippet_mentions_reminders() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "reminders" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_crm_workflow_skills() -> None:
+    """Skills prompt snippet should include the CRM routing skills."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "crm-change-workflow" in snippet
+    assert "crm-deal-analysis-workflow" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_email_meeting_workflow() -> None:
+    """Skills prompt snippet should include the email and meeting workflow skill."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "email-meeting-workflow" in snippet
