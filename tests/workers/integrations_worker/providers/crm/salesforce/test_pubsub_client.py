@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import grpc
+from grpc import aio
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_client import (
     _next_fetch_request_count,
     _replay_preset_for,
+    ssl_channel_credentials,
 )
 
 
@@ -29,3 +32,9 @@ def test_salesforce_pubsub_tops_up_only_available_fetch_capacity() -> None:
     assert _next_fetch_request_count(pending_num_requested=0, num_requested=10) == 10
     assert _next_fetch_request_count(pending_num_requested=10, num_requested=10) == 0
     assert _next_fetch_request_count(pending_num_requested=15, num_requested=10) == 0
+
+
+def test_salesforce_pubsub_uses_supported_grpc_ssl_credentials_factory() -> None:
+    assert ssl_channel_credentials is grpc.ssl_channel_credentials
+    assert hasattr(aio, "secure_channel")
+    assert not hasattr(aio, "ssl_channel_credentials")
