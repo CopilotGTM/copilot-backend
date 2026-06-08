@@ -9,6 +9,7 @@ from io import BytesIO
 from typing import Any, Protocol, cast
 
 from fastavro import parse_schema, schemaless_reader
+from grpc import ssl_channel_credentials
 
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_schema_cache import (
@@ -66,7 +67,7 @@ class SalesforceGrpcSchemaClient(SalesforcePubSubSchemaClient):
         )
 
         pb2 = cast(Any, pubsub_api_pb2)
-        channel = aio.secure_channel(self._pubsub_endpoint, aio.ssl_channel_credentials())
+        channel = aio.secure_channel(self._pubsub_endpoint, ssl_channel_credentials())
         try:
             stub = pubsub_api_pb2_grpc.PubSubStub(channel)
             response = await stub.GetSchema(
@@ -116,7 +117,7 @@ class SalesforceGrpcPubSubTransport:
                     return
                 yield request
 
-        grpc_channel = aio.secure_channel(self._pubsub_endpoint, aio.ssl_channel_credentials())
+        grpc_channel = aio.secure_channel(self._pubsub_endpoint, ssl_channel_credentials())
         try:
             stub = pubsub_api_pb2_grpc.PubSubStub(grpc_channel)
             responses = stub.Subscribe(requests(), metadata=metadata)
