@@ -110,31 +110,54 @@ email first. The invite tool will return confirmation or clarification if identi
 
 ## Meeting Invite Workflow
 
-1. Resolve the meeting purpose and title.
-   - Infer a reasonable title from the stated purpose, active deal, prior message, or agenda.
-   - If only a person is clear, use a neutral title such as "Meeting with Saksham" and
-     show it in the confirmation.
-   - Do not ask for a title first when attendee, time, and meeting intent are clear.
-   - Ask for a title only when no purpose, attendee, or context exists.
+Follow this state machine:
 
-2. Resolve time:
-   - Start and end time are required.
-   - Use conversation timezone metadata when available.
-   - Pass local time expressions as the user said them; do not convert them to UTC.
-   - Preserve local weekday intent, e.g. "Saturday 10 PM" means the user's local Saturday.
-   - If the date is omitted and "today" is not clearly intended, ask for the date in the same
-     clarification as any missing title or attendee details.
+`collect_details -> resolve_entities -> ask_one_missing_fields_question -> final_confirmation -> send`
+
+Do not skip states. Do not say "ready to send" until title, time, attendees,
+timezone, and sender are all resolved.
+
+1. Collect details.
+   - Extract topic/title, attendee phrase, time range, date, timezone, sender, body/agenda, and deal.
+   - Split time ranges yourself before calling tools. For example, "10 to 11 am next Friday"
+     means `start_time="next Friday 10:00 AM"` and `end_time="next Friday 11:00 AM"`.
+   - Treat "today", "tomorrow", and weekdays in the user's app timezone.
+
+2. Choose a safe title.
+   - Prefer a user-provided topic: "pricing review", "contract sync", "Exiter review".
+   - If a person name is the only context, use "Meeting with {Name}".
+   - If the attendee is only an email address, use `Meeting`.
+   - If no topic exists, use `Meeting`.
+   - Never put an email address in the title.
+   - Do not ask for a title first when attendee, time, and meeting intent are clear.
 
 3. Resolve attendees:
    - Use recipient resolution rules.
    - For "all stakeholders", pass the raw phrase and resolved `deal_id` when supported.
+   - For email addresses, use them only as attendees, not as title text.
    - Confirm resolved attendees before sending when the tool requests confirmation.
 
-4. Add useful context:
+4. Resolve time:
+   - Start and end time are required.
+   - Use conversation timezone metadata when available.
+   - Pass local time expressions as the user said them; do not convert them to UTC.
+   - Preserve local weekday intent, e.g. "Saturday 10 PM" means the user's local Saturday.
+   - If the date is omitted and "today" is not clearly intended, ask for the date together
+     with any other missing fields.
+
+5. Add useful context:
    - Include concise body/agenda when the user asks for a meeting with context.
    - Pull agenda points from deal notes, recent meetings, emails, or current conversation.
 
-5. Send only after blockers are cleared:
+6. Ask one missing-fields question if blocked.
+   - If sender mailbox, date/time, or attendee identity is missing or ambiguous, ask for all
+     missing fields in one message.
+   - "Yes" does not answer a sender mailbox question. If sender is missing and the user says
+     "yes", ask for the sender email again.
+   - If the user gives missing details, continue with `confirmed=False`; do not treat those
+     details as final approval.
+
+7. Final confirmation, then send.
    - Use `send_calendar_invite`.
    - Once title, time, attendees, sender, and timezone are resolved, present the final
      confirmation payload and wait.
@@ -151,6 +174,8 @@ email first. The invite tool will return confirmation or clarification if identi
 | User request | Preferred handling |
 | --- | --- |
 | "Create a meeting with Saksham from 8 to 9 PM" | Use title "Meeting with Saksham"; pass `attendees=["Saksham"]` so the invite tool searches stakeholders, CRM contacts, CRM users, and internal users. If date and sender are missing, ask once: "Should I schedule this for today from 8-9 PM, and which sender mailbox should I use?" |
+| "Send a meeting to nikhilsinghal005@gmail.com from 5-6 PM today" | Use title `Meeting`, attendee `nikhilsinghal005@gmail.com`, and ask only for sender if sender is missing. Never title it "Meeting with nikhilsinghal005@gmail.com". |
+| User replies "Yes" after sender is requested | Say the sender is still missing. Do not treat "Yes" as a sender or final approval. |
 | "Schedule Exiter review with Saksham Bhutani Saturday 8-9 PM" | Call `send_calendar_invite` with title "Exiter review", local Saturday start/end, and attendee name. If Saksham resolves to an internal user, show confirmation before sending. |
 | "Send meeting to all stakeholders tomorrow 4 PM" | Resolve active deal, call `send_calendar_invite` with `attendees=["all stakeholders"]` and `deal_id`; confirm the expanded recipient list before sending. |
 | "Set up a call with legal and the champion" | Resolve deal stakeholders by role evidence. If multiple legal/champion matches exist, ask one question listing all ambiguous roles and missing time/title fields together. |

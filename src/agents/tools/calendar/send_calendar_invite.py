@@ -22,6 +22,15 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 
+_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+_GENERIC_EMAIL_TITLE_PREFIXES = (
+    "meeting with",
+    "call with",
+    "sync with",
+    "meet with",
+)
+
+
 def _parse_datetime(
     value: str,
     timezone_name: str,
@@ -68,10 +77,29 @@ def _available_sender_accounts(message: str) -> list[str]:
     if marker not in message:
         return []
     account_text = message.split(marker, 1)[1]
-    return [
-        match.group(0).rstrip(".")
-        for match in re.finditer(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", account_text)
-    ]
+    return [match.group(0).rstrip(".") for match in _EMAIL_PATTERN.finditer(account_text)]
+
+
+def _looks_like_email(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(_EMAIL_PATTERN.fullmatch(value.strip()))
+
+
+def _normalize_invite_title(title: str) -> str:
+    cleaned = str(title or "").strip()
+    if not cleaned:
+        return "Meeting"
+
+    if not _EMAIL_PATTERN.search(cleaned):
+        return cleaned
+
+    lowered = cleaned.lower()
+    if any(lowered.startswith(prefix) for prefix in _GENERIC_EMAIL_TITLE_PREFIXES):
+        return "Meeting"
+
+    without_email = _EMAIL_PATTERN.sub("the attendee", cleaned).strip()
+    return without_email or "Meeting"
 
 
 def _resolve_invite_timezone(
@@ -123,6 +151,15 @@ async def send_calendar_invite(
     user_id = context.user_id
     if not user_id:
         return {"status": "error", "message": "Cannot send invite: user not identified."}
+
+    title = _normalize_invite_title(title)
+    if sender_email and not _looks_like_email(sender_email):
+        return {
+            "status": "needs_clarification",
+            "code": "calendar_sender_email_invalid",
+            "message": "I still need a valid sender email address for this invite.",
+            "missing_fields": ["sender_email"],
+        }
 
     metadata = context.metadata or {}
     timezone_name, timezone_conflict = _resolve_invite_timezone(

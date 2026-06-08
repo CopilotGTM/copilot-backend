@@ -573,7 +573,7 @@ def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> 
     instructions = skill.instructions
     assert "Meeting with Saksham" in instructions
     assert "Do not ask for a title first" in instructions
-    assert "show it in the confirmation" in instructions
+    assert "If the attendee is only an email address, use `Meeting`" in instructions
 
 
 def test_email_meeting_workflow_skill_requires_final_confirmation_after_details() -> None:
@@ -585,6 +585,28 @@ def test_email_meeting_workflow_skill_requires_final_confirmation_after_details(
     assert "do not treat that as approval" in instructions
     assert "confirmed=False" in instructions
     assert "final confirmation card" in instructions
+
+
+def test_email_meeting_workflow_skill_defines_meeting_invite_state_machine() -> None:
+    """The meeting flow should be a deterministic journey, not ad hoc prompts."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "collect_details -> resolve_entities -> ask_one_missing_fields_question" in instructions
+    assert "final_confirmation -> send" in instructions
+    assert 'Do not say "ready to send"' in instructions
+
+
+def test_email_meeting_workflow_skill_forbids_email_based_titles_and_yes_sender() -> None:
+    """The skill should prevent visible invite titles and sender prompts from drifting."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "Never put an email address in the title" in instructions
+    assert "If no topic exists, use `Meeting`" in instructions
+    assert '"Yes" does not answer a sender mailbox question' in instructions
 
 
 def test_email_meeting_workflow_skill_has_email_writing_reference() -> None:
