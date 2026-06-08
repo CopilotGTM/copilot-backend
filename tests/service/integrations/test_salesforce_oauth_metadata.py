@@ -57,7 +57,7 @@ def test_salesforce_callback_persists_provider_identity_metadata() -> None:
             "channel": "/data/TaskChangeEvent",
         },
         "content_note": {
-            "enabled": True,
+            "enabled": False,
             "channel": "/data/ContentNoteChangeEvent",
         },
         "content_document_link": {
