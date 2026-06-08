@@ -351,6 +351,8 @@ class WhatsAppBotService:
             "current_datetime": datetime.now(UTC).isoformat(),
             "whatsapp_message_id": message.message_id,
         }
+        if getattr(user, "timezone", None):
+            bot_context["user_timezone"] = str(user.timezone)
         if message.audio_files:
             bot_context["whatsapp_audio_files"] = message.audio_files
         if attachment_refs:

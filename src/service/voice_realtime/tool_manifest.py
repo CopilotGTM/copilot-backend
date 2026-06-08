@@ -465,7 +465,10 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "priority": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"]},
-                "due_date": {"type": "string"},
+                "due_date": {
+                    "type": "string",
+                    "description": "Raw local due date/time expression. Do not convert to UTC.",
+                },
                 "deal_name": {"type": "string"},
                 "deal_id": {"type": "string"},
                 "assign_to": {"type": "string"},
@@ -560,7 +563,8 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                     "type": "string",
                     "description": (
                         "Raw local time expression exactly as spoken or typed, such as "
-                        "'10 AM', '12 AM', or 'tomorrow at 9'. Do not convert to UTC."
+                        "'10 AM', '12 AM', 'Saturday 10 PM', or 'tomorrow at 9'. "
+                        "Do not convert to UTC."
                     ),
                 },
                 "reminder_type": {"type": "string", "enum": ["static", "agentic"]},
@@ -732,18 +736,40 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "start_time": {"type": "string"},
-                "end_time": {"type": "string"},
+                "start_time": {
+                    "type": "string",
+                    "description": "Raw local start time expression. Do not convert to UTC.",
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "Raw local end time expression. Do not convert to UTC.",
+                },
                 "attendees": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Attendee emails or raw attendee names exactly as provided.",
+                    "description": (
+                        "Attendee emails or raw attendee names exactly as provided. Do not ask "
+                        "for email first when the user gives a name."
+                    ),
                 },
                 "body": {"type": "string"},
                 "location": {"type": "string"},
                 "deal_id": {"type": "string"},
-                "timezone": {"type": "string"},
-                "sender_email": {"type": "string"},
+                "timezone": {
+                    "type": "string",
+                    "description": (
+                        "Only pass when the user explicitly names a timezone. Otherwise omit; "
+                        "the backend uses the captured app timezone."
+                    ),
+                },
+                "sender_email": {
+                    "type": "string",
+                    "description": (
+                        "Calendar sender mailbox. If the invite tool returns "
+                        "available_sender_accounts, ask together with any missing title, time, "
+                        "or attendee fields."
+                    ),
+                },
                 "confirmed": {"type": "boolean"},
             },
             "required": ["title", "start_time", "end_time", "attendees"],

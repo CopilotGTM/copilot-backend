@@ -135,3 +135,25 @@ def test_send_calendar_invite_voice_schema_is_available_for_direct_write() -> No
     assert schema["parameters"]["required"] == ["title", "start_time", "end_time", "attendees"]
     assert "sender_email" in schema["parameters"]["properties"]
     assert "confirmed" in schema["parameters"]["properties"]
+
+
+def test_send_calendar_invite_voice_schema_discourages_timezone_override() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
+    timezone_schema = schema["parameters"]["properties"]["timezone"]
+
+    assert "Only pass when the user explicitly names a timezone" in (timezone_schema["description"])
+    assert "captured app timezone" in timezone_schema["description"]
+
+
+def test_send_calendar_invite_voice_schema_guides_bundled_clarifications() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
+    sender_schema = schema["parameters"]["properties"]["sender_email"]
+    attendees_schema = schema["parameters"]["properties"]["attendees"]
+
+    assert "raw attendee names" in attendees_schema["description"]
+    assert "ask together" in sender_schema["description"]
+    assert "available_sender_accounts" in sender_schema["description"]

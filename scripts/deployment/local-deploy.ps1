@@ -16,7 +16,8 @@
 
 param(
     [string]$DeployEnvironment = "dev",
-    [bool]$EnableFlower = $true,
+    [bool]$EnableFlower = $false,
+    [bool]$QuickApiOnly = $true,
     [bool]$UseSeparatedImages = $true,
     [bool]$UseFullImageForWorkers = $false,
     [bool]$UseFullImageForApi = $false,
@@ -25,19 +26,21 @@ param(
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower <bool>] [-UseSeparatedImages <bool>] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-QuickApiOnly <bool>] [-EnableFlower <bool>] [-UseSeparatedImages <bool>] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -DeployEnvironment    Target environment (default: dev)"
-    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: true)"
+    Write-Host "  -QuickApiOnly         Fast API-only deploy: build API image, skip hooks/workers (default: true)"
+    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: false)"
     Write-Host "  -UseSeparatedImages   Build separate images per component (default: true, matches pipeline)"
     Write-Host "  -UseFullImageForWorkers Build worker images using the 'full' target to include API deps (default: false)"
     Write-Host "  -UseFullImageForApi   Build API image using the 'full' target (default: false)"
     Write-Host "  -Help                 Show this help message"
     Write-Host ""
     Write-Host "Example:"
-    Write-Host "  .\local-deploy.ps1                              # Deploy with all features enabled"
-    Write-Host "  .\local-deploy.ps1 -EnableFlower `$false         # Deploy without Flower UI"
+    Write-Host "  .\local-deploy.ps1                              # Fast API-only deploy"
+    Write-Host "  .\local-deploy.ps1 -QuickApiOnly `$false         # Full API + workers deploy"
+    Write-Host "  .\local-deploy.ps1 -EnableFlower `$true          # Deploy with Flower UI"
     Write-Host "  .\local-deploy.ps1 -UseSeparatedImages `$false   # Use legacy single image"
     exit 0
 }
@@ -155,6 +158,12 @@ function Test-Prerequisites {
         exit 1
     }
 
+    $currentKubeContext = kubectl config current-context
+    if ($DeployEnvironment -eq "dev" -and $currentKubeContext -notmatch "dev") {
+        Write-Error "Current Kubernetes context is '$currentKubeContext', but this is a dev deploy. Run: kubectl config use-context copilot-gtm-aks-dev"
+        exit 1
+    }
+
     # Check if logged into Azure
     try {
         az account show | Out-Null
@@ -230,12 +239,19 @@ function Build-AndPushImage {
         Write-Warning "Using 'full' image target for workers to ensure API deps (fastapi) are present."
     }
 
-    $repoToTarget = @(
-        @{ Repo = $API_IMAGE_REPOSITORY; Target = $apiTarget },
-        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = $knowledgeTarget },
-        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = $lightWorkerTarget },
-        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = $integrationsTarget }
-    )
+    if ($QuickApiOnly) {
+        Write-Host "Quick API-only mode: building only $API_IMAGE_REPOSITORY"
+        $repoToTarget = @(
+            @{ Repo = $API_IMAGE_REPOSITORY; Target = $apiTarget }
+        )
+    } else {
+        $repoToTarget = @(
+            @{ Repo = $API_IMAGE_REPOSITORY; Target = $apiTarget },
+            @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = $knowledgeTarget },
+            @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = $lightWorkerTarget },
+            @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = $integrationsTarget }
+        )
+    }
 
     foreach ($item in $repoToTarget) {
         $repo = $item.Repo
@@ -266,8 +282,7 @@ function Get-AzureKeyVaultSecrets {
         "RESEND_API_KEY",
         "SUPABASE_ANON_KEY",
         "SUPABASE_JWT_SECRET",
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "NANGO_SECRET_KEY"
+        "SUPABASE_SERVICE_ROLE_KEY"
     )
 
     # Check if all secrets are already set from .env.development
@@ -280,32 +295,102 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    # Ensure NANGO_BASE_URL is set
-    if (-not $env:NANGO_BASE_URL) {
-        $env:NANGO_BASE_URL = "https://api.nango.dev"
-    }
-
     if ($allSecretsPresent) {
         Write-Success "All secrets already present from .env.development - skipping Key Vault retrieval"
         return
     }
 
-    # If any secrets are missing, try to retrieve from Key Vault
-    Write-Host "Some secrets missing - attempting to retrieve from Azure Key Vault..."
+    # If any secrets are missing, first reuse the current deployed secret when available.
+    # Pipeline-only values like REDIS_PASSWORD are not guaranteed to exist in Key Vault.
+    Write-Host "Some secrets missing - attempting to retrieve from Kubernetes secret and Azure Key Vault..."
 
-    # Key Vault name for infrastructure secrets (from .env.development)
-    $KEY_VAULT_NAME = $env:AZURE_KEY_VAULT_NAME
+    function Get-KubernetesSecretValue {
+        param([string]$SecretKey)
 
-    if (-not $KEY_VAULT_NAME) {
-        Write-Warning "AZURE_KEY_VAULT_NAME not set and some secrets are missing. Please ensure all secrets are in .env.development"
+        try {
+            $secretName = "$HELM_RELEASE_NAME-secret"
+            $secretJson = kubectl get secret $secretName -n $NAMESPACE -o json 2>$null
+            if (-not $secretJson) {
+                return ""
+            }
+
+            $secret = $secretJson | ConvertFrom-Json
+            $encodedValue = $secret.data.PSObject.Properties[$SecretKey].Value
+            if (-not $encodedValue) {
+                return ""
+            }
+
+            return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedValue))
+        } catch {
+            return ""
+        }
+    }
+
+    function Set-EnvFromKubernetesSecretIfMissing {
+        param([string]$EnvName)
+
+        if ([Environment]::GetEnvironmentVariable($EnvName)) {
+            return
+        }
+
+        $value = Get-KubernetesSecretValue $EnvName
+        if ($value) {
+            Set-Item -Path "Env:$EnvName" -Value $value
+        }
+    }
+
+    foreach ($secret in $requiredSecrets) {
+        Set-EnvFromKubernetesSecretIfMissing $secret
+    }
+
+    $allSecretsPresent = $true
+    foreach ($secret in $requiredSecrets) {
+        if (-not [Environment]::GetEnvironmentVariable($secret)) {
+            $allSecretsPresent = $false
+        }
+    }
+
+    if ($allSecretsPresent) {
+        Write-Success "Missing secrets restored from the current Kubernetes deployment"
         return
     }
 
-    Write-Host "Retrieving secrets from Key Vault: $KEY_VAULT_NAME"
+    function Resolve-KeyVaultName {
+        param([string]$VaultName, [string]$VaultUrl)
+
+        if ($VaultName) {
+            return $VaultName
+        }
+        if (-not $VaultUrl) {
+            return ""
+        }
+
+        try {
+            $uri = [System.Uri]$VaultUrl
+            return $uri.Host.Split(".")[0]
+        } catch {
+            $withoutScheme = $VaultUrl -replace "^https?://", ""
+            return ($withoutScheme.Split(".")[0]).TrimEnd("/")
+        }
+    }
+
+    # Pipeline and Helm use Key Vault URLs; Azure CLI secret reads need the vault name.
+    $DATABASE_KEY_VAULT_NAME = Resolve-KeyVaultName $env:AZURE_KEY_VAULT_NAME $env:AZURE_KEY_VAULT_URL
+    $MASTER_KEY_VAULT_NAME = Resolve-KeyVaultName $env:AZURE_MASTER_KEY_VAULT_NAME $env:AZURE_MASTER_KEY_VAULT_URL
+
+    if (-not $DATABASE_KEY_VAULT_NAME -and -not $MASTER_KEY_VAULT_NAME) {
+        Write-Warning "AZURE_KEY_VAULT_URL/AZURE_MASTER_KEY_VAULT_URL not set and some secrets are missing. Please ensure all secrets are in .env.development"
+        return
+    }
+
+    Write-Host "Retrieving secrets from Key Vault URLs configured for this environment"
 
     # Function to safely get secret
     function Get-SecretSafely {
         param([string]$VaultName, [string]$SecretName, [string]$DefaultValue = "")
+        if (-not $VaultName) {
+            return $DefaultValue
+        }
         try {
             $result = az keyvault secret show --vault-name $VaultName --name $SecretName --query value -o tsv 2>$null
             if ($result) { return $result } else { return $DefaultValue }
@@ -314,36 +399,59 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    # Only fetch secrets that are not already set
-    if (-not $env:AZURE_OPENAI_API_KEY) {
-        $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
-    }
-    if (-not $env:AZURE_EMBEDDER_OPENAI_API_KEY) {
-        $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
-    }
-    if (-not $env:DATABASE_PASSWORD) {
-        $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
-    }
-    if (-not $env:REDIS_PASSWORD) {
-        $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
-    }
-    if (-not $env:RESEND_API_KEY) {
-        $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
-    }
-    if (-not $env:SUPABASE_ANON_KEY) {
-        $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
-    }
-    if (-not $env:SUPABASE_JWT_SECRET) {
-        $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
-    }
-    if (-not $env:SUPABASE_SERVICE_ROLE_KEY) {
-        $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
-    }
-    if (-not $env:NANGO_SECRET_KEY) {
-        $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
+    function Get-SecretFromVaults {
+        param([string[]]$VaultNames, [string[]]$SecretNames)
+
+        foreach ($vaultName in $VaultNames) {
+            foreach ($secretName in $SecretNames) {
+                $value = Get-SecretSafely $vaultName $secretName
+                if ($value) {
+                    return $value
+                }
+            }
+        }
+
+        return ""
     }
 
-    Write-Success "Secrets configuration complete"
+    function Set-EnvSecretIfMissing {
+        param([string]$EnvName, [string[]]$VaultNames, [string[]]$SecretNames)
+
+        if ([Environment]::GetEnvironmentVariable($EnvName)) {
+            return
+        }
+
+        $value = Get-SecretFromVaults $VaultNames $SecretNames
+        if ($value) {
+            Set-Item -Path "Env:$EnvName" -Value $value
+        }
+    }
+
+    $databaseFirstVaults = @($DATABASE_KEY_VAULT_NAME, $MASTER_KEY_VAULT_NAME)
+    $masterFirstVaults = @($MASTER_KEY_VAULT_NAME, $DATABASE_KEY_VAULT_NAME)
+
+    # Only fetch secrets that are not already set
+    Set-EnvSecretIfMissing "AZURE_OPENAI_API_KEY" $masterFirstVaults @("azure-openai-api-key")
+    Set-EnvSecretIfMissing "AZURE_EMBEDDER_OPENAI_API_KEY" $masterFirstVaults @("azure-embedder-openai-api-key")
+    Set-EnvSecretIfMissing "DATABASE_PASSWORD" $databaseFirstVaults @("db-admin-password", "database-password")
+    Set-EnvSecretIfMissing "REDIS_PASSWORD" $masterFirstVaults @("redis-password")
+    Set-EnvSecretIfMissing "RESEND_API_KEY" $masterFirstVaults @("resend-api-key")
+    Set-EnvSecretIfMissing "SUPABASE_ANON_KEY" $masterFirstVaults @("supabase-anon-key")
+    Set-EnvSecretIfMissing "SUPABASE_JWT_SECRET" $masterFirstVaults @("supabase-jwt-secret")
+    Set-EnvSecretIfMissing "SUPABASE_SERVICE_ROLE_KEY" $masterFirstVaults @("supabase-service-role-key")
+
+    $missingAfterFallback = @()
+    foreach ($secret in $requiredSecrets) {
+        if (-not [Environment]::GetEnvironmentVariable($secret)) {
+            $missingAfterFallback += $secret
+        }
+    }
+
+    if ($missingAfterFallback.Count -gt 0) {
+        Write-Warning "Still missing secret(s) after Kubernetes/Key Vault fallback: $($missingAfterFallback -join ', ')"
+    } else {
+        Write-Success "Secrets configuration complete"
+    }
 }
 
 function Deploy-WithHelm {
@@ -354,7 +462,7 @@ function Deploy-WithHelm {
     $helmStatus = helm status copilot-backend -n $NAMESPACE 2>&1
     if ($helmStatus -match "pending-upgrade|pending-install|pending-rollback") {
         Write-Warning "Helm release is in pending state. Rolling back to unlock..."
-        helm rollback copilot-backend -n $NAMESPACE
+        helm rollback copilot-backend -n $NAMESPACE --no-hooks
         Start-Sleep -Seconds 10
     }
 
@@ -376,6 +484,37 @@ function Deploy-WithHelm {
     $lightRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$LIGHT_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
     $integrationsRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$INTEGRATIONS_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
 
+    if ($QuickApiOnly) {
+        Write-Host "Quick API-only mode: reusing existing Helm values and updating only the API image..."
+        $helmArgs = @(
+            "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
+            "--reuse-values",
+            "--namespace", $NAMESPACE,
+            "--set", "api.image.repository=$apiRepo",
+            "--set", "api.image.tag=$IMAGE_TAG",
+            "--set", "flower.enabled=false",
+            "--set", "flower.ingress.enabled=false",
+            "--set", "global.celery.enableEvents=false",
+            "--no-hooks"
+        )
+
+        $helmResult = & helm @helmArgs
+        $helmExitCode = $LASTEXITCODE
+
+        if ($helmExitCode -ne 0) {
+            Write-Error "Helm deployment failed with exit code: $helmExitCode"
+            Write-Host "Helm output: $helmResult"
+            Write-Host "Attempting to check Helm status..."
+            helm status copilot-backend -n $NAMESPACE
+            exit 1
+        }
+
+        Write-Success "Helm deployment completed"
+        Write-Host "Quick API-only mode: waiting only for API rollout..."
+        kubectl rollout status deployment copilot-backend -n $NAMESPACE --timeout=180s
+        return
+    }
+
     $helmArgs = @(
         "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
         "-f", "$CHART_PATH/values-dev.yaml",
@@ -389,26 +528,12 @@ function Deploy-WithHelm {
         "--set", "global.redis.usePassword=true",
         "--set", "api.image.repository=$apiRepo",
         "--set", "api.image.tag=$IMAGE_TAG",
-        "--set", "knowledge-extract-worker.image.repository=$knowledgeRepo",
-        "--set", "knowledge-extract-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-extract-worker.autoscaling.enabled=true",
         "--set", "knowledge-extract-worker.gpu.enabled=true",
-        "--set", "knowledge-upload-worker.image.repository=$knowledgeRepo",
-        "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
-        "--set", "organization-worker.image.repository=$lightRepo",
-        "--set", "organization-worker.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.autoscaling.enabled=true",
-        "--set", "chat-worker.image.repository=$lightRepo",
-        "--set", "chat-worker.image.tag=$IMAGE_TAG",
-        "--set", "integrations-worker.image.repository=$integrationsRepo",
-        "--set", "integrations-worker.image.tag=$IMAGE_TAG",
         "--set", "integrations-worker.autoscaling.enabled=true",
-        "--set", "deal-worker.image.repository=$lightRepo",
-        "--set", "deal-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.autoscaling.enabled=true",
-        "--set", "integrations-beat.image.repository=$integrationsRepo",
-        "--set", "integrations-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
         "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
@@ -451,8 +576,6 @@ function Deploy-WithHelm {
         "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$($env:AZURE_EMBEDDER_OPENAI_ENDPOINT)",
         "--set", "api.secrets.AZURE_EMBEDDER_DEPLOYMENT=$($env:AZURE_EMBEDDER_DEPLOYMENT)",
         "--set", "api.secrets.AZURE_SUBSCRIPTION=$($env:AZURE_SUBSCRIPTION)",
-        "--set", "api.secrets.NANGO_SECRET_KEY=$($env:NANGO_SECRET_KEY)",
-        "--set", "api.secrets.NANGO_BASE_URL=$($env:NANGO_BASE_URL)",
         "--set", "knowledge-extract-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
@@ -469,12 +592,35 @@ function Deploy-WithHelm {
         "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
+    $helmArgs += @(
+        "--set", "knowledge-extract-worker.image.repository=$knowledgeRepo",
+        "--set", "knowledge-extract-worker.image.tag=$IMAGE_TAG",
+        "--set", "knowledge-upload-worker.image.repository=$knowledgeRepo",
+        "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
+        "--set", "organization-worker.image.repository=$lightRepo",
+        "--set", "organization-worker.image.tag=$IMAGE_TAG",
+        "--set", "chat-worker.image.repository=$lightRepo",
+        "--set", "chat-worker.image.tag=$IMAGE_TAG",
+        "--set", "integrations-worker.image.repository=$integrationsRepo",
+        "--set", "integrations-worker.image.tag=$IMAGE_TAG",
+        "--set", "deal-worker.image.repository=$lightRepo",
+        "--set", "deal-worker.image.tag=$IMAGE_TAG",
+        "--set", "integrations-beat.image.repository=$integrationsRepo",
+        "--set", "integrations-beat.image.tag=$IMAGE_TAG"
+    )
+
     if ($EnableFlower) {
         Write-Host "Flower enabled: deploying Flower UI and enabling Celery events for workers..."
         $helmArgs += @(
             "--set", "flower.enabled=true",
             "--set", "flower.ingress.enabled=false",
             "--set", "global.celery.enableEvents=true"
+        )
+    } else {
+        $helmArgs += @(
+            "--set", "flower.enabled=false",
+            "--set", "flower.ingress.enabled=false",
+            "--set", "global.celery.enableEvents=false"
         )
     }
 
@@ -576,7 +722,11 @@ function Main {
     Test-Prerequisites
     Connect-ToACR
     Build-AndPushImage
-    Get-AzureKeyVaultSecrets
+    if ($QuickApiOnly) {
+        Write-Host "Quick API-only mode: skipping app secret hydration; existing Helm values will be reused."
+    } else {
+        Get-AzureKeyVaultSecrets
+    }
     Deploy-WithHelm
     Test-DeploymentStatus
 
