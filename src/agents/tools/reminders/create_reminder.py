@@ -24,13 +24,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import and_, select
-
+from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.master_tables.external_identity_models import (
-    ExternalIdentityMapping,
-    ExternalIdentityProvider,
-)
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderStatus,
@@ -40,6 +35,7 @@ from src.domain.models.organisation_tables.reminder_models import (
 from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import resolve_timezone_name
+from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
 from src.service.reminders.reminder_service import ReminderService, ReminderServiceError
 
 if TYPE_CHECKING:
@@ -50,16 +46,6 @@ logger = logging.getLogger(__name__)
 
 _BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
 _DELIVERY_FALLBACK_ORDER = ("teams", "slack", "whatsapp")
-_CHANNEL_TO_PROVIDER = {
-    "teams": ExternalIdentityProvider.TEAMS,
-    "slack": ExternalIdentityProvider.SLACK,
-    "whatsapp": ExternalIdentityProvider.WHATSAPP,
-}
-_REQUIRED_DELIVERY_CONTEXT_KEYS = {
-    "teams": ("service_url", "conversation_id"),
-    "slack": ("team_id", "channel_id"),
-    "whatsapp": ("phone_number_id", "recipient_wa_id"),
-}
 _GENERIC_REMINDER_TITLES = {
     "reminder",
     "a reminder",
@@ -107,10 +93,7 @@ def _missing_fields_error(message: str, missing_fields: list[str]) -> dict[str, 
 
 
 def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict[str, Any]) -> bool:
-    required_keys = _REQUIRED_DELIVERY_CONTEXT_KEYS.get(delivery_channel)
-    if not required_keys:
-        return False
-    return all(bool(str(delivery_context.get(key, "")).strip()) for key in required_keys)
+    return OutboundChannelService.delivery_context_is_ready(delivery_channel, delivery_context)
 
 
 def _normalize_delivery_context(
@@ -118,17 +101,18 @@ def _normalize_delivery_context(
     conversation_context: dict[str, Any] | None,
     external_tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    normalized = dict(conversation_context or {})
-    if delivery_channel == "slack" and external_tenant_id and not normalized.get("team_id"):
-        normalized["team_id"] = external_tenant_id
-    return normalized
+    return OutboundChannelService.normalize_delivery_context(
+        delivery_channel,
+        conversation_context,
+        external_tenant_id,
+    )
 
 
 def _resolve_current_reminder_delivery_target(
     context: AgentContext,
 ) -> tuple[str, dict[str, Any]] | None:
     channel = (context.channel or "").lower()
-    if channel not in _REQUIRED_DELIVERY_CONTEXT_KEYS:
+    if channel not in _DELIVERY_FALLBACK_ORDER:
         return None
 
     metadata = context.metadata or {}
@@ -164,46 +148,17 @@ async def _resolve_mapping_delivery_context(
     if not context.user_id:
         return None
 
-    provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
-    if not provider:
+    if delivery_channel not in _DELIVERY_FALLBACK_ORDER:
         return None
 
     async for session in acquire_master_async_session():
-        stmt = select(
-            ExternalIdentityMapping.conversation_context,
-            ExternalIdentityMapping.external_tenant_id,
-        ).where(
-            and_(
-                ExternalIdentityMapping.organisation_id == context.organisation_id,
-                ExternalIdentityMapping.user_id == context.user_id,
-                ExternalIdentityMapping.provider == provider,
-                ExternalIdentityMapping.is_active == True,  # noqa: E712
-            )
-        )
-        result = await session.execute(stmt)
-        row = result.first()
-        if row is None:
-            return None
-
-        row_mapping = getattr(row, "_mapping", None)
-        if row_mapping:
-            conversation_context = row_mapping.get("conversation_context")
-            external_tenant_id = row_mapping.get("external_tenant_id")
-        else:
-            conversation_context = getattr(row, "conversation_context", None)
-            external_tenant_id = getattr(row, "external_tenant_id", None)
-
-        if conversation_context is None and isinstance(row, tuple):
-            conversation_context = row[0]
-            external_tenant_id = row[1] if len(row) > 1 else None
-
-        normalized = _normalize_delivery_context(
+        target = await OutboundChannelService().resolve_user_channel(
+            session,
+            context.organisation_id,
+            context.user_id,
             delivery_channel,
-            conversation_context,
-            external_tenant_id,
         )
-        if _delivery_context_is_ready(delivery_channel, normalized):
-            return normalized
+        return target.delivery_context if target else None
     return None
 
 
@@ -215,7 +170,7 @@ async def _resolve_reminder_delivery_target(
         return current_target
 
     channel = (context.channel or "").lower()
-    channels_to_try = (channel,) if channel in _CHANNEL_TO_PROVIDER else _DELIVERY_FALLBACK_ORDER
+    channels_to_try = (channel,) if channel in _DELIVERY_FALLBACK_ORDER else _DELIVERY_FALLBACK_ORDER
 
     for delivery_channel in channels_to_try:
         delivery_context = await _resolve_mapping_delivery_context(context, delivery_channel)
@@ -995,8 +950,6 @@ async def create_reminder_form(
     if channel == "slack":
         from zoneinfo import ZoneInfo
 
-        from src.service.bots.slack_bot_service import SlackBotService
-
         try:
             local_dt = trigger_dt.astimezone(ZoneInfo(effective_timezone))
         except Exception:
@@ -1072,23 +1025,33 @@ async def create_reminder_form(
             ]
         )
 
-        bot_service = SlackBotService()
-        sent = await bot_service.send_block_kit_message(
-            team_id=team_id,
-            channel_id=channel_id,
-            blocks=slack_blocks,
-            text_fallback=f"Reminder preview: {title}",
+        result = await OutboundChannelService().send_payload(
+            OutboundDeliveryTarget(
+                channel="slack",
+                mapping_id=None,
+                delivery_context={"team_id": team_id, "channel_id": channel_id},
+            ),
+            ChannelPayload(
+                type="card",
+                content={"blocks": slack_blocks},
+                text_fallback=f"Reminder preview: {title}",
+            ),
         )
+        sent = result.success
     else:
-        from src.service.bots.teams_bot_service import TeamsBotService
-
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
-            service_url=service_url,
-            conversation_id=conversation_id,
-            payload=card_payload,
-            text_fallback=f"Reminder preview: {title}",
+        result = await OutboundChannelService().send_payload(
+            OutboundDeliveryTarget(
+                channel="teams",
+                mapping_id=None,
+                delivery_context={"service_url": service_url, "conversation_id": conversation_id},
+            ),
+            ChannelPayload(
+                type="card",
+                content=card_payload,
+                text_fallback=f"Reminder preview: {title}",
+            ),
         )
+        sent = result.success
 
     if not sent:
         logger.error("Failed to send reminder preview card for reminder %s", reminder.reminder_id)

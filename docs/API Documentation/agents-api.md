@@ -22,7 +22,12 @@ Check which delivery channels are ready for scheduled-agent delivery.
 GET /users/agents/channels
 ```
 
-The response shape matches `GET /users/reminders/channels`.
+The response shape matches `GET /users/reminders/channels`, including `channel`, `available`,
+`label`, `icon_url`, and `mapping_id` for each channel.
+
+Clients should render scheduled-agent channel options from this response. Do not hardcode the
+supported channel list in the frontend; the backend owns channel identity, labels, icons,
+availability, and mapping IDs.
 
 ## Create Scheduled Agent
 

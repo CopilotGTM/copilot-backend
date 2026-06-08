@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -30,12 +27,9 @@ from src.api.schemas.reminder_models import (
     StaticReminderUpdateRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.master_tables.external_identity_models import (
-    ExternalIdentityMapping,
-    ExternalIdentityProvider,
-)
 from src.domain.models.organisation_tables.reminder_models import ReminderStatus, ReminderType
 from src.infra.utils.logger import get_logger
+from src.service.channels import OutboundChannelService
 from src.service.reminders.reminder_service import (
     InvalidStatusTransitionError,
     ReminderNotFoundError,
@@ -49,32 +43,9 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 
 reminders_router = APIRouter()
 
-# Maps delivery_channel string → ExternalIdentityProvider for lookup
-_CHANNEL_TO_PROVIDER = {
-    "teams": ExternalIdentityProvider.TEAMS,
-    "slack": ExternalIdentityProvider.SLACK,
-    "whatsapp": ExternalIdentityProvider.WHATSAPP,
-}
-
-_REQUIRED_DELIVERY_CONTEXT_KEYS = {
-    "teams": ("service_url", "conversation_id"),
-    "slack": ("team_id", "channel_id"),
-    "whatsapp": ("phone_number_id", "recipient_wa_id"),
-}
-
-
-class _ProviderChannelInfo(TypedDict):
-    mapping_id: UUID | None
-    available: bool
-
-
-def _empty_provider_channel_info() -> _ProviderChannelInfo:
-    return {"mapping_id": None, "available": False}
-
-
-def _provider_name(provider: ExternalIdentityProvider | str) -> str:
+def _provider_name(provider) -> str:
     """Normalize provider values returned by SQLModel/SQLAlchemy queries."""
-    return provider.value if isinstance(provider, ExternalIdentityProvider) else str(provider)
+    return provider.value if hasattr(provider, "value") else str(provider)
 
 
 def _normalize_delivery_context(
@@ -83,24 +54,16 @@ def _normalize_delivery_context(
     external_tenant_id: str | None = None,
 ) -> dict:
     """Normalize provider-specific mapping context into reminder delivery context."""
-    normalized = dict(conversation_context or {})
-
-    # Slack auth stores the workspace in external_tenant_id rather than
-    # conversation_context, but reminder delivery needs it at execution time.
-    if delivery_channel == "slack" and external_tenant_id and not normalized.get("team_id"):
-        normalized["team_id"] = external_tenant_id
-
-    return normalized
+    return OutboundChannelService.normalize_delivery_context(
+        delivery_channel,
+        conversation_context,
+        external_tenant_id,
+    )
 
 
 def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict | None) -> bool:
     """Return whether the channel has the fields required for proactive delivery."""
-    required_keys = _REQUIRED_DELIVERY_CONTEXT_KEYS.get(delivery_channel)
-    if not required_keys:
-        return False
-
-    context = delivery_context or {}
-    return all(bool(str(context.get(key, "")).strip()) for key in required_keys)
+    return OutboundChannelService.delivery_context_is_ready(delivery_channel, delivery_context)
 
 
 async def _resolve_delivery_context(
@@ -114,30 +77,13 @@ async def _resolve_delivery_context(
     Returns a normalized delivery_context dict, or None if no active mapping
     exists for this user+channel.
     """
-    provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
-    if not provider:
-        return None
-
-    stmt = select(
-        col(ExternalIdentityMapping.conversation_context),
-        col(ExternalIdentityMapping.external_tenant_id),
-    ).where(
-        col(ExternalIdentityMapping.organisation_id) == organisation_id,
-        col(ExternalIdentityMapping.user_id) == user_id,
-        col(ExternalIdentityMapping.provider) == provider,
-        col(ExternalIdentityMapping.is_active).is_(True),
+    target = await OutboundChannelService().resolve_user_channel(
+        master_session,
+        organisation_id,
+        user_id,
+        delivery_channel,
     )
-    result = await master_session.execute(stmt)
-    row = result.first()
-
-    if row is None:
-        return None
-
-    return _normalize_delivery_context(
-        delivery_channel=delivery_channel,
-        conversation_context=row[0],
-        external_tenant_id=row[1],
-    )
+    return target.delivery_context if target else None
 
 
 async def get_reminder_service(
@@ -174,60 +120,20 @@ async def get_available_channels(
     master_session: AsyncSession = Depends(get_master_async_session),
 ) -> GenericResponse[AvailableChannelsResponse]:
     try:
-        stmt = select(
-            col(ExternalIdentityMapping.provider),
-            col(ExternalIdentityMapping.mapping_id),
-            col(ExternalIdentityMapping.conversation_context),
-            col(ExternalIdentityMapping.external_tenant_id),
-        ).where(
-            col(ExternalIdentityMapping.user_id) == user.user_id,
-            col(ExternalIdentityMapping.organisation_id) == user.organisation_id,
-            col(ExternalIdentityMapping.is_active).is_(True),
+        channel_infos = await OutboundChannelService().list_user_channels(
+            master_session,
+            user.organisation_id,
+            user.user_id,
         )
-        result = await master_session.execute(stmt)
-        rows = result.all()
-
-        provider_map: dict[str, _ProviderChannelInfo] = {
-            "teams": _empty_provider_channel_info(),
-            "slack": _empty_provider_channel_info(),
-            "whatsapp": _empty_provider_channel_info(),
-        }
-        for row in rows:
-            provider = _provider_name(row.provider)
-            provider_info = provider_map.setdefault(
-                provider,
-                _empty_provider_channel_info(),
-            )
-            if provider_info["mapping_id"] is None:
-                provider_info["mapping_id"] = row.mapping_id
-
-            normalized_context = _normalize_delivery_context(
-                delivery_channel=provider,
-                conversation_context=row.conversation_context,
-                external_tenant_id=row.external_tenant_id,
-            )
-            if _delivery_context_is_ready(provider, normalized_context):
-                provider_info["available"] = True
-
         channels = [
             DeliveryChannelInfo(
-                channel="teams",
-                available=bool(provider_map["teams"]["available"]),
-                label="Microsoft Teams",
-                mapping_id=provider_map["teams"]["mapping_id"],
-            ),
-            DeliveryChannelInfo(
-                channel="slack",
-                available=bool(provider_map["slack"]["available"]),
-                label="Slack",
-                mapping_id=provider_map["slack"]["mapping_id"],
-            ),
-            DeliveryChannelInfo(
-                channel="whatsapp",
-                available=bool(provider_map["whatsapp"]["available"]),
-                label="WhatsApp",
-                mapping_id=provider_map["whatsapp"]["mapping_id"],
-            ),
+                channel=item.channel,
+                available=item.available,
+                label=item.label,
+                icon_url=item.icon_url,
+                mapping_id=item.mapping_id,
+            )
+            for item in channel_infos
         ]
 
         return Response.success_response(

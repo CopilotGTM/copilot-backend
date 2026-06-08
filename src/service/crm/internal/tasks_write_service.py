@@ -12,10 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.master_tables import User
-from src.domain.models.master_tables.external_identity_models import (
-    ExternalIdentityMapping,
-    ExternalIdentityProvider,
-)
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
@@ -36,6 +32,7 @@ from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import DEFAULT_TIMEZONE, resolve_timezone_name
+from src.service.channels import OutboundChannelService
 from src.service.crm.access.crm_user_service import build_user_display_name
 from src.service.crm.internal.internal_crm_user_service import (
     InternalCRMUserService,
@@ -47,14 +44,7 @@ logger = get_logger(__name__)
 _ALLOWED_TASK_TYPES = {CRMActivityType.TASK.value, CRMActivityType.TODO.value}
 _ALLOWED_STATUSES = {status.value for status in CRMActivityStatus}
 _ALLOWED_PRIORITIES = {priority.value for priority in CRMActivityPriority}
-_CHANNEL_TO_PROVIDER = {
-    "teams": ExternalIdentityProvider.TEAMS,
-    "slack": ExternalIdentityProvider.SLACK,
-}
-_REQUIRED_DELIVERY_CONTEXT_KEYS = {
-    "teams": ("service_url", "conversation_id"),
-    "slack": ("team_id", "channel_id"),
-}
+_TASK_REMINDER_CHANNELS = ("teams", "slack")
 
 
 class TasksWriteServiceError(Exception):
@@ -506,35 +496,19 @@ class TasksWriteService:
     async def _resolve_delivery_target_for_channel(
         self, delivery_channel: str
     ) -> tuple[str, dict[str, Any]] | None:
-        provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
-        if not provider:
+        if delivery_channel not in _TASK_REMINDER_CHANNELS:
             raise TasksWriteServiceError("Invalid reminder delivery channel", 400)
 
         async with master_async_session_scope() as master_session:
-            stmt = select(
-                ExternalIdentityMapping.conversation_context,
-                ExternalIdentityMapping.external_tenant_id,
-            ).where(
-                col(ExternalIdentityMapping.user_id) == self.actor_user_id,
-                col(ExternalIdentityMapping.organisation_id) == self.organisation_id,
-                col(ExternalIdentityMapping.provider) == provider,
-                col(ExternalIdentityMapping.is_active) == True,  # noqa: E712
+            target = await OutboundChannelService().resolve_user_channel(
+                master_session,
+                self.organisation_id,
+                self.actor_user_id,
+                delivery_channel,
             )
-            result = await master_session.execute(stmt)
-            row = result.first()
-
-        if row is None:
+        if target is None:
             return None
-
-        delivery_context = self._normalize_delivery_context(
-            delivery_channel=delivery_channel,
-            conversation_context=row[0],
-            external_tenant_id=row[1],
-        )
-        if not self._delivery_context_is_ready(delivery_channel, delivery_context):
-            return None
-
-        return delivery_channel, delivery_context
+        return target.channel, target.delivery_context
 
     @staticmethod
     def _normalize_delivery_context(
@@ -542,21 +516,21 @@ class TasksWriteService:
         conversation_context: dict[str, Any] | None,
         external_tenant_id: str | None = None,
     ) -> dict[str, Any]:
-        normalized = dict(conversation_context or {})
-        if delivery_channel == "slack" and external_tenant_id and not normalized.get("team_id"):
-            normalized["team_id"] = external_tenant_id
-        return normalized
+        return OutboundChannelService.normalize_delivery_context(
+            delivery_channel,
+            conversation_context,
+            external_tenant_id,
+        )
 
     @staticmethod
     def _delivery_context_is_ready(
         delivery_channel: str,
         delivery_context: dict[str, Any] | None,
     ) -> bool:
-        required_keys = _REQUIRED_DELIVERY_CONTEXT_KEYS.get(delivery_channel)
-        if not required_keys:
-            return False
-        context = delivery_context or {}
-        return all(bool(str(context.get(key, "")).strip()) for key in required_keys)
+        return OutboundChannelService.delivery_context_is_ready(
+            delivery_channel,
+            delivery_context,
+        )
 
     def _safe_schedule(self, reminder_id: UUID, trigger_epoch: float) -> None:
         try:

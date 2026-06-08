@@ -10,6 +10,7 @@ from src.api.routers.reminders.reminders_handler import (
     _normalize_delivery_context,
     _provider_name,
     create_reminder,
+    get_available_channels,
     get_reminder,
     list_reminders,
 )
@@ -19,6 +20,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
     ReminderType,
 )
+from src.service.channels import OutboundChannelInfo
 from src.service.reminders.reminder_service import ReminderNotFoundError
 
 
@@ -106,6 +108,59 @@ def test_static_reminder_create_request_rejects_agent_fields() -> None:
                 "delivery_channel": "teams",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_get_available_channels_returns_service_channels(monkeypatch: pytest.MonkeyPatch):
+    class FakeOutboundChannelService:
+        async def list_user_channels(self, master_session, organisation_id, user_id):
+            return [
+                OutboundChannelInfo(
+                    channel="teams",
+                    available=True,
+                    label="Microsoft Teams",
+                    icon_url="/integrations/microsoft-teams.png",
+                    mapping_id=uuid4(),
+                ),
+                OutboundChannelInfo(
+                    channel="slack",
+                    available=False,
+                    label="Slack",
+                    icon_url="/integrations/slack.png",
+                    mapping_id=None,
+                ),
+                OutboundChannelInfo(
+                    channel="whatsapp",
+                    available=True,
+                    label="WhatsApp",
+                    icon_url="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
+                    mapping_id=uuid4(),
+                ),
+            ]
+
+    monkeypatch.setattr(
+        reminders_handler,
+        "OutboundChannelService",
+        FakeOutboundChannelService,
+    )
+
+    result = await get_available_channels(
+        response=FastAPIResponse(),
+        user=type("User", (), {"organisation_id": uuid4(), "user_id": uuid4()})(),
+        master_session=object(),
+    )
+
+    assert [channel.channel for channel in result.data.channels] == [
+        "teams",
+        "slack",
+        "whatsapp",
+    ]
+    assert [channel.available for channel in result.data.channels] == [True, False, True]
+    assert [channel.icon_url for channel in result.data.channels] == [
+        "/integrations/microsoft-teams.png",
+        "/integrations/slack.png",
+        "https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
+    ]
 
 
 @pytest.mark.asyncio

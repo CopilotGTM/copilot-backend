@@ -43,9 +43,10 @@ class ReminderHistoryQueryParams(BaseModel):
 class DeliveryChannelInfo(BaseModel):
     """Information about a single delivery channel."""
 
-    channel: str = Field(description="Channel identifier: 'teams' or 'slack'")
+    channel: str = Field(description="Channel identifier: 'teams', 'slack', or 'whatsapp'")
     available: bool = Field(description="Whether the user has this channel set up and ready to use")
     label: str = Field(description="Human-readable label for the channel")
+    icon_url: str = Field(description="Icon URL for rendering this channel in clients")
     mapping_id: UUID | None = Field(
         default=None,
         description="Identity mapping ID to send back when creating a reminder with this channel.",

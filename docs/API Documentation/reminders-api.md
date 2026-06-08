@@ -33,12 +33,31 @@ Returns:
         "channel": "teams",
         "available": true,
         "label": "Microsoft Teams",
+        "icon_url": "/integrations/microsoft-teams.png",
+        "mapping_id": "..."
+      },
+      {
+        "channel": "slack",
+        "available": true,
+        "label": "Slack",
+        "icon_url": "/integrations/slack.png",
+        "mapping_id": "..."
+      },
+      {
+        "channel": "whatsapp",
+        "available": true,
+        "label": "WhatsApp",
+        "icon_url": "https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg",
         "mapping_id": "..."
       }
     ]
   }
 }
 ```
+
+Clients should render channel options from this response. Do not hardcode the supported channel
+list in the frontend; the backend owns channel identity, labels, icons, availability, and
+mapping IDs.
 
 ## Create Static Reminder
 

@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import col
 
+from src.adapters import ChannelPayload
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderRunStatus,
@@ -32,6 +33,7 @@ from src.domain.models.organisation_tables.reminder_models import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
+from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
 
 logger = logging.getLogger(__name__)
 
@@ -361,15 +363,10 @@ class ReminderExecutionService:
     @staticmethod
     def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict[str, Any]) -> bool:
         """Validate the minimum delivery context required for reminder execution."""
-        required_keys = {
-            "teams": ("service_url", "conversation_id"),
-            "slack": ("team_id", "channel_id"),
-            "whatsapp": ("phone_number_id", "recipient_wa_id"),
-        }.get(delivery_channel)
-        if not required_keys:
-            return False
-
-        return all(bool(str(delivery_context.get(key, "")).strip()) for key in required_keys)
+        return OutboundChannelService.delivery_context_is_ready(
+            delivery_channel,
+            delivery_context,
+        )
 
     async def _send_text(
         self,
@@ -379,52 +376,15 @@ class ReminderExecutionService:
         text: str,
     ) -> bool:
         """Send a plain text reminder through the configured bot provider."""
-        if delivery_channel == "teams":
-            from src.service.bots.teams_bot_service import TeamsBotService
-
-            service_url = delivery_context.get("service_url", "")
-            conversation_id = delivery_context.get("conversation_id", "")
-            if not service_url or not conversation_id:
-                logger.error("Teams reminder missing delivery context")
-                return False
-
-            bot_service = TeamsBotService()
-            return await bot_service.send_proactive_message(
-                service_url=service_url,
-                conversation_id=conversation_id,
-                message=text,
-            )
-
-        if delivery_channel == "slack":
-            from src.service.bots.slack_bot_service import SlackBotService
-
-            team_id = delivery_context.get("team_id", "")
-            channel_id = delivery_context.get("channel_id", "")
-            if not team_id or not channel_id:
-                logger.error("Slack reminder missing delivery context")
-                return False
-
-            bot_service = SlackBotService()
-            return await bot_service._send_message(team_id, channel_id, text)
-
-        if delivery_channel == "whatsapp":
-            from src.service.bots.whatsapp_bot_service import WhatsAppBotService
-
-            phone_number_id = delivery_context.get("phone_number_id", "")
-            recipient_wa_id = delivery_context.get("recipient_wa_id", "")
-            if not phone_number_id or not recipient_wa_id:
-                logger.error("WhatsApp reminder missing delivery context")
-                return False
-
-            bot_service = WhatsAppBotService()
-            return await bot_service.send_text_message(
-                phone_number_id=phone_number_id,
-                recipient_wa_id=recipient_wa_id,
-                text=text,
-            )
-
-        logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
-        return False
+        target = OutboundDeliveryTarget(
+            channel=delivery_channel,
+            mapping_id=None,
+            delivery_context=delivery_context,
+        )
+        result = await OutboundChannelService().send_text(target, text)
+        if not result.success and result.error:
+            logger.error("Reminder text delivery failed: %s", result.error)
+        return result.success
 
     async def _send_payload(
         self,
@@ -436,77 +396,28 @@ class ReminderExecutionService:
         response_text: str | None,
     ) -> bool:
         """Send a rendered agent response through the configured bot provider."""
-        if delivery_channel == "teams":
-            from src.service.bots.teams_bot_service import TeamsBotService
-
-            service_url = delivery_context.get("service_url", "")
-            conversation_id = delivery_context.get("conversation_id", "")
-            if not service_url or not conversation_id:
-                logger.error("Teams reminder missing delivery context")
-                return False
-
-            bot_service = TeamsBotService()
-            title_header = f"**Scheduled Alert: {title}**\n\n"
-            return await bot_service.send_proactive_payload(
-                service_url=service_url,
-                conversation_id=conversation_id,
-                payload=payload.content,
-                text_fallback=title_header + (response_text[:200] if response_text else ""),
-            )
-
-        if delivery_channel == "slack":
-            from src.service.bots.slack_bot_service import SlackBotService
-
-            team_id = delivery_context.get("team_id", "")
-            channel_id = delivery_context.get("channel_id", "")
-            if not team_id or not channel_id:
-                logger.error("Slack reminder missing delivery context")
-                return False
-
-            bot_service = SlackBotService()
-            blocks = payload.content.get("blocks")
-            text = payload.content.get("text") or payload.text_fallback or response_text or title
-            if blocks:
-                return await bot_service.send_block_kit_message(
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    blocks=blocks,
-                    text_fallback=text,
-                )
-
-            return await bot_service._send_message(team_id, channel_id, text)
-
-        if delivery_channel == "whatsapp":
-            from src.service.bots.whatsapp_bot_service import WhatsAppBotService
-            from src.workers.chat_worker.services.bot_message_processing_service import (
-                BotMessageProcessingService,
-            )
-
-            phone_number_id = delivery_context.get("phone_number_id", "")
-            recipient_wa_id = delivery_context.get("recipient_wa_id", "")
-            if not phone_number_id or not recipient_wa_id:
-                logger.error("WhatsApp reminder missing delivery context")
-                return False
-
-            text = (
-                payload.content.get("text")
-                or payload.text_fallback
-                or response_text
-                or f"Scheduled Alert: {title}"
-            )
-            bot_service = WhatsAppBotService()
-            for chunk in BotMessageProcessingService._split_whatsapp_text(text):
-                sent = await bot_service.send_text_message(
-                    phone_number_id=phone_number_id,
-                    recipient_wa_id=recipient_wa_id,
-                    text=chunk,
-                )
-                if not sent:
-                    return False
-            return True
-
-        logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
-        return False
+        text_fallback = (
+            payload.text_fallback
+            or payload.content.get("text")
+            or response_text
+            or f"Scheduled Alert: {title}"
+        )
+        outbound_payload = ChannelPayload(
+            type=getattr(payload, "type", "message"),
+            content=payload.content,
+            text_fallback=text_fallback,
+            attachments=getattr(payload, "attachments", None),
+            source_text=getattr(payload, "source_text", None),
+        )
+        target = OutboundDeliveryTarget(
+            channel=delivery_channel,
+            mapping_id=None,
+            delivery_context=delivery_context,
+        )
+        result = await OutboundChannelService().send_payload(target, outbound_payload)
+        if not result.success and result.error:
+            logger.error("Reminder payload delivery failed: %s", result.error)
+        return result.success
 
     async def _mark_success(
         self,
