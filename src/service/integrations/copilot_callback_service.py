@@ -283,7 +283,7 @@ class CopilotCallbackService:
             cdc_metadata.setdefault(
                 object_key,
                 {
-                    "enabled": True,
+                    "enabled": config.get("default_enabled") != "false",
                     "channel": config["channel"],
                 },
             )

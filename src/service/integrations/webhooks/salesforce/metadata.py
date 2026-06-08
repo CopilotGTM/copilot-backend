@@ -28,6 +28,7 @@ SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
         "channel": CONTENT_NOTE_CDC_CHANNEL,
         "object_name": "ContentNote",
         "id_prefix": "069",
+        "default_enabled": "false",
     },
     "content_document_link": {
         "channel": CONTENT_DOCUMENT_LINK_CDC_CHANNEL,
