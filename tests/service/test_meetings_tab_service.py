@@ -448,6 +448,135 @@ async def test_recording_detail_falls_back_to_meeting_level_summary(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_recording_detail_returns_transcript_segments_sorted_by_index(monkeypatch) -> None:
+    """Recording detail should expose compact ordered transcript segments."""
+    service = _service()
+    meeting_id = uuid4()
+
+    async def _rollback() -> None:
+        return None
+
+    class _SegmentResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(
+                    segment_index=1,
+                    start_time_seconds=12.5,
+                    speaker_external_id="speaker-1",
+                    speaker_name="Nikhil",
+                    content="Let's review the next step.",
+                ),
+                SimpleNamespace(
+                    segment_index=2,
+                    start_time_seconds=24.0,
+                    speaker_external_id=None,
+                    speaker_name="Priya",
+                    content="I can send that by Friday.",
+                ),
+            ]
+
+    async def _execute(_stmt):
+        return _SegmentResult()
+
+    service.session.rollback = _rollback
+    service.session.execute = _execute
+    event = SimpleNamespace(event_id=uuid4())
+    meeting = SimpleNamespace(
+        meeting_id=meeting_id,
+        meeting_summary_data={"data": {"meeting_summary": "non-deal summary"}},
+    )
+    recording = SimpleNamespace(
+        status="DONE",
+        transcript_status="DONE",
+        provider_session_id=None,
+        provider_payload={
+            "bot_snapshot": {
+                "recordings": [
+                    {
+                        "media_shortcuts": {
+                            "video_mixed": {
+                                "id": "video_123",
+                                "data": {"download_url": "https://example.com/video.mp4"},
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+    )
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, meeting)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.summary == {"data": {"meeting_summary": "non-deal summary"}}
+    assert detail.model_dump(mode="json")["transcript_segments"] == [
+        {
+            "start_time": 12.5,
+            "speaker_id": "speaker-1",
+            "speaker_name": "Nikhil",
+            "text": "Let's review the next step.",
+        },
+        {
+            "start_time": 24.0,
+            "speaker_id": None,
+            "speaker_name": "Priya",
+            "text": "I can send that by Friday.",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_returns_empty_transcript_segments_when_missing(monkeypatch) -> None:
+    """Recording detail should return an empty transcript segment array when rows are absent."""
+    service = _service()
+
+    async def _rollback() -> None:
+        return None
+
+    service.session.rollback = _rollback
+    now = datetime.now(UTC)
+    event = SimpleNamespace(event_id=uuid4())
+    recording = SimpleNamespace(
+        status="DONE",
+        transcript_status="DONE",
+        provider_session_id=None,
+        provider_payload={
+            "bot_snapshot": {
+                "recordings": [
+                    {
+                        "media_shortcuts": {
+                            "video_mixed": {
+                                "id": "video_123",
+                                "data": {
+                                    "download_url": "https://example.com/video.mp4",
+                                    "expires_at": now.isoformat(),
+                                },
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+    )
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.model_dump(mode="json")["transcript_segments"] == []
+
+
+@pytest.mark.asyncio
 async def test_create_meeting_with_join_link_enqueues_single_event_bot_dispatch(monkeypatch):
     """New non-deal meetings with join links should trigger the idempotent bot task."""
     service = _service()
