@@ -89,17 +89,21 @@ class OutboundChannelService:
     ) -> list[OutboundChannelInfo]:
         """Return availability for supported outbound channels for this user."""
         supported_channels = tuple(channel for channel in channels if channel in _CHANNEL_METADATA)
-        stmt = select(
-            col(ExternalIdentityMapping.provider),
-            col(ExternalIdentityMapping.mapping_id),
-            col(ExternalIdentityMapping.conversation_context),
-            col(ExternalIdentityMapping.external_tenant_id),
-        ).where(
-            col(ExternalIdentityMapping.organisation_id) == organisation_id,
-            col(ExternalIdentityMapping.user_id) == user_id,
-            col(ExternalIdentityMapping.is_active).is_(True),
-        ).order_by(
-            col(ExternalIdentityMapping.linked_at).desc(),
+        stmt = (
+            select(
+                col(ExternalIdentityMapping.provider),
+                col(ExternalIdentityMapping.mapping_id),
+                col(ExternalIdentityMapping.conversation_context),
+                col(ExternalIdentityMapping.external_tenant_id),
+            )
+            .where(
+                col(ExternalIdentityMapping.organisation_id) == organisation_id,
+                col(ExternalIdentityMapping.user_id) == user_id,
+                col(ExternalIdentityMapping.is_active).is_(True),
+            )
+            .order_by(
+                col(ExternalIdentityMapping.linked_at).desc(),
+            )
         )
         result = await master_session.execute(stmt)
 
@@ -150,17 +154,21 @@ class OutboundChannelService:
         if provider is None:
             return None
 
-        stmt = select(
-            col(ExternalIdentityMapping.mapping_id),
-            col(ExternalIdentityMapping.conversation_context),
-            col(ExternalIdentityMapping.external_tenant_id),
-        ).where(
-            col(ExternalIdentityMapping.organisation_id) == organisation_id,
-            col(ExternalIdentityMapping.user_id) == user_id,
-            col(ExternalIdentityMapping.provider) == provider,
-            col(ExternalIdentityMapping.is_active).is_(True),
-        ).order_by(
-            col(ExternalIdentityMapping.linked_at).desc(),
+        stmt = (
+            select(
+                col(ExternalIdentityMapping.mapping_id),
+                col(ExternalIdentityMapping.conversation_context),
+                col(ExternalIdentityMapping.external_tenant_id),
+            )
+            .where(
+                col(ExternalIdentityMapping.organisation_id) == organisation_id,
+                col(ExternalIdentityMapping.user_id) == user_id,
+                col(ExternalIdentityMapping.provider) == provider,
+                col(ExternalIdentityMapping.is_active).is_(True),
+            )
+            .order_by(
+                col(ExternalIdentityMapping.linked_at).desc(),
+            )
         )
         result = await master_session.execute(stmt)
         for row in self._result_rows(result):
@@ -276,12 +284,8 @@ class OutboundChannelService:
                 sent = True
                 for chunk in BotMessageProcessingService._split_whatsapp_text(text):
                     chunk_sent = await WhatsAppBotService().send_text_message(
-                        phone_number_id=str(
-                            target.delivery_context.get("phone_number_id", "")
-                        ),
-                        recipient_wa_id=str(
-                            target.delivery_context.get("recipient_wa_id", "")
-                        ),
+                        phone_number_id=str(target.delivery_context.get("phone_number_id", "")),
+                        recipient_wa_id=str(target.delivery_context.get("recipient_wa_id", "")),
                         text=chunk,
                     )
                     if not chunk_sent:

@@ -170,7 +170,9 @@ async def _resolve_reminder_delivery_target(
         return current_target
 
     channel = (context.channel or "").lower()
-    channels_to_try = (channel,) if channel in _DELIVERY_FALLBACK_ORDER else _DELIVERY_FALLBACK_ORDER
+    channels_to_try = (
+        (channel,) if channel in _DELIVERY_FALLBACK_ORDER else _DELIVERY_FALLBACK_ORDER
+    )
 
     for delivery_channel in channels_to_try:
         delivery_context = await _resolve_mapping_delivery_context(context, delivery_channel)
