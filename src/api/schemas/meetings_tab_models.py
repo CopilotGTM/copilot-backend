@@ -76,6 +76,9 @@ class MeetingListItem(BaseModel):
     transcript_status: str | None = None
     has_recording: bool = False
     has_summary: bool = False
+    meeting_summary_status: str | None = None
+    meeting_summary_data: dict[str, Any] | None = None
+    meeting_summary_generated_at: datetime | None = None
     has_prep: bool = False
     next_action: str | None = None
 

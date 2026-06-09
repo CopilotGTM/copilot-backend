@@ -115,10 +115,10 @@ class MeetingSummaryNotificationService:
     def __init__(self, organisation_id: UUID) -> None:
         self.organisation_id = organisation_id
 
-    def build_summary_url(self, *, deal_id: UUID, event_id: UUID) -> str:
+    def build_summary_url(self, *, event_id: UUID) -> str:
         """Build the app deep link; frontend auth guard owns login redirect."""
         base_url = (app_config.APP_URL or "").rstrip("/") or "https://app.copilotgtm.com"
-        return f"{base_url}/deals/{deal_id}/briefing-room?meeting={event_id}&summary=1"
+        return f"{base_url}/meetings?event_id={event_id}&section=summary"
 
     @staticmethod
     def _format_meeting_time(value: datetime | None) -> str:
@@ -138,7 +138,7 @@ class MeetingSummaryNotificationService:
         route the user directly to the meeting summary after authentication.
         """
         title = context.meeting_title or "Untitled meeting"
-        url = self.build_summary_url(deal_id=context.deal_id, event_id=context.event_id)
+        url = self.build_summary_url(event_id=context.event_id)
         meeting_time = self._format_meeting_time(context.meeting_start_at)
 
         safe_name = html_escape(recipient.first_name or "there")
@@ -171,7 +171,7 @@ class MeetingSummaryNotificationService:
     def render_channel_text(self, context: MeetingSummaryNotificationContext) -> str:
         """Render a short channel message that links back to the app summary."""
         title = context.meeting_title or "Untitled meeting"
-        url = self.build_summary_url(deal_id=context.deal_id, event_id=context.event_id)
+        url = self.build_summary_url(event_id=context.event_id)
         meeting_time = self._format_meeting_time(context.meeting_start_at)
         return (
             f"**Meeting summary is ready:** {title}\n"

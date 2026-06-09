@@ -80,6 +80,8 @@ def test_deal_association_surfaces_deal_summary_state() -> None:
     assoc = SimpleNamespace(
         deal_id=uuid4(),
         meeting_summary_status=GenerationStatus.COMPLETED,
+        meeting_summary_data={"summary": "deal-only"},
+        meeting_summary_generated_at=now,
         meeting_prep_status=GenerationStatus.COMPLETED,
     )
     deal = SimpleNamespace(
@@ -90,12 +92,75 @@ def test_deal_association_surfaces_deal_summary_state() -> None:
     )
     row = (event, assoc, deal, None, None)
 
-    item = _service()._format_row(row, {"example.com"})  # noqa: SLF001
+    item = _service()._format_row(row, {"example.com"}, include_summary_data=True)  # noqa: SLF001
 
     assert item.linked_record is not None
     assert item.linked_record.record_type == MeetingLinkedRecordType.DEAL
     assert item.has_summary is True
     assert item.has_prep is True
+    assert item.meeting_summary_data == {"summary": "deal-only"}
+    assert item.meeting_summary_status == GenerationStatus.COMPLETED
+
+
+def test_meeting_list_row_omits_summary_payload_by_default() -> None:
+    """List responses should expose summary state without carrying full summary content."""
+    now = datetime.now(UTC)
+    event = SimpleNamespace(
+        event_id=uuid4(),
+        title="Internal sync",
+        start_at=now,
+        end_at=now + timedelta(minutes=30),
+        online_meeting_provider="google_meet",
+        provider="google",
+        conference_link=None,
+        status="confirmed",
+        attendees=[],
+        attendee_count=0,
+    )
+    meeting = SimpleNamespace(
+        meeting_summary_status=GenerationStatus.COMPLETED,
+        meeting_summary_data={"data": {"meeting_summary": "large summary"}},
+        meeting_summary_generated_at=now,
+    )
+    row = (event, None, None, None, meeting)
+
+    item = _service()._format_row(row, {"example.com"})  # noqa: SLF001
+
+    assert item.has_summary is True
+    assert item.meeting_summary_status == GenerationStatus.COMPLETED
+    assert item.meeting_summary_generated_at == now
+    assert item.meeting_summary_data is None
+
+
+def test_non_deal_meeting_surfaces_meeting_level_summary_state() -> None:
+    """Non-deal meeting summaries should be visible from the Meetings tab detail payload."""
+    now = datetime.now(UTC)
+    event = SimpleNamespace(
+        event_id=uuid4(),
+        title="Internal sync",
+        start_at=now,
+        end_at=now + timedelta(minutes=30),
+        online_meeting_provider="google_meet",
+        provider="google",
+        conference_link=None,
+        status="confirmed",
+        attendees=[],
+        attendee_count=0,
+    )
+    meeting = SimpleNamespace(
+        meeting_summary_status=GenerationStatus.COMPLETED,
+        meeting_summary_data={"data": {"meeting_summary": "non-deal summary"}},
+        meeting_summary_generated_at=now,
+    )
+    row = (event, None, None, None, meeting)
+
+    item = _service()._format_row(row, {"example.com"}, include_summary_data=True)  # noqa: SLF001
+
+    assert item.linked_record is None
+    assert item.has_summary is True
+    assert item.meeting_summary_data == {"data": {"meeting_summary": "non-deal summary"}}
+    assert item.meeting_summary_status == GenerationStatus.COMPLETED
+    assert item.meeting_summary_generated_at == now
 
 
 def test_platform_label_mapping_uses_provider_and_link_signals() -> None:
@@ -333,6 +398,53 @@ async def test_deal_recording_detail_returns_deal_summary(monkeypatch) -> None:
     assert detail.playback_url == "https://example.com/video.mp4"
     assert detail.summary == {"summary": "deal-only"}
     assert detail.action_items == [{"title": "deal action"}]
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_falls_back_to_meeting_level_summary(monkeypatch) -> None:
+    """Recording detail should show meeting-level summary when there is no deal association."""
+    service = _service()
+
+    async def _rollback() -> None:
+        return None
+
+    service.session.rollback = _rollback
+    now = datetime.now(UTC)
+    event = SimpleNamespace(event_id=uuid4())
+    meeting = SimpleNamespace(
+        meeting_summary_data={"data": {"meeting_summary": "non-deal summary"}},
+    )
+    recording = SimpleNamespace(
+        status="DONE",
+        transcript_status="DONE",
+        provider_session_id=None,
+        provider_payload={
+            "bot_snapshot": {
+                "recordings": [
+                    {
+                        "media_shortcuts": {
+                            "video_mixed": {
+                                "id": "video_123",
+                                "data": {
+                                    "download_url": "https://example.com/video.mp4",
+                                    "expires_at": now.isoformat(),
+                                },
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+    )
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, meeting)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.summary == {"data": {"meeting_summary": "non-deal summary"}}
 
 
 @pytest.mark.asyncio
