@@ -65,6 +65,7 @@ from src.service.crm.access.meetings_access_service import (
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
@@ -248,13 +249,51 @@ class MeetingsTabService:
         if request.link:
             await self.set_link(result.event_id, request.link.record_type, request.link.record_id)
 
+        bot_dispatch = await self._enqueue_created_meeting_bot_dispatch(
+            result.event_id,
+            result.conference_link,
+        )
         return CreateMeetingResponse(
             event_id=result.event_id,
             provider_event_id=result.provider_event_id,
             conference_link=result.conference_link,
             meeting=await self.get_meeting_detail(result.event_id),
-            bot_dispatch=None,
+            bot_dispatch=bot_dispatch,
         )
+
+    async def _enqueue_created_meeting_bot_dispatch(
+        self,
+        event_id: UUID,
+        conference_link: str | None,
+    ) -> dict[str, Any] | None:
+        """Queue bot dispatch after provider-backed meeting creation has committed."""
+        if not conference_link:
+            return None
+        try:
+            # CalendarInviteService has already persisted the event by this point.
+            # The worker re-reads the row so it can apply the same eligibility rules
+            # as sync/webhook paths instead of trusting the API request.
+            task_id = await send_deal_task_async(
+                "deal.send_meeting_recording",
+                kwargs={
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(event_id),
+                },
+                queue="deal",
+                routing_key="deal",
+            )
+        except Exception:
+            logger.error(
+                "Failed to dispatch meeting recording send task after meeting create",
+                extra={
+                    "event": "meetings_tab_create_meeting_recording_dispatch_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "calendar_event_id": str(event_id),
+                },
+                exc_info=True,
+            )
+            return {"status": "dispatch_failed"}
+        return {"task_id": task_id, "status": "queued"}
 
     async def set_link(
         self,
@@ -347,6 +386,8 @@ class MeetingsTabService:
             ),
         }
 
+        # Release the org session before calling Recall. Playback resolution can
+        # involve provider I/O and should not pin the request's DB connection.
         await self.session.rollback()
 
         if provider_session_id:
@@ -381,6 +422,7 @@ class MeetingsTabService:
         )
 
     def _meeting_rows_stmt(self):
+        """Build the user-owned meeting query shared by list/detail endpoints."""
         event_c = cast(Any, CalendarEvent).__table__.c
         state_c = cast(Any, CalendarEventUserState).__table__.c
         integration_c = cast(Any, KnowledgeIntegration).__table__.c
@@ -432,6 +474,8 @@ class MeetingsTabService:
                 ),
             )
             .where(
+                # The Meetings tab is current-user scoped: the event must belong to
+                # this org and to an active calendar integration created by this user.
                 event_c.organisation_id == self.organisation_id,
                 state_c.is_deleted.is_(False),
                 integration_c.organisation_id == self.organisation_id,
@@ -442,6 +486,7 @@ class MeetingsTabService:
         )
 
     async def _get_meeting_row(self, event_id: UUID):
+        """Load one meeting row through the current-user ownership query."""
         stmt = self._meeting_rows_stmt().where(col(CalendarEvent.event_id) == event_id).limit(1)
         result = await self.session.execute(stmt)
         row = result.first()
@@ -454,6 +499,7 @@ class MeetingsTabService:
         return cast(CalendarEvent, row[0])
 
     async def _load_deal_or_404(self, deal_id: UUID) -> CRMDeal:
+        """Load a deal through the org boundary before linking it to a meeting."""
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.deal_id) == deal_id,
@@ -465,6 +511,7 @@ class MeetingsTabService:
         return deal
 
     async def _mirror_deal_link(self, event_id: UUID, deal_id: UUID) -> None:
+        """Create or reactivate the active meeting-to-deal association."""
         stmt = select(CalendarEventDealAssociation).where(
             col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
             col(CalendarEventDealAssociation.event_id) == event_id,
@@ -627,6 +674,7 @@ class MeetingsTabService:
         linked_record: MeetingLinkedRecord | None,
         is_external: bool,
     ) -> MeetingBotStatus:
+        """Project provider session state into the compact UI bot status."""
         if recording and self._enum_value(recording.status) in {"IN_CALL", "JOINING"}:
             status = "recording_live"
         elif recording and recording.sent_to_provider_at is not None:

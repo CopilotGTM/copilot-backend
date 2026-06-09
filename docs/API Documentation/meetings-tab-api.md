@@ -350,7 +350,7 @@ Behavior:
 - Validates the deal belongs to the same organisation and is not deleted.
 - Creates or reactivates a `CalendarEventDealAssociation` for the selected deal.
 - Does not remove other existing deal associations; this keeps existing deal timelines and jobs intact.
-- Attempts safe auto-invite after save when the meeting is external and deal-linked.
+- Attempts safe bot dispatch after save when the synced calendar event has a join link.
 
 Frontend behavior:
 
@@ -449,6 +449,24 @@ Frontend behavior:
 - Use `transcript_artifact` for transcript availability metadata.
 
 If no playable Recall video artifact is available, backend returns `409`.
+
+## Meeting Summary Notification Deep Link
+
+When a deal-linked meeting summary is generated, backend notifications link to the existing deal
+briefing-room route:
+
+```text
+{APP_URL}/deals/{deal_id}/briefing-room?meeting={event_id}&summary=1
+```
+
+Notification content is link-only. Email, Slack, and Teams notifications must not include the
+generated summary body, transcript snippets, or deal notes.
+
+Email recipients are limited to active approved internal users in the same organisation whose email
+appears on the target calendar meeting attendee list. External attendees are not notified.
+
+The frontend auth flow must preserve both the path and query string through login, then select the
+`meeting` id and focus/open the summary UI when `summary=1` is present.
 
 ## Error Handling
 

@@ -1,4 +1,9 @@
-"""Public task exports for the deal worker.\n\nThis module is the import surface Celery loads for autodiscovery, and maps\nall deal-worker tasks to stable names for queue dispatch.\n"""
+"""Public task exports for the deal worker.
+
+This module is the import surface Celery loads for autodiscovery, and maps all
+deal-worker tasks to stable names for queue dispatch. Keep imports explicit so
+worker startup fails loudly if a task module stops importing.
+"""
 
 from .deal_asset_email_attachment_tasks import (
     extract_email_attachments_all_orgs_task,
@@ -27,15 +32,19 @@ from .deal_mappers import (
     trigger_timeline_sync_all_orgs_task,
 )
 
-# Meeting bot tasks are lightweight orchestration around deal-linked
-# calendar events, so they are exported alongside the other meeting workflows.
+# Meeting bot tasks are lightweight orchestration around calendar events,
+# so they are exported alongside the other meeting workflows.
 from .meeting_bot_tasks import (
     process_meeting_recording_webhook_task,
     send_meeting_recording_task,
     send_unsent_meeting_recordings_org_task,
     trigger_send_unsent_meeting_recordings_all_orgs_task,
 )
-from .meeting_insight_tasks import process_meeting_prep, process_meeting_summary
+from .meeting_insight_tasks import (
+    process_meeting_prep,
+    process_meeting_summary,
+    send_meeting_summary_ready_notification_task,
+)
 from .stale_job_cleanup_tasks import (
     cleanup_stale_deal_jobs_all_orgs_task,
     cleanup_stale_deal_jobs_org_task,
@@ -60,6 +69,7 @@ __all__ = [
     # Meeting insight tasks (meeting-level)
     "process_meeting_prep",
     "process_meeting_summary",
+    "send_meeting_summary_ready_notification_task",
     "process_meeting_recording_webhook_task",
     "send_meeting_recording_task",
     "send_unsent_meeting_recordings_org_task",

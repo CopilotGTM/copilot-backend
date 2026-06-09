@@ -113,6 +113,11 @@ from .messaging_models import (
     MessagingMessage,
     MessagingThreadSummary,
 )
+from .notification_delivery import (
+    NotificationDelivery,
+    NotificationDeliveryChannel,
+    NotificationDeliveryStatus,
+)
 from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
 from .risk_blocker_models import (
     DealRiskBlocker,
@@ -217,6 +222,9 @@ __all__ = [
     "MeetingRecordingStatus",
     "MeetingTranscriptStatus",
     "MeetingRecordingSession",
+    "NotificationDelivery",
+    "NotificationDeliveryChannel",
+    "NotificationDeliveryStatus",
     # Participant models
     "IntegrationParticipant",
     "IntegrationParticipantIdentity",

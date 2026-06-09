@@ -3,7 +3,7 @@
 These tasks cover three entry points:
 - matcher-driven sends for newly linked future meetings
 - webhook processing for provider state changes
-- an hourly fallback scan to catch events that were linked before dispatch ran
+- a nightly fallback scan to catch active integration events missed by fast paths
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def send_meeting_recording_task(
     organisation_id: str,
     calendar_event_id: str,
 ) -> dict[str, Any]:
-    """Send one deal-linked calendar event to the recording provider.
+    """Send one calendar event to the recording provider.
 
     This is the fast path for newly matched meetings, where the service decides if
     the row should be skipped, already-sent, or retried as sent.
@@ -202,7 +202,7 @@ def send_unsent_meeting_recordings_org_task(
     self: Task,
     organisation_id: str,
 ) -> dict[str, Any]:
-    """Fallback scan for upcoming deal-linked meetings not yet sent to Recall.
+    """Fallback scan for upcoming active integration meetings not yet sent to Recall.
 
     The scan is intentionally eventual: it is useful when a matcher event was missed,
     when previous sends failed before persistence, or when race conditions left a
@@ -211,7 +211,7 @@ def send_unsent_meeting_recordings_org_task(
     started_at = datetime.now(UTC).isoformat()
     lock_key = f"task_lock:send_unsent_meeting_recordings_org:{organisation_id}"
 
-    # Org-level locking keeps the hourly scan from overlapping with itself while
+    # Org-level locking keeps the nightly scan from overlapping with itself while
     # still allowing direct event sends to proceed independently.
     if not acquire_task_lock(lock_key, ttl=660):
         return {

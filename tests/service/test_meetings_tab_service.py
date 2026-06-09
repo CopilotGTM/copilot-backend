@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from src.api.schemas.meetings_tab_models import MeetingLinkedRecordType, MeetingsView
+from src.api.schemas.meetings_tab_models import (
+    MeetingBotStatus,
+    MeetingDetail,
+    MeetingLinkedRecordType,
+    MeetingsView,
+)
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus, GenerationStatus
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingStatus,
     MeetingTranscriptStatus,
 )
+from src.service.calendar_invites.models import CalendarInviteAttendee
 from src.service.meetings_tab_service import MeetingsTabService
 
 
@@ -326,3 +333,78 @@ async def test_deal_recording_detail_returns_deal_summary(monkeypatch) -> None:
     assert detail.playback_url == "https://example.com/video.mp4"
     assert detail.summary == {"summary": "deal-only"}
     assert detail.action_items == [{"title": "deal action"}]
+
+
+@pytest.mark.asyncio
+async def test_create_meeting_with_join_link_enqueues_single_event_bot_dispatch(monkeypatch):
+    """New non-deal meetings with join links should trigger the idempotent bot task."""
+    service = _service()
+    event_id = uuid4()
+    provider_event_id = "provider-event-123"
+    conference_link = "https://meet.google.com/abc-defg-hij"
+    captured_invite = {}
+
+    class _FakeCalendarInviteService:
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        async def create_invite(self, invite):
+            captured_invite["invite"] = invite
+            return SimpleNamespace(
+                event_id=event_id,
+                provider_event_id=provider_event_id,
+                conference_link=conference_link,
+            )
+
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.CalendarInviteService",
+        _FakeCalendarInviteService,
+    )
+    detail = MeetingDetail(
+        event_id=event_id,
+        title="Customer sync",
+        start_at=datetime.now(UTC) + timedelta(hours=2),
+        end_at=datetime.now(UTC) + timedelta(hours=3),
+        platform="google",
+        conference_link=conference_link,
+        status="confirmed",
+        bot=MeetingBotStatus(status="invite_available"),
+    )
+
+    async def _get_meeting_detail(_event_id):
+        return detail
+
+    monkeypatch.setattr(service, "get_meeting_detail", _get_meeting_detail)
+    send_task = AsyncMock(return_value="task-123")
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.send_deal_task_async",
+        send_task,
+    )
+
+    result = await service.create_meeting(
+        SimpleNamespace(
+            title="Customer sync",
+            body=None,
+            location=None,
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            end_at=datetime.now(UTC) + timedelta(hours=3),
+            timezone="UTC",
+            attendees=[CalendarInviteAttendee(email="buyer@example.com")],
+            link=None,
+            sender_email=None,
+            idempotency_key=None,
+        )
+    )
+
+    assert captured_invite["invite"].deal_id is None
+    assert result.event_id == event_id
+    assert result.bot_dispatch == {"task_id": "task-123", "status": "queued"}
+    send_task.assert_awaited_once_with(
+        "deal.send_meeting_recording",
+        kwargs={
+            "organisation_id": str(service.organisation_id),
+            "calendar_event_id": str(event_id),
+        },
+        queue="deal",
+        routing_key="deal",
+    )

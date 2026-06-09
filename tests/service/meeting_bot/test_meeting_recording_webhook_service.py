@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
@@ -22,6 +23,45 @@ def _make_service(organisation_id):
     svc.organisation_id = organisation_id
     svc.session_service = AsyncMock()
     return svc
+
+
+class _ScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+
+class _ExecuteResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _ScalarResult(self._rows)
+
+
+class _SummaryJobSession:
+    def __init__(self, execute_rows):
+        self._execute_rows = list(execute_rows)
+        self.added = []
+        self.commits = 0
+
+    async def execute(self, _stmt):
+        rows = self._execute_rows.pop(0) if self._execute_rows else []
+        return _ExecuteResult(rows)
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        self.commits += 1
 
 
 @pytest.mark.asyncio
@@ -142,6 +182,14 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
         )
     )
     monkeypatch.setattr(service, "_fetch_transcript_artifact", fetch_mock)
+    materialize_mock = AsyncMock(
+        return_value={
+            "transcript_materialized": True,
+            "summary_jobs_created": 1,
+            "summary_jobs_skipped": 0,
+        }
+    )
+    service._materialize_recall_transcript_and_enqueue_summaries = materialize_mock
 
     payload = {
         "event": "transcript.done",
@@ -159,6 +207,10 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
     assert kwargs["transcript_status"] == MeetingTranscriptStatus.READY
     assert kwargs["transcript_ready_at"] == datetime(2026, 4, 23, 12, 30, tzinfo=UTC)
     assert kwargs["provider_payload"]["transcript_artifact"]["transcript_id"] == "transcript_1"
+    materialize_mock.assert_awaited_once_with(updated.calendar_event_id)
+    assert result["transcript_materialized"] is True
+    assert result["summary_jobs_created"] == 1
+    assert result["summary_jobs_skipped"] == 0
 
 
 @pytest.mark.asyncio
@@ -310,3 +362,41 @@ async def test_extract_organisation_id_reads_bot_metadata() -> None:
     )
 
     assert result == organisation_id
+
+
+@pytest.mark.asyncio
+async def test_create_summary_jobs_creates_non_deal_job_when_no_active_association(
+    monkeypatch,
+) -> None:
+    """Recall transcripts should still generate a meeting summary when no deal is linked."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    service = _make_service(organisation_id)
+    session = _SummaryJobSession(
+        [
+            [],  # active deal associations
+            [],  # active non-deal summary jobs
+        ]
+    )
+
+    async def fake_acquire_org_session(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(
+        "src.service.meeting_bot.webhook_service.acquire_org_async_session",
+        fake_acquire_org_session,
+    )
+
+    result = await service._create_meeting_summary_jobs(event_id)
+
+    assert result["created"] == 1
+    assert result["skipped"] == 0
+    assert len(result["job_ids_to_enqueue"]) == 1
+    assert len(session.added) == 1
+    job = session.added[0]
+    assert job.deal_id is None
+    assert job.event_id == event_id
+    assert job.job_type == DealJobType.MEETING_SUMMARY
+    assert job.status == JobStatus.PENDING
+    assert job.job_metadata["source"] == "recall_webhook"
+    assert job.job_metadata["summary_scope"] == "meeting"

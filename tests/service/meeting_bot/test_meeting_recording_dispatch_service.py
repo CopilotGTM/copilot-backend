@@ -9,9 +9,13 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
 from src.service.integrations.meeting_recording.providers import RecallProviderError
-from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
+from src.service.meeting_bot.dispatch_service import (
+    ACTIVE_CALENDAR_INTEGRATION_TYPES,
+    MeetingRecordingDispatchService,
+)
 
 
 class _FakeScalarResult:
@@ -63,6 +67,15 @@ def _yield_session(session):
 
 class TestMeetingRecordingDispatchService:
     """Regression coverage for meeting recording dispatch decisions."""
+
+    def test_active_calendar_integration_types_include_parent_and_capability_rows(self) -> None:
+        """Calendar sync can write user-state rows through either integration shape."""
+        assert set(ACTIVE_CALENDAR_INTEGRATION_TYPES) == {
+            IntegrationType.GOOGLE,
+            IntegrationType.MICROSOFT,
+            IntegrationType.GOOGLE_CALENDAR,
+            IntegrationType.OUTLOOK_CALENDAR,
+        }
 
     @pytest.mark.asyncio
     async def test_dispatch_event_sends_pending_session_to_provider(
@@ -143,6 +156,155 @@ class TestMeetingRecordingDispatchService:
             "calendar_event_id": str(event_id),
         }
         service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_cancels_provider_bot_for_cancelled_calendar_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Webhook cancellation should reconcile the scheduled Recall bot."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        session_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link=None,
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="cancelled",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._has_active_calendar_integration = AsyncMock(return_value=False)  # noqa: SLF001
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_by_event=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    provider_session_id="bot_123",
+                    provider_payload={},
+                    status=MeetingRecordingStatus.SENT,
+                )
+            ),
+            mark_cancelled=AsyncMock(),
+        )
+        provider = SimpleNamespace(cancel_session=AsyncMock())
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "cancelled",
+            "calendar_event_id": str(event_id),
+        }
+        service._has_active_calendar_integration.assert_not_awaited()  # noqa: SLF001
+        provider.cancel_session.assert_awaited_once_with("bot_123")
+        service._session_service.mark_cancelled.assert_awaited_once_with(  # noqa: SLF001
+            session_id,
+            status_message="Recording bot cancelled because the calendar event was cancelled",
+            provider_payload={
+                "last_cancel_error": None,
+                "cancelled_provider_session_id": "bot_123",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_requires_active_calendar_integration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale direct task cannot send a bot after integration ownership is gone."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._has_active_calendar_integration = AsyncMock(return_value=False)  # noqa: SLF001
+        session_id = uuid4()
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    dedupe_key="meeting-recording-key",
+                    sent_to_provider_at=None,
+                )
+            ),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        provider = SimpleNamespace(
+            create_session=AsyncMock(return_value={"id": "bot_123", "status": "scheduled"})
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "skipped",
+            "reason": "calendar_integration_not_active",
+            "calendar_event_id": str(event_id),
+        }
+        service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_dispatch_event_rechecks_active_integration_before_provider_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Integration deactivation during dispatch must stop before provider I/O."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._has_active_calendar_integration = AsyncMock(  # noqa: SLF001
+            side_effect=[True, False]
+        )
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    dedupe_key="meeting-recording-key",
+                    status=MeetingRecordingStatus.PENDING_SEND,
+                    sent_to_provider_at=None,
+                )
+            ),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        service._build_provider = AsyncMock()  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "skipped",
+            "reason": "calendar_integration_not_active",
+            "calendar_event_id": str(event_id),
+        }
+        assert service._has_active_calendar_integration.await_count == 2  # noqa: SLF001
+        service._session_service.mark_send_queued.assert_not_awaited()  # noqa: SLF001
+        service._build_provider.assert_not_awaited()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dispatch_event_skips_cancelled_recording_session(
@@ -1027,7 +1189,11 @@ class TestMeetingRecordingDispatchService:
             return result
 
         monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
-        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=3))  # noqa: SLF001
+        monkeypatch.setattr(
+            service,
+            "_count_upcoming_integration_meetings",
+            AsyncMock(return_value=3),
+        )  # noqa: SLF001
         monkeypatch.setattr(service, "dispatch_event", _fake_dispatch_event)
 
         result = await service.dispatch_unsent_upcoming()
@@ -1058,7 +1224,11 @@ class TestMeetingRecordingDispatchService:
             raise RuntimeError("provider temporary failure")
 
         monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
-        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=1))  # noqa: SLF001
+        monkeypatch.setattr(
+            service,
+            "_count_upcoming_integration_meetings",
+            AsyncMock(return_value=1),
+        )  # noqa: SLF001
         monkeypatch.setattr(service, "dispatch_event", _fake_dispatch_event)
 
         result = await service.dispatch_unsent_upcoming()
@@ -1085,7 +1255,11 @@ class TestMeetingRecordingDispatchService:
             return []
 
         monkeypatch.setattr(service, "_list_unsent_upcoming_event_ids", _fake_list_event_ids)  # noqa: SLF001
-        monkeypatch.setattr(service, "_count_upcoming_deal_meetings", AsyncMock(return_value=4))  # noqa: SLF001
+        monkeypatch.setattr(
+            service,
+            "_count_upcoming_integration_meetings",
+            AsyncMock(return_value=4),
+        )  # noqa: SLF001
         monkeypatch.setattr(service, "dispatch_event", AsyncMock())
 
         result = await service.dispatch_unsent_upcoming()
@@ -1139,3 +1313,27 @@ class TestMeetingRecordingDispatchService:
         await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
 
         assert "meeting_recording_sessions.status != " in query_session.sql
+
+    @pytest.mark.asyncio
+    async def test_unsent_upcoming_query_uses_active_calendar_integration_ownership(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallback candidates come from active calendar integrations, not deal links."""
+        organisation_id = uuid4()
+        query_session = _CapturingQuerySession()
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(query_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+
+        await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
+
+        assert "calendar_event_user_states" in query_session.sql
+        assert "knowledge_integrations" in query_session.sql
+        assert "calendar_event_deal_associations" not in query_session.sql
+        assert "calendar_event_user_states.is_deleted IS false" in query_session.sql
+        assert "knowledge_integrations.is_active IS true" in query_session.sql
+        assert "knowledge_integrations.integration_type IN" in query_session.sql
+        assert "calendar_events.start_at <" in query_session.sql

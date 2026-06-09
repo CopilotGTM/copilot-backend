@@ -720,6 +720,43 @@ class TestFetchTranscriptForEvent:
         svc.find_integrations_for_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_materialize_recall_transcript_uses_recall_only(self) -> None:
+        """Webhook materialization should not fall back to native calendar integrations."""
+        svc = _make_service()
+        event = FakeCalendarEvent(organisation_id=svc.organisation_id)
+        existing = FakeMeeting(calendar_event_id=event.event_id)
+        materialized = FakeMeeting(calendar_event_id=event.event_id, status=MeetingStatus.READY)
+
+        svc._get_event = AsyncMock(return_value=event)  # type: ignore[method-assign]
+        svc.get_meeting_by_event = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+        svc._fetch_recall_transcript = AsyncMock(  # type: ignore[method-assign]
+            return_value=TranscriptFetchResult(success=True, meeting=materialized),
+        )
+        svc.find_integrations_for_event = AsyncMock()  # type: ignore[method-assign]
+
+        result = await svc.materialize_recall_transcript(event.event_id)
+
+        assert result.success is True
+        assert result.meeting == materialized
+        svc._fetch_recall_transcript.assert_awaited_once_with(event, existing)
+        svc.find_integrations_for_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_materialize_recall_transcript_missing_event_does_not_retry(self) -> None:
+        """Missing local event is permanent; webhook retries cannot repair it."""
+        svc = _make_service()
+        event_id = uuid4()
+        svc._get_event = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        svc._fetch_recall_transcript = AsyncMock()  # type: ignore[method-assign]
+
+        result = await svc.materialize_recall_transcript(event_id)
+
+        assert result.success is False
+        assert result.error == "Calendar event not found"
+        assert result.should_retry is False
+        svc._fetch_recall_transcript.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_failed_recall_fetch_preserves_created_meeting_for_status_update(self) -> None:
         """Recall-only failures update the created Meeting instead of inserting again."""
         svc = _make_service()

@@ -28,6 +28,23 @@ def test_get_scheduled_job_returns_email_attachment_extraction_definition() -> N
     assert job.kwargs == {}
 
 
+def test_get_scheduled_job_returns_nightly_meeting_bot_fallback_definition() -> None:
+    """Meeting bot fallback runs nightly in UTC, not hourly."""
+    job = get_scheduled_job("meeting-bot-fallback")
+
+    assert job.name == "meeting-bot-fallback"
+    assert job.task_name == "deal.trigger_send_unsent_meeting_recordings_all_orgs"
+    assert job.schedule == "0 20 * * *"
+    assert job.queue == "deal"
+    assert job.kwargs == {}
+
+
+def test_transcript_fetch_pipeline_schedule_is_disabled() -> None:
+    """Recall webhooks now materialize transcripts directly; polling stays disabled."""
+    with pytest.raises(KeyError):
+        get_scheduled_job("transcript-fetch-pipeline")
+
+
 def test_get_scheduled_job_rejects_unknown_job_name() -> None:
     """Unknown job names must fail fast with a KeyError."""
     with pytest.raises(KeyError):

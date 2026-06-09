@@ -6,31 +6,33 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.api.routers.integrations.microsoft_webhook_routes import (
-    get_microsoft_webhook_ingestion_service,
+    get_microsoft_webhook_request_service,
     router,
 )
 from src.service.integrations.webhooks.microsoft.metadata import MicrosoftSubscriptionKind
 
 
-class FakeMicrosoftWebhookIngestionService:
+class FakeMicrosoftWebhookRequestService:
     def __init__(self) -> None:
-        self.ingest = AsyncMock()
-        self.ingest_lifecycle = AsyncMock()
+        self.handle_webhook = AsyncMock()
+        self.handle_lifecycle = AsyncMock()
 
 
-def _client(service: FakeMicrosoftWebhookIngestionService) -> TestClient:
+def _client(service: FakeMicrosoftWebhookRequestService | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix="/users/integrations")
 
-    async def _override_service() -> FakeMicrosoftWebhookIngestionService:
-        return service
+    if service is not None:
 
-    app.dependency_overrides[get_microsoft_webhook_ingestion_service] = _override_service
+        async def _override_service() -> FakeMicrosoftWebhookRequestService:
+            return service
+
+        app.dependency_overrides[get_microsoft_webhook_request_service] = _override_service
     return TestClient(app)
 
 
 def test_microsoft_webhook_validation_token_returns_plain_text() -> None:
-    service = FakeMicrosoftWebhookIngestionService()
+    service = FakeMicrosoftWebhookRequestService()
     client = _client(service)
 
     response = client.post("/users/integrations/microsoft/webhook?validationToken=abc%20123")
@@ -38,22 +40,22 @@ def test_microsoft_webhook_validation_token_returns_plain_text() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     assert response.text == "abc 123"
-    service.ingest.assert_not_awaited()
+    service.handle_webhook.assert_not_awaited()
 
 
 def test_microsoft_webhook_validation_token_is_not_double_decoded() -> None:
-    service = FakeMicrosoftWebhookIngestionService()
+    service = FakeMicrosoftWebhookRequestService()
     client = _client(service)
 
     response = client.post("/users/integrations/microsoft/webhook?validationToken=abc%2520def")
 
     assert response.status_code == 200
     assert response.text == "abc%20def"
-    service.ingest.assert_not_awaited()
+    service.handle_webhook.assert_not_awaited()
 
 
-def test_microsoft_webhook_calls_ingestion_service_and_returns_accepted() -> None:
-    service = FakeMicrosoftWebhookIngestionService()
+def test_microsoft_webhook_calls_request_service_and_returns_accepted() -> None:
+    service = FakeMicrosoftWebhookRequestService()
     client = _client(service)
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -75,17 +77,16 @@ def test_microsoft_webhook_calls_ingestion_service_and_returns_accepted() -> Non
     )
 
     assert response.status_code == 202
-    service.ingest.assert_awaited_once_with(
-        organisation_id=organisation_id,
-        integration_id=integration_id,
-        kind=MicrosoftSubscriptionKind.EMAIL,
-        notification_payloads=[notification],
-    )
+    service.handle_webhook.assert_awaited_once()
+    call_kwargs = service.handle_webhook.await_args.kwargs
+    assert call_kwargs["organisation_id"] == organisation_id
+    assert call_kwargs["integration_id"] == integration_id
+    assert call_kwargs["kind"] == MicrosoftSubscriptionKind.EMAIL.value
+    assert call_kwargs["request"].url.path == "/users/integrations/microsoft/webhook"
 
 
 def test_microsoft_webhook_rejects_invalid_utf8_body() -> None:
-    service = FakeMicrosoftWebhookIngestionService()
-    client = _client(service)
+    client = _client()
 
     response = client.post(
         "/users/integrations/microsoft/webhook",
@@ -99,11 +100,10 @@ def test_microsoft_webhook_rejects_invalid_utf8_body() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid Microsoft webhook JSON payload"
-    service.ingest.assert_not_awaited()
 
 
-def test_microsoft_webhook_lifecycle_calls_ingestion_service_and_returns_accepted() -> None:
-    service = FakeMicrosoftWebhookIngestionService()
+def test_microsoft_webhook_lifecycle_calls_request_service_and_returns_accepted() -> None:
+    service = FakeMicrosoftWebhookRequestService()
     client = _client(service)
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -125,9 +125,9 @@ def test_microsoft_webhook_lifecycle_calls_ingestion_service_and_returns_accepte
     )
 
     assert response.status_code == 202
-    service.ingest_lifecycle.assert_awaited_once_with(
-        organisation_id=organisation_id,
-        integration_id=integration_id,
-        kind=MicrosoftSubscriptionKind.EMAIL,
-        notification_payloads=[notification],
-    )
+    service.handle_lifecycle.assert_awaited_once()
+    call_kwargs = service.handle_lifecycle.await_args.kwargs
+    assert call_kwargs["organisation_id"] == organisation_id
+    assert call_kwargs["integration_id"] == integration_id
+    assert call_kwargs["kind"] == MicrosoftSubscriptionKind.EMAIL.value
+    assert call_kwargs["request"].url.path == "/users/integrations/microsoft/webhook/lifecycle"

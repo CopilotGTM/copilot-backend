@@ -99,6 +99,7 @@ def test_calendar_and_email_polling_cronjobs_are_not_rendered() -> None:
 
     assert "copilot-backend-sync-calendar-events" not in cronjob_names
     assert "copilot-backend-sync-email-all-orgs" not in cronjob_names
+    assert "copilot-backend-transcript-fetch-pipeline" not in cronjob_names
 
 
 def test_microsoft_graph_subscription_renewal_cronjob_renders_dispatch_contract() -> None:
@@ -191,6 +192,11 @@ def test_deal_cronjobs_render_with_production_job_hardening() -> None:
         if doc["metadata"]["name"] == "copilot-backend-email-attachment-extraction"
     )
     assert email_attachments["spec"]["schedule"] == "20,50 * * * *"
+
+    meeting_bot_fallback = next(
+        doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-meeting-bot-fallback"
+    )
+    assert meeting_bot_fallback["spec"]["schedule"] == "0 20 * * *"
 
 
 def test_knowledge_cronjobs_render_with_production_job_hardening() -> None:

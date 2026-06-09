@@ -1,6 +1,6 @@
 """Tests for calendar sync service incremental sync functionality."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -401,6 +401,162 @@ class TestCalendarIncrementalBatchWrites:
         }
         user_states = service._batch_upsert_user_states.await_args.args[0]
         assert len(user_states) == 4
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_enqueues_changed_future_meeting_bot_after_commit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Changed future events with join links enqueue the idempotent single-event task."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        commit_count = 0
+
+        async def _commit() -> None:
+            nonlocal commit_count
+            commit_count += 1
+
+        session = AsyncMock()
+        session.commit = AsyncMock(side_effect=_commit)
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        upserted = _event_row("ical-created")
+        upserted.start_at = datetime.now(UTC) + timedelta(hours=2)
+        upserted.conference_link = "https://meet.google.com/abc-defg-hij"
+        service._batch_upsert_events = AsyncMock(return_value={("ical-created", ""): upserted})
+        send_task = AsyncMock()
+
+        async def _send_task(*args, **kwargs):
+            assert commit_count >= 1
+            return await send_task(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            _send_task,
+        )
+
+        event_data = _google_event(provider_id="user-created", external_id="ical-created")
+        event_data["conferenceData"] = {
+            "entryPoints": [
+                {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
+            ]
+        }
+
+        await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[event_data],
+        )
+
+        send_task.assert_awaited_once_with(
+            "deal.send_meeting_recording",
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "calendar_event_id": str(upserted.event_id),
+            },
+            queue="deal",
+            routing_key="deal",
+        )
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_enqueues_cancelled_future_meeting_bot_after_commit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelled future events enqueue bot reconciliation so scheduled bots are removed."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        commit_count = 0
+
+        async def _commit() -> None:
+            nonlocal commit_count
+            commit_count += 1
+
+        session = AsyncMock()
+        session.commit = AsyncMock(side_effect=_commit)
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        existing = _event_row("ical-cancelled")
+        existing.start_at = datetime.now(UTC) + timedelta(hours=2)
+        existing.conference_link = None
+        service._load_existing_events_by_identity = AsyncMock(
+            return_value={("ical-cancelled", ""): existing}
+        )
+        service._is_google_cancelled_exception = MagicMock(return_value=True)
+        service._batch_upsert_events = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        send_task = AsyncMock()
+
+        async def _send_task(*args, **kwargs):
+            assert commit_count >= 1
+            return await send_task(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            _send_task,
+        )
+
+        await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[
+                _google_event(
+                    provider_id="user-cancelled",
+                    external_id="ical-cancelled",
+                    status="cancelled",
+                )
+            ],
+        )
+
+        send_task.assert_awaited_once_with(
+            "deal.send_meeting_recording",
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "calendar_event_id": str(existing.event_id),
+            },
+            queue="deal",
+            routing_key="deal",
+        )
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_does_not_enqueue_ineligible_meeting_bot_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Events without join links are left for normal sync only."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        upserted = _event_row("ical-created")
+        upserted.start_at = datetime.now(UTC) + timedelta(hours=2)
+        upserted.conference_link = None
+        service._batch_upsert_events = AsyncMock(return_value={("ical-created", ""): upserted})
+        send_task = AsyncMock()
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            send_task,
+        )
+
+        await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[_google_event(provider_id="user-created", external_id="ical-created")],
+        )
+
+        send_task.assert_not_awaited()
 
 
 def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
