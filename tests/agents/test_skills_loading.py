@@ -573,7 +573,7 @@ def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> 
     instructions = skill.instructions
     assert "Meeting with Saksham" in instructions
     assert "Do not ask for a title first" in instructions
-    assert "If the attendee is only an email address, use `Meeting`" in instructions
+    assert "If the attendee is only an email address and no topic exists" in instructions
 
 
 def test_email_meeting_workflow_skill_requires_final_confirmation_after_details() -> None:
@@ -605,7 +605,7 @@ def test_email_meeting_workflow_skill_forbids_email_based_titles_and_yes_sender(
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
     assert "Never put an email address in the title" in instructions
-    assert "If no topic exists, use `Meeting`" in instructions
+    assert 'do not invent "Meeting with {email}"' in instructions
     assert '"Yes" does not answer a sender mailbox question' in instructions
 
 

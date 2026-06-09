@@ -171,9 +171,72 @@ async def test_send_calendar_invite_replaces_email_based_default_title_before_co
         sender_email="nikhil@copilotgtm.com",
     )
 
-    assert result["status"] == "confirmation_required"
-    assert result["confirmation_payload"]["title"] == "Meeting"
-    assert result["confirmation_payload"]["attendees"][0]["email"] == ("nikhilsinghal005@gmail.com")
+    assert result["status"] == "needs_clarification"
+    assert result["code"] == "calendar_invite_title_required"
+    assert result["missing_fields"] == ["title"]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_bundles_missing_title_and_sender_for_email_attendee(
+    monkeypatch,
+) -> None:
+    """Email-only invites need a user-provided title before final confirmation."""
+    session = MagicMock()
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        title="Meeting",
+        start_time="Friday 5 PM",
+        end_time="Friday 6 PM",
+        attendees=["nikhilsinghal005@gmail.com"],
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["code"] == "calendar_invite_details_required"
+    assert result["missing_fields"] == ["title", "sender_email"]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_requires_sender_before_confirmation(monkeypatch) -> None:
+    """Missing sender should be a clarification blocker, not a final confirmation card."""
+    session = MagicMock()
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        title="Customer follow-up",
+        start_time="Friday 5 PM",
+        end_time="Friday 6 PM",
+        attendees=["nikhilsinghal005@gmail.com"],
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["code"] == "calendar_sender_email_required"
+    assert result["missing_fields"] == ["sender_email"]
+    assert "confirmation_payload" not in result
     service.assert_not_called()
 
 
