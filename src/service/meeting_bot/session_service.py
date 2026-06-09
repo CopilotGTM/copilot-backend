@@ -288,6 +288,75 @@ class MeetingRecordingSessionService:
             return record
         return None
 
+    async def reset_for_resend_if_current(
+        self,
+        session_id: UUID,
+        *,
+        expected_provider_session_id: str | None,
+        expected_meeting_url: str,
+        expected_join_at: datetime,
+        expected_sent_to_provider_at: datetime,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> MeetingRecordingSession | None:
+        """Reset only if another worker has not already replaced the provider row."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            now = datetime.now(UTC)
+            provider_condition = (
+                col(MeetingRecordingSession.provider_session_id).is_(None)
+                if expected_provider_session_id is None
+                else col(MeetingRecordingSession.provider_session_id)
+                == expected_provider_session_id
+            )
+            stmt = (
+                update(MeetingRecordingSession)
+                .where(
+                    col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+                    col(MeetingRecordingSession.session_id) == session_id,
+                    provider_condition,
+                    col(MeetingRecordingSession.meeting_url) == expected_meeting_url,
+                    col(MeetingRecordingSession.join_at) == expected_join_at,
+                    col(MeetingRecordingSession.sent_to_provider_at)
+                    == expected_sent_to_provider_at,
+                    col(MeetingRecordingSession.status) == MeetingRecordingStatus.SENT,
+                )
+                .values(
+                    meeting_url=meeting_url,
+                    join_at=join_at,
+                    status=MeetingRecordingStatus.PENDING_SEND,
+                    status_message="Session reset for reschedule",
+                    sent_to_provider_at=None,
+                    provider_session_id=None,
+                    provider_status=None,
+                    provider_payload={},
+                    last_webhook_at=None,
+                    transcript_ready_at=None,
+                    transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
+                    updated_at=now,
+                )
+                .returning(col(MeetingRecordingSession.session_id))
+            )
+            result = await session.execute(stmt)
+            reset_session_id = result.scalar_one_or_none()
+            await session.commit()
+            record = await self._get_by_session_id(session, session_id)
+            if record is not None:
+                record.__dict__["_reset_claimed"] = reset_session_id is not None
+                if reset_session_id is not None:
+                    record.meeting_url = meeting_url
+                    record.join_at = join_at
+                    record.status = MeetingRecordingStatus.PENDING_SEND
+                    record.status_message = "Session reset for reschedule"
+                    record.sent_to_provider_at = None
+                    record.provider_session_id = None
+                    record.provider_status = None
+                    record.provider_payload = {}
+                    record.last_webhook_at = None
+                    record.transcript_ready_at = None
+                    record.transcript_status = MeetingTranscriptStatus.NOT_REQUESTED
+            return record
+        return None
+
     async def get_by_provider_session_id(
         self,
         provider_session_id: str,

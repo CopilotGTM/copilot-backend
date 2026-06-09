@@ -255,6 +255,117 @@ class TestResetForResend:
         assert result.transcript_ready_at is None
         assert result.transcript_status == MeetingTranscriptStatus.NOT_REQUESTED
 
+    @pytest.mark.asyncio
+    async def test_reset_for_resend_if_current_resets_matching_provider_state(
+        self, monkeypatch
+    ) -> None:
+        """A resend reset claims only the provider row the caller inspected."""
+        service = _make_service()
+        original_join_at = datetime.now(UTC) + timedelta(minutes=1)
+        sent_at = datetime.now(UTC)
+        existing = MeetingRecordingSession(
+            organisation_id=service.organisation_id,
+            calendar_event_id=uuid4(),
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="key",
+            meeting_url="https://old.example/join",
+            join_at=original_join_at,
+            status=MeetingRecordingStatus.SENT,
+            transcript_status=MeetingTranscriptStatus.PENDING,
+            sent_to_provider_at=sent_at,
+            provider_session_id="bot_old",
+            provider_status="scheduled",
+            provider_payload={"id": "bot_old"},
+        )
+        update_result = MagicMock()
+        update_result.scalar_one_or_none.return_value = existing.session_id
+        select_result = MagicMock()
+        select_result.scalar_one_or_none.return_value = existing
+        mock_session = MagicMock()
+        mock_session.execute = AsyncMock(side_effect=[update_result, select_result])
+        mock_session.commit = AsyncMock()
+
+        async def fake_gen(_organisation_id):
+            yield mock_session
+
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        new_join_at = datetime.now(UTC) + timedelta(minutes=10)
+        result = await service.reset_for_resend_if_current(
+            existing.session_id,
+            expected_provider_session_id="bot_old",
+            expected_meeting_url="https://old.example/join",
+            expected_join_at=original_join_at,
+            expected_sent_to_provider_at=sent_at,
+            meeting_url="https://new.example/join",
+            join_at=new_join_at,
+        )
+
+        assert result is existing
+        assert result.__dict__["_reset_claimed"] is True
+        assert result.meeting_url == "https://new.example/join"
+        assert result.join_at == new_join_at
+        assert result.status == MeetingRecordingStatus.PENDING_SEND
+        assert result.provider_session_id is None
+        assert result.sent_to_provider_at is None
+        assert result.transcript_status == MeetingTranscriptStatus.NOT_REQUESTED
+
+    @pytest.mark.asyncio
+    async def test_reset_for_resend_if_current_does_not_clear_stale_provider_state(
+        self, monkeypatch
+    ) -> None:
+        """A stale worker sees the current row but does not clear newer provider data."""
+        service = _make_service()
+        current_join_at = datetime.now(UTC) + timedelta(minutes=10)
+        existing = MeetingRecordingSession(
+            organisation_id=service.organisation_id,
+            calendar_event_id=uuid4(),
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="key",
+            meeting_url="https://current.example/join",
+            join_at=current_join_at,
+            status=MeetingRecordingStatus.SENT,
+            transcript_status=MeetingTranscriptStatus.PENDING,
+            sent_to_provider_at=datetime.now(UTC),
+            provider_session_id="bot_current",
+            provider_status="scheduled",
+            provider_payload={"id": "bot_current"},
+        )
+        update_result = MagicMock()
+        update_result.scalar_one_or_none.return_value = None
+        select_result = MagicMock()
+        select_result.scalar_one_or_none.return_value = existing
+        mock_session = MagicMock()
+        mock_session.execute = AsyncMock(side_effect=[update_result, select_result])
+        mock_session.commit = AsyncMock()
+
+        async def fake_gen(_organisation_id):
+            yield mock_session
+
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        result = await service.reset_for_resend_if_current(
+            existing.session_id,
+            expected_provider_session_id="bot_old",
+            expected_meeting_url="https://old.example/join",
+            expected_join_at=current_join_at - timedelta(minutes=5),
+            expected_sent_to_provider_at=datetime.now(UTC) - timedelta(minutes=1),
+            meeting_url="https://new.example/join",
+            join_at=current_join_at + timedelta(minutes=5),
+        )
+
+        assert result is existing
+        assert result.__dict__["_reset_claimed"] is False
+        assert result.meeting_url == "https://current.example/join"
+        assert result.provider_session_id == "bot_current"
+        assert result.sent_to_provider_at is not None
+
 
 class TestStatusTransitions:
     """Coverage for provider lifecycle status transitions."""
