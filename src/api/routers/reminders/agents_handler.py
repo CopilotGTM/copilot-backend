@@ -12,9 +12,6 @@ from src.api.dependencies.organisation_dependencies import UserIDs, get_current_
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.reminders.reminders_handler import (
     _UNEXPECTED_ERR_MSG,
-    _delivery_context_is_ready,
-    _resolve_delivery_context,
-    get_available_channels,
     get_reminder_service,
 )
 from src.api.schemas.base_models import GenericResponse
@@ -22,6 +19,7 @@ from src.api.schemas.reminder_models import (
     AgentCreateRequest,
     AgentUpdateRequest,
     AvailableChannelsResponse,
+    DeliveryChannelInfo,
     ReminderDetail,
     ReminderHistoryQueryParams,
     ReminderHistoryResponse,
@@ -31,6 +29,7 @@ from src.api.schemas.reminder_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.reminder_models import ReminderStatus, ReminderType
 from src.infra.utils.logger import get_logger
+from src.service.channels import OutboundChannelService
 from src.service.reminders.reminder_service import (
     InvalidStatusTransitionError,
     ReminderNotFoundError,
@@ -58,11 +57,34 @@ async def get_available_agent_channels(
     user: UserIDs = Depends(get_current_user),
     master_session: AsyncSession = Depends(get_master_async_session),
 ) -> GenericResponse[AvailableChannelsResponse]:
-    return await get_available_channels(
-        response=response,
-        user=user,
-        master_session=master_session,
-    )
+    try:
+        channel_infos = await OutboundChannelService().list_user_channels(
+            master_session,
+            user.organisation_id,
+            user.user_id,
+        )
+        channels = [
+            DeliveryChannelInfo(
+                channel=item.channel,
+                available=item.available,
+                label=item.label,
+                icon_url=item.icon_url,
+                mapping_id=item.mapping_id,
+            )
+            for item in channel_infos
+        ]
+
+        return Response.success_response(
+            message="Available scheduled-agent channels retrieved successfully",
+            data=AvailableChannelsResponse(channels=channels),
+        )
+    except Exception:
+        logger.exception("Failed to get scheduled-agent channels")
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
 
 
 @agents_router.post(
@@ -80,12 +102,13 @@ async def create_agent(
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
-        delivery_context = await _resolve_delivery_context(
-            master_session, user.organisation_id, user.user_id, body.delivery_channel
+        delivery_target = await OutboundChannelService().resolve_user_channel(
+            master_session,
+            user.organisation_id,
+            user.user_id,
+            body.delivery_channel,
         )
-        if delivery_context is None or not _delivery_context_is_ready(
-            body.delivery_channel, delivery_context
-        ):
+        if delivery_target is None:
             return Response.error_response(
                 message=(
                     f"Channel '{body.delivery_channel}' is not set up. "
@@ -106,7 +129,7 @@ async def create_agent(
             recurrence=body.recurrence,
             recurrence_end_at=body.recurrence_end_at,
             delivery_channel=body.delivery_channel,
-            delivery_context=delivery_context,
+            delivery_context=delivery_target.delivery_context,
         )
 
         return Response.created_response(
@@ -292,12 +315,13 @@ async def update_agent(
             )
 
         if "delivery_channel" in updates:
-            delivery_context = await _resolve_delivery_context(
-                master_session, user.organisation_id, user.user_id, updates["delivery_channel"]
+            delivery_target = await OutboundChannelService().resolve_user_channel(
+                master_session,
+                user.organisation_id,
+                user.user_id,
+                updates["delivery_channel"],
             )
-            if delivery_context is None or not _delivery_context_is_ready(
-                updates["delivery_channel"], delivery_context
-            ):
+            if delivery_target is None:
                 return Response.error_response(
                     message=(
                         f"Channel '{updates['delivery_channel']}' is not set up. "
@@ -306,7 +330,7 @@ async def update_agent(
                     status_code=400,
                     response=response,
                 )
-            updates["delivery_context"] = delivery_context
+            updates["delivery_context"] = delivery_target.delivery_context
 
         item = await service.update(reminder_id, updates, reminder_type=ReminderType.AGENTIC)
 

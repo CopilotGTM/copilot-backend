@@ -25,9 +25,11 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import get_context_anchor_local, resolve_timezone_name
+from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -1108,8 +1110,6 @@ async def create_task_form(
 
     # Send preview card
     if channel == "slack":
-        from src.service.bots.slack_bot_service import SlackBotService
-
         blocks = _build_slack_preview(
             payload_json=payload_json,
             title=title,
@@ -1122,16 +1122,23 @@ async def create_task_form(
             reminder_label=reminder_label,
         )
 
-        bot_service = SlackBotService()
-        sent = await bot_service.send_block_kit_message(
-            team_id=context.metadata.get("team_id", ""),
-            channel_id=context.metadata.get("channel_id", ""),
-            blocks=blocks,
-            text_fallback=f"Task preview: {title}",
+        result = await OutboundChannelService().send_payload(
+            OutboundDeliveryTarget(
+                channel="slack",
+                mapping_id=None,
+                delivery_context={
+                    "team_id": context.metadata.get("team_id", ""),
+                    "channel_id": context.metadata.get("channel_id", ""),
+                },
+            ),
+            ChannelPayload(
+                type="card",
+                content={"blocks": blocks},
+                text_fallback=f"Task preview: {title}",
+            ),
         )
+        sent = result.success
     else:
-        from src.service.bots.teams_bot_service import TeamsBotService
-
         card_payload = _build_teams_preview(
             payload_json=payload_json,
             title=title,
@@ -1150,13 +1157,22 @@ async def create_task_form(
             bool(teams_service_url),
             bool(teams_conversation_id),
         )
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
-            service_url=teams_service_url,
-            conversation_id=teams_conversation_id,
-            payload=card_payload,
-            text_fallback=f"Task preview: {title}",
+        result = await OutboundChannelService().send_payload(
+            OutboundDeliveryTarget(
+                channel="teams",
+                mapping_id=None,
+                delivery_context={
+                    "service_url": teams_service_url,
+                    "conversation_id": teams_conversation_id,
+                },
+            ),
+            ChannelPayload(
+                type="card",
+                content=card_payload,
+                text_fallback=f"Task preview: {title}",
+            ),
         )
+        sent = result.success
 
     if not sent:
         logger.error("Failed to send task preview card (channel=%s)", channel)

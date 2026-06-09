@@ -30,8 +30,7 @@ from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user
 from src.infra.utils.logger import get_logger
 from src.service.bots.auth_state_service import get_bot_auth_state_service
 from src.service.bots.identity_service import ExternalIdentityService
-from src.service.bots.teams_bot_service import TeamsBotService
-from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
 
 logger = get_logger(__name__)
 
@@ -298,8 +297,17 @@ async def bot_auth_callback(
                 "Type **help** to see available commands."
             )
             try:
-                bot_service = TeamsBotService()
-                await bot_service.send_proactive_message(service_url, conversation_id, welcome_text)
+                await OutboundChannelService().send_text(
+                    OutboundDeliveryTarget(
+                        channel="teams",
+                        mapping_id=None,
+                        delivery_context={
+                            "service_url": service_url,
+                            "conversation_id": conversation_id,
+                        },
+                    ),
+                    welcome_text,
+                )
             except Exception:
                 logger.warning("Failed to send Teams welcome message", exc_info=True)
 
@@ -314,10 +322,14 @@ async def bot_auth_callback(
                 "Type *help* to see available commands."
             )
             try:
-                from src.service.bots.slack_bot_service import SlackBotService
-
-                slack_service = SlackBotService()
-                await slack_service._send_message(slack_team_id, channel_id, welcome_text)
+                await OutboundChannelService().send_text(
+                    OutboundDeliveryTarget(
+                        channel="slack",
+                        mapping_id=None,
+                        delivery_context={"team_id": slack_team_id, "channel_id": channel_id},
+                    ),
+                    welcome_text,
+                )
             except Exception:
                 logger.warning("Failed to send Slack welcome message", exc_info=True)
 
@@ -332,11 +344,16 @@ async def bot_auth_callback(
                 "Type help to see available commands."
             )
             try:
-                whatsapp_service = WhatsAppBotService()
-                await whatsapp_service.send_text_message(
-                    phone_number_id=phone_number_id,
-                    recipient_wa_id=recipient_wa_id,
-                    text=welcome_text,
+                await OutboundChannelService().send_text(
+                    OutboundDeliveryTarget(
+                        channel="whatsapp",
+                        mapping_id=None,
+                        delivery_context={
+                            "phone_number_id": phone_number_id,
+                            "recipient_wa_id": recipient_wa_id,
+                        },
+                    ),
+                    welcome_text,
                 )
             except Exception:
                 logger.warning("Failed to send WhatsApp welcome message", exc_info=True)
