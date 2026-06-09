@@ -22,11 +22,15 @@ from src.domain.models.organisation_tables.job_models import DealJobs, DealJobTy
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.services.meeting_insight_services import (
     MeetingSummaryService,
     NonRetryableJobError,
+)
+from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_notification_task import (
+    send_meeting_summary_ready_notification_task,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
     dispatch_deal_insight_pipeline_async,
@@ -39,8 +43,29 @@ logger = get_logger(__name__)
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
+def _should_dispatch_insight_pipeline_after_summary(
+    user_id: UUID,
+    job_metadata: dict,
+) -> bool:
+    """Decide whether this summary task owns downstream deal insight dispatch.
+
+    Scheduled deal-summary chains already wire the insight pipeline themselves.
+    Recall webhook jobs bypass that chain, so deal-linked webhook summaries must
+    dispatch insights here; non-deal jobs pass `skip_insight_pipeline`.
+    """
+    if bool(job_metadata.get("skip_insight_pipeline")):
+        return False
+    is_automated = (
+        user_id == AUTOMATED_PIPELINE_USER_ID or job_metadata.get("source") == "automated_pipeline"
+    )
+    return not is_automated or job_metadata.get("source") == "recall_webhook"
+
+
 async def _dispatch_insight_pipeline_for_manual_summary(
-    organisation_id: UUID, deal_id: UUID
+    organisation_id: UUID,
+    deal_id: UUID,
+    *,
+    source: str = "transcript_upload",
 ) -> None:
     """Dispatch the deal insight pipeline after a manual meeting summary completes.
 
@@ -54,7 +79,7 @@ async def _dispatch_insight_pipeline_for_manual_summary(
                 session,
                 organisation_id,
                 deal_id,
-                source="transcript_upload",
+                source=source,
                 trigger="meeting_summary_completed",
             )
             await session.commit()
@@ -85,6 +110,42 @@ async def _dispatch_insight_pipeline_for_manual_summary(
         )
 
 
+async def _dispatch_summary_ready_notification(
+    organisation_id: UUID,
+    deal_id: UUID,
+    event_id: UUID,
+) -> None:
+    """Queue summary-ready notifications without coupling I/O to generation.
+
+    Notification delivery has its own idempotency table, so enqueue failure is
+    logged but never rolls back a completed summary.
+    """
+    try:
+        send_meeting_summary_ready_notification_task.apply_async(
+            args=[str(organisation_id), str(deal_id), str(event_id)],
+            queue="deal_jobs",
+        )
+        logger.info(
+            "Queued meeting summary ready notification",
+            extra={
+                "event": "meeting_summary_ready_notification_queued",
+                "organisation_id": str(organisation_id),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to queue meeting summary ready notification",
+            extra={
+                "event": "meeting_summary_ready_notification_queue_failed",
+                "organisation_id": str(organisation_id),
+                "deal_id": str(deal_id),
+                "event_id": str(event_id),
+            },
+        )
+
+
 @app.task(bind=True, name="meeting_summary_task.process", acks_late=True, max_retries=3)
 def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
     """Process a meeting summary job.
@@ -110,19 +171,36 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         },
     )
 
+    lock_key = f"task_lock:meeting_summary_job:{job_id}"
+    # The job row is durable, but duplicate Celery messages can still arrive.
+    # The lock keeps the expensive LLM call single-flight for this job id.
+    if not acquire_task_lock(lock_key, ttl=700):
+        logger.info(
+            "Meeting summary job already running, skipping",
+            extra={
+                "event": "meeting_summary_job_skipped",
+                "organisation_id": str(organisation_id),
+                "job_id": str(job_id),
+                "failure_reason": "already_running",
+            },
+        )
+        return {"status": "skipped", "reason": "already_running"}
+
     async def _run():
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
 
         # Phase 1: Load job context (fresh session)
         # Initialize variables that will be set in the session block
-        deal_id: UUID
+        deal_id: UUID | None
         event_id: UUID
         job_type_str: str
         user_id: UUID
         job_metadata: dict
 
         async for session in acquire_org_async_session(org_uuid):
+            # Load only the durable job context here, then release the session before
+            # summary generation. The service owns its own fresh-session pattern.
             job = await session.get(DealJobs, job_uuid)
             if not job:
                 raise RuntimeError(f"Deal job {job_id} not found")
@@ -132,7 +210,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 raise RuntimeError(f"Invalid job type {job.job_type} for meeting summary task")
 
             # Extract values before closing session
-            if not job.deal_id or not job.event_id:
+            if not job.event_id:
                 raise NonRetryableJobError("Meeting summary requires event_id", "invalid_data")
 
             deal_id = job.deal_id
@@ -157,14 +235,15 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 "event": "meeting_summary_job_loaded",
                 "organisation_id": str(org_uuid),
                 "job_id": str(job_uuid),
-                "deal_id": str(deal_id),
+                "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
                 "automated": is_automated,
             },
         )
 
-        # Create publisher for SSE updates
-        publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str)
+        # Only deal-linked summaries are user-visible job streams. Non-deal
+        # Recall summaries are background materialization and should stay silent.
+        publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str) if deal_id else None
 
         # Phase 2: Call service (service manages its own sessions)
         service = MeetingSummaryService(
@@ -180,12 +259,17 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                     "event": "meeting_summary_generating",
                     "organisation_id": str(org_uuid),
                     "job_id": str(job_uuid),
-                    "deal_id": str(deal_id),
+                    "deal_id": str(deal_id) if deal_id else None,
                     "event_id": str(event_id),
                     "automated": is_automated,
                 },
             )
-            result = await service.generate()
+            if deal_id:
+                result = await service.generate()
+            else:
+                # Non-deal Recall meetings still get a summary, but the result is
+                # stored on Meeting and must not trigger any deal insight pipeline.
+                result = await service.generate_meeting_level_summary()
 
         except NonRetryableJobError as e:
             logger.info(
@@ -194,7 +278,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                     "event": "meeting_summary_job_failed_permanently",
                     "organisation_id": str(org_uuid),
                     "job_id": str(job_uuid),
-                    "deal_id": str(deal_id),
+                    "deal_id": str(deal_id) if deal_id else None,
                     "event_id": str(event_id),
                     "error_code": e.error_code,
                     "automated": is_automated,
@@ -208,8 +292,9 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                     job.error_message = str(e)
                     await session.commit()
 
-            publisher.publish_error(str(e), e.error_code)
-            publisher.publish_finalize("error")
+            if publisher:
+                publisher.publish_error(str(e), e.error_code)
+                publisher.publish_finalize("error")
 
             return {
                 "status": "failed",
@@ -226,7 +311,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                     "event": "meeting_summary_job_failed",
                     "organisation_id": str(org_uuid),
                     "job_id": str(job_uuid),
-                    "deal_id": str(deal_id),
+                    "deal_id": str(deal_id) if deal_id else None,
                     "event_id": str(event_id),
                     "automated": is_automated,
                 },
@@ -240,7 +325,8 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                     job.retry_count += 1
                     await session.commit()
 
-            publisher.publish_finalize("error")
+            if publisher:
+                publisher.publish_finalize("error")
             raise
 
         # Phase 3: Save result and costing (fresh session)
@@ -261,8 +347,9 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                         job.latency_ms = int(token_usage.duration_seconds * 1000)
                 await session.commit()
 
-        publisher.publish_result(result)
-        publisher.publish_finalize("done")
+        if publisher:
+            publisher.publish_result(result)
+            publisher.publish_finalize("done")
 
         logger.info(
             "Meeting summary job completed",
@@ -270,17 +357,28 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 "event": "meeting_summary_job_completed",
                 "organisation_id": str(org_uuid),
                 "job_id": str(job_uuid),
-                "deal_id": str(deal_id),
+                "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
                 "automated": is_automated,
             },
         )
 
-        # Trigger insight pipeline for non-automated jobs (e.g. manual transcript uploads).
-        # Automated pipeline jobs already have the insight chain wired by process_deal_pipeline.
-        skip_insight_pipeline = bool(job_metadata.get("skip_insight_pipeline"))
-        if not is_automated and not skip_insight_pipeline:
-            await _dispatch_insight_pipeline_for_manual_summary(org_uuid, deal_id)
+        if deal_id:
+            await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id)
+
+        # Recall webhook jobs bypass the old process_deal_pipeline chain, so this
+        # summary task must continue the downstream insight pipeline for that source.
+        if deal_id and _should_dispatch_insight_pipeline_after_summary(user_id, job_metadata):
+            source = (
+                "recall_webhook"
+                if job_metadata.get("source") == "recall_webhook"
+                else "transcript_upload"
+            )
+            await _dispatch_insight_pipeline_for_manual_summary(
+                org_uuid,
+                deal_id,
+                source=source,
+            )
 
         return {
             "status": "completed",
@@ -314,3 +412,5 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             },
         )
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
+    finally:
+        release_task_lock(lock_key)

@@ -51,6 +51,8 @@ _TEAMS_TRANSCRIPT_SCOPES = frozenset(
         MICROSOFT_SCOPE_ONLINE_MEETING_TRANSCRIPT_READ_ALL,
     }
 )
+# Transcript APIs are only available through the parent Google/Microsoft grants.
+# Calendar-only child integrations can prove event ownership but cannot fetch text.
 _CALENDAR_PROVIDER_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE,
     IntegrationType.MICROSOFT,
@@ -355,6 +357,23 @@ class TranscriptService:
                 result.status = "pending"
         return result
 
+    async def materialize_recall_transcript(self, event_id: UUID) -> TranscriptFetchResult:
+        """Materialize the Recall transcript artifact persisted by the webhook.
+
+        This path is intentionally Recall-only. Native Google/Teams fallback belongs
+        to the legacy/manual transcript fetch path, not provider webhook handling.
+        """
+        event = await self._get_event(event_id)
+        if not event:
+            return TranscriptFetchResult(
+                success=False,
+                error="Calendar event not found",
+                should_retry=False,
+            )
+
+        existing = await self.get_meeting_by_event(event_id)
+        return await self._fetch_recall_transcript(event, existing)
+
     async def try_fetch_with_integration(
         self,
         event: CalendarEvent,
@@ -418,6 +437,8 @@ class TranscriptService:
         )
 
         try:
+            # The download URL is already signed by Recall and came from the
+            # webhook snapshot, so this provider object does not need tenant OAuth.
             provider = RecallMeetingRecordingProvider(api_key="")
             transcript_payload = await provider.fetch_transcript(download_url)
             full_transcript, segments = self._parse_recall_transcript(
@@ -461,6 +482,8 @@ class TranscriptService:
             )
             return TranscriptFetchResult(success=True, meeting=refreshed_meeting or meeting)
         except RecallProviderError as exc:
+            # Returning retryable lets the webhook task retry later; Recall can lag
+            # between `transcript.done` and the artifact URL becoming readable.
             logger.warning(
                 "Recall transcript download failed for event %s: %s",
                 event.event_id,
@@ -487,6 +510,8 @@ class TranscriptService:
 
     async def _get_ready_recall_session(self, event_id: UUID) -> MeetingRecordingSession | None:
         async for session in acquire_org_async_session(self.organisation_id):
+            # The org filter is the trust boundary. Provider session ids and event ids
+            # are never enough by themselves in a multi-tenant schema.
             stmt = select(MeetingRecordingSession).where(
                 col(MeetingRecordingSession.organisation_id) == self.organisation_id,
                 col(MeetingRecordingSession.calendar_event_id) == event_id,
@@ -501,6 +526,7 @@ class TranscriptService:
         payload: list[dict[str, Any]],
         meeting_id: UUID,
     ) -> tuple[str, list[TranscriptSegment]]:
+        """Convert Recall's word/participant JSON into our transcript schema."""
         segments: list[TranscriptSegment] = []
         lines: list[str] = []
 
@@ -511,6 +537,8 @@ class TranscriptService:
             words = item.get("words") or []
             text = item.get("text") or item.get("transcript")
             if not text and words:
+                # Recall often returns word-level payloads without a segment-level
+                # text field. Joining words preserves usable transcript text for LLMs.
                 text = " ".join(str(word.get("text") or "").strip() for word in words).strip()
             if not isinstance(text, str) or not text.strip():
                 continue
@@ -540,6 +568,7 @@ class TranscriptService:
 
     @staticmethod
     def _recall_word_time(word: Any, field_name: str) -> float | None:
+        """Read Recall relative word timestamps when present."""
         if not isinstance(word, dict):
             return None
         value = word.get(field_name)
@@ -742,6 +771,8 @@ class TranscriptService:
 
     async def _get_meeting(self, event_id: UUID) -> Meeting | None:
         async for session in acquire_org_async_session(self.organisation_id):
+            # Meeting rows are scoped by org plus event. The event id may come from
+            # webhook payloads or API requests, so keep organisation_id in every lookup.
             stmt = select(Meeting).where(
                 col(Meeting.organisation_id) == self.organisation_id,
                 col(Meeting.calendar_event_id) == event_id,
@@ -751,6 +782,7 @@ class TranscriptService:
 
     async def _get_event(self, event_id: UUID) -> CalendarEvent | None:
         async for session in acquire_org_async_session(self.organisation_id):
+            # Same tenant boundary as meeting lookup: event_id alone is not trusted.
             stmt = select(CalendarEvent).where(
                 col(CalendarEvent.event_id) == event_id,
                 col(CalendarEvent.organisation_id) == self.organisation_id,
@@ -784,7 +816,8 @@ class TranscriptService:
                     await session.commit()
                     return meeting
 
-            # Check if meeting already exists for this event (handles race conditions)
+            # Re-read by event because webhook retries can race with a prior task
+            # that created the Meeting after our caller loaded `existing`.
             stmt = select(Meeting).where(col(Meeting.calendar_event_id) == event_id)
             meeting = (await session.execute(stmt)).scalars().first()
             if meeting:
@@ -792,7 +825,8 @@ class TranscriptService:
                 await session.commit()
                 return meeting
 
-            # Create new
+            # First writer creates the transcript container; later retries take the
+            # branch above and update the same row.
             meeting = Meeting(
                 organisation_id=self.organisation_id,
                 calendar_event_id=event_id,

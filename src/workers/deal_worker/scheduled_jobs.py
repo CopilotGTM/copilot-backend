@@ -1,4 +1,8 @@
-"""Scheduled deal-worker jobs consumed by Kubernetes CronJobs.\n\nEntries are immutable contracts used by deployment checks and dispatch tests.\n"""
+"""Scheduled deal-worker jobs consumed by Kubernetes CronJobs.
+
+Entries are immutable contracts used by deployment checks and dispatch tests.
+The schedule strings here must stay aligned with Helm CronJob rendering.
+"""
 
 from __future__ import annotations
 
@@ -32,12 +36,6 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="10,25,40,55 * * * *",
         max_lag_seconds=20 * 60,
     ),
-    "transcript-fetch-pipeline": ScheduledJob(
-        name="transcript-fetch-pipeline",
-        task_name="deal.trigger_transcript_fetch_all_orgs",
-        schedule="5,35 * * * *",
-        max_lag_seconds=35 * 60,
-    ),
     "stale-deal-job-cleanup": ScheduledJob(
         name="stale-deal-job-cleanup",
         task_name="deal.cleanup_stale_jobs_all_orgs",
@@ -65,13 +63,17 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
     "meeting-bot-fallback": ScheduledJob(
         name="meeting-bot-fallback",
         task_name="deal.trigger_send_unsent_meeting_recordings_all_orgs",
-        schedule="50 * * * *",
+        schedule="0 20 * * *",
         max_lag_seconds=90 * 60,
     ),
 }
 
 
 def get_scheduled_job(job_name: str) -> ScheduledJob:
-    """Resolve a named scheduled job definition.\n\n    Raises:\n        KeyError: if the job name does not exist.\n"""
+    """Resolve a named scheduled job definition.
+
+    Raises:
+        KeyError: if the job name does not exist.
+    """
 
     return SCHEDULED_JOBS[job_name]

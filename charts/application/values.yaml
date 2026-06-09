@@ -480,8 +480,6 @@ dealCronJobs:
       schedule: "3,18,33,48 * * * *"
     - name: timeline-sync
       schedule: "10,25,40,55 * * * *"
-    - name: transcript-fetch-pipeline
-      schedule: "5,35 * * * *"
     - name: stale-deal-job-cleanup
       schedule: "45 * * * *"
     - name: deal-memory-backfill
@@ -491,7 +489,7 @@ dealCronJobs:
     - name: stakeholder-research-retry
       schedule: "20 * * * *"
     - name: meeting-bot-fallback
-      schedule: "50 * * * *"
+      schedule: "0 20 * * *"
 
 # Legacy Celery Beat config for deal worker.
 # Fixed deal schedules are owned by Kubernetes CronJobs below.

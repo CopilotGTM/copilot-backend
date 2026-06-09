@@ -54,6 +54,7 @@ from src.service.integrations.sync_history_manager import (
     SyncHistoryManager,
     datetime_now_naive,
 )
+from src.workers.deal_worker.client import send_deal_task_async
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,
     SyncActionCounts,
@@ -87,6 +88,7 @@ class CalendarSyncService:
         self._sync_history = SyncHistoryManager(session)
         self._normalizer = CalendarEventNormalizer()
         self._writer = CalendarSyncWriter(session, organisation_id)
+        self._pending_recording_event_ids: set[UUID] = set()
 
     async def sync_calendar_events(
         self,
@@ -160,6 +162,7 @@ class CalendarSyncService:
                     user_external_id = normalized.user_external_id or external_id
                     await self._upsert_user_state(event, integration, user_external_id)
                     existing[key] = event
+                    self._queue_recording_dispatch_if_eligible(event)
 
                     if is_new:
                         created_count += 1
@@ -174,6 +177,7 @@ class CalendarSyncService:
                     # any single failure.
                     if records_processed % 100 == 0:
                         await self.db.commit()
+                        await self._dispatch_pending_recording_events()
                         logger.debug("Batch commit: %d events processed", records_processed)
 
                 except Exception as e:
@@ -190,6 +194,7 @@ class CalendarSyncService:
                     records_failed += 1
 
             await self.db.commit()
+            await self._dispatch_pending_recording_events()
 
             if missing_identity_samples:
                 logger.info(
@@ -371,6 +376,7 @@ class CalendarSyncService:
                                 record.status = "cancelled"
                                 record.synced_at = datetime.now(UTC)
                                 self.db.add(record)
+                                self._queue_recording_dispatch_if_eligible(record)
                             deleted_processed_count += 1
                             records_processed += 1
                         else:
@@ -403,6 +409,7 @@ class CalendarSyncService:
                                 record.status = "cancelled"
                                 record.synced_at = datetime.now(UTC)
                                 self.db.add(record)
+                                self._queue_recording_dispatch_if_eligible(record)
                             cancelled_existing_count += 1
                             records_processed += 1
                         else:
@@ -446,6 +453,7 @@ class CalendarSyncService:
                             record.status = "cancelled"
                             record.synced_at = datetime.now(UTC)
                             self.db.add(record)
+                            self._queue_recording_dispatch_if_eligible(record)
                             if user_external_id:
                                 user_states_to_upsert.append(
                                     self._build_user_state_row(
@@ -523,6 +531,7 @@ class CalendarSyncService:
                     missing_upserted_events.append(item.event.debug_sample)
                     continue
 
+                self._queue_recording_dispatch_if_eligible(event)
                 attendee_snapshots.append((event, item.event))
                 user_external_id = item.event.user_external_id or identity.external_id
                 user_states_to_upsert.append(
@@ -545,6 +554,7 @@ class CalendarSyncService:
             await self._batch_upsert_user_states(user_states_to_upsert)
 
             await self.db.commit()
+            await self._dispatch_pending_recording_events()
 
             # --- Step 4: counter reconciliation log line ---
             # `unaccounted` should always be 0 — every input event must land in
@@ -702,6 +712,56 @@ class CalendarSyncService:
 
     async def _batch_upsert_user_states(self, rows: list[tuple[UUID, UUID, str]]) -> None:
         await self._writer.batch_upsert_user_states(rows)
+
+    def _queue_recording_dispatch_if_eligible(self, event: CalendarEvent) -> None:
+        """Record changed future meetings that can be safely enqueued after commit."""
+        start_at = event.start_at
+        if start_at.tzinfo is None:
+            start_at = start_at.replace(tzinfo=UTC)
+        else:
+            start_at = start_at.astimezone(UTC)
+        if start_at <= datetime.now(UTC):
+            return
+        if (getattr(event, "status", None) or "").lower() == "cancelled":
+            # Cancellations still need the dispatch task: it re-reads the event and
+            # cancels any scheduled Recall bot for this calendar event.
+            self._pending_recording_event_ids.add(event.event_id)
+            return
+        if not getattr(event, "conference_link", None):
+            return
+        self._pending_recording_event_ids.add(event.event_id)
+
+    async def _dispatch_pending_recording_events(self) -> None:
+        """Enqueue single-event meeting-bot work after calendar writes commit."""
+        if not self._pending_recording_event_ids:
+            return
+
+        event_ids = sorted(self._pending_recording_event_ids, key=str)
+        self._pending_recording_event_ids.clear()
+        for event_id in event_ids:
+            try:
+                # Enqueue only after the calendar transaction commits. The task
+                # re-reads the event, so dispatching earlier could observe stale
+                # start time, cancellation status, or conference link.
+                await send_deal_task_async(
+                    "deal.send_meeting_recording",
+                    kwargs={
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(event_id),
+                    },
+                    queue="deal",
+                    routing_key="deal",
+                )
+            except Exception:
+                logger.error(
+                    "Failed to dispatch meeting recording send task after calendar sync",
+                    extra={
+                        "event": "calendar_sync_meeting_recording_dispatch_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "calendar_event_id": str(event_id),
+                    },
+                    exc_info=True,
+                )
 
     @staticmethod
     def _build_user_state_row(

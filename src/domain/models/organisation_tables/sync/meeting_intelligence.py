@@ -42,6 +42,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import TimestampMixin
+from .calendar import GenerationStatus
 
 # =============================================================================
 # Enums
@@ -153,6 +154,39 @@ class Meeting(TimestampMixin, SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
         description="Full transcript text for summarization.",
+    )
+    compressed_transcript: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Cached compressed transcript for future agent context optimization.",
+    )
+    compressed_transcript_generated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When compressed_transcript was last generated.",
+    )
+    compressed_transcript_source_hash: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="Hash of the full_transcript used to generate the cached compression.",
+    )
+
+    # Deal-linked summaries remain on CalendarEventDealAssociation. These fields
+    # store generated content for meetings that have a transcript but no deal link.
+    meeting_summary_status: GenerationStatus = Field(
+        default=GenerationStatus.NOT_STARTED,
+        sa_column=Column(String(32), nullable=False, server_default=text("'NOT_STARTED'")),
+        description="Generation status for meeting-level post-meeting summary content.",
+    )
+    meeting_summary_data: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Generated post-meeting summary content for meetings without a deal link.",
+    )
+    meeting_summary_generated_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When meeting-level summary content was last generated.",
     )
 
     # Source-specific metadata

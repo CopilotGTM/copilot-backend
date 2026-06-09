@@ -9,6 +9,9 @@ Tasks for meeting-related AI/agent workflows:
 from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_prep_task import (
     process_meeting_prep,
 )
+from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_notification_task import (
+    send_meeting_summary_ready_notification_task,
+)
 from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
     process_meeting_summary,
 )
@@ -16,4 +19,9 @@ from src.workers.deal_worker.tasks.meeting_insight_tasks.transcript_upload_task 
     process_transcript_upload,
 )
 
-__all__ = ["process_meeting_prep", "process_meeting_summary", "process_transcript_upload"]
+__all__ = [
+    "process_meeting_prep",
+    "process_meeting_summary",
+    "process_transcript_upload",
+    "send_meeting_summary_ready_notification_task",
+]

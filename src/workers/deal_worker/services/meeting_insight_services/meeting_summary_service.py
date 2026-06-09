@@ -242,6 +242,7 @@ class MeetingSummaryService:
         # Verify transcript (TranscriptService manages its own sessions)
         transcript_service = TranscriptService(self.organisation_id)
         meeting = await transcript_service.ensure_transcript(self.event_id)
+        meeting_id: UUID | None = meeting.meeting_id if meeting else None
 
         if not meeting:
             logger.info(
@@ -347,11 +348,128 @@ class MeetingSummaryService:
 
         if association_id:
             async for session in acquire_org_async_session(self.organisation_id):
+                # Short-term compatibility: deal timelines still read the association,
+                # while newer meeting surfaces can read the canonical Meeting row.
+                # Keep both writes in one save phase so the payloads do not drift.
                 assoc = await session.get(CalendarEventDealAssociation, association_id)
                 if assoc:
                     assoc.meeting_summary_data = wrapped_result
                     assoc.meeting_summary_status = GenerationStatus.COMPLETED
+                if meeting_id:
+                    meeting_row = await session.get(Meeting, meeting_id)
+                    if meeting_row:
+                        meeting_row.meeting_summary_data = wrapped_result
+                        meeting_row.meeting_summary_status = GenerationStatus.COMPLETED
+                        meeting_row.meeting_summary_generated_at = datetime.now(UTC)
+                if assoc or meeting_id:
                     await session.commit()
+
+        return wrapped_result
+
+    async def generate_meeting_level_summary(self) -> dict:
+        """Generate summary for a transcribed meeting that is not linked to a deal.
+
+        Called by the Recall webhook summary job path when `DealJobs.deal_id` is
+        null. It stores generated content on the Meeting row and intentionally
+        avoids deal-memory/risk/stakeholder pipelines.
+        """
+        if not self.event_id:
+            raise ValueError("event_id is required for generate_meeting_level_summary()")
+
+        from src.agents.workflows.meeting_level_summary import (
+            MeetingLevelSummaryAgent,
+            MeetingLevelSummaryInput,
+        )
+
+        self._publish_progress("Loading meeting context...", "Querying Database", 0.1)
+
+        org_name: str | None = None
+        internal_domains: list[str] = []
+        event: CalendarEvent | None = None
+        meeting_id: UUID | None = None
+        transcript: str | None = None
+        attendee_roster: list[dict[str, str | bool | None]] = []
+
+        async for master_session in acquire_master_async_session():
+            # Master data is read first, then released before the LLM call below.
+            # The prompt only needs org name/domains, not a live DB session.
+            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_stmt = select(col(Organisation.domain)).where(
+                col(Organisation.organisation_id) == self.organisation_id,
+            )
+            org_result = await master_session.execute(org_stmt)
+            internal_domains = _normalize_internal_domains(org_result.scalar_one_or_none())
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            # The org filter is the immutable tenant boundary for both event and
+            # transcript rows; event_id alone can come from webhook-triggered work.
+            event = await get_event(session, self.organisation_id, self.event_id)
+            if not event:
+                raise NonRetryableJobError("Missing event data", "invalid_data")
+
+            attendee_roster = _build_summary_attendees(list(event.attendees))
+            meeting_stmt = select(Meeting).where(
+                col(Meeting.organisation_id) == self.organisation_id,
+                col(Meeting.calendar_event_id) == self.event_id,
+                col(Meeting.is_deleted).is_(False),
+            )
+            meeting = (await session.execute(meeting_stmt)).scalars().first()
+            if not meeting:
+                raise NonRetryableJobError(
+                    "No transcript available for this meeting. The meeting may not have been "
+                    "recorded or transcription was not enabled.",
+                    "no_transcript",
+                )
+            if not meeting.full_transcript:
+                if meeting.status == MeetingStatus.NOT_AVAILABLE:
+                    raise NonRetryableJobError(
+                        "No transcript available for this meeting. The meeting may not have been "
+                        "recorded or transcription was not enabled.",
+                        "no_transcript",
+                    )
+                raise NonRetryableJobError(
+                    "No transcript available for this meeting. The meeting may not have been "
+                    "recorded or transcription was not enabled.",
+                    "no_transcript",
+                )
+
+            meeting.meeting_summary_status = GenerationStatus.GENERATING
+            meeting_id = meeting.meeting_id
+            transcript = meeting.full_transcript
+            await session.commit()
+
+        # The DB sessions above are closed before the model call so LLM latency
+        # cannot hold an org connection from the pool.
+        self._publish_progress("Generating meeting summary with AI...", "Generation", 0.3)
+        agent = MeetingLevelSummaryAgent(
+            organisation_id=self.organisation_id,
+            org_name=org_name,
+        )
+        summary_data = await agent.generate(
+            MeetingLevelSummaryInput(
+                event_id=str(self.event_id),
+                title=event.title,
+                start_at=event.start_at.isoformat(),
+                end_at=event.end_at.isoformat(),
+                attendees=attendee_roster,
+                internal_domains=internal_domains,
+                transcript=transcript,
+                current_datetime=datetime.now(UTC).isoformat(),
+            ),
+        )
+        self.last_token_usage = agent.last_token_usage
+        wrapped_result = wrap_generated_content(summary_data.model_dump())
+
+        self._publish_progress("Saving results...", "Saving", 0.9)
+        async for session in acquire_org_async_session(self.organisation_id):
+            # Re-open a fresh session for the write. The Meeting row is the durable
+            # storage target for summaries that have no deal association.
+            meeting = await session.get(Meeting, meeting_id)
+            if meeting:
+                meeting.meeting_summary_data = wrapped_result
+                meeting.meeting_summary_status = GenerationStatus.COMPLETED
+                meeting.meeting_summary_generated_at = datetime.now(UTC)
+                await session.commit()
 
         return wrapped_result
 
@@ -507,7 +625,9 @@ class MeetingSummaryService:
         now = datetime.now(UTC)
 
         async for session in acquire_org_async_session(self.organisation_id):
-            # Check if deal has at least 1 completed meeting summary
+            # A deal should only rebuild memory after at least one completed
+            # meeting summary exists; otherwise downstream insight agents have
+            # no new meeting context to absorb.
             stmt = (
                 select(col(CalendarEventDealAssociation.association_id))
                 .join(
@@ -570,7 +690,8 @@ class MeetingSummaryService:
         """
         result = PipelineResult()
 
-        # Get events needing summary (already ordered oldest first)
+        # Summaries run oldest-first so the final deal-memory build sees meeting
+        # context in the same chronological order the seller experienced it.
         events = await self._get_events_needing_summary(deal_id)
         result.meetings_found = len(events)
 
@@ -605,13 +726,15 @@ class MeetingSummaryService:
             },
         )
 
-        # Create jobs and collect job IDs for task chain
+        # Build durable jobs first, then wire Celery signatures from committed IDs.
+        # This lets retries recover from broker failures without losing visibility.
         job_ids: list[UUID] = []
         deal_memory_job_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
             for event_id, _association_id, event_deal_id in events:
-                # Check if active job already exists
+                # Reuse active jobs so an overlapping pipeline request does not
+                # generate two summaries for the same deal/event pair.
                 existing_job = await self._get_active_job(session, event_deal_id, event_id)
                 if existing_job:
                     logger.debug(
@@ -625,7 +748,8 @@ class MeetingSummaryService:
                     job_ids.append(existing_job.job_id)
                     continue
 
-                # Create new job
+                # New jobs stay pending until the Celery chain reaches them.
+                # The job row is visible to API/SSE clients before execution starts.
                 job = await self._create_job(session, event_deal_id, event_id)
                 job_ids.append(job.job_id)
                 result.jobs_created += 1
@@ -636,7 +760,8 @@ class MeetingSummaryService:
                     job.job_id,
                 )
 
-            # Create or get deal memory job (to add at the end of the pipeline)
+            # The deal-memory job is the fan-in point after all meeting summaries
+            # complete, so downstream risk/stakeholder tasks see fresh context.
             deal_memory_job_id, created = await get_or_create_deal_memory_job(
                 session,
                 self.organisation_id,

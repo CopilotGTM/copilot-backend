@@ -1,8 +1,8 @@
 """Meeting recording dispatch orchestration.
 
-This service is called from the deal matcher follow-up task and from the hourly
-fallback scan. It owns the "should we send this event?" checks before making the
-external provider call.
+This service is called from event-driven send tasks and from the nightly fallback
+scan. It owns the "should we send this event?" checks before making the external
+provider call.
 """
 
 from __future__ import annotations
@@ -15,9 +15,12 @@ import httpx
 from sqlalchemy import func, or_, select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.calendar import (
-    AssociationStatus,
     CalendarEvent,
-    CalendarEventDealAssociation,
+    CalendarEventUserState,
+)
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationType,
+    KnowledgeIntegration,
 )
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -35,11 +38,18 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 
 logger = get_logger(__name__)
 
+ACTIVE_CALENDAR_INTEGRATION_TYPES = (
+    IntegrationType.GOOGLE,
+    IntegrationType.MICROSOFT,
+    IntegrationType.GOOGLE_CALENDAR,
+    IntegrationType.OUTLOOK_CALENDAR,
+)
+
 
 class MeetingRecordingDispatchService:
     """Send one org-scoped calendar event to the recording provider.
 
-    The service is used by both the direct send task and the hourly fallback scan.
+    The service is used by both the direct send task and the nightly fallback scan.
     It intentionally keeps decisioning separate from task orchestration so it can be
     reused safely if matching and scheduling are retried.
     """
@@ -73,6 +83,21 @@ class MeetingRecordingDispatchService:
                 "calendar_event_id": str(calendar_event_id),
             }
 
+        # Calendar cancellations are actionable even when the provider event lost its
+        # active user-state row; the local org/event/session boundary is enough to
+        # reconcile a bot that was scheduled before the cancellation arrived.
+        if (getattr(event, "status", None) or "").lower() == "cancelled":
+            return await self._cancel_existing_recording_for_calendar_cancellation(
+                calendar_event_id
+            )
+
+        if not await self._has_active_calendar_integration(calendar_event_id):
+            return {
+                "status": "skipped",
+                "reason": "calendar_integration_not_active",
+                "calendar_event_id": str(calendar_event_id),
+            }
+
         meeting_url = getattr(event, "conference_link", None)
         # We need a concrete join target before creating a bot; events without links
         # will never produce a successful provider session.
@@ -80,15 +105,6 @@ class MeetingRecordingDispatchService:
             return {
                 "status": "skipped",
                 "reason": "missing_meeting_url",
-                "calendar_event_id": str(calendar_event_id),
-            }
-
-        # Do not queue cancelled meetings. This avoids duplicate bot churn when
-        # calendars are updated between initial matching and fallback polling.
-        if (getattr(event, "status", None) or "").lower() == "cancelled":
-            return {
-                "status": "skipped",
-                "reason": "cancelled",
                 "calendar_event_id": str(calendar_event_id),
             }
 
@@ -155,6 +171,14 @@ class MeetingRecordingDispatchService:
                     "calendar_event_id": str(calendar_event_id),
                 }
             session_record = reset_record
+
+        if not await self._has_active_calendar_integration(calendar_event_id):
+            return {
+                "status": "skipped",
+                "reason": "calendar_integration_not_active",
+                "calendar_event_id": str(calendar_event_id),
+            }
+
         dispatch_status = "sent"
         attempt_adopt_before_create = False
         provider: RecallMeetingRecordingProvider | None = None
@@ -324,18 +348,124 @@ class MeetingRecordingDispatchService:
             "provider_session_id": str(provider_session_id),
         }
 
-    async def dispatch_unsent_upcoming(self) -> dict[str, int]:
-        """Scan upcoming deal-linked meetings and send anything still missing.
+    async def _cancel_existing_recording_for_calendar_cancellation(
+        self,
+        calendar_event_id: UUID,
+    ) -> dict[str, str]:
+        """Cancel any scheduled provider bot after the source calendar event is cancelled."""
+        session_record = await self._session_service.get_by_event(calendar_event_id)
+        if session_record is None:
+            return {
+                "status": "skipped",
+                "reason": "recording_session_missing",
+                "calendar_event_id": str(calendar_event_id),
+            }
 
-        This is intentionally broad and best-effort: if matcher created links after
-        the normal path ran, the scan closes the gap.
+        provider_payload = dict(session_record.provider_payload or {})
+        provider_session_id = getattr(session_record, "provider_session_id", None)
+        if self._is_cancelled_recording_status(getattr(session_record, "status", None)):
+            if not provider_payload.get("last_cancel_error"):
+                return {
+                    "status": "cancelled",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            if not provider_session_id:
+                return {
+                    "status": "skipped",
+                    "reason": "cancel_cleanup_missing_provider_session",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+
+        if provider_session_id:
+            provider = await self._build_provider()
+            try:
+                await provider.cancel_session(provider_session_id)
+            except RecallProviderError as error:
+                if error.status_code == 404:
+                    pass
+                elif self._is_not_deletable_error(error):
+                    try:
+                        await provider.leave_call(provider_session_id)
+                    except RecallProviderError as leave_error:
+                        if leave_error.status_code != 404:
+                            await self._session_service.mark_cancelled(
+                                session_record.session_id,
+                                status_message=f"Recall cancel failed: {leave_error}",
+                                provider_payload={
+                                    "last_cancel_error": {
+                                        "operation": "calendar_cancel_leave_call",
+                                        "status_code": leave_error.status_code,
+                                        "code": leave_error.code,
+                                        "detail": leave_error.detail,
+                                        "response_body": leave_error.response_body,
+                                    }
+                                },
+                            )
+                            raise
+                else:
+                    await self._session_service.mark_cancelled(
+                        session_record.session_id,
+                        status_message=f"Recall cancel failed: {error.detail or str(error)}",
+                        provider_payload={
+                            "last_cancel_error": {
+                                "operation": "calendar_cancel",
+                                "status_code": error.status_code,
+                                "code": error.code,
+                                "detail": error.detail,
+                                "response_body": error.response_body,
+                            }
+                        },
+                    )
+                    raise
+            except httpx.HTTPError as error:
+                await self._session_service.mark_cancelled(
+                    session_record.session_id,
+                    status_message=f"Recall cancel failed: {error}",
+                    provider_payload={
+                        "last_cancel_error": {
+                            "operation": "calendar_cancel",
+                            "detail": str(error),
+                        }
+                    },
+                )
+                raise
+
+        await self._session_service.mark_cancelled(
+            session_record.session_id,
+            status_message="Recording bot cancelled because the calendar event was cancelled",
+            provider_payload={
+                "last_cancel_error": None,
+                "cancelled_provider_session_id": provider_session_id,
+            }
+            if provider_session_id
+            else None,
+        )
+        logger.info(
+            "Meeting recording provider session cancelled after calendar cancellation",
+            extra={
+                "event": "meeting_recording_calendar_cancel_succeeded",
+                "organisation_id": str(self.organisation_id),
+                "calendar_event_id": str(calendar_event_id),
+                "provider_session_id": provider_session_id,
+            },
+        )
+        return {
+            "status": "cancelled",
+            "calendar_event_id": str(calendar_event_id),
+        }
+
+    async def dispatch_unsent_upcoming(self) -> dict[str, int]:
+        """Scan upcoming active integration meetings and send anything still missing.
+
+        This is intentionally broad and best-effort: if sync or API writes happened
+        before the normal task dispatch ran, the scan closes the gap.
         """
         event_ids = await self._list_unsent_upcoming_event_ids()
-        upcoming_deal_meetings = await self._count_upcoming_deal_meetings()
+        upcoming_integration_meetings = await self._count_upcoming_integration_meetings()
         # Deterministic ordering gives stable operator logs and reduces diff noise when
         # rerunning the same scan right after a temporary provider failure.
         summary = {
-            "meetings_found": upcoming_deal_meetings,
+            "meetings_found": upcoming_integration_meetings,
             "actionable_meetings_found": len(event_ids),
             "recordings_sent": 0,
             "already_sent": 0,
@@ -348,7 +478,7 @@ class MeetingRecordingDispatchService:
             extra={
                 "event": "meeting_recording_fallback_candidates_loaded",
                 "organisation_id": str(self.organisation_id),
-                "meetings_found": upcoming_deal_meetings,
+                "meetings_found": upcoming_integration_meetings,
                 "actionable_meetings_found": len(event_ids),
             },
         )
@@ -403,23 +533,38 @@ class MeetingRecordingDispatchService:
         return summary
 
     async def _count_upcoming_deal_meetings(self) -> int:
-        """Count upcoming active deal-linked meetings, regardless of bot state."""
+        """Compatibility wrapper for older tests and callers."""
+        return await self._count_upcoming_integration_meetings()
+
+    async def _count_upcoming_integration_meetings(self) -> int:
+        """Count upcoming active integration meetings in the fallback scan window."""
         now = datetime.now(UTC)
+        window_end = now + timedelta(days=3)
 
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = (
                 select(func.count(col(CalendarEvent.event_id).distinct()))
                 .select_from(CalendarEvent)
                 .join(
-                    CalendarEventDealAssociation,
-                    col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
+                    CalendarEventUserState,
+                    col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
+                )
+                .join(
+                    KnowledgeIntegration,
+                    col(KnowledgeIntegration.integration_id)
+                    == col(CalendarEventUserState.integration_id),
                 )
                 .where(
                     col(CalendarEvent.organisation_id) == self.organisation_id,
                     col(CalendarEvent.start_at) > now,
+                    col(CalendarEvent.start_at) < window_end,
                     col(CalendarEvent.conference_link).is_not(None),
-                    col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                    col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+                    col(CalendarEventUserState.is_deleted).is_(False),
+                    col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+                    col(KnowledgeIntegration.is_active).is_(True),
+                    col(KnowledgeIntegration.integration_type).in_(
+                        ACTIVE_CALENDAR_INTEGRATION_TYPES
+                    ),
                     or_(
                         col(CalendarEvent.status).is_(None),
                         col(CalendarEvent.status) != "cancelled",
@@ -711,9 +856,35 @@ class MeetingRecordingDispatchService:
             return result.scalar_one_or_none()
         return None
 
+    async def _has_active_calendar_integration(self, calendar_event_id: UUID) -> bool:
+        """Verify a dispatch task still maps to an active Google/Microsoft calendar."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = (
+                select(col(CalendarEventUserState.state_id))
+                .join(
+                    KnowledgeIntegration,
+                    col(KnowledgeIntegration.integration_id)
+                    == col(CalendarEventUserState.integration_id),
+                )
+                .where(
+                    col(CalendarEventUserState.event_id) == calendar_event_id,
+                    col(CalendarEventUserState.is_deleted).is_(False),
+                    col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+                    col(KnowledgeIntegration.is_active).is_(True),
+                    col(KnowledgeIntegration.integration_type).in_(
+                        ACTIVE_CALENDAR_INTEGRATION_TYPES
+                    ),
+                )
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+        return False
+
     async def _list_unsent_upcoming_event_ids(self) -> list[UUID]:
-        """Return ordered upcoming deal-linked events that are missing send completion."""
+        """Return ordered upcoming integration events that are missing send completion."""
         now = datetime.now(UTC)
+        window_end = now + timedelta(days=3)
 
         async for session in acquire_org_async_session(self.organisation_id):
             # Distinct+order_by is required for PostgreSQL compatibility and stable
@@ -723,8 +894,13 @@ class MeetingRecordingDispatchService:
                 select(col(CalendarEvent.event_id), col(CalendarEvent.start_at))
                 .distinct()
                 .join(
-                    CalendarEventDealAssociation,
-                    col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
+                    CalendarEventUserState,
+                    col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
+                )
+                .join(
+                    KnowledgeIntegration,
+                    col(KnowledgeIntegration.integration_id)
+                    == col(CalendarEventUserState.integration_id),
                 )
                 .outerjoin(
                     MeetingRecordingSession,
@@ -738,10 +914,14 @@ class MeetingRecordingDispatchService:
                 .where(
                     col(CalendarEvent.organisation_id) == self.organisation_id,
                     col(CalendarEvent.start_at) > now,
+                    col(CalendarEvent.start_at) < window_end,
                     col(CalendarEvent.conference_link).is_not(None),
-                    # Only deal-linked active meetings should generate bots.
-                    col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                    col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+                    col(CalendarEventUserState.is_deleted).is_(False),
+                    col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+                    col(KnowledgeIntegration.is_active).is_(True),
+                    col(KnowledgeIntegration.integration_type).in_(
+                        ACTIVE_CALENDAR_INTEGRATION_TYPES
+                    ),
                     or_(
                         col(CalendarEvent.status).is_(None),
                         col(CalendarEvent.status) != "cancelled",
