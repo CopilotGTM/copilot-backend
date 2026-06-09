@@ -155,6 +155,9 @@ workers-light = [
     # Azure Storage (for attachments in chat worker)
     "azure-storage-blob==12.25.1",
 
+    # Deal-worker sends meeting-summary notifications from Celery, not the API image.
+    "resend==2.11.0",
+
     # Thumbnail generation for chat attachments
     "Pillow==10.4.0",
     "PyMuPDF==1.26.3",
