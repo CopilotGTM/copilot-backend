@@ -147,6 +147,15 @@ class CreateMeetingResponse(BaseModel):
     bot_dispatch: dict[str, Any] | None = None
 
 
+class MeetingTranscriptSegment(BaseModel):
+    """Compact transcript segment exposed by recording detail."""
+
+    start_time: float | None = None
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+    text: str
+
+
 class MeetingRecordingResponse(BaseModel):
     """Recall-bot recording detail for the recording intelligence page."""
 
@@ -158,3 +167,4 @@ class MeetingRecordingResponse(BaseModel):
     transcript_artifact: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
     action_items: list[dict[str, Any]] = Field(default_factory=list)
+    transcript_segments: list[MeetingTranscriptSegment] = Field(default_factory=list)

@@ -432,6 +432,12 @@ type MeetingRecordingResponse = {
   transcript_artifact: Record<string, unknown> | null;
   summary: Record<string, unknown> | null;
   action_items: Array<Record<string, unknown>>;
+  transcript_segments: Array<{
+    start_time: number | null;
+    speaker_id: string | null;
+    speaker_name: string | null;
+    text: string;
+  }>;
 };
 ```
 
@@ -445,7 +451,9 @@ Frontend behavior:
 
 - Use `playback_url` directly as a fresh Recall playback/download URL.
 - Do not treat `playback_url` as permanent; fetch this endpoint again when opening playback.
-- Use `summary` and `action_items` for the right-side intelligence panel when present.
+- Use `summary` and structured `action_items` for the intelligence panel when present.
+- Use `transcript_segments` for transcript rows. The backend returns `[]` when no segment rows
+  are available and does not expose the raw full transcript text.
 - Use `transcript_artifact` for transcript availability metadata.
 
 If no playable Recall video artifact is available, backend returns `409`.

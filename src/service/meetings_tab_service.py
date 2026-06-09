@@ -29,6 +29,7 @@ from src.api.schemas.meetings_tab_models import (
     MeetingRecordingResponse,
     MeetingsPage,
     MeetingsView,
+    MeetingTranscriptSegment,
 )
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -47,6 +48,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
+    TranscriptSegment,
 )
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -372,6 +374,7 @@ class MeetingsTabService:
         provider_payload = dict(recording.provider_payload or {})
         bot_snapshot = provider_payload.get("bot_snapshot")
         provider_session_id = recording.provider_session_id
+        transcript_segments = await self._load_transcript_segments(meeting)
         response_payload = {
             "event_id": event.event_id,
             "recording_status": self._enum_value(recording.status) if recording.status else None,
@@ -388,6 +391,7 @@ class MeetingsTabService:
             "action_items": self._action_items_from_summary(
                 deal_context_assoc.meeting_followup_data if deal_context_assoc else None
             ),
+            "transcript_segments": transcript_segments,
         }
 
         # Release the org session before calling Recall. Playback resolution can
@@ -423,7 +427,30 @@ class MeetingsTabService:
             transcript_artifact=response_payload["transcript_artifact"],
             summary=response_payload["summary"],
             action_items=response_payload["action_items"],
+            transcript_segments=response_payload["transcript_segments"],
         )
+
+    async def _load_transcript_segments(
+        self, meeting: Meeting | None
+    ) -> list[MeetingTranscriptSegment]:
+        meeting_id = getattr(meeting, "meeting_id", None)
+        if meeting_id is None:
+            return []
+        stmt = (
+            select(TranscriptSegment)
+            .where(col(TranscriptSegment.meeting_id) == meeting_id)
+            .order_by(col(TranscriptSegment.segment_index))
+        )
+        result = await self.session.execute(stmt)
+        return [
+            MeetingTranscriptSegment(
+                start_time=segment.start_time_seconds,
+                speaker_id=segment.speaker_external_id,
+                speaker_name=segment.speaker_name,
+                text=segment.content,
+            )
+            for segment in result.scalars().all()
+        ]
 
     def _meeting_rows_stmt(self):
         """Build the user-owned meeting query shared by list/detail endpoints."""
