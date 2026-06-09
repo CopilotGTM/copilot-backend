@@ -126,8 +126,9 @@ timezone, and sender are all resolved.
 2. Choose a safe title.
    - Prefer a user-provided topic: "pricing review", "contract sync", "Exiter review".
    - If a person name is the only context, use "Meeting with {Name}".
-   - If the attendee is only an email address, use `Meeting`.
-   - If no topic exists, use `Meeting`.
+   - If the attendee is only an email address and no topic exists, ask for the title
+     together with any other missing fields such as sender.
+   - If no topic or person context exists, ask for the title.
    - Never put an email address in the title.
    - Do not ask for a title first when attendee, time, and meeting intent are clear.
 
@@ -150,8 +151,10 @@ timezone, and sender are all resolved.
    - Pull agenda points from deal notes, recent meetings, emails, or current conversation.
 
 6. Ask one missing-fields question if blocked.
-   - If sender mailbox, date/time, or attendee identity is missing or ambiguous, ask for all
-     missing fields in one message.
+   - If sender mailbox, title, date/time, or attendee identity is missing or ambiguous, ask
+     for all missing fields in one message.
+   - If the attendee is an email address and the user did not provide a real title, ask for
+     the title; do not invent "Meeting with {email}".
    - "Yes" does not answer a sender mailbox question. If sender is missing and the user says
      "yes", ask for the sender email again.
    - If the user gives missing details, continue with `confirmed=False`; do not treat those
@@ -174,7 +177,7 @@ timezone, and sender are all resolved.
 | User request | Preferred handling |
 | --- | --- |
 | "Create a meeting with Saksham from 8 to 9 PM" | Use title "Meeting with Saksham"; pass `attendees=["Saksham"]` so the invite tool searches stakeholders, CRM contacts, CRM users, and internal users. If date and sender are missing, ask once: "Should I schedule this for today from 8-9 PM, and which sender mailbox should I use?" |
-| "Send a meeting to nikhilsinghal005@gmail.com from 5-6 PM today" | Use title `Meeting`, attendee `nikhilsinghal005@gmail.com`, and ask only for sender if sender is missing. Never title it "Meeting with nikhilsinghal005@gmail.com". |
+| "Send a meeting to nikhilsinghal005@gmail.com from 5-6 PM today" | Ask once for the missing title and sender: "What title should I use, and which sender mailbox should I send it from?" Never title it "Meeting with nikhilsinghal005@gmail.com". |
 | User replies "Yes" after sender is requested | Say the sender is still missing. Do not treat "Yes" as a sender or final approval. |
 | "Schedule Exiter review with Saksham Bhutani Saturday 8-9 PM" | Call `send_calendar_invite` with title "Exiter review", local Saturday start/end, and attendee name. If Saksham resolves to an internal user, show confirmation before sending. |
 | "Send meeting to all stakeholders tomorrow 4 PM" | Resolve active deal, call `send_calendar_invite` with `attendees=["all stakeholders"]` and `deal_id`; confirm the expanded recipient list before sending. |

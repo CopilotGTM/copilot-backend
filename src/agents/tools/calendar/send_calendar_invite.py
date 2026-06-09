@@ -29,6 +29,11 @@ _GENERIC_EMAIL_TITLE_PREFIXES = (
     "sync with",
     "meet with",
 )
+_GENERIC_EMAIL_ONLY_TITLES = {
+    "meeting",
+    "call",
+    "sync",
+}
 
 
 def _parse_datetime(
@@ -84,6 +89,39 @@ def _looks_like_email(value: str | None) -> bool:
     if not value:
         return False
     return bool(_EMAIL_PATTERN.fullmatch(value.strip()))
+
+
+def _attendees_are_only_direct_emails(attendees: list[str] | list[dict[str, Any]]) -> bool:
+    if not attendees:
+        return False
+
+    attendee_values: list[str] = []
+    for attendee in attendees:
+        if isinstance(attendee, str):
+            attendee_values.append(attendee)
+            continue
+        email = attendee.get("email")
+        if isinstance(email, str):
+            attendee_values.append(email)
+            continue
+        return False
+
+    return bool(attendee_values) and all(_looks_like_email(value) for value in attendee_values)
+
+
+def _title_needs_clarification(
+    *,
+    title: str,
+    attendees: list[str] | list[dict[str, Any]],
+) -> bool:
+    cleaned = str(title or "").strip()
+    if not cleaned:
+        return True
+    if _EMAIL_PATTERN.search(cleaned):
+        return True
+    return cleaned.lower() in _GENERIC_EMAIL_ONLY_TITLES and _attendees_are_only_direct_emails(
+        attendees
+    )
 
 
 def _normalize_invite_title(title: str) -> str:
@@ -152,7 +190,6 @@ async def send_calendar_invite(
     if not user_id:
         return {"status": "error", "message": "Cannot send invite: user not identified."}
 
-    title = _normalize_invite_title(title)
     if sender_email and not _looks_like_email(sender_email):
         return {
             "status": "needs_clarification",
@@ -160,6 +197,34 @@ async def send_calendar_invite(
             "message": "I still need a valid sender email address for this invite.",
             "missing_fields": ["sender_email"],
         }
+
+    missing_detail_fields: list[str] = []
+    if _title_needs_clarification(title=title, attendees=attendees):
+        missing_detail_fields.append("title")
+    if not sender_email and not confirmed:
+        missing_detail_fields.append("sender_email")
+    if missing_detail_fields:
+        if missing_detail_fields == ["sender_email"]:
+            return {
+                "status": "needs_clarification",
+                "code": "calendar_sender_email_required",
+                "message": "I still need the sender email address for this invite.",
+                "missing_fields": missing_detail_fields,
+            }
+        if missing_detail_fields == ["title"]:
+            return {
+                "status": "needs_clarification",
+                "code": "calendar_invite_title_required",
+                "message": "I still need a real meeting title before I can create this invite.",
+                "missing_fields": missing_detail_fields,
+            }
+        return {
+            "status": "needs_clarification",
+            "code": "calendar_invite_details_required",
+            "message": "I still need the meeting title and sender email address for this invite.",
+            "missing_fields": missing_detail_fields,
+        }
+    title = _normalize_invite_title(title)
 
     metadata = context.metadata or {}
     timezone_name, timezone_conflict = _resolve_invite_timezone(
