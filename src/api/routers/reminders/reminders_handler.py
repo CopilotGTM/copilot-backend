@@ -43,6 +43,7 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 
 reminders_router = APIRouter()
 
+
 def _provider_name(provider) -> str:
     """Normalize provider values returned by SQLModel/SQLAlchemy queries."""
     return provider.value if hasattr(provider, "value") else str(provider)

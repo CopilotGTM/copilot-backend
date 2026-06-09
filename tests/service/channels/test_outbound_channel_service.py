@@ -226,7 +226,9 @@ async def test_send_text_to_all_available_returns_partial_success(
     sent: list[tuple[str, str]] = []
 
     class FakeTeamsBotService:
-        async def send_proactive_message(self, service_url: str, conversation_id: str, message: str):
+        async def send_proactive_message(
+            self, service_url: str, conversation_id: str, message: str
+        ):
             sent.append(("teams", message))
             return True
 
@@ -269,7 +271,9 @@ async def test_send_text_rejects_incomplete_target_without_provider_call(
     called = False
 
     class FakeTeamsBotService:
-        async def send_proactive_message(self, service_url: str, conversation_id: str, message: str):
+        async def send_proactive_message(
+            self, service_url: str, conversation_id: str, message: str
+        ):
             nonlocal called
             called = True
             return True
