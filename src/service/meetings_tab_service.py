@@ -206,7 +206,7 @@ class MeetingsTabService:
         """Return drawer-ready detail for one user-owned calendar event."""
         row = await self._get_meeting_row(event_id)
         domains = await self._load_org_domains()
-        item = self._format_row(row, domains)
+        item = self._format_row(row, domains, include_summary_data=True)
         event, assoc, deal, _recording, _meeting = row
         return MeetingDetail(
             **item.model_dump(),
@@ -359,7 +359,7 @@ class MeetingsTabService:
     async def get_recording(self, event_id: UUID) -> MeetingRecordingResponse:
         """Return Recall-bot recording playback and transcript metadata."""
         row = await self._get_meeting_row(event_id)
-        event, assoc, deal, recording, _meeting = row
+        event, assoc, deal, recording, meeting = row
         if recording is None:
             raise MeetingsTabServiceError("Recording is not ready", 409, code="recording_not_ready")
 
@@ -380,7 +380,11 @@ class MeetingsTabService:
             else None,
             "provider_session_id": provider_session_id,
             "transcript_artifact": provider_payload.get("transcript_artifact"),
-            "summary": deal_context_assoc.meeting_summary_data if deal_context_assoc else None,
+            "summary": deal_context_assoc.meeting_summary_data
+            if deal_context_assoc
+            else meeting.meeting_summary_data
+            if meeting
+            else None,
             "action_items": self._action_items_from_summary(
                 deal_context_assoc.meeting_followup_data if deal_context_assoc else None
             ),
@@ -597,7 +601,13 @@ class MeetingsTabService:
             output.append(row)
         return output
 
-    def _format_row(self, row: Any, org_domains: set[str]) -> MeetingListItem:
+    def _format_row(
+        self,
+        row: Any,
+        org_domains: set[str],
+        *,
+        include_summary_data: bool = False,
+    ) -> MeetingListItem:
         event, assoc, deal, recording, meeting = row
         attendees = [
             MeetingAttendeeItem(
@@ -612,6 +622,27 @@ class MeetingsTabService:
         deal_context_assoc = (
             assoc
             if linked_record and linked_record.record_type == MeetingLinkedRecordType.DEAL
+            else None
+        )
+        meeting_summary_status = (
+            deal_context_assoc.meeting_summary_status
+            if deal_context_assoc is not None
+            else meeting.meeting_summary_status
+            if meeting is not None
+            else None
+        )
+        meeting_summary_data = (
+            deal_context_assoc.meeting_summary_data
+            if deal_context_assoc is not None
+            else meeting.meeting_summary_data
+            if meeting is not None
+            else None
+        )
+        meeting_summary_generated_at = (
+            getattr(deal_context_assoc, "meeting_summary_generated_at", None)
+            if deal_context_assoc is not None
+            else meeting.meeting_summary_generated_at
+            if meeting is not None
             else None
         )
         is_external = self._is_external_meeting(event, org_domains)
@@ -636,8 +667,10 @@ class MeetingsTabService:
             recording_availability=self._recording_availability(recording),
             transcript_status=self._enum_value(recording.transcript_status) if recording else None,
             has_recording=recording is not None,
-            has_summary=deal_context_assoc is not None
-            and deal_context_assoc.meeting_summary_status == GenerationStatus.COMPLETED,
+            has_summary=meeting_summary_status == GenerationStatus.COMPLETED,
+            meeting_summary_status=self._enum_value(meeting_summary_status),
+            meeting_summary_data=meeting_summary_data if include_summary_data else None,
+            meeting_summary_generated_at=meeting_summary_generated_at,
             has_prep=deal_context_assoc is not None
             and deal_context_assoc.meeting_prep_status == GenerationStatus.COMPLETED,
             next_action=self._next_action(deal_context_assoc, meeting, recording),

@@ -50,8 +50,8 @@ def test_email_rendering_links_to_app_without_embedding_summary_content(monkeypa
     rendered = service.render_email(context, recipient)
 
     assert rendered.subject == "Meeting summary is ready: Pricing Review"
-    assert f"/deals/{deal_id}/briefing-room?meeting={event_id}&amp;summary=1" in rendered.html
-    assert f"/deals/{deal_id}/briefing-room?meeting={event_id}&summary=1" in rendered.text
+    assert f"/meetings?event_id={event_id}&amp;section=summary" in rendered.html
+    assert f"/meetings?event_id={event_id}&section=summary" in rendered.text
     assert "Customer asked for a confidential discount" not in rendered.html
     assert "Customer asked for a confidential discount" not in rendered.text
 
@@ -85,10 +85,7 @@ def test_channel_rendering_links_to_app_without_embedding_summary_content(monkey
     text = service.render_channel_text(context)
 
     assert "Meeting summary is ready" in text
-    assert (
-        f"https://app.example.test/deals/{deal_id}/briefing-room?meeting={event_id}&summary=1"
-        in text
-    )
+    assert f"https://app.example.test/meetings?event_id={event_id}&section=summary" in text
     assert "Do not post this generated summary to channels" not in text
 
 
