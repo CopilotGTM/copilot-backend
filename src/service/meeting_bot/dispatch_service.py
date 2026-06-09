@@ -123,6 +123,8 @@ class MeetingRecordingDispatchService:
                     provider_session_id=existing_session.provider_session_id,
                     meeting_url=meeting_url,
                     join_at=join_at,
+                    calendar_event_id=calendar_event_id,
+                    dedupe_key=getattr(existing_session, "dedupe_key", None),
                 ):
                     return {
                         "status": "already_sent",
@@ -236,12 +238,15 @@ class MeetingRecordingDispatchService:
                 )
                 attempt_adopt_before_create = True
             else:
-                if await self._provider_session_matches(
+                provider_session_status = await self._provider_session_status(
                     provider=provider,
                     provider_session_id=session_record.provider_session_id,
                     meeting_url=meeting_url,
                     join_at=join_at,
-                ):
+                    calendar_event_id=calendar_event_id,
+                    dedupe_key=session_record.dedupe_key,
+                )
+                if provider_session_status == "matches":
                     return {
                         "status": "already_sent",
                         "calendar_event_id": str(calendar_event_id),
@@ -252,8 +257,17 @@ class MeetingRecordingDispatchService:
                     calendar_event_id=calendar_event_id,
                     meeting_url=meeting_url,
                     join_at=join_at,
-                    skip_cancel=True,
+                    expected_provider_session_id=session_record.provider_session_id,
+                    expected_meeting_url=session_record.meeting_url,
+                    expected_join_at=session_record.join_at,
+                    expected_sent_to_provider_at=session_record.sent_to_provider_at,
+                    skip_cancel=provider_session_status == "missing",
                 )
+                if session_record is None:
+                    return {
+                        "status": "already_sent",
+                        "calendar_event_id": str(calendar_event_id),
+                    }
                 attempt_adopt_before_create = True
 
         # Mark queued before the provider call so operators can distinguish
@@ -653,21 +667,52 @@ class MeetingRecordingDispatchService:
         meeting_url: str,
         join_at: datetime,
         skip_cancel: bool = False,
-    ) -> MeetingRecordingSession:
+        expected_provider_session_id: str | None = None,
+        expected_meeting_url: str | None = None,
+        expected_join_at: datetime | None = None,
+        expected_sent_to_provider_at: datetime | None = None,
+    ) -> MeetingRecordingSession | None:
         """Move local state to send-ready after provider cleanup or stale detection."""
-        if not skip_cancel:
+        if (
+            expected_meeting_url is not None
+            and expected_join_at is not None
+            and expected_sent_to_provider_at is not None
+        ):
+            reset_session_record = await self._session_service.reset_for_resend_if_current(
+                session_record.session_id,
+                expected_provider_session_id=expected_provider_session_id,
+                expected_meeting_url=expected_meeting_url,
+                expected_join_at=expected_join_at,
+                expected_sent_to_provider_at=expected_sent_to_provider_at,
+                meeting_url=meeting_url,
+                join_at=join_at,
+            )
+            if (
+                reset_session_record is not None
+                and "_reset_claimed" in reset_session_record.__dict__
+                and not bool(reset_session_record.__dict__["_reset_claimed"])
+            ):
+                return None
+        else:
+            if not skip_cancel:
+                await self._cancel_existing_provider_session_if_possible(
+                    provider=provider,
+                    calendar_event_id=calendar_event_id,
+                    provider_session_id=session_record.provider_session_id,
+                )
+            reset_session_record = await self._session_service.reset_for_resend(
+                session_record.session_id,
+                meeting_url=meeting_url,
+                join_at=join_at,
+            )
+        if not reset_session_record:
+            raise RuntimeError("Failed to reset meeting recording session for resend")
+        if not skip_cancel and expected_meeting_url is not None:
             await self._cancel_existing_provider_session_if_possible(
                 provider=provider,
                 calendar_event_id=calendar_event_id,
                 provider_session_id=session_record.provider_session_id,
             )
-        reset_session_record = await self._session_service.reset_for_resend(
-            session_record.session_id,
-            meeting_url=meeting_url,
-            join_at=join_at,
-        )
-        if not reset_session_record:
-            raise RuntimeError("Failed to reset meeting recording session for resend")
 
         logger.info(
             "Meeting recording session reset and marked for resend",
@@ -696,6 +741,8 @@ class MeetingRecordingDispatchService:
                 provider=provider,
                 meeting_url=meeting_url,
                 join_at=join_at,
+                calendar_event_id=calendar_event_id,
+                dedupe_key=session_record.dedupe_key,
             )
             if matching_bot:
                 await self._adopt_provider_session(
@@ -733,6 +780,8 @@ class MeetingRecordingDispatchService:
                 provider=provider,
                 meeting_url=meeting_url,
                 join_at=join_at,
+                calendar_event_id=calendar_event_id,
+                dedupe_key=session_record.dedupe_key,
             )
             if matching_bot:
                 await self._adopt_provider_session(
@@ -774,6 +823,8 @@ class MeetingRecordingDispatchService:
         provider_session_id: str | None,
         meeting_url: str,
         join_at: datetime,
+        calendar_event_id: UUID,
+        dedupe_key: str | None,
     ) -> bool:
         """Verify the local provider id still points at the expected Recall bot."""
         if not provider_session_id:
@@ -792,7 +843,52 @@ class MeetingRecordingDispatchService:
                 )
                 return False
             raise
-        return self._bot_matches(bot_payload, meeting_url=meeting_url, join_at=join_at)
+        return self._bot_matches(
+            bot_payload,
+            meeting_url=meeting_url,
+            join_at=join_at,
+            calendar_event_id=calendar_event_id,
+            dedupe_key=dedupe_key,
+            fetched_by_provider_id=True,
+        )
+
+    async def _provider_session_status(
+        self,
+        *,
+        provider: RecallMeetingRecordingProvider,
+        provider_session_id: str | None,
+        meeting_url: str,
+        join_at: datetime,
+        calendar_event_id: UUID,
+        dedupe_key: str | None,
+    ) -> str:
+        """Return whether the stored provider id is matching, missing, or mismatched."""
+        if not provider_session_id:
+            return "mismatch"
+        try:
+            bot_payload = await provider.fetch_session(provider_session_id)
+        except RecallProviderError as error:
+            if error.status_code == 404:
+                logger.warning(
+                    "Meeting recording provider session missing during reconciliation",
+                    extra={
+                        "event": "meeting_recording_provider_session_missing",
+                        "organisation_id": str(self.organisation_id),
+                        "provider_session_id": provider_session_id,
+                    },
+                )
+                return "missing"
+            raise
+        if self._bot_matches(
+            bot_payload,
+            meeting_url=meeting_url,
+            join_at=join_at,
+            calendar_event_id=calendar_event_id,
+            dedupe_key=dedupe_key,
+            fetched_by_provider_id=True,
+        ):
+            return "matches"
+        return "mismatch"
 
     async def _find_matching_provider_session(
         self,
@@ -800,12 +896,21 @@ class MeetingRecordingDispatchService:
         provider: RecallMeetingRecordingProvider,
         meeting_url: str,
         join_at: datetime,
+        calendar_event_id: UUID,
+        dedupe_key: str | None,
     ) -> dict[str, Any] | None:
         """Find an upcoming Recall bot for the same meeting URL and start time."""
         window_start = self._normalize_utc(join_at) - timedelta(minutes=15)
         bots = await provider.list_sessions(join_at_after=window_start, meeting_url=meeting_url)
         for bot_payload in bots:
-            if self._bot_matches(bot_payload, meeting_url=meeting_url, join_at=join_at):
+            if self._bot_matches(
+                bot_payload,
+                meeting_url=meeting_url,
+                join_at=join_at,
+                calendar_event_id=calendar_event_id,
+                dedupe_key=dedupe_key,
+                fetched_by_provider_id=False,
+            ):
                 return bot_payload
         return None
 
@@ -1047,22 +1152,37 @@ class MeetingRecordingDispatchService:
             return str(value.value)
         return str(value)
 
-    @classmethod
     def _bot_matches(
-        cls,
+        self,
         bot_payload: dict[str, Any],
         *,
         meeting_url: str,
         join_at: datetime,
+        calendar_event_id: UUID,
+        dedupe_key: str | None,
+        fetched_by_provider_id: bool,
     ) -> bool:
-        """Compare Recall bot identity using URL plus meeting instance time."""
-        bot_url = bot_payload.get("meeting_url")
-        bot_join_at = cls._parse_provider_datetime(bot_payload.get("join_at"))
-        if bot_url != meeting_url or bot_join_at is None:
+        """Compare Recall bot identity without relying on Teams URL formatting."""
+        bot_join_at = self._parse_provider_datetime(bot_payload.get("join_at"))
+        if bot_join_at is None:
             return False
-        return cls._normalize_utc(bot_join_at).replace(microsecond=0) == cls._normalize_utc(
+        if self._normalize_utc(bot_join_at).replace(microsecond=0) != self._normalize_utc(
             join_at
-        ).replace(microsecond=0)
+        ).replace(microsecond=0):
+            return False
+
+        metadata = bot_payload.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            return (
+                metadata.get("organisation_id") == str(self.organisation_id)
+                and metadata.get("calendar_event_id") == str(calendar_event_id)
+                and (dedupe_key is None or metadata.get("dedupe_key") == dedupe_key)
+            )
+
+        bot_url = bot_payload.get("meeting_url")
+        if isinstance(bot_url, str):
+            return bot_url == meeting_url
+        return fetched_by_provider_id
 
     @staticmethod
     def _parse_provider_datetime(value: Any) -> datetime | None:
