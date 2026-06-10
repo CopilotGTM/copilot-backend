@@ -268,6 +268,7 @@ class EmailSyncService:
             records_failed = 0
             created_count = 0
             updated_count = 0
+            changed_email_ids: list[str] = []
 
             for idx, message_data in enumerate(message_list):
                 try:
@@ -287,6 +288,7 @@ class EmailSyncService:
                     else:
                         updated_count += 1
 
+                    changed_email_ids.append(str(message.email_id))
                     records_processed += 1
 
                     if records_processed % 50 == 0:
@@ -349,6 +351,7 @@ class EmailSyncService:
                 "records_failed": records_failed,
                 "created_count": created_count,
                 "updated": updated_count,
+                "changed_email_ids": changed_email_ids,
             }
 
         except Exception as e:
@@ -644,6 +647,7 @@ class EmailSyncService:
                     "created_count": 0,
                     "updated": 0,
                     "skipped": 0,
+                    "changed_email_ids": [],
                 }
 
             # Track action counts for logging (observability only)
@@ -867,6 +871,7 @@ class EmailSyncService:
             created_count = 0
             updated_count = 0
             skipped_count = 0
+            changed_email_ids: list[str] = []
             changed_messages: list[tuple[dict[str, Any], str]] = []
             change_kind_by_external_id: dict[str, str] = {}
 
@@ -913,7 +918,13 @@ class EmailSyncService:
                     records_failed += 1
 
             if changed_messages:
-                processed, failed, created, updated = await self._persist_incremental_messages(
+                (
+                    processed,
+                    failed,
+                    created,
+                    updated,
+                    persisted_email_ids,
+                ) = await self._persist_incremental_messages(
                     integration_id,
                     changed_messages,
                     provider,
@@ -924,6 +935,7 @@ class EmailSyncService:
                 records_failed += failed
                 created_count += created
                 updated_count += updated
+                changed_email_ids.extend(persisted_email_ids)
 
             # Persist all message upserts before final run bookkeeping.
             await self.db.commit()
@@ -971,6 +983,7 @@ class EmailSyncService:
                 "created_count": created_count,
                 "updated": updated_count,
                 "skipped": skipped_count,
+                "changed_email_ids": changed_email_ids,
                 "action_counts": action_counts.to_dict(),
             }
 
@@ -1008,7 +1021,7 @@ class EmailSyncService:
         provider: str,
         folder_id: UUID | None,
         change_kind_by_external_id: dict[str, str],
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, list[str]]:
         """Persist changed messages with batch speed and item-level failure recovery.
 
         The optimistic path keeps the N+1 fix. The fallback restores the old
@@ -1022,7 +1035,7 @@ class EmailSyncService:
                 folder_id,
             )
             return self._count_written_message_changes(
-                written.keys(),
+                written.values(),
                 change_kind_by_external_id,
             )
         except Exception as e:
@@ -1056,16 +1069,17 @@ class EmailSyncService:
         provider: str,
         folder_id: UUID | None,
         change_kind_by_external_id: dict[str, str],
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, list[str]]:
         """Persist changed messages one at a time after batch failure."""
         records_processed = 0
         records_failed = 0
         created_count = 0
         updated_count = 0
+        changed_email_ids: list[str] = []
 
         for idx, (message_data, external_id) in enumerate(changed_messages):
             try:
-                await self._upsert_message(
+                message = await self._upsert_message(
                     integration_id,
                     message_data,
                     provider,
@@ -1074,6 +1088,7 @@ class EmailSyncService:
                 )
                 await self.db.commit()
                 records_processed += 1
+                changed_email_ids.append(str(message.email_id))
                 if change_kind_by_external_id.get(external_id) == "created":
                     created_count += 1
                 else:
@@ -1093,26 +1108,29 @@ class EmailSyncService:
                     await self.db.rollback()
                 records_failed += 1
 
-        return records_processed, records_failed, created_count, updated_count
+        return records_processed, records_failed, created_count, updated_count, changed_email_ids
 
     @staticmethod
     def _count_written_message_changes(
-        external_ids: Iterable[str],
+        messages: Iterable[Email],
         change_kind_by_external_id: dict[str, str],
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, list[str]]:
         """Convert persisted external IDs into sync counters."""
         records_processed = 0
         created_count = 0
         updated_count = 0
+        changed_email_ids: list[str] = []
 
-        for external_id in external_ids:
+        for message in messages:
+            external_id = message.external_message_id
             records_processed += 1
+            changed_email_ids.append(str(message.email_id))
             if change_kind_by_external_id.get(external_id) == "created":
                 created_count += 1
             else:
                 updated_count += 1
 
-        return records_processed, 0, created_count, updated_count
+        return records_processed, 0, created_count, updated_count, changed_email_ids
 
     async def _load_existing_folders_by_external_ids(
         self,

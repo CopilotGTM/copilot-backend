@@ -55,6 +55,9 @@ from src.service.integrations.sync_health import (
     record_sync_failure,
     record_sync_success,
 )
+from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
+    CommunicationDealMappingTriggerService,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 
@@ -113,7 +116,8 @@ def sync_email_org_task(
             "integration_results": [...]
         }
     """
-    started_at = datetime.now(UTC).isoformat()
+    started_at_dt = datetime.now(UTC)
+    started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     # Track which integration is being synced so the timeout handler can
     # record a failure against the right integration.
@@ -206,6 +210,7 @@ def sync_email_org_task(
 
         for info in integration_list:
             current_integration_id[0] = info.integration_id
+            integration_sync_started_at = datetime.now(UTC)
             logger.info(
                 "Syncing email integration",
                 extra={
@@ -222,11 +227,26 @@ def sync_email_org_task(
                     integration_id=info.integration_id,
                 )
 
+                communication_deal_mapping = None
                 if sync_result.get("status") == "success":
                     await record_sync_success(
                         organisation_id=org_id,
                         integration_id=info.integration_id,
                     )
+                    if sync_result.get("messages_synced", 0) > 0 or sync_result.get(
+                        "changed_email_ids"
+                    ):
+                        communication_deal_mapping = (
+                            await CommunicationDealMappingTriggerService(
+                                org_id
+                            ).trigger_for_changed_communications(
+                                integration_id=info.integration_id,
+                                source_kind="email",
+                                trigger_source="incremental_sync",
+                                changed_record_ids=sync_result.get("changed_email_ids", []),
+                                sync_started_at=integration_sync_started_at,
+                            )
+                        ).to_dict()
                     successful += 1
                     total_folders += sync_result.get("folders_synced", 0)
                     total_messages += sync_result.get("messages_synced", 0)
@@ -257,6 +277,7 @@ def sync_email_org_task(
                         "messages_synced": sync_result.get("messages_synced", 0),
                         "error": sync_result.get("error"),
                         "failure_type": sync_result.get("error_type"),
+                        "communication_deal_mapping": communication_deal_mapping,
                     }
                 )
 
@@ -327,18 +348,6 @@ def sync_email_org_task(
             },
         )
 
-        # Dispatch Task 3: Match emails to deals
-        if total_messages > 0:
-            app.send_task(
-                "deal.match_email_to_deals_org",
-                args=[organisation_id],
-                queue="deal",
-            )
-            logger.info(
-                "Dispatched email matching task for org",
-                extra={"organisation_id": organisation_id},
-            )
-
         return {
             "status": status,
             "organisation_id": organisation_id,
@@ -392,7 +401,8 @@ def sync_email_org_task(
             extra={"organisation_id": organisation_id, "error": str(e)},
         )
 
-        # Check if we should retry
+        # Org fanout can be retried as a unit; per-integration writes are
+        # idempotent and failed integrations are recorded individually above.
         if self.request.retries < self.max_retries:
             logger.info(
                 "Retrying email org sync",

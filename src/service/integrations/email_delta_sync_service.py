@@ -614,6 +614,7 @@ class EmailDeltaSyncService:
                 "integration_type": sync_data.integration_type_value,
                 "folders_synced": 0,
                 "messages_synced": 0,
+                "changed_email_ids": [],
                 "folder_results": [],
                 "skipped": True,
                 "skip_reason": "gmail_read_scope_missing",
@@ -712,6 +713,7 @@ class EmailDeltaSyncService:
                 "integration_type": sync_data.integration_type_value,
                 "folders_synced": folders_synced,
                 "messages_synced": 0,
+                "changed_email_ids": [],
                 "folder_results": [],
             }
 
@@ -721,6 +723,7 @@ class EmailDeltaSyncService:
         # ─────────────────────────────────────────────────────────────────
         folder_results = []
         total_messages = 0
+        changed_email_ids: list[str] = []
 
         for folder_data in folders_to_sync:
             folder_result = await self._sync_folder_messages_fresh_session(
@@ -732,6 +735,7 @@ class EmailDeltaSyncService:
             )
             folder_results.append(folder_result)
             total_messages += folder_result.get("messages_synced", 0)
+            changed_email_ids.extend(folder_result.get("changed_email_ids", []))
 
         # ─────────────────────────────────────────────────────────────────
         # Phase 5: Update integration metadata (delta links + last_synced_at)
@@ -812,6 +816,7 @@ class EmailDeltaSyncService:
             "integration_type": sync_data.integration_type_value,
             "folders_synced": folders_synced,
             "messages_synced": total_messages,
+            "changed_email_ids": list(dict.fromkeys(changed_email_ids)),
             "folder_results": folder_results,
         }
 
@@ -863,6 +868,7 @@ class EmailDeltaSyncService:
                     "folder_name": folder_name,
                     "folder_type": folder_data.folder_type,
                     "messages_synced": 0,
+                    "changed_email_ids": [],
                     "is_initial": is_initial,
                 }
 
@@ -870,6 +876,7 @@ class EmailDeltaSyncService:
             # Write messages to DB (fresh session)
             # ─────────────────────────────────────────────────────────────────
             messages_synced = 0
+            changed_email_ids: list[str] = []
             write_committed = False
 
             async for session in acquire_org_async_session(org_id):
@@ -895,6 +902,7 @@ class EmailDeltaSyncService:
                         "folder_name": folder_name,
                         "folder_type": folder_data.folder_type,
                         "status": "failed",
+                        "changed_email_ids": [],
                         "error": "Integration no longer exists",
                     }
 
@@ -914,6 +922,7 @@ class EmailDeltaSyncService:
                         provider=sync_data.provider,
                     )
                 messages_synced = sync_result.get("records_processed", 0)
+                changed_email_ids = list(sync_result.get("changed_email_ids", []))
 
                 # Update folder last_synced_at
                 folder_stmt = select(EmailFolder).where(
@@ -960,6 +969,7 @@ class EmailDeltaSyncService:
                 "folder_name": folder_name,
                 "folder_type": folder_data.folder_type,
                 "messages_synced": messages_synced,
+                "changed_email_ids": changed_email_ids,
                 "is_initial": is_initial,
             }
 
@@ -985,5 +995,6 @@ class EmailDeltaSyncService:
                 "folder_name": folder_name,
                 "folder_type": folder_data.folder_type,
                 "status": "failed",
+                "changed_email_ids": [],
                 "error": str(e),
             }

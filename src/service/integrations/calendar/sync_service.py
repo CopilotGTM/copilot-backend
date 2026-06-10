@@ -123,6 +123,7 @@ class CalendarSyncService:
             records_failed = 0
             created_count = 0
             updated_count = 0
+            changed_event_ids: list[str] = []
             missing_identity_samples: list[dict[str, Any]] = []
 
             # --- Step 1: prefetch existing rows for every (external_id, anchor) ---
@@ -162,6 +163,7 @@ class CalendarSyncService:
                     user_external_id = normalized.user_external_id or external_id
                     await self._upsert_user_state(event, integration, user_external_id)
                     existing[key] = event
+                    changed_event_ids.append(str(event.event_id))
                     self._queue_recording_dispatch_if_eligible(event)
 
                     if is_new:
@@ -227,6 +229,7 @@ class CalendarSyncService:
                 "records_failed": records_failed,
                 "created": created_count,
                 "updated": updated_count,
+                "changed_event_ids": changed_event_ids,
             }
 
         except Exception as e:
@@ -308,6 +311,7 @@ class CalendarSyncService:
                     "created": 0,
                     "updated": 0,
                     "skipped": 0,
+                    "changed_event_ids": [],
                 }
 
             action_counts = SyncActionCounts()
@@ -337,6 +341,7 @@ class CalendarSyncService:
             deleted_no_state_count = 0
             missing_identity_samples: list[dict[str, Any]] = []
             unchanged_samples: list[dict[str, Any]] = []
+            directly_changed_event_ids: list[str] = []
             # These three lists accumulate the work that will be flushed as
             # batched writes after the per-event loop completes. Keeping them
             # local (rather than calling the writer per event) is the second
@@ -376,6 +381,7 @@ class CalendarSyncService:
                                 record.status = "cancelled"
                                 record.synced_at = datetime.now(UTC)
                                 self.db.add(record)
+                                directly_changed_event_ids.append(str(record.event_id))
                                 self._queue_recording_dispatch_if_eligible(record)
                             deleted_processed_count += 1
                             records_processed += 1
@@ -409,6 +415,7 @@ class CalendarSyncService:
                                 record.status = "cancelled"
                                 record.synced_at = datetime.now(UTC)
                                 self.db.add(record)
+                                directly_changed_event_ids.append(str(record.event_id))
                                 self._queue_recording_dispatch_if_eligible(record)
                             cancelled_existing_count += 1
                             records_processed += 1
@@ -432,6 +439,7 @@ class CalendarSyncService:
                                 record.status = "cancelled"
                                 record.synced_at = datetime.now(UTC)
                                 self.db.add(record)
+                                directly_changed_event_ids.append(str(record.event_id))
                                 records_processed += 1
                                 continue
                         logger.warning("Event %d: skipping (missing shared global UID)", idx)
@@ -453,6 +461,7 @@ class CalendarSyncService:
                             record.status = "cancelled"
                             record.synced_at = datetime.now(UTC)
                             self.db.add(record)
+                            directly_changed_event_ids.append(str(record.event_id))
                             self._queue_recording_dispatch_if_eligible(record)
                             if user_external_id:
                                 user_states_to_upsert.append(
@@ -516,6 +525,8 @@ class CalendarSyncService:
             # N+1 query pattern.
             upserted_events = await self._batch_upsert_events(integration, events_to_upsert)
             existing.update(upserted_events)
+            changed_event_ids = [str(event.event_id) for event in upserted_events.values()]
+            changed_event_ids.extend(directly_changed_event_ids)
 
             # Reconcile each input item back to the row that came out of
             # RETURNING. A missing row here means the upsert silently dropped
@@ -641,6 +652,7 @@ class CalendarSyncService:
                 "cancelled_no_record": cancelled_no_record_count,
                 "deleted_processed": deleted_processed_count,
                 "deleted_no_state": deleted_no_state_count,
+                "changed_event_ids": list(dict.fromkeys(changed_event_ids)),
                 "action_counts": action_counts.to_dict(),
             }
 

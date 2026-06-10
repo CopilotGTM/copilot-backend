@@ -12,6 +12,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
@@ -86,7 +87,17 @@ class MeetingRecordingSessionService:
                 transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
             )
             session.add(record)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                # Multiple webhook-triggered workers can reach first-session creation
+                # together; the unique constraint is the durable winner, so losing
+                # workers re-read the row instead of retrying provider work.
+                await session.rollback()
+                existing = await self._get_by_event(session, calendar_event_id, provider)
+                if existing is None:
+                    raise
+                return existing
             await session.refresh(record)
             return record
         raise RuntimeError("Failed to acquire org session")

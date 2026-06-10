@@ -100,6 +100,7 @@ def test_calendar_and_email_polling_cronjobs_are_not_rendered() -> None:
     assert "copilot-backend-sync-calendar-events" not in cronjob_names
     assert "copilot-backend-sync-email-all-orgs" not in cronjob_names
     assert "copilot-backend-transcript-fetch-pipeline" not in cronjob_names
+    assert "copilot-backend-timeline-sync" not in cronjob_names
 
 
 def test_microsoft_graph_subscription_renewal_cronjob_renders_dispatch_contract() -> None:
@@ -178,6 +179,7 @@ def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     spec = deal_mapping["spec"]
     job_spec = spec["jobTemplate"]["spec"]
 
+    assert spec["schedule"] == "3 */2 * * *"
     assert spec["timeZone"] == "Etc/UTC"
     assert spec["successfulJobsHistoryLimit"] == 1
     assert spec["failedJobsHistoryLimit"] == 2

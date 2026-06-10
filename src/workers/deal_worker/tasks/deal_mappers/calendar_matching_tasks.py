@@ -42,14 +42,43 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+    DealMappingEligibilityService,
+)
 from src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher import (
     DealMeetingMatcher,
+)
+from src.workers.deal_worker.tasks.deal_mappers.timeline_sync_tasks import (
+    sync_deal_timeline_task,
 )
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
 )
 
 logger = get_logger(__name__)
+
+
+def _dispatch_deal_timeline_sync(*, organisation_id: str, deal_id: str) -> tuple[bool, str | None]:
+    try:
+        sync_deal_timeline_task.apply_async(
+            kwargs={
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+            },
+            headers=correlation_headers(),
+        )
+        return True, None
+    except Exception as exc:
+        logger.warning(
+            "Failed to dispatch deal timeline sync after calendar matching",
+            extra={
+                "event": "calendar_matching_timeline_sync_dispatch_failed",
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "failure_reason": str(exc),
+            },
+        )
+        return False, str(exc)
 
 
 @app.task(
@@ -214,6 +243,21 @@ def match_calendar_to_deals_task(
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
         tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.DEAL_CALENDAR_REMATCH)
+        eligibility = await DealMappingEligibilityService(org_uuid).get_deal_eligibility(deal_uuid)
+        if not eligibility.is_eligible:
+            result = {
+                "status": "skipped",
+                "reason": eligibility.reason,
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "meetings_linked": 0,
+                "cancelled_rejected": 0,
+            }
+            await tracker.complete(result, "skipping_ineligible_deal", "Skipping ineligible deal")
+            return result
+
         await tracker.start("matching_meetings", "Finding meetings", 0.25)
 
         # Deal-level: Pass session to constructor (process_deal requires it)
@@ -234,6 +278,13 @@ def match_calendar_to_deals_task(
                 "meetings_linked": stats.get("meetings_linked", 0),
                 "cancelled_rejected": stats.get("cancelled_rejected", 0),
             }
+            timeline_dispatched, timeline_error = _dispatch_deal_timeline_sync(
+                organisation_id=organisation_id,
+                deal_id=deal_id,
+            )
+            result["timeline_sync_dispatched"] = timeline_dispatched
+            if timeline_error:
+                result["timeline_sync_dispatch_error"] = timeline_error
             await tracker.complete(result, "saving_meeting_links", "Saving meeting links")
             return result
 

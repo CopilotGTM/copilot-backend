@@ -47,6 +47,9 @@ from src.service.integrations.calendar_cursor_metadata import (
 from src.service.integrations.calendar_sync_service import CalendarSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_health import record_sync_failure
+from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
+    CommunicationDealMappingTriggerService,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
@@ -116,6 +119,7 @@ def sync_calendar_integration_task(
     self: Task,
     organisation_id: str,
     integration_id: str,
+    trigger_source: str = "manual_sync",
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific calendar integration.
@@ -142,9 +146,11 @@ def sync_calendar_integration_task(
             "events_synced": 50
         }
     """
-    started_at = datetime.now(UTC).isoformat()
+    started_at_dt = datetime.now(UTC)
+    started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
+    communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
 
     async def _sync_integration() -> dict[str, Any]:
         """Sync the specific calendar integration.
@@ -202,7 +208,8 @@ def sync_calendar_integration_task(
                     "error": "Integration is not connected (no connection_id)",
                 }
 
-            # Get provider details
+            # Parent provider rows store calendar cursor state on the capability row;
+            # direct calendar integrations keep it on the integration itself.
             int_type = (
                 IntegrationType(integration_row.integration_type)
                 if isinstance(integration_row.integration_type, str)
@@ -419,6 +426,20 @@ def sync_calendar_integration_task(
             session.add(integration_db)
             await session.commit()
 
+            communication_deal_mapping = None
+            if records_synced > 0 or sync_result.get("changed_event_ids"):
+                communication_deal_mapping = (
+                    await CommunicationDealMappingTriggerService(
+                        org_id
+                    ).trigger_for_changed_communications(
+                        integration_id=int_id,
+                        source_kind="calendar",
+                        trigger_source=communication_trigger_source,
+                        changed_record_ids=sync_result.get("changed_event_ids", []),
+                        sync_started_at=started_at_dt,
+                    )
+                ).to_dict()
+
             logger.info(
                 "Manual calendar sync complete",
                 extra={
@@ -445,6 +466,7 @@ def sync_calendar_integration_task(
                 "completed_at": datetime.now(UTC).isoformat(),
                 "events_synced": records_synced,
                 "sync_breakdown": sync_result,
+                "communication_deal_mapping": communication_deal_mapping,
             }
         # Session released after this block
 
@@ -523,7 +545,8 @@ def sync_calendar_integration_task(
             },
         )
 
-        # Check if we should retry
+        # Provider/manual sync failures are retry-safe: the next attempt reuses
+        # persisted cursors and writes idempotently through the sync services.
         if self.request.retries < self.max_retries:
             logger.info(
                 "Retrying manual calendar sync",

@@ -13,6 +13,8 @@ def test_get_scheduled_job_returns_deal_mapping_definition() -> None:
 
     assert job.name == "deal-mapping"
     assert job.task_name == "stakeholder.sync_all_deals_stakeholders_all_orgs"
+    assert job.schedule == "3 */2 * * *"
+    assert job.max_lag_seconds == 3 * 60 * 60
     assert job.queue == "deal"
     assert job.kwargs == {}
 
@@ -43,6 +45,12 @@ def test_transcript_fetch_pipeline_schedule_is_disabled() -> None:
     """Recall webhooks now materialize transcripts directly; polling stays disabled."""
     with pytest.raises(KeyError):
         get_scheduled_job("transcript-fetch-pipeline")
+
+
+def test_timeline_sync_schedule_is_disabled() -> None:
+    """Timeline sync now runs deal-scoped after email/calendar mapping."""
+    with pytest.raises(KeyError):
+        get_scheduled_job("timeline-sync")
 
 
 def test_get_scheduled_job_rejects_unknown_job_name() -> None:

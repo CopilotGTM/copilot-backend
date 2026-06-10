@@ -44,6 +44,9 @@ from src.service.integrations.sync_health import (
     is_action_required_failure,
     record_sync_failure,
 )
+from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
+    CommunicationDealMappingTriggerService,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
@@ -116,7 +119,7 @@ def sync_calendar_org_task(
 
     Triggered by sync_calendar_all_orgs_task (Tier 1). Iterates each active
     calendar integration, fetches events from the provider, and persists them.
-    On success, dispatches deal-matching to link new events to deals.
+    Deal mapping is handled by initial backfill and event-based deal triggers.
 
     Args:
         organisation_id: The organization UUID string.
@@ -124,7 +127,8 @@ def sync_calendar_org_task(
     Returns:
         Dict with status, summary counts, and per-integration results.
     """
-    started_at = datetime.now(UTC).isoformat()
+    started_at_dt = datetime.now(UTC)
+    started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     current_integration_id: list[UUID | None] = [None]
 
@@ -284,6 +288,7 @@ def sync_calendar_org_task(
 
         for fetch_data in integration_fetch_list:
             current_integration_id[0] = fetch_data.integration_id
+            integration_sync_started_at = datetime.now(UTC)
             logger.info(
                 "Syncing calendar integration",
                 extra={
@@ -444,14 +449,27 @@ def sync_calendar_org_task(
                         state_db.consecutive_sync_failures = 0
                         session.add(state_db)
                     else:
-                        # Update sync health in the same commit as the persist —
-                        # avoids a second DB round-trip per successful sync.
+                        # Legacy rows keep sync health on the integration, while
+                        # capability rows keep it on IntegrationSyncState.
                         apply_sync_success(integration_db)
                     session.add(integration_db)
                     await session.commit()
 
                     successful += 1
                     total_events += records_synced
+                    communication_deal_mapping = None
+                    if records_synced > 0 or sync_result.get("changed_event_ids"):
+                        communication_deal_mapping = (
+                            await CommunicationDealMappingTriggerService(
+                                org_id
+                            ).trigger_for_changed_communications(
+                                integration_id=fetch_data.integration_id,
+                                source_kind="calendar",
+                                trigger_source="incremental_sync",
+                                changed_record_ids=sync_result.get("changed_event_ids", []),
+                                sync_started_at=integration_sync_started_at,
+                            )
+                        ).to_dict()
 
                     integration_results.append(
                         {
@@ -460,6 +478,7 @@ def sync_calendar_org_task(
                             "status": "success",
                             "events_synced": records_synced,
                             "sync_breakdown": sync_result,
+                            "communication_deal_mapping": communication_deal_mapping,
                         }
                     )
             except Exception as e:
@@ -526,19 +545,6 @@ def sync_calendar_org_task(
                 "total_events_synced": total_events,
             },
         )
-
-        # Trigger deal matching only when new events were persisted — avoids
-        # unnecessary deal_worker load on no-op syncs.
-        if total_events > 0:
-            app.send_task(
-                "deal.match_calendar_to_deals_org",
-                args=[organisation_id],
-                queue="deal",
-            )
-            logger.info(
-                "Dispatched calendar matching task for org",
-                extra={"organisation_id": organisation_id},
-            )
 
         return {
             "status": status,
