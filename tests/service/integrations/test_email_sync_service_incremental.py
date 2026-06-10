@@ -275,6 +275,8 @@ class TestEmailIncrementalBatchWrites:
         organisation_id = uuid4()
         integration = _make_integration(organisation_id=organisation_id)
         folder_id = uuid4()
+        created_email_id = uuid4()
+        updated_email_id = uuid4()
         session = AsyncMock()
         session.commit = AsyncMock()
         session.add = MagicMock()
@@ -311,8 +313,14 @@ class TestEmailIncrementalBatchWrites:
         service._has_meaningful_message_changes = MagicMock(side_effect=[True, False])
         service._batch_upsert_messages = AsyncMock(
             return_value={
-                "msg-created": SimpleNamespace(external_message_id="msg-created"),
-                "msg-updated": SimpleNamespace(external_message_id="msg-updated"),
+                "msg-created": SimpleNamespace(
+                    email_id=created_email_id,
+                    external_message_id="msg-created",
+                ),
+                "msg-updated": SimpleNamespace(
+                    email_id=updated_email_id,
+                    external_message_id="msg-updated",
+                ),
             }
         )
 
@@ -334,6 +342,7 @@ class TestEmailIncrementalBatchWrites:
         assert result["created_count"] == 1
         assert result["updated"] == 1
         assert result["skipped"] == 1
+        assert result["changed_email_ids"] == [str(created_email_id), str(updated_email_id)]
         assert service._batch_upsert_messages.await_count == 1
         assert len(service._batch_upsert_messages.await_args.args[1]) == 2
 
@@ -343,6 +352,8 @@ class TestEmailIncrementalBatchWrites:
         organisation_id = uuid4()
         integration = _make_integration(organisation_id=organisation_id)
         folder_id = uuid4()
+        first_email_id = uuid4()
+        third_email_id = uuid4()
         session = AsyncMock()
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
@@ -355,9 +366,9 @@ class TestEmailIncrementalBatchWrites:
         service._batch_upsert_messages = AsyncMock(side_effect=ValueError("bad batch"))
         service._upsert_message = AsyncMock(
             side_effect=[
-                SimpleNamespace(external_message_id="msg-1"),
+                SimpleNamespace(email_id=first_email_id, external_message_id="msg-1"),
                 ValueError("bad row"),
-                SimpleNamespace(external_message_id="msg-3"),
+                SimpleNamespace(email_id=third_email_id, external_message_id="msg-3"),
             ]
         )
 
@@ -377,9 +388,52 @@ class TestEmailIncrementalBatchWrites:
         assert result["records_failed"] == 1
         assert result["created_count"] == 2
         assert result["updated"] == 0
+        assert result["changed_email_ids"] == [str(first_email_id), str(third_email_id)]
         assert service._batch_upsert_messages.await_count == 1
         assert service._upsert_message.await_count == 3
         assert session.rollback.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_full_message_sync_returns_changed_email_ids(self) -> None:
+        """Full sync reports local email IDs for every successful message write."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        folder_id = uuid4()
+        first_email_id = uuid4()
+        second_email_id = uuid4()
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = EmailSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._upsert_message = AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    email_id=first_email_id,
+                    created_at=1,
+                    updated_at=1,
+                ),
+                SimpleNamespace(
+                    email_id=second_email_id,
+                    created_at=1,
+                    updated_at=2,
+                ),
+            ]
+        )
+
+        result = await service.sync_messages(
+            integration=integration,
+            provider="outlook",
+            folder_id=folder_id,
+            messages=[
+                _outlook_message(message_id="msg-1"),
+                _outlook_message(message_id="msg-2"),
+            ],
+        )
+
+        assert result["records_processed"] == 2
+        assert result["changed_email_ids"] == [str(first_email_id), str(second_email_id)]
 
 
 class TestEmailFolderHasMeaningfulChanges:

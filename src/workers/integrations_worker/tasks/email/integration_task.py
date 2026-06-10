@@ -32,6 +32,9 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_delta_sync_service import EmailDeltaSyncService
 from src.service.integrations.sync_health import record_sync_failure
+from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
+    CommunicationDealMappingTriggerService,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 
@@ -54,6 +57,7 @@ def sync_email_integration_task(
     self: Task,
     organisation_id: str,
     integration_id: str,
+    trigger_source: str = "manual_sync",
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific email integration.
@@ -82,9 +86,11 @@ def sync_email_integration_task(
             "folder_results": [...]
         }
     """
-    started_at = datetime.now(UTC).isoformat()
+    started_at_dt = datetime.now(UTC)
+    started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
+    communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
 
     async def _sync_integration() -> dict[str, Any]:
         """Sync the specific integration."""
@@ -98,6 +104,21 @@ def sync_email_integration_task(
             organisation_id=org_id,
             integration_id=int_id,
         )
+
+        if result.get("status") == "success" and (
+            result.get("messages_synced", 0) > 0 or result.get("changed_email_ids")
+        ):
+            result["communication_deal_mapping"] = (
+                await CommunicationDealMappingTriggerService(
+                    org_id
+                ).trigger_for_changed_communications(
+                    integration_id=int_id,
+                    source_kind="email",
+                    trigger_source=communication_trigger_source,
+                    changed_record_ids=result.get("changed_email_ids", []),
+                    sync_started_at=started_at_dt,
+                )
+            ).to_dict()
 
         # Add timing info to result
         result["started_at"] = started_at
@@ -172,7 +193,8 @@ def sync_email_integration_task(
             },
         )
 
-        # Check if we should retry
+        # Email sync is retry-safe because message writes are keyed by provider
+        # message id; retrying after a transient failure refreshes existing rows.
         if self.request.retries < self.max_retries:
             logger.info(
                 "Retrying manual email sync",

@@ -5,10 +5,18 @@ Tests for Task 2: match_calendar_to_deals_org_task and match_calendar_to_deals_t
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+import src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks as calendar_tasks
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+    DealMappingEligibilityResult,
+    DealMappingSkipReason,
+)
 
 # Handle circular import gracefully - skip all task-dependent tests if import fails
 try:
@@ -114,6 +122,122 @@ class TestMatchCalendarToDealsTaskParameters:
         assert sig.parameters["job_id"].default is None
 
 
+class TestMatchCalendarToDealsTaskEligibility:
+    def test_skips_ineligible_deal_before_matching(self, monkeypatch) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        eligibility = DealMappingEligibilityResult(
+            deal_id=deal_id,
+            is_eligible=False,
+            reason=DealMappingSkipReason.NO_APP_USER_ON_DEAL,
+        )
+        eligibility_service = SimpleNamespace(
+            get_deal_eligibility=AsyncMock(return_value=eligibility)
+        )
+        matcher = SimpleNamespace(process_deal=AsyncMock())
+        tracker = SimpleNamespace(
+            start=AsyncMock(),
+            complete=AsyncMock(),
+            fail=AsyncMock(),
+        )
+
+        monkeypatch.setattr(
+            calendar_tasks,
+            "DealMappingEligibilityService",
+            lambda _organisation_id: eligibility_service,
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "DealMeetingMatcher",
+            lambda *_args, **_kwargs: matcher,
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "VisibleDealJobTracker",
+            lambda *_args, **_kwargs: tracker,
+        )
+
+        result = match_calendar_to_deals_task(
+            organisation_id=str(organisation_id),
+            deal_id=str(deal_id),
+            job_id=str(uuid4()),
+        )
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == DealMappingSkipReason.NO_APP_USER_ON_DEAL
+        matcher.process_deal.assert_not_awaited()
+        tracker.complete.assert_awaited_once()
+
+
+class TestMatchCalendarToDealsTaskTimelineSync:
+    def test_dispatches_deal_timeline_sync_after_successful_matching(self, monkeypatch) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        eligibility = DealMappingEligibilityResult(
+            deal_id=deal_id,
+            is_eligible=True,
+        )
+        eligibility_service = SimpleNamespace(
+            get_deal_eligibility=AsyncMock(return_value=eligibility)
+        )
+        matcher = SimpleNamespace(
+            process_deal=AsyncMock(
+                return_value={
+                    "deals_processed": 1,
+                    "meetings_linked": 2,
+                    "cancelled_rejected": 0,
+                }
+            )
+        )
+        tracker = SimpleNamespace(
+            start=AsyncMock(),
+            complete=AsyncMock(),
+            fail=AsyncMock(),
+        )
+        timeline_task = SimpleNamespace(apply_async=Mock())
+
+        monkeypatch.setattr(
+            calendar_tasks,
+            "DealMappingEligibilityService",
+            lambda _organisation_id: eligibility_service,
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "DealMeetingMatcher",
+            lambda *_args, **_kwargs: matcher,
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "VisibleDealJobTracker",
+            lambda *_args, **_kwargs: tracker,
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "acquire_org_async_session",
+            _session_generator_factory([SimpleNamespace()]),
+        )
+        monkeypatch.setattr(
+            calendar_tasks,
+            "sync_deal_timeline_task",
+            timeline_task,
+            raising=False,
+        )
+
+        result = match_calendar_to_deals_task(
+            organisation_id=str(organisation_id),
+            deal_id=str(deal_id),
+            job_id=str(uuid4()),
+        )
+
+        assert result["status"] == "success"
+        assert result["timeline_sync_dispatched"] is True
+        timeline_task.apply_async.assert_called_once()
+        assert timeline_task.apply_async.call_args.kwargs["kwargs"] == {
+            "organisation_id": str(organisation_id),
+            "deal_id": str(deal_id),
+        }
+
+
 # Tests that don't require task imports
 @pytest.mark.skipif(False, reason="")  # Always run these
 class TestMatchCalendarToDealsOrgTaskResultStructure:
@@ -193,3 +317,15 @@ class TestRetryBehavior:
         assert base_delay * (2**0) == 30
         assert base_delay * (2**1) == 60
         assert base_delay * (2**2) == 120
+
+
+def _session_generator_factory(sessions: list[object]):
+    queue = iter(sessions)
+
+    def _factory(*_args: object) -> AsyncIterator[object]:
+        async def _generator() -> AsyncIterator[object]:
+            yield next(queue)
+
+        return _generator()
+
+    return _factory

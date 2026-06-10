@@ -233,6 +233,7 @@ async def test_gmail_ingestion_dedupes_pubsub_message_id_and_enqueues_email_sync
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -317,6 +318,7 @@ async def test_gmail_ingestion_resolves_provider_parent_capability_state(monkeyp
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -359,6 +361,7 @@ async def test_calendar_ingestion_verifies_channel_id_resource_id_and_token(monk
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -412,6 +415,7 @@ async def test_calendar_ingestion_resolves_provider_parent_capability_state(
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",

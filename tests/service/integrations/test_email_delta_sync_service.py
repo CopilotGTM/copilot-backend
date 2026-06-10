@@ -52,6 +52,7 @@ async def test_gmail_sync_skips_when_read_scope_is_missing() -> None:
         "integration_type": IntegrationType.GMAIL.value,
         "folders_synced": 0,
         "messages_synced": 0,
+        "changed_email_ids": [],
         "folder_results": [],
         "skipped": True,
         "skip_reason": "gmail_read_scope_missing",
@@ -235,7 +236,10 @@ async def test_folder_cursor_is_persisted_after_successful_message_write() -> No
         ) as mock_email_service_cls,
     ):
         mock_email_service = mock_email_service_cls.return_value
-        mock_email_service.sync_messages = AsyncMock(return_value={"records_processed": 1})
+        changed_email_id = uuid4()
+        mock_email_service.sync_messages = AsyncMock(
+            return_value={"records_processed": 1, "changed_email_ids": [str(changed_email_id)]}
+        )
 
         result = await service._sync_folder_messages_fresh_session(
             token_info=MagicMock(),
@@ -246,6 +250,7 @@ async def test_folder_cursor_is_persisted_after_successful_message_write() -> No
         )
 
     assert result["messages_synced"] == 1
+    assert result["changed_email_ids"] == [str(changed_email_id)]
     assert cursor_updates == {"inbox": "new-delta"}
     assert integration.connection_metadata[EMAIL_DELTA_LINKS_KEY]["inbox"] == "new-delta"
     persist_session.commit.assert_awaited_once()

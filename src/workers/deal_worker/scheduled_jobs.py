@@ -27,14 +27,8 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
     "deal-mapping": ScheduledJob(
         name="deal-mapping",
         task_name="stakeholder.sync_all_deals_stakeholders_all_orgs",
-        schedule="3,18,33,48 * * * *",
-        max_lag_seconds=20 * 60,
-    ),
-    "timeline-sync": ScheduledJob(
-        name="timeline-sync",
-        task_name="deal.trigger_timeline_sync_all_orgs",
-        schedule="10,25,40,55 * * * *",
-        max_lag_seconds=20 * 60,
+        schedule="3 */2 * * *",
+        max_lag_seconds=3 * 60 * 60,
     ),
     "stale-deal-job-cleanup": ScheduledJob(
         name="stale-deal-job-cleanup",

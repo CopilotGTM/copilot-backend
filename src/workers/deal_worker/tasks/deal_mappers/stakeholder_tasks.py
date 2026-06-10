@@ -42,6 +42,15 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service import (
+    DealMappingBackfillClaimService,
+)
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_downstream_job_service import (
+    DealMappingDownstreamJobService,
+)
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+    DealMappingEligibilityService,
+)
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
     StakeholderSyncService,
 )
@@ -56,6 +65,8 @@ from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
 )
 
 logger = get_logger(__name__)
+INITIAL_BACKFILL_CLAIM_LIMIT = 100
+ALWAYS_REMATCH_CHANGE_TYPES = {"INITIAL_BACKFILL", "COMMUNICATION_SYNC_REMAP"}
 
 
 @app.task(
@@ -108,6 +119,26 @@ def sync_deal_stakeholders_task(
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
         tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.STAKEHOLDER_SYNC)
+        eligibility = await DealMappingEligibilityService(org_uuid).get_deal_eligibility(deal_uuid)
+        if not eligibility.is_eligible:
+            response = {
+                "status": "skipped",
+                "reason": eligibility.reason,
+                "deal_id": deal_id,
+                "change_type": change_type,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "rematching_triggered": False,
+                "integration_id": integration_id,
+                "integration_type": integration_type,
+            }
+            await tracker.complete(
+                response,
+                "skipping_ineligible_deal",
+                "Skipping ineligible deal",
+            )
+            return response
+
         await tracker.start(
             "searching_related_stakeholders",
             "Searching related stakeholders",
@@ -122,19 +153,36 @@ def sync_deal_stakeholders_task(
 
         rematching_triggered = False
 
-        # Trigger re-matching if new stakeholders were created
-        if trigger_rematching and result.requires_rematching:
-            # Reuse one header snapshot so both sibling tasks tie back to the same parent run.
+        should_dispatch_rematching = result.requires_rematching or (
+            change_type in ALWAYS_REMATCH_CHANGE_TYPES
+        )
+        if trigger_rematching and should_dispatch_rematching:
+            downstream_jobs = await DealMappingDownstreamJobService(org_uuid).claim_rematch_jobs(
+                deal_id=deal_uuid,
+                parent_stakeholder_job_id=UUID(job_id) if job_id else None,
+                change_type=change_type,
+            )
             dispatch_headers = correlation_headers()
-            match_calendar_to_deals_task.apply_async(
-                kwargs={"organisation_id": organisation_id, "deal_id": deal_id},
-                headers=dispatch_headers,
-            )
-            match_email_to_deals_task.apply_async(
-                kwargs={"organisation_id": organisation_id, "deal_id": deal_id},
-                headers=dispatch_headers,
-            )
-            rematching_triggered = True
+            if downstream_jobs["calendar_dispatch_required"]:
+                match_calendar_to_deals_task.apply_async(
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "deal_id": deal_id,
+                        "job_id": downstream_jobs["calendar_job_id"],
+                    },
+                    headers=dispatch_headers,
+                )
+                rematching_triggered = True
+            if downstream_jobs["email_dispatch_required"]:
+                match_email_to_deals_task.apply_async(
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "deal_id": deal_id,
+                        "job_id": downstream_jobs["email_job_id"],
+                    },
+                    headers=dispatch_headers,
+                )
+                rematching_triggered = True
 
         logger.info(
             "Task 1 complete: synced stakeholders for deal",
@@ -249,76 +297,57 @@ def sync_all_deals_stakeholders_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
-        # Org-level: StakeholderSyncService manages its own sessions (fresh session pattern)
-        service = StakeholderSyncService(org_uuid)
-        result = await service.sync_for_organisation()
-
-        # Trigger calendar and email matching for the entire org
-        # ALWAYS trigger when trigger_deal_matching=True, not just when new CRM stakeholders
-        # This ensures discovered stakeholders (CALENDAR_DISCOVERY, EMAIL_DISCOVERY)
-        # from previous runs are used to find more meetings
-        deal_matching_triggered = False
-        if trigger_deal_matching:
+        service = DealMappingBackfillClaimService(org_uuid)
+        result = await service.claim_stakeholder_backfill_batch(limit=INITIAL_BACKFILL_CLAIM_LIMIT)
+        deal_tasks: list[dict[str, Any]] = []
+        dispatch_headers = correlation_headers()
+        for deal_task in result.get("deal_tasks", []):
             try:
-                from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
-                    match_calendar_to_deals_org_task,
-                )
-                from src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks import (
-                    match_email_to_deals_org_task,
-                )
-
-                # Reuse one header snapshot so both org-wide matchers stay under the same lineage.
-                dispatch_headers = correlation_headers()
-                match_calendar_to_deals_org_task.apply_async(
-                    kwargs={"organisation_id": organisation_id},
-                    headers=dispatch_headers,
-                )
-                match_email_to_deals_org_task.apply_async(
-                    kwargs={"organisation_id": organisation_id},
-                    headers=dispatch_headers,
-                )
-                deal_matching_triggered = True
-                logger.info(
-                    "Triggered calendar/email matching for organisation",
-                    extra={
-                        "event": "stakeholder_sync_org_matching_triggered",
-                        "organisation_id": organisation_id,
-                        "deal_matching_triggered": True,
+                task = sync_deal_stakeholders_task.apply_async(
+                    kwargs={
+                        "organisation_id": deal_task["organisation_id"],
+                        "deal_id": deal_task["deal_id"],
+                        "change_type": "INITIAL_BACKFILL",
+                        "trigger_rematching": bool(trigger_deal_matching),
+                        "job_id": deal_task["job_id"],
                     },
+                    headers=dispatch_headers,
+                )
+                deal_tasks.append(
+                    {
+                        **deal_task,
+                        "task_id": task.id,
+                        "status": "triggered",
+                    }
                 )
             except Exception as e:
-                result.errors.append(f"Failed to trigger deal matching: {str(e)}")
+                await service.mark_dispatch_failed(
+                    job_id=UUID(deal_task["job_id"]),
+                    error=str(e),
+                )
                 logger.warning(
-                    "Failed to trigger deal matching for organisation",
+                    "Failed to dispatch stakeholder sync for claimed deal",
                     extra={
-                        "event": "stakeholder_sync_org_matching_failed",
+                        "event": "stakeholder_sync_deal_dispatch_failed",
                         "organisation_id": organisation_id,
+                        "deal_id": deal_task.get("deal_id"),
                         "failure_reason": str(e),
                     },
                 )
+                deal_tasks.append(
+                    {
+                        **deal_task,
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                )
 
-        # Determine overall status
-        if result.failed_deals == 0:
-            status = "completed"
-        elif result.successful_deals == 0:
-            status = "failed"
-        else:
-            status = "partial"
-
-        return {
-            "status": status,
-            "organisation_id": organisation_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "total_deals": result.total_deals,
-            "successful_deals": result.successful_deals,
-            "failed_deals": result.failed_deals,
-            "stakeholders_created": result.stakeholders_created,
-            "stakeholders_updated": result.stakeholders_updated,
-            "stakeholders_deactivated": result.stakeholders_deactivated,
-            "deal_matching_triggered": deal_matching_triggered,
-            "errors": result.errors[:10] if result.errors else [],
-        }
+        result["deal_tasks_dispatched"] = sum(
+            1 for deal_task in deal_tasks if deal_task.get("status") == "triggered"
+        )
+        result["deal_tasks"] = deal_tasks
+        result["completed_at"] = datetime.now(UTC).isoformat()
+        return result
 
     try:
         return run_async(_run())

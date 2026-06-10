@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
@@ -89,6 +90,56 @@ class TestGetOrCreatePendingSession:
         session.add.assert_called_once()
         session.commit.assert_awaited_once()
         session.refresh.assert_awaited_once_with(result)
+
+    @pytest.mark.asyncio
+    async def test_recovers_when_concurrent_insert_wins_first_session_race(
+        self, monkeypatch
+    ) -> None:
+        """A duplicate insert race returns the winner row instead of failing dispatch."""
+        service = _make_service()
+        event_id = uuid4()
+        join_at = datetime.now(UTC) + timedelta(minutes=5)
+        existing = MeetingRecordingSession(
+            organisation_id=service.organisation_id,
+            calendar_event_id=event_id,
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="winner-key",
+            meeting_url="https://teams.example/join",
+            join_at=join_at,
+            status=MeetingRecordingStatus.PENDING_SEND,
+            transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
+        )
+        missing_result = MagicMock()
+        missing_result.scalar_one_or_none.return_value = None
+        existing_result = MagicMock()
+        existing_result.scalar_one_or_none.return_value = existing
+        session = MagicMock()
+        session.execute = AsyncMock(side_effect=[missing_result, existing_result])
+        session.commit = AsyncMock(
+            side_effect=IntegrityError("insert", {}, Exception("unique violation"))
+        )
+        session.rollback = AsyncMock()
+        session.refresh = AsyncMock()
+        session.add = MagicMock()
+
+        async def fake_gen(_organisation_id):
+            yield session
+
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        result = await service.get_or_create_pending_session(
+            calendar_event_id=event_id,
+            meeting_url="https://teams.example/join",
+            join_at=join_at,
+        )
+
+        assert result is existing
+        session.rollback.assert_awaited_once()
+        assert session.execute.await_count == 2
+        session.refresh.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_updates_existing_unsent_session(self, monkeypatch) -> None:

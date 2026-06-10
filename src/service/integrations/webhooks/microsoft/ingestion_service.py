@@ -360,6 +360,7 @@ class MicrosoftWebhookIngestionService:
             kwargs={
                 "organisation_id": str(organisation_id),
                 "integration_id": str(integration_id),
+                "trigger_source": "webhook",
             },
             queue="integrations_priority",
             routing_key="integrations_priority",

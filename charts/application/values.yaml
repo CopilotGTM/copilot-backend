@@ -477,9 +477,7 @@ dealCronJobs:
       memory: "512Mi"
   jobs:
     - name: deal-mapping
-      schedule: "3,18,33,48 * * * *"
-    - name: timeline-sync
-      schedule: "10,25,40,55 * * * *"
+      schedule: "3 */2 * * *"
     - name: stale-deal-job-cleanup
       schedule: "45 * * * *"
     - name: deal-memory-backfill

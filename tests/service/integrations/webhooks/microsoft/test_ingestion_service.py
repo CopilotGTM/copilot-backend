@@ -163,6 +163,7 @@ async def test_ingest_calendar_notification_enqueues_calendar_sync(monkeypatch) 
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -223,6 +224,7 @@ async def test_ingest_calendar_notification_resolves_provider_parent_capability_
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -331,6 +333,7 @@ async def test_ingest_email_notification_resolves_provider_parent_capability_sta
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -507,6 +510,7 @@ async def test_ingest_lifecycle_matching_notification_enqueues_immediate_sync(mo
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -566,6 +570,7 @@ async def test_ingest_calendar_lifecycle_resolves_provider_parent_capability_sta
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -625,6 +630,7 @@ async def test_ingest_email_lifecycle_resolves_provider_parent_capability_state(
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
+            "trigger_source": "webhook",
         },
         queue="integrations_priority",
         routing_key="integrations_priority",

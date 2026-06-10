@@ -5,10 +5,18 @@ Tests for Task 3: match_email_to_deals_org_task and match_email_to_deals_task.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+import src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks as email_tasks
+from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+    DealMappingEligibilityResult,
+    DealMappingSkipReason,
+)
 
 # Handle circular import gracefully - skip all task-dependent tests if import fails
 try:
@@ -112,6 +120,122 @@ class TestMatchEmailToDealsTaskParameters:
         assert "deal_id" in sig.parameters
         assert "job_id" in sig.parameters
         assert sig.parameters["job_id"].default is None
+
+
+class TestMatchEmailToDealsTaskEligibility:
+    def test_skips_ineligible_deal_before_matching(self, monkeypatch) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        eligibility = DealMappingEligibilityResult(
+            deal_id=deal_id,
+            is_eligible=False,
+            reason=DealMappingSkipReason.NO_APP_USER_ON_DEAL,
+        )
+        eligibility_service = SimpleNamespace(
+            get_deal_eligibility=AsyncMock(return_value=eligibility)
+        )
+        matcher = SimpleNamespace(process_deal=AsyncMock())
+        tracker = SimpleNamespace(
+            start=AsyncMock(),
+            complete=AsyncMock(),
+            fail=AsyncMock(),
+        )
+
+        monkeypatch.setattr(
+            email_tasks,
+            "DealMappingEligibilityService",
+            lambda _organisation_id: eligibility_service,
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "DealEmailMatcher",
+            lambda *_args, **_kwargs: matcher,
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "VisibleDealJobTracker",
+            lambda *_args, **_kwargs: tracker,
+        )
+
+        result = match_email_to_deals_task(
+            organisation_id=str(organisation_id),
+            deal_id=str(deal_id),
+            job_id=str(uuid4()),
+        )
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == DealMappingSkipReason.NO_APP_USER_ON_DEAL
+        matcher.process_deal.assert_not_awaited()
+        tracker.complete.assert_awaited_once()
+
+
+class TestMatchEmailToDealsTaskTimelineSync:
+    def test_dispatches_deal_timeline_sync_after_successful_matching(self, monkeypatch) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        eligibility = DealMappingEligibilityResult(
+            deal_id=deal_id,
+            is_eligible=True,
+        )
+        eligibility_service = SimpleNamespace(
+            get_deal_eligibility=AsyncMock(return_value=eligibility)
+        )
+        matcher = SimpleNamespace(
+            process_deal=AsyncMock(
+                return_value={
+                    "emails_processed": 10,
+                    "emails_matched": 2,
+                    "associations_created": 2,
+                }
+            )
+        )
+        tracker = SimpleNamespace(
+            start=AsyncMock(),
+            complete=AsyncMock(),
+            fail=AsyncMock(),
+        )
+        timeline_task = SimpleNamespace(apply_async=Mock())
+
+        monkeypatch.setattr(
+            email_tasks,
+            "DealMappingEligibilityService",
+            lambda _organisation_id: eligibility_service,
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "DealEmailMatcher",
+            lambda *_args, **_kwargs: matcher,
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "VisibleDealJobTracker",
+            lambda *_args, **_kwargs: tracker,
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "acquire_org_async_session",
+            _session_generator_factory([SimpleNamespace()]),
+        )
+        monkeypatch.setattr(
+            email_tasks,
+            "sync_deal_timeline_task",
+            timeline_task,
+            raising=False,
+        )
+
+        result = match_email_to_deals_task(
+            organisation_id=str(organisation_id),
+            deal_id=str(deal_id),
+            job_id=str(uuid4()),
+        )
+
+        assert result["status"] == "success"
+        assert result["timeline_sync_dispatched"] is True
+        timeline_task.apply_async.assert_called_once()
+        assert timeline_task.apply_async.call_args.kwargs["kwargs"] == {
+            "organisation_id": str(organisation_id),
+            "deal_id": str(deal_id),
+        }
 
 
 # Tests that don't require task imports - always run
@@ -228,3 +352,15 @@ class TestEmailMatchingMetrics:
             else 0.0
         )
         assert match_rate == 0.0
+
+
+def _session_generator_factory(sessions: list[object]):
+    queue = iter(sessions)
+
+    def _factory(*_args: object) -> AsyncIterator[object]:
+        async def _generator() -> AsyncIterator[object]:
+            yield next(queue)
+
+        return _generator()
+
+    return _factory

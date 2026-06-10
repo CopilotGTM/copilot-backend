@@ -391,6 +391,11 @@ class TestCalendarIncrementalBatchWrites:
         assert result["updated"] == 1
         assert result["skipped"] == 1
         assert result["cancelled_existing"] == 1
+        assert result["changed_event_ids"] == [
+            str(upserted_created.event_id),
+            str(upserted_updated.event_id),
+            str(existing_cancelled.event_id),
+        ]
         assert service._batch_upsert_events.await_count == 1
         assert len(service._batch_upsert_events.await_args.args[1]) == 2
         refreshed_attendees = service._batch_sync_attendees.await_args.args[0]
@@ -401,6 +406,39 @@ class TestCalendarIncrementalBatchWrites:
         }
         user_states = service._batch_upsert_user_states.await_args.args[0]
         assert len(user_states) == 4
+
+    @pytest.mark.asyncio
+    async def test_full_sync_returns_changed_event_ids(self) -> None:
+        """Full sync reports local event IDs for every successful event write."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        first_event = _event_row("ical-1")
+        second_event = _event_row("ical-2")
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._upsert_event = AsyncMock(side_effect=[first_event, second_event])
+        service._sync_attendees = AsyncMock()
+        service._upsert_user_state = AsyncMock()
+
+        result = await service.sync_calendar_events(
+            integration=integration,
+            provider="google",
+            events=[
+                _google_event(provider_id="user-1", external_id="ical-1"),
+                _google_event(provider_id="user-2", external_id="ical-2"),
+            ],
+        )
+
+        assert result["records_processed"] == 2
+        assert result["changed_event_ids"] == [
+            str(first_event.event_id),
+            str(second_event.event_id),
+        ]
 
     @pytest.mark.asyncio
     async def test_incremental_sync_enqueues_changed_future_meeting_bot_after_commit(
