@@ -321,6 +321,48 @@ class TestCalendarIncrementalBatchWrites:
         assert "No Email" not in str(insert_params.values())
 
     @pytest.mark.asyncio
+    async def test_batch_sync_attendees_splits_inserts_before_asyncpg_bind_limit(self) -> None:
+        """Large attendee snapshots must not exceed asyncpg's bind limit."""
+        organisation_id = uuid4()
+        session = AsyncMock()
+
+        async def compile_then_return(statement):
+            statement.compile(dialect=postgresql.dialect())
+            return _FakeExecuteResult()
+
+        session.execute = AsyncMock(side_effect=compile_then_return)
+        service = CalendarSyncService(session, organisation_id)
+        event = _event_row("ical-large-attendee-roster")
+        attendees = [
+            {
+                "email": f"attendee-{index}@example.com",
+                "displayName": f"Attendee {index}",
+                "responseStatus": "accepted",
+            }
+            for index in range(5000)
+        ]
+
+        await service._batch_sync_attendees(
+            [
+                (
+                    event,
+                    _normalize_event(
+                        _google_event(
+                            provider_id="evt-large-attendee-roster",
+                            external_id="ical-large-attendee-roster",
+                            attendees=attendees,
+                        )
+                    ),
+                )
+            ]
+        )
+
+        assert session.execute.await_count == 3
+        for call in session.execute.await_args_list[1:]:
+            compiled = call.args[0].compile(dialect=postgresql.dialect())
+            assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
+
+    @pytest.mark.asyncio
     async def test_batch_upsert_user_states_resets_deleted_state_in_one_statement(self) -> None:
         """User-state rows are upserted in one statement and resurrect on conflict.
 

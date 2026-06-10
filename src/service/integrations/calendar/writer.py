@@ -373,8 +373,8 @@ class CalendarSyncWriter:
         for db_event, normalized in snapshots_by_event.values():
             values.extend(self._build_attendee_values(db_event, normalized))
 
-        if values:
-            await self.session.execute(insert(CalendarAttendee).values(values))
+        for chunk in self._iter_parameter_safe_chunks(values):
+            await self.session.execute(insert(CalendarAttendee).values(chunk))
 
     async def sync_attendees(
         self, event: CalendarEvent, normalized: NormalizedCalendarEvent
