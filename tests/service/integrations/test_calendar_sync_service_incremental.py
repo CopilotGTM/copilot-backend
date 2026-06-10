@@ -12,6 +12,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
+from src.service.integrations.calendar.writer import _ASYNC_PG_BIND_PARAMETER_LIMIT
 from src.service.integrations.calendar_sync_service import (
     CalendarEventUpsertBatchItem,
     CalendarSyncService,
@@ -213,6 +214,41 @@ class TestCalendarIncrementalBatchWrites:
         }
 
     @pytest.mark.asyncio
+    async def test_batch_upsert_events_splits_before_asyncpg_bind_parameter_limit(self) -> None:
+        """Large initial calendar syncs must not exceed asyncpg's bind limit."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+
+        async def compile_then_return_rows(statement):
+            compiled = statement.compile(dialect=postgresql.dialect())
+            external_ids = {
+                value
+                for value in compiled.params.values()
+                if isinstance(value, str) and value.startswith("ical-")
+            }
+            return _FakeExecuteResult([_event_row(external_id) for external_id in external_ids])
+
+        session.execute = AsyncMock(side_effect=compile_then_return_rows)
+        service = CalendarSyncService(session, organisation_id)
+        items = [
+            CalendarEventUpsertBatchItem(
+                event=_normalize_event(
+                    _google_event(provider_id=f"evt-{index}", external_id=f"ical-{index}")
+                ),
+            )
+            for index in range(1300)
+        ]
+
+        result = await service._batch_upsert_events(integration, items)
+
+        assert session.execute.await_count == 2
+        assert len(result) == 1300
+        for call in session.execute.await_args_list:
+            compiled = call.args[0].compile(dialect=postgresql.dialect())
+            assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
+
+    @pytest.mark.asyncio
     async def test_batch_sync_attendees_deletes_once_and_inserts_fresh_snapshot(self) -> None:
         """Attendee snapshot refresh is one bulk delete + one bulk insert.
 
@@ -283,6 +319,48 @@ class TestCalendarIncrementalBatchWrites:
         assert "buyer@example.com" in str(insert_params.values())
         assert "host@example.com" in str(insert_params.values())
         assert "No Email" not in str(insert_params.values())
+
+    @pytest.mark.asyncio
+    async def test_batch_sync_attendees_splits_inserts_before_asyncpg_bind_limit(self) -> None:
+        """Large attendee snapshots must not exceed asyncpg's bind limit."""
+        organisation_id = uuid4()
+        session = AsyncMock()
+
+        async def compile_then_return(statement):
+            statement.compile(dialect=postgresql.dialect())
+            return _FakeExecuteResult()
+
+        session.execute = AsyncMock(side_effect=compile_then_return)
+        service = CalendarSyncService(session, organisation_id)
+        event = _event_row("ical-large-attendee-roster")
+        attendees = [
+            {
+                "email": f"attendee-{index}@example.com",
+                "displayName": f"Attendee {index}",
+                "responseStatus": "accepted",
+            }
+            for index in range(5000)
+        ]
+
+        await service._batch_sync_attendees(
+            [
+                (
+                    event,
+                    _normalize_event(
+                        _google_event(
+                            provider_id="evt-large-attendee-roster",
+                            external_id="ical-large-attendee-roster",
+                            attendees=attendees,
+                        )
+                    ),
+                )
+            ]
+        )
+
+        assert session.execute.await_count == 3
+        for call in session.execute.await_args_list[1:]:
+            compiled = call.args[0].compile(dialect=postgresql.dialect())
+            assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
 
     @pytest.mark.asyncio
     async def test_batch_upsert_user_states_resets_deleted_state_in_one_statement(self) -> None:

@@ -8,12 +8,14 @@ exact column lists that survive an upsert.
 
 Two contracts the writer protects:
 
-  1. **Single-statement bulk writes.** The whole reason this module was extracted
+  1. **Batched bulk writes.** The whole reason this module was extracted
      from the legacy service was an N+1 in production: every changed event was
      producing one INSERT for calendar_events, one delete + one insert for
      attendees, and one INSERT for user_state. The batched methods here collapse
-     each of those to one statement per sync pass; per-event methods exist for
-     the full-sync path that still operates one event at a time.
+     each of those to one statement per sync pass when safe, or a small number
+     of parameter-safe statements for very large event batches; per-event
+     methods exist for the full-sync path that still operates one event at a
+     time.
 
   2. **Attendee snapshots are atomic replacements, not diffs.** When the provider
      sends a roster, we delete the old roster for that event and re-insert the
@@ -53,6 +55,8 @@ logger = get_logger(__name__)
 # batches can include hundreds of events; logging all of them on a write
 # failure would be noisy in Sentry and slow to render.
 SAMPLE_LOG_LIMIT = 5
+_ASYNC_PG_BIND_PARAMETER_LIMIT = 32_767
+_BULK_UPSERT_PARAMETER_BUDGET = 24_000
 SPARSE_OPTIONAL_EVENT_COLUMNS = frozenset(
     {
         "calendar_external_id",
@@ -161,6 +165,32 @@ class CalendarSyncWriter:
         all_keys = sorted(set().union(*(row.keys() for row in values)))
         return [{key: row.get(key) for key in all_keys} for row in values]
 
+    @staticmethod
+    def _iter_parameter_safe_chunks(
+        values: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        if not values:
+            return []
+
+        max_rows_per_statement = max(1, _BULK_UPSERT_PARAMETER_BUDGET // len(values[0]))
+        return [
+            values[offset : offset + max_rows_per_statement]
+            for offset in range(0, len(values), max_rows_per_statement)
+        ]
+
+    async def _execute_event_upsert_values(
+        self,
+        values: list[dict[str, Any]],
+    ) -> list[CalendarEvent]:
+        stmt: Any = insert(CalendarEvent).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["external_id", "occurrence_anchor"],
+            set_=self._event_upsert_update_dict(stmt, values[0]),
+        ).returning(CalendarEvent)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def batch_upsert_events(
         self,
         integration: KnowledgeIntegration,
@@ -198,30 +228,30 @@ class CalendarSyncWriter:
             self._build_event_upsert_values(item.event) for item in latest_by_identity.values()
         ]
         values = self._normalize_event_batch_values(raw_values)
-        stmt: Any = insert(CalendarEvent).values(values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["external_id", "occurrence_anchor"],
-            set_=self._event_upsert_update_dict(stmt, values[0]),
-        ).returning(CalendarEvent)
+        events: list[CalendarEvent] = []
+        chunks = self._iter_parameter_safe_chunks(values)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            try:
+                events.extend(await self._execute_event_upsert_values(chunk))
+            except Exception:
+                # Attach a bounded sample of the input payloads so the Sentry event
+                # has enough context to debug the failure without dumping the whole
+                # batch (which can be hundreds of events).
+                logger.error(
+                    "Calendar batch event upsert failed: integration=%s chunk=%s/%s "
+                    "chunk_size=%s samples=%s",
+                    integration.integration_id,
+                    chunk_index,
+                    len(chunks),
+                    len(chunk),
+                    [
+                        item.event.debug_sample
+                        for item in list(latest_by_identity.values())[:SAMPLE_LOG_LIMIT]
+                    ],
+                    exc_info=True,
+                )
+                raise
 
-        try:
-            result = await self.session.execute(stmt)
-        except Exception:
-            # Attach a bounded sample of the input payloads so the Sentry event
-            # has enough context to debug the failure without dumping the whole
-            # batch (which can be hundreds of events).
-            logger.error(
-                "Calendar batch event upsert failed: integration=%s samples=%s",
-                integration.integration_id,
-                [
-                    item.event.debug_sample
-                    for item in list(latest_by_identity.values())[:SAMPLE_LOG_LIMIT]
-                ],
-                exc_info=True,
-            )
-            raise
-
-        events = result.scalars().all()
         return {(event.external_id, event.occurrence_anchor): event for event in events}
 
     @staticmethod
@@ -343,8 +373,8 @@ class CalendarSyncWriter:
         for db_event, normalized in snapshots_by_event.values():
             values.extend(self._build_attendee_values(db_event, normalized))
 
-        if values:
-            await self.session.execute(insert(CalendarAttendee).values(values))
+        for chunk in self._iter_parameter_safe_chunks(values):
+            await self.session.execute(insert(CalendarAttendee).values(chunk))
 
     async def sync_attendees(
         self, event: CalendarEvent, normalized: NormalizedCalendarEvent
