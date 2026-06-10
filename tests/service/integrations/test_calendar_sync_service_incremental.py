@@ -579,6 +579,47 @@ class TestCalendarIncrementalBatchWrites:
         )
 
     @pytest.mark.asyncio
+    async def test_incremental_sync_does_not_enqueue_meeting_bot_outside_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calendar sync must not fan out a full year of future Recall bots."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        upserted = _event_row("ical-created")
+        upserted.start_at = datetime.now(UTC) + timedelta(days=4)
+        upserted.conference_link = "https://meet.google.com/abc-defg-hij"
+        service._batch_upsert_events = AsyncMock(return_value={("ical-created", ""): upserted})
+        send_task = AsyncMock()
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            send_task,
+        )
+
+        event_data = _google_event(provider_id="user-created", external_id="ical-created")
+        event_data["conferenceData"] = {
+            "entryPoints": [
+                {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
+            ]
+        }
+
+        await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[event_data],
+        )
+
+        send_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_incremental_sync_enqueues_cancelled_future_meeting_bot_after_commit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

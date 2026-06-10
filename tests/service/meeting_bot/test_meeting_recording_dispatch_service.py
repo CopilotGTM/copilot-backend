@@ -201,6 +201,43 @@ class TestMeetingRecordingDispatchService:
         service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
 
     @pytest.mark.asyncio
+    async def test_dispatch_event_skips_meetings_outside_recording_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The final dispatch gate protects every caller from far-future bot sends."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(days=4),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+        )
+        service._build_provider = AsyncMock()  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result == {
+            "status": "skipped",
+            "reason": "meeting_outside_recording_window",
+            "calendar_event_id": str(event_id),
+        }
+        service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
+        service._build_provider.assert_not_awaited()  # noqa: SLF001
+
+    @pytest.mark.asyncio
     async def test_dispatch_event_cancels_provider_bot_for_cancelled_calendar_event(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

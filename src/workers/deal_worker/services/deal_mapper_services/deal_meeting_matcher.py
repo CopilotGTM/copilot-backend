@@ -49,6 +49,7 @@ from src.infra.database.sessions import acquire_master_async_session, acquire_or
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_sync_service import build_meeting_timeline_event
 from src.service.crm.timeline.timeline_event_source_resolver import resolve_meeting_event_source
+from src.service.meeting_bot.recording_window import is_within_recording_dispatch_window
 from src.service.meeting_bot.session_service import (
     MeetingRecordingSessionService,
 )
@@ -1252,7 +1253,7 @@ class DealMeetingMatcher:
             return False
         if join_at.tzinfo is None:
             join_at = join_at.replace(tzinfo=UTC)
-        if join_at <= datetime.now(UTC):
+        if not is_within_recording_dispatch_window(join_at, datetime.now(UTC)):
             return False
 
         stmt = (

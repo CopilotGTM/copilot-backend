@@ -35,6 +35,11 @@ from src.service.integrations.meeting_recording.providers import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
 )
+from src.service.meeting_bot.recording_window import (
+    is_within_recording_dispatch_window,
+    normalize_utc,
+    recording_window_end,
+)
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
 logger = get_logger(__name__)
@@ -112,12 +117,17 @@ class MeetingRecordingDispatchService:
             }
 
         join_at = event.start_at
-        if join_at.tzinfo is None:
-            # A missing timezone means a naive timestamp; assume UTC so ordering and
-            # comparisons stay stable across workers.
-            join_at = join_at.replace(tzinfo=UTC)
+        join_at = normalize_utc(join_at)
+        now = datetime.now(UTC)
 
-        if join_at <= datetime.now(UTC):
+        if not is_within_recording_dispatch_window(join_at, now):
+            if join_at > now:
+                return {
+                    "status": "skipped",
+                    "reason": "meeting_outside_recording_window",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+
             existing_session = await self._session_service.get_by_event(calendar_event_id)
             if existing_session and existing_session.sent_to_provider_at is not None:
                 existing_provider = await self._build_provider()
@@ -556,7 +566,7 @@ class MeetingRecordingDispatchService:
     async def _count_upcoming_integration_meetings(self) -> int:
         """Count upcoming active integration meetings in the fallback scan window."""
         now = datetime.now(UTC)
-        window_end = now + timedelta(days=3)
+        window_end = recording_window_end(now)
 
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = (
@@ -1027,7 +1037,7 @@ class MeetingRecordingDispatchService:
     async def _list_unsent_upcoming_event_ids(self) -> list[UUID]:
         """Return ordered upcoming integration events that are missing send completion."""
         now = datetime.now(UTC)
-        window_end = now + timedelta(days=3)
+        window_end = recording_window_end(now)
 
         async for session in acquire_org_async_session(self.organisation_id):
             # Distinct+order_by is required for PostgreSQL compatibility and stable

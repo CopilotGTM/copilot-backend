@@ -106,6 +106,23 @@ class TestMeetingRecordingQueueing:
         assert session.statements == []
 
     @pytest.mark.asyncio
+    async def test_far_future_meeting_does_not_persist_pending_session(self) -> None:
+        """Matcher must not create durable send intent outside the bot window."""
+        matcher = DealMeetingMatcher(uuid4())
+        session = _FakeSession(rowcount=1)
+        event = SimpleNamespace(
+            event_id=uuid4(),
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(days=4),
+        )
+
+        created = await matcher._enqueue_meeting_recording(session, event)  # noqa: SLF001
+
+        assert created is False
+        assert matcher._pending_recording_event_ids == set()  # noqa: SLF001
+        assert session.statements == []
+
+    @pytest.mark.asyncio
     async def test_duplicate_pending_session_is_not_queued_twice(self) -> None:
         """An unchanged duplicate row remains idempotent and does not requeue."""
         matcher = DealMeetingMatcher(uuid4())
