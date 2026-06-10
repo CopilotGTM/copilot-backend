@@ -12,6 +12,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
+from src.service.integrations.calendar.writer import _ASYNC_PG_BIND_PARAMETER_LIMIT
 from src.service.integrations.calendar_sync_service import (
     CalendarEventUpsertBatchItem,
     CalendarSyncService,
@@ -211,6 +212,41 @@ class TestCalendarIncrementalBatchWrites:
             ("ical-with-link", ""): rows[0],
             ("ical-without-link", ""): rows[1],
         }
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_events_splits_before_asyncpg_bind_parameter_limit(self) -> None:
+        """Large initial calendar syncs must not exceed asyncpg's bind limit."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+
+        async def compile_then_return_rows(statement):
+            compiled = statement.compile(dialect=postgresql.dialect())
+            external_ids = {
+                value
+                for value in compiled.params.values()
+                if isinstance(value, str) and value.startswith("ical-")
+            }
+            return _FakeExecuteResult([_event_row(external_id) for external_id in external_ids])
+
+        session.execute = AsyncMock(side_effect=compile_then_return_rows)
+        service = CalendarSyncService(session, organisation_id)
+        items = [
+            CalendarEventUpsertBatchItem(
+                event=_normalize_event(
+                    _google_event(provider_id=f"evt-{index}", external_id=f"ical-{index}")
+                ),
+            )
+            for index in range(1300)
+        ]
+
+        result = await service._batch_upsert_events(integration, items)
+
+        assert session.execute.await_count == 2
+        assert len(result) == 1300
+        for call in session.execute.await_args_list:
+            compiled = call.args[0].compile(dialect=postgresql.dialect())
+            assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
 
     @pytest.mark.asyncio
     async def test_batch_sync_attendees_deletes_once_and_inserts_fresh_snapshot(self) -> None:
