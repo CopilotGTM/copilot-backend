@@ -119,7 +119,7 @@ Note: tasks triggered by Celery Beat/schedulers do not originate from an HTTP re
 
 ### Is Flower "internal" in our Helm charts?
 
-Yes, by default it is internal:
+Yes, by default it is enabled but internal:
 
 - `Service` is `ClusterIP` (only reachable inside the cluster).
 - `Ingress` is **disabled** by default (`flower.ingress.enabled=false`), so nothing is exposed publicly.
@@ -132,9 +132,9 @@ An optional Helm subchart was added:
 
 - Chart: `charts/application/charts/flower/templates/deployment.yaml:1`
 
-### How to enable
+### How Flower is enabled
 
-You need **both**:
+Flower task visibility needs **both**:
 
 - `flower.enabled=true` (deploy Flower)
 - `global.celery.enableEvents=true` (start workers with `celery -E` so Flower receives task events)
@@ -162,13 +162,13 @@ Note: the container image runs Flower as `celery flower` (there is no standalone
 ## Recommended configuration (AKS)
 
 - Set `LOG_FORMAT=json` and `LOG_LEVEL=INFO` in your Kubernetes secret (API + workers).
-- Keep Flower disabled by default and enable it only when you need live task visibility (or lock it behind ingress auth).
+- Keep Flower internal by default and expose it only through port-forwarding or a secured private ingress.
 
 ## What should you do now?
 
-### Option 1 (recommended): Deploy Flower temporarily (internal only)
+### Option 1 (recommended): Access Flower internally
 
-1) Create a small override file (example `values.flower.yaml`):
+1) Confirm the chart has Flower and Celery events enabled:
 
    ```yaml
    global:
@@ -180,10 +180,10 @@ Note: the container image runs Flower as `celery flower` (there is no standalone
        enabled: false
    ```
 
-2) Deploy/upgrade:
+2) Deploy/upgrade with the application chart:
 
    ```bash
-   helm upgrade --install <release> ./charts/application -n <namespace> -f values.flower.yaml
+   helm upgrade --install <release> ./charts/application -n <namespace>
    ```
 
 3) Port-forward:
@@ -193,7 +193,7 @@ Note: the container image runs Flower as `celery flower` (there is no standalone
    ```
 
 4) Open `http://localhost:5555`.
-5) When done, disable events + Flower again (to reduce Redis traffic):
+5) If you need to reduce Redis event traffic later, disable events + Flower:
    - set `global.celery.enableEvents=false`
    - set `flower.enabled=false`
 
