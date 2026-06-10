@@ -112,7 +112,7 @@ async def _dispatch_insight_pipeline_for_manual_summary(
 
 async def _dispatch_summary_ready_notification(
     organisation_id: UUID,
-    deal_id: UUID,
+    deal_id: UUID | None,
     event_id: UUID,
 ) -> None:
     """Queue summary-ready notifications without coupling I/O to generation.
@@ -122,7 +122,7 @@ async def _dispatch_summary_ready_notification(
     """
     try:
         send_meeting_summary_ready_notification_task.apply_async(
-            args=[str(organisation_id), str(deal_id), str(event_id)],
+            args=[str(organisation_id), str(deal_id) if deal_id else None, str(event_id)],
             queue="deal_jobs",
         )
         logger.info(
@@ -130,7 +130,7 @@ async def _dispatch_summary_ready_notification(
             extra={
                 "event": "meeting_summary_ready_notification_queued",
                 "organisation_id": str(organisation_id),
-                "deal_id": str(deal_id),
+                "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
             },
         )
@@ -140,7 +140,7 @@ async def _dispatch_summary_ready_notification(
             extra={
                 "event": "meeting_summary_ready_notification_queue_failed",
                 "organisation_id": str(organisation_id),
-                "deal_id": str(deal_id),
+                "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
             },
         )
@@ -242,7 +242,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         )
 
         # Only deal-linked summaries are user-visible job streams. Non-deal
-        # Recall summaries are background materialization and should stay silent.
+        # Recall summaries still notify attendees, but do not publish job SSE.
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str) if deal_id else None
 
         # Phase 2: Call service (service manages its own sessions)
@@ -363,8 +363,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             },
         )
 
-        if deal_id:
-            await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id)
+        await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id)
 
         # Recall webhook jobs bypass the old process_deal_pipeline chain, so this
         # summary task must continue the downstream insight pipeline for that source.

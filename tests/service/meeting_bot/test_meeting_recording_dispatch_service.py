@@ -68,6 +68,15 @@ def _yield_session(session):
 class TestMeetingRecordingDispatchService:
     """Regression coverage for meeting recording dispatch decisions."""
 
+    @pytest.fixture(autouse=True)
+    def _default_master_org_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep dispatch unit tests isolated from the real master database."""
+        master_session = _FakeLookupSession(None)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            lambda: _yield_session(master_session),
+        )
+
     def test_active_calendar_integration_types_include_parent_and_capability_rows(self) -> None:
         """Calendar sync can write user-state rows through either integration shape."""
         assert set(ACTIVE_CALENDAR_INTEGRATION_TYPES) == {
@@ -112,6 +121,7 @@ class TestMeetingRecordingDispatchService:
             create_session=AsyncMock(return_value={"id": "bot_123", "status": "scheduled"})
         )
         service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+        service._resolve_bot_name = AsyncMock(return_value="Acme Corp Notetaker")  # noqa: SLF001
 
         result = await service.dispatch_event(event_id)
 
@@ -121,6 +131,39 @@ class TestMeetingRecordingDispatchService:
         service._session_service.mark_send_queued.assert_awaited_once()  # noqa: SLF001
         service._session_service.mark_sent.assert_awaited_once()  # noqa: SLF001
         provider.create_session.assert_awaited_once()
+        assert provider.create_session.await_args.kwargs["bot_name"] == "Acme Corp Notetaker"
+
+    @pytest.mark.asyncio
+    async def test_resolve_bot_name_uses_organisation_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recall bot joins as the tenant company not the CopilotGTM brand."""
+        organisation_id = uuid4()
+        master_session = _FakeLookupSession("Acme Corp")
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            lambda: _yield_session(master_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+
+        assert await service._resolve_bot_name() == "Acme Corp Notetaker"  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_resolve_bot_name_falls_back_to_notetaker_for_blank_org_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Blank or unavailable organisation names should not expose fallback branding."""
+        organisation_id = uuid4()
+        master_session = _FakeLookupSession("   ")
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            lambda: _yield_session(master_session),
+        )
+
+        service = MeetingRecordingDispatchService(organisation_id)
+
+        assert await service._resolve_bot_name() == "Notetaker"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dispatch_event_skips_when_join_url_is_missing(

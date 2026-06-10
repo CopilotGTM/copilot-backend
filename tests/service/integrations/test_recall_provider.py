@@ -48,14 +48,14 @@ class TestRecallMeetingRecordingProvider:
             result = await provider.create_session(
                 meeting_url="https://teams.example/join",
                 join_at=join_at,
-                bot_name="CopilotGTM Notetaker",
+                bot_name="Acme Corp Notetaker",
                 metadata={"organisation_id": str(uuid4())},
             )
 
         assert result["id"] == "bot_123"
         kwargs = mock_client.post.call_args.kwargs
         assert kwargs["json"]["meeting_url"] == "https://teams.example/join"
-        assert kwargs["json"]["bot_name"] == "CopilotGTM Notetaker"
+        assert kwargs["json"]["bot_name"] == "Acme Corp Notetaker"
         assert kwargs["json"]["metadata"]
         assert (
             kwargs["json"]["recording_config"]["transcript"]["provider"]["recallai_streaming"][
@@ -121,7 +121,7 @@ class TestRecallMeetingRecordingProvider:
                 "bot_123",
                 meeting_url="https://teams.example/join",
                 join_at=join_at,
-                bot_name="CopilotGTM Notetaker",
+                bot_name="Acme Corp Notetaker",
                 metadata={"calendar_event_id": str(uuid4())},
             )
 

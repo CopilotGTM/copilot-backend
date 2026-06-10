@@ -624,7 +624,7 @@ class RecallConfig:
 
     RECALL_REGION: str = os.getenv("RECALL_REGION", "us-west-2")
     RECALL_TIMEOUT_SECONDS: float = float(os.getenv("RECALL_TIMEOUT_SECONDS", "30"))
-    RECALL_BOT_NAME: str = os.getenv("RECALL_BOT_NAME", "CopilotGTM Notetaker")
+    RECALL_BOT_NAME: str = os.getenv("RECALL_BOT_NAME", "Notetaker")
 
     SECRET_NAME_API_KEY: str = "recall-api-key"
     SECRET_NAME_WEBHOOK_SECRET: str = "recall-webhook-secret"
