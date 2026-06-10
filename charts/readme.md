@@ -12,7 +12,7 @@ This Helm umbrella chart deploys:
 
 See [`docs/Technical Documentation/aks-logging-best-practices.md`](../docs/Technical%20Documentation/aks-logging-best-practices.md) for recommended AKS logging setup (Azure Monitor/Log Analytics) and KQL queries for both the API and Celery workers.
 
-Optional: enable the Flower UI (`flower.enabled=true`) and Celery events (`global.celery.enableEvents=true`) to monitor worker/task state across queues.
+The chart enables the Flower UI (`flower.enabled=true`) and Celery events (`global.celery.enableEvents=true`) to monitor worker/task state across queues. Flower ingress remains disabled unless explicitly exposed.
 
 ## Worker Summary
 
