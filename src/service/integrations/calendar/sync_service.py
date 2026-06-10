@@ -54,6 +54,10 @@ from src.service.integrations.sync_history_manager import (
     SyncHistoryManager,
     datetime_now_naive,
 )
+from src.service.meeting_bot.recording_window import (
+    is_within_recording_dispatch_window,
+    normalize_utc,
+)
 from src.workers.deal_worker.client import send_deal_task_async
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,
@@ -727,17 +731,16 @@ class CalendarSyncService:
 
     def _queue_recording_dispatch_if_eligible(self, event: CalendarEvent) -> None:
         """Record changed future meetings that can be safely enqueued after commit."""
-        start_at = event.start_at
-        if start_at.tzinfo is None:
-            start_at = start_at.replace(tzinfo=UTC)
-        else:
-            start_at = start_at.astimezone(UTC)
-        if start_at <= datetime.now(UTC):
+        start_at = normalize_utc(event.start_at)
+        now = datetime.now(UTC)
+        if start_at <= now:
             return
         if (getattr(event, "status", None) or "").lower() == "cancelled":
             # Cancellations still need the dispatch task: it re-reads the event and
             # cancels any scheduled Recall bot for this calendar event.
             self._pending_recording_event_ids.add(event.event_id)
+            return
+        if not is_within_recording_dispatch_window(start_at, now):
             return
         if not getattr(event, "conference_link", None):
             return
