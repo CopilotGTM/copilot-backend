@@ -30,6 +30,7 @@ from src.domain.models.organisation_tables.sync import (
     GenerationStatus,
     IntegrationType,
     KnowledgeIntegration,
+    Meeting,
     MessagingChannel,
     MessagingDealLink,
     NotificationDelivery,
@@ -45,6 +46,7 @@ logger = get_logger(__name__)
 
 MEETING_SUMMARY_READY_NOTIFICATION = "meeting_summary_ready"
 CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE = "calendar_event_deal_association"
+MEETING_SOURCE = "meeting"
 NOTIFICATION_DELIVERY_STALE_AFTER = timedelta(minutes=15)
 
 
@@ -54,13 +56,15 @@ class MeetingSummaryNotificationContext:
 
     organisation_id: UUID
     organisation_name: str
-    deal_id: UUID
+    deal_id: UUID | None
     deal_name: str | None
     event_id: UUID
     meeting_title: str | None
     meeting_start_at: datetime | None
     summary_data: dict[str, Any]
     association_id: UUID | None = None
+    source_type: str = CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE
+    source_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -365,7 +369,7 @@ class MeetingSummaryNotificationService:
     async def load_context(
         self,
         *,
-        deal_id: UUID,
+        deal_id: UUID | None,
         event_id: UUID,
     ) -> MeetingSummaryNotificationContext | None:
         """Load the completed deal-linked summary that notification workers announce."""
@@ -378,10 +382,14 @@ class MeetingSummaryNotificationService:
                 await master_session.execute(org_stmt)
             ).scalar_one_or_none() or organisation_name
 
+        if deal_id is None:
+            return await self._load_meeting_context(
+                event_id=event_id,
+                organisation_name=organisation_name,
+            )
+
         async for session in acquire_org_async_session(self.organisation_id):
             # The association row is the source of truth for deal-linked summaries.
-            # Non-deal meeting summaries live on Meeting and are intentionally not
-            # announced through this deal-channel notification service.
             stmt = (
                 select(CalendarEvent, CalendarEventDealAssociation, CRMDeal)
                 .join(
@@ -419,6 +427,50 @@ class MeetingSummaryNotificationService:
                 meeting_start_at=event.start_at,
                 summary_data=summary_data,
                 association_id=association.association_id,
+                source_type=CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE,
+                source_id=association.association_id,
+            )
+        return None
+
+    async def _load_meeting_context(
+        self,
+        *,
+        event_id: UUID,
+        organisation_name: str,
+    ) -> MeetingSummaryNotificationContext | None:
+        """Load a completed meeting-level summary for non-deal notifications."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = (
+                select(CalendarEvent, Meeting)
+                .join(Meeting, col(Meeting.calendar_event_id) == col(CalendarEvent.event_id))
+                .where(
+                    col(CalendarEvent.organisation_id) == self.organisation_id,
+                    col(CalendarEvent.event_id) == event_id,
+                    col(Meeting.organisation_id) == self.organisation_id,
+                    col(Meeting.meeting_summary_status) == GenerationStatus.COMPLETED,
+                    col(Meeting.meeting_summary_data).isnot(None),
+                )
+            )
+            row = (await session.execute(stmt)).first()
+            if not row:
+                return None
+
+            event, meeting = row
+            summary_data = meeting.meeting_summary_data
+            if not isinstance(summary_data, dict):
+                return None
+
+            return MeetingSummaryNotificationContext(
+                organisation_id=self.organisation_id,
+                organisation_name=organisation_name,
+                deal_id=None,
+                deal_name=None,
+                event_id=event_id,
+                meeting_title=event.title,
+                meeting_start_at=event.start_at,
+                summary_data=summary_data,
+                source_type=MEETING_SOURCE,
+                source_id=meeting.meeting_id,
             )
         return None
 
@@ -482,22 +534,23 @@ class MeetingSummaryNotificationService:
         lets failed deliveries retry while already-sent rows short-circuit.
         """
         async for session in acquire_org_async_session(self.organisation_id):
+            source_id = context.source_id or context.association_id or context.event_id
+            delivery_metadata = {**(metadata or {})}
+            if context.deal_id:
+                delivery_metadata["deal_id"] = str(context.deal_id)
             insert_stmt = (
                 pg_insert(NotificationDelivery)
                 .values(
                     organisation_id=self.organisation_id,
                     notification_type=MEETING_SUMMARY_READY_NOTIFICATION,
-                    source_type=CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE,
-                    source_id=context.association_id or context.event_id,
+                    source_type=context.source_type,
+                    source_id=source_id,
                     channel=channel.value,
                     target_key=target_key,
                     target_label=target_label,
                     status=NotificationDeliveryStatus.SENDING.value,
                     attempt_count=1,
-                    delivery_metadata={
-                        "deal_id": str(context.deal_id),
-                        **(metadata or {}),
-                    },
+                    delivery_metadata=delivery_metadata,
                     updated_at=datetime.now(UTC),
                 )
                 .on_conflict_do_nothing(constraint="uq_notification_delivery_target")
@@ -514,9 +567,8 @@ class MeetingSummaryNotificationService:
                     col(NotificationDelivery.organisation_id) == self.organisation_id,
                     col(NotificationDelivery.notification_type)
                     == MEETING_SUMMARY_READY_NOTIFICATION,
-                    col(NotificationDelivery.source_type) == CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE,
-                    col(NotificationDelivery.source_id)
-                    == (context.association_id or context.event_id),
+                    col(NotificationDelivery.source_type) == context.source_type,
+                    col(NotificationDelivery.source_id) == source_id,
                     col(NotificationDelivery.channel) == channel.value,
                     col(NotificationDelivery.target_key) == target_key,
                 )
@@ -547,10 +599,7 @@ class MeetingSummaryNotificationService:
             existing.attempt_count += 1
             existing.last_error = None
             existing.updated_at = datetime.now(UTC)
-            existing.delivery_metadata = {
-                "deal_id": str(context.deal_id),
-                **(metadata or {}),
-            }
+            existing.delivery_metadata = delivery_metadata
             await session.commit()
             return existing.delivery_id
         return None
@@ -578,14 +627,14 @@ class MeetingSummaryNotificationService:
                 await session.commit()
             return
 
-    async def notify(self, *, deal_id: UUID, event_id: UUID) -> dict[str, int | str]:
+    async def notify(self, *, deal_id: UUID | None, event_id: UUID) -> dict[str, int | str]:
         """Notify internal users and active deal channels for one completed summary."""
         context = await self.load_context(deal_id=deal_id, event_id=event_id)
         if not context:
             return {"status": "skipped", "reason": "summary_not_ready"}
 
         recipients = await self.resolve_email_recipients(event_id=event_id)
-        channels = await self.resolve_channel_targets(deal_id)
+        channels = await self.resolve_channel_targets(context.deal_id) if context.deal_id else []
 
         sent = 0
         skipped = 0

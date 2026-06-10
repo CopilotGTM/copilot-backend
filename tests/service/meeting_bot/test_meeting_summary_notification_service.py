@@ -89,6 +89,31 @@ def test_channel_rendering_links_to_app_without_embedding_summary_content(monkey
     assert "Do not post this generated summary to channels" not in text
 
 
+def test_meeting_level_context_uses_meeting_source_id():
+    """Non-deal summary notifications should dedupe by the Meeting row."""
+    from src.service.meeting_bot.summary_notification_service import (
+        MEETING_SOURCE,
+        MeetingSummaryNotificationContext,
+    )
+
+    meeting_id = uuid4()
+    context = MeetingSummaryNotificationContext(
+        organisation_id=uuid4(),
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=uuid4(),
+        meeting_title="Weekly review",
+        meeting_start_at=None,
+        summary_data={"summary": "ready"},
+        source_type=MEETING_SOURCE,
+        source_id=meeting_id,
+    )
+
+    assert context.source_type == "meeting"
+    assert context.source_id == meeting_id
+
+
 @pytest.mark.asyncio
 async def test_resolve_email_recipients_limits_to_internal_meeting_attendees(monkeypatch):
     """Only active approved org users on the meeting invite should receive email."""
@@ -352,6 +377,72 @@ async def test_claim_delivery_uses_postgres_unique_constraint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_claim_delivery_uses_context_source_type_and_id(monkeypatch):
+    """Meeting-level notifications should not collide with deal-association notifications."""
+    from sqlalchemy.dialects import postgresql
+    from src.domain.models.organisation_tables.sync import NotificationDeliveryChannel
+    from src.service.meeting_bot.summary_notification_service import (
+        MEETING_SOURCE,
+        MeetingSummaryNotificationContext,
+        MeetingSummaryNotificationService,
+    )
+
+    class _InsertResult:
+        def scalar_one_or_none(self):
+            return uuid4()
+
+    class _CapturingSession:
+        def __init__(self):
+            self.params = {}
+
+        async def execute(self, stmt):
+            compiled = stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": False},
+            )
+            self.params = dict(compiled.params)
+            return _InsertResult()
+
+        async def commit(self):
+            return None
+
+    async def _yield_session(session):
+        yield session
+
+    org_id = uuid4()
+    meeting_id = uuid4()
+    session = _CapturingSession()
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_notification_service.acquire_org_async_session",
+        lambda _org_id: _yield_session(session),
+    )
+    service = MeetingSummaryNotificationService(org_id)
+    context = MeetingSummaryNotificationContext(
+        organisation_id=org_id,
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=uuid4(),
+        meeting_title="Meeting",
+        meeting_start_at=None,
+        summary_data={"summary": "ready"},
+        source_type=MEETING_SOURCE,
+        source_id=meeting_id,
+    )
+
+    delivery_id = await service._claim_delivery(  # noqa: SLF001
+        context=context,
+        channel=NotificationDeliveryChannel.EMAIL,
+        target_key="user-1",
+        target_label="seller@example.com",
+    )
+
+    assert delivery_id is not None
+    assert session.params["source_type"] == "meeting"
+    assert session.params["source_id"] == meeting_id
+
+
+@pytest.mark.asyncio
 async def test_claim_delivery_retries_existing_failed_delivery(monkeypatch):
     """A failed delivery row should be claimed again instead of creating a duplicate target."""
     from src.domain.models.organisation_tables.sync import (
@@ -599,3 +690,78 @@ async def test_notify_reports_failed_when_email_provider_fails(monkeypatch):
         "failed": 1,
     }
     assert marked_failed == [(claimed_delivery_id, "email_send_failed")]
+
+
+@pytest.mark.asyncio
+async def test_notify_non_deal_summary_emails_internal_attendees_without_channels(monkeypatch):
+    """Non-deal summaries notify internal attendees but never fan out to deal channels."""
+    from src.service.meeting_bot.summary_notification_service import (
+        MEETING_SOURCE,
+        MeetingSummaryNotificationContext,
+        MeetingSummaryNotificationService,
+        NotificationRecipient,
+    )
+
+    org_id = uuid4()
+    event_id = uuid4()
+    meeting_id = uuid4()
+    service = MeetingSummaryNotificationService(org_id)
+    context = MeetingSummaryNotificationContext(
+        organisation_id=org_id,
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=event_id,
+        meeting_title="Internal review",
+        meeting_start_at=None,
+        summary_data={"summary": "ready"},
+        source_type=MEETING_SOURCE,
+        source_id=meeting_id,
+    )
+    recipient = NotificationRecipient(
+        user_id=uuid4(),
+        email="seller@example.com",
+        first_name="Seller",
+    )
+    claimed_delivery_id = uuid4()
+    sent_deliveries: list[object] = []
+
+    async def _load_context(**kwargs):
+        assert kwargs == {"deal_id": None, "event_id": event_id}
+        return context
+
+    async def _resolve_email_recipients(**kwargs):
+        assert kwargs == {"event_id": event_id}
+        return [recipient]
+
+    async def _resolve_channel_targets(_deal_id):
+        raise AssertionError("non-deal summaries must not resolve deal channels")
+
+    async def _claim_delivery(**kwargs):
+        assert kwargs["context"] is context
+        assert kwargs["metadata"] == {"email": recipient.email}
+        return claimed_delivery_id
+
+    async def _send_email(_context, _recipient):
+        return True
+
+    async def _mark_sent(delivery_id):
+        sent_deliveries.append(delivery_id)
+
+    monkeypatch.setattr(service, "load_context", _load_context)
+    monkeypatch.setattr(service, "resolve_email_recipients", _resolve_email_recipients)
+    monkeypatch.setattr(service, "resolve_channel_targets", _resolve_channel_targets)
+    monkeypatch.setattr(service, "_claim_delivery", _claim_delivery)
+    monkeypatch.setattr(service, "send_email", _send_email)
+    monkeypatch.setattr(service, "_mark_delivery_sent", _mark_sent)
+
+    result = await service.notify(deal_id=None, event_id=event_id)
+
+    assert result == {
+        "status": "completed",
+        "targets_found": 1,
+        "sent": 1,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert sent_deliveries == [claimed_delivery_id]

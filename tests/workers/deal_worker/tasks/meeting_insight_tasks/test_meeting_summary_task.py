@@ -584,6 +584,27 @@ class TestDispatchSummaryReadyNotification:
         )
 
     @pytest.mark.asyncio
+    async def test_enqueues_non_deal_summary_ready_notification(self):
+        """Non-deal meeting summaries should still notify internal attendees."""
+        org_id = uuid4()
+        event_id = uuid4()
+
+        with patch(
+            "src.workers.deal_worker.tasks.meeting_insight_tasks"
+            ".meeting_summary_task.send_meeting_summary_ready_notification_task",
+        ) as mock_task:
+            from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+                _dispatch_summary_ready_notification,
+            )
+
+            await _dispatch_summary_ready_notification(org_id, None, event_id)
+
+        mock_task.apply_async.assert_called_once_with(
+            args=[str(org_id), None, str(event_id)],
+            queue="deal_jobs",
+        )
+
+    @pytest.mark.asyncio
     async def test_enqueue_failure_does_not_propagate(self):
         """Notification enqueue failure must not fail the completed summary job."""
         org_id = uuid4()
@@ -856,7 +877,7 @@ class TestMeetingSummaryTaskConfig:
         assert service_cls.call_args.kwargs["deal_id"] is None
         assert service_cls.call_args.kwargs["event_id"] == event_id
         service.generate_meeting_level_summary.assert_awaited_once()
-        dispatch_notification.assert_not_awaited()
+        dispatch_notification.assert_awaited_once_with(org_id, None, event_id)
         dispatch_pipeline.assert_not_awaited()
         publisher_cls.assert_not_called()
         assert job.status == JobStatus.COMPLETED

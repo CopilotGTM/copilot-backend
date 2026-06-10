@@ -1,6 +1,6 @@
 """Celery task for meeting summary ready notifications.
 
-Called after a deal-linked meeting summary job completes. The service uses
+Called after a meeting summary job completes. The service uses
 NotificationDelivery rows for per-target idempotency, so this task can retry
 without sending duplicate emails/channel messages.
 """
@@ -32,7 +32,7 @@ class MeetingSummaryNotificationRetryableError(RuntimeError):
 def send_meeting_summary_ready_notification_task(
     self: Task,
     organisation_id: str,
-    deal_id: str,
+    deal_id: str | None,
     event_id: str,
 ):
     """Send idempotent summary-ready notifications for one completed meeting summary.
@@ -43,7 +43,7 @@ def send_meeting_summary_ready_notification_task(
 
     async def _run():
         org_uuid = UUID(organisation_id)
-        deal_uuid = UUID(deal_id)
+        deal_uuid = UUID(deal_id) if deal_id else None
         event_uuid = UUID(event_id)
         service = MeetingSummaryNotificationService(org_uuid)
         return await service.notify(deal_id=deal_uuid, event_id=event_uuid)

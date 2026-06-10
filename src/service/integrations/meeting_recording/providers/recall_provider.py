@@ -78,7 +78,7 @@ class RecallMeetingRecordingProvider:
         meeting_url: str,
         join_at: datetime,
         metadata: dict[str, Any],
-        bot_name: str = "CopilotGTM Notetaker",
+        bot_name: str = "Notetaker",
         recording_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a bot for one meeting URL.
@@ -112,7 +112,7 @@ class RecallMeetingRecordingProvider:
         meeting_url: str,
         join_at: datetime,
         metadata: dict[str, Any],
-        bot_name: str = "CopilotGTM Notetaker",
+        bot_name: str = "Notetaker",
         recording_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update a scheduled bot before Recall starts dispatching it."""

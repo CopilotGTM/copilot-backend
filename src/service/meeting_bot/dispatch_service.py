@@ -14,6 +14,7 @@ from uuid import UUID
 import httpx
 from sqlalchemy import func, or_, select
 from sqlmodel import col
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventUserState,
@@ -28,7 +29,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingStatus,
 )
 from src.infra.config.configs import recall_config
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.meeting_recording.providers import (
     RecallMeetingRecordingProvider,
@@ -44,6 +45,7 @@ ACTIVE_CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
 )
+DEFAULT_RECALL_BOT_NAME = "Notetaker"
 
 
 class MeetingRecordingDispatchService:
@@ -58,6 +60,7 @@ class MeetingRecordingDispatchService:
         """Bind all DB and provider work to a single tenant."""
         self.organisation_id = organisation_id
         self._session_service = MeetingRecordingSessionService(organisation_id)
+        self._bot_name: str | None = None
 
     async def dispatch_event(
         self,
@@ -621,7 +624,7 @@ class MeetingRecordingDispatchService:
                 provider_session_id,
                 meeting_url=meeting_url,
                 join_at=join_at,
-                bot_name=recall_config.RECALL_BOT_NAME,
+                bot_name=await self._resolve_bot_name(),
                 metadata=self._provider_metadata(
                     calendar_event_id=calendar_event_id,
                     dedupe_key=session_record.dedupe_key,
@@ -757,7 +760,7 @@ class MeetingRecordingDispatchService:
             return await provider.create_session(
                 meeting_url=meeting_url,
                 join_at=join_at,
-                bot_name=recall_config.RECALL_BOT_NAME,
+                bot_name=await self._resolve_bot_name(),
                 metadata=self._provider_metadata(
                     calendar_event_id=calendar_event_id,
                     dedupe_key=session_record.dedupe_key,
@@ -793,6 +796,41 @@ class MeetingRecordingDispatchService:
                 return matching_bot
             await self._record_provider_failure(session_record, "create", error)
             raise
+
+    async def _resolve_bot_name(self) -> str:
+        """Return the tenant-branded display name sent to Recall."""
+        if self._bot_name is not None:
+            return self._bot_name
+
+        organisation_name: str | None = None
+        try:
+            async for session in acquire_master_async_session():
+                stmt = select(col(Organisation.organisation_name)).where(
+                    col(Organisation.organisation_id) == self.organisation_id
+                )
+                result = await session.execute(stmt)
+                organisation_name = result.scalar_one_or_none()
+                break
+        except Exception:
+            logger.warning(
+                "Meeting recording bot name lookup failed; using fallback",
+                extra={
+                    "event": "meeting_recording_bot_name_lookup_failed",
+                    "organisation_id": str(self.organisation_id),
+                },
+                exc_info=True,
+            )
+
+        self._bot_name = self._format_bot_name(organisation_name)
+        return self._bot_name
+
+    @staticmethod
+    def _format_bot_name(organisation_name: str | None) -> str:
+        """Format the user-visible bot name for meeting attendees."""
+        name = organisation_name.strip() if isinstance(organisation_name, str) else ""
+        if not name:
+            return DEFAULT_RECALL_BOT_NAME
+        return f"{name} Notetaker"
 
     async def _adopt_provider_session(
         self,
