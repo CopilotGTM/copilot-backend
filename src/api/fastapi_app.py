@@ -81,6 +81,13 @@ from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
 from src.infra.config.configs import app_config, security_secrets_config
+from src.infra.database.tenant_runtime_config import (
+    validate_current_shared_tenant_runtime_startup,
+)
+from src.infra.database.tenant_runtime_credentials import (
+    validate_current_shared_tenant_runtime_password,
+)
+from src.infra.secrets.manager import master_secrets_manager
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..api.middleware.request_context import RequestContextMiddleware
@@ -110,6 +117,10 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
+    validate_current_shared_tenant_runtime_startup()
+    await validate_current_shared_tenant_runtime_password(
+        secrets_manager=master_secrets_manager,
+    )
 
     # Initialize Redis connection pools at startup
     logger.info("Initializing Redis connection pools...")
