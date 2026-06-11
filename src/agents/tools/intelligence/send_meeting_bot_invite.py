@@ -21,11 +21,11 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventUserState,
 )
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationType,
-    KnowledgeIntegration,
-)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.utils.timezone import get_context_anchor_utc
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
+)
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
 
 if TYPE_CHECKING:
@@ -33,11 +33,6 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
-
-CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE.value,
-    IntegrationType.MICROSOFT.value,
-)
 
 
 async def send_meeting_bot_invite(

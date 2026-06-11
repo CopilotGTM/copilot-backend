@@ -579,6 +579,97 @@ class TestCalendarIncrementalBatchWrites:
         )
 
     @pytest.mark.asyncio
+    async def test_incremental_sync_enqueues_outlook_event_when_join_link_is_newly_extracted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The backend callback path must stop skipping Outlook events with third-party links."""
+        organisation_id = uuid4()
+        integration = _make_integration(
+            organisation_id=organisation_id,
+            integration_type=IntegrationType.MICROSOFT,
+        )
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        existing = _event_row("shared-ms-ical")
+        existing.start_at = datetime.now(UTC) + timedelta(hours=2)
+        existing.end_at = existing.start_at + timedelta(minutes=45)
+        existing.conference_link = None
+        service._load_existing_events_by_identity = AsyncMock(
+            return_value={("shared-ms-ical", ""): existing}
+        )
+
+        async def _batch_upsert_events(_integration, items):
+            assert len(items) == 1
+            normalized = items[0].event
+            assert normalized.fields["conference_link"] == "https://meet.google.com/yqz-yaqx-dup"
+            assert normalized.fields["online_meeting_provider"] == "googleMeet"
+            existing.conference_link = normalized.fields["conference_link"]
+            existing.online_meeting_provider = normalized.fields["online_meeting_provider"]
+            return {("shared-ms-ical", ""): existing}
+
+        service._batch_upsert_events = AsyncMock(side_effect=_batch_upsert_events)
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        send_task = AsyncMock()
+        commit_count = 0
+
+        async def _commit() -> None:
+            nonlocal commit_count
+            commit_count += 1
+
+        async def _send_task(*args, **kwargs):
+            assert commit_count >= 1
+            return await send_task(*args, **kwargs)
+
+        session.commit.side_effect = _commit
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            _send_task,
+        )
+
+        await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="microsoft",
+            events=[
+                {
+                    "id": "ms-user-event",
+                    "iCalUId": "shared-ms-ical",
+                    "subject": "Meet with Carlos",
+                    "isCancelled": False,
+                    "lastModifiedDateTime": "2026-06-11T16:30:00Z",
+                    "start": {
+                        "dateTime": existing.start_at.isoformat().replace("+00:00", "Z"),
+                        "timeZone": "UTC",
+                    },
+                    "end": {
+                        "dateTime": existing.end_at.isoformat().replace("+00:00", "Z"),
+                        "timeZone": "UTC",
+                    },
+                    "location": {"displayName": "https://meet.google.com/yqz-yaqx-dup"},
+                    "organizer": {
+                        "emailAddress": {"address": "cmunoz@avaya.com", "name": "Carlos"}
+                    },
+                    "attendees": [],
+                }
+            ],
+        )
+
+        service._batch_upsert_events.assert_awaited_once()
+        send_task.assert_awaited_once_with(
+            "deal.send_meeting_recording",
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "calendar_event_id": str(existing.event_id),
+            },
+            queue="deal",
+            routing_key="deal",
+        )
+
+    @pytest.mark.asyncio
     async def test_incremental_sync_does_not_enqueue_meeting_bot_outside_window(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

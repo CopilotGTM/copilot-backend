@@ -17,6 +17,47 @@ CalendarEvent (OrgScopedRecordMixin — no integration_id)
 
 CalendarEvent is org-scoped: multiple users' calendars contribute to the same canonical event (matched by `external_id` + `occurrence_anchor`). Per-integration tracking is via `CalendarEventUserState`.
 
+### Calendar Provider vs Meeting Platform
+
+Calendar provider and online meeting platform are separate concepts.
+
+`calendar_events.provider` records where the calendar event was synced from, such as
+`google`, `microsoft`, or `outlook`.
+
+`calendar_events.conference_link` records the actual join URL that Kai/Recall can use,
+regardless of which calendar provider delivered the event.
+
+`calendar_events.online_meeting_provider` records the meeting platform inferred from the
+join URL or structured provider conference metadata:
+
+| Join URL host | online_meeting_provider |
+| --- | --- |
+| `meet.google.com` | `googleMeet` |
+| `teams.microsoft.com`, `teams.live.com` | `teamsForBusiness` |
+| `zoom.us`, `*.zoom.us` | `zoom` |
+| `webex.com`, `*.webex.com` | `webex` |
+
+Supported examples:
+
+- Outlook calendar event with a Google Meet link in `location` or `locations`
+- Outlook calendar event with a Zoom link in `locations`, `body`, or `bodyPreview`
+- Outlook calendar event with a Microsoft Safe Link that wraps a supported meeting URL
+- Outlook calendar event with native Teams `onlineMeeting.joinUrl`
+- Outlook calendar event with a Teams/Webex link in body/location fields
+- Google Calendar event with Google Meet `conferenceData`
+- Google Calendar event with Zoom/Teams/Webex link in `conferenceData`, description, or location
+
+Downstream meeting-bot logic must continue to use `conference_link` as the only
+join target. It should not branch on calendar provider when deciding whether Kai can
+join. Provider-specific parsing belongs in `CalendarEventNormalizer`.
+
+Current-user meeting visibility uses `CalendarEventUserState` joined to the
+provider-parent `KnowledgeIntegration` row (`google` or `microsoft`). Calendar
+capability integration types (`google_calendar`, `outlook_calendar`) may remain
+eligible in dispatch fallback checks for backward compatibility, but user-owned
+query surfaces should not be widened to capability rows unless the user-state
+writer is migrated to those rows.
+
 ### Sync Flow
 
 1. **Fetch**: Provider returns events (delta or full)

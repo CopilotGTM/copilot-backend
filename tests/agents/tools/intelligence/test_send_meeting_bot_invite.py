@@ -22,6 +22,9 @@ from src.agents.tools.intelligence.send_meeting_bot_invite import (
     CALENDAR_INTEGRATION_TYPES,
     send_meeting_bot_invite,
 )
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES,
+)
 
 
 class _AsyncSessionContext:
@@ -86,13 +89,9 @@ def _event() -> SimpleNamespace:
 
 def test_calendar_tool_filters_provider_parent_integrations() -> None:
     """Meeting-bot ownership checks should use provider rows, not sync capabilities."""
-    assert CALENDAR_INTEGRATION_TYPES == (
-        "google",
-        "microsoft",
-    )
+    assert CALENDAR_INTEGRATION_TYPES == PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES
     assert LIST_MEETINGS_CALENDAR_INTEGRATION_TYPES == (
-        "google",
-        "microsoft",
+        PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES
     )
 
 

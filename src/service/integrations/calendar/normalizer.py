@@ -26,6 +26,8 @@ matter:
 
 from __future__ import annotations
 
+import html
+import re
 import urllib.parse
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -48,6 +50,27 @@ ISO_UTC_SUFFIX = "+00:00"
 # Provider events without a subject/summary still need *something* the timeline
 # can render. Match what the existing UI displays for empty-title events.
 DEFAULT_EVENT_TITLE = "(No title)"
+
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+
+EXACT_MEETING_HOSTS = {
+    "meet.google.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+}
+
+EXACT_MEETING_PROVIDERS = {
+    "meet.google.com": "googleMeet",
+    "teams.microsoft.com": "teamsForBusiness",
+    "teams.live.com": "teamsForBusiness",
+}
+
+SUFFIX_MEETING_HOSTS = {
+    "zoom.us",
+    "webex.com",
+}
+
+MICROSOFT_SAFELINK_HOST_SUFFIX = ".safelinks.protection.outlook.com"
 
 
 class CalendarEventNormalizer:
@@ -105,6 +128,7 @@ class CalendarEventNormalizer:
         events: Iterable[dict[str, Any]],
         provider: str,
     ) -> list[NormalizedCalendarEvent]:
+        """Normalize a provider batch for the calendar sync orchestrator."""
         return [self.normalize(event_data, provider) for event_data in events]
 
     @staticmethod
@@ -253,6 +277,7 @@ class CalendarEventNormalizer:
 
     @classmethod
     def extract_event_fields(cls, event_data: dict[str, Any], provider: str) -> dict[str, Any]:
+        """Extract provider-neutral CalendarEvent column values from one raw payload."""
         if provider == "google":
             return cls._extract_google_event_fields(event_data)
         if provider in ("microsoft", "outlook"):
@@ -271,10 +296,113 @@ class CalendarEventNormalizer:
         }
         cls._apply_google_time_fields(fields, event_data)
         cls._apply_google_conference(fields, event_data.get("conferenceData"))
+        cls._apply_join_link_from_candidates(
+            fields,
+            cls._google_join_link_candidates(event_data),
+        )
         cls._apply_google_organizer(fields, event_data.get("organizer"))
         cls._apply_attendee_count(fields, event_data.get("attendees"))
         cls._apply_google_source_modified(fields, event_data)
         return fields
+
+    @classmethod
+    def extract_join_link_update(
+        cls,
+        provider: str | None,
+        event_data: dict[str, Any],
+    ) -> dict[str, str] | None:
+        """Return only the join-link fields that a sparse backfill should write."""
+        provider_name = (provider or "").lower()
+        if provider_name in {"microsoft", "outlook"}:
+            candidates = cls._microsoft_join_link_candidates(event_data)
+        elif provider_name == "google":
+            candidates = cls._google_join_link_candidates(event_data)
+        else:
+            candidates = cls._unknown_provider_join_link_candidates(event_data)
+
+        fields: dict[str, Any] = {}
+        cls._apply_join_link_from_candidates(fields, candidates, replace_existing=True)
+        conference_link = fields.get("conference_link")
+        online_meeting_provider = fields.get("online_meeting_provider")
+        if not isinstance(conference_link, str) or not isinstance(online_meeting_provider, str):
+            return None
+        return {
+            "conference_link": conference_link,
+            "online_meeting_provider": online_meeting_provider,
+        }
+
+    @classmethod
+    def _apply_join_link_from_candidates(
+        cls,
+        fields: dict[str, Any],
+        candidates: Iterable[Any],
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        if fields.get("conference_link") and not replace_existing:
+            return
+        for candidate in candidates:
+            meeting_url = cls._extract_supported_meeting_url(candidate)
+            if meeting_url is None:
+                continue
+            provider = cls._meeting_provider_from_url(meeting_url)
+            if provider is None:
+                continue
+            fields["conference_link"] = meeting_url
+            fields["online_meeting_provider"] = provider
+            return
+
+    @classmethod
+    def _extract_supported_meeting_url(cls, value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        for raw_url in cls._iter_urls(value):
+            cleaned = cls._clean_candidate_url(raw_url)
+            candidate = cls._unwrap_microsoft_safelink(cleaned) or cleaned
+            if cls._meeting_provider_from_url(candidate):
+                return candidate
+        return None
+
+    @staticmethod
+    def _iter_urls(value: str) -> Iterable[str]:
+        for match in URL_PATTERN.finditer(value):
+            yield match.group(0)
+
+    @staticmethod
+    def _clean_candidate_url(value: str) -> str:
+        return html.unescape(value.strip().rstrip(").,;]"))
+
+    @staticmethod
+    def _unwrap_microsoft_safelink(value: str) -> str | None:
+        try:
+            parsed = urllib.parse.urlparse(value)
+            host = (parsed.hostname or "").lower()
+            if not host.endswith(MICROSOFT_SAFELINK_HOST_SUFFIX):
+                return None
+            encoded_urls = urllib.parse.parse_qs(parsed.query).get("url", [])
+            if not encoded_urls:
+                return None
+            return encoded_urls[0]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _meeting_provider_from_url(value: str) -> str | None:
+        try:
+            parsed = urllib.parse.urlparse(value)
+        except Exception:
+            return None
+
+        if parsed.scheme not in {"http", "https"}:
+            return None
+
+        host = (parsed.hostname or "").lower()
+        if host in EXACT_MEETING_HOSTS:
+            return EXACT_MEETING_PROVIDERS[host]
+        for suffix_host in SUFFIX_MEETING_HOSTS:
+            if host == suffix_host or host.endswith(f".{suffix_host}"):
+                return "zoom" if suffix_host == "zoom.us" else "webex"
+        return None
 
     @classmethod
     def _apply_google_time_fields(cls, fields: dict[str, Any], event_data: dict[str, Any]) -> None:
@@ -306,33 +434,40 @@ class CalendarEventNormalizer:
         elif "date" in end:
             fields["end_at"] = cls.parse_iso_date(end["date"])
 
-    @staticmethod
-    def _apply_google_conference(fields: dict[str, Any], conference_data: Any) -> None:
+    @classmethod
+    def _apply_google_conference(cls, fields: dict[str, Any], conference_data: Any) -> None:
         if not isinstance(conference_data, dict):
             return
 
-        # Take the first `video` entry point. Google sometimes lists phone or
-        # SIP entries first; only the video link is what callers want for the
-        # one-click join button.
+        video_uri = None
         for entry in conference_data.get("entryPoints", []):
             if entry.get("entryPointType") == "video":
-                fields["conference_link"] = entry.get("uri")
+                video_uri = entry.get("uri")
                 break
 
         solution = conference_data.get("conferenceSolution", {})
         solution_type = solution.get("key", {}).get("type", "")
 
-        # `hangoutsMeet` is Google Meet (treated as a first-class provider for
-        # transcript matching). `addOn` is anything else integrated through
-        # Google's third-party slot — Zoom, Webex, etc. Normalize the slug so
-        # downstream code doesn't have to handle whitespace/case from the
-        # provider's display name.
         if solution_type == "hangoutsMeet":
+            if not isinstance(video_uri, str):
+                return
+            meeting_url = cls._extract_supported_meeting_url(video_uri)
+            if meeting_url is None:
+                return
+            fields["conference_link"] = meeting_url
             fields["online_meeting_provider"] = "googleMeet"
             fields["online_meeting_id"] = conference_data.get("conferenceId")
-        elif solution_type == "addOn":
-            provider_name = solution.get("name", "").lower().replace(" ", "")
-            fields["online_meeting_provider"] = provider_name or "thirdParty"
+            return
+
+        if isinstance(video_uri, str):
+            meeting_url = cls._extract_supported_meeting_url(video_uri)
+            if meeting_url is None:
+                return
+            provider = cls._meeting_provider_from_url(meeting_url)
+            if provider is None:
+                return
+            fields["conference_link"] = meeting_url
+            fields["online_meeting_provider"] = provider
             fields["online_meeting_id"] = conference_data.get("conferenceId")
 
     @staticmethod
@@ -401,23 +536,79 @@ class CalendarEventNormalizer:
             fields["organiser_email"] = organizer.get("address")
             fields["organiser_name"] = organizer.get("name")
 
+    @staticmethod
+    def _microsoft_join_link_candidates(event_data: dict[str, Any]) -> Iterable[Any]:
+        online_meeting = event_data.get("onlineMeeting")
+        if isinstance(online_meeting, dict):
+            yield online_meeting.get("joinUrl")
+
+        yield event_data.get("onlineMeetingUrl")
+
+        location = event_data.get("location")
+        if isinstance(location, dict):
+            yield location.get("displayName")
+            yield location.get("locationUri")
+        else:
+            yield location
+
+        locations = event_data.get("locations")
+        if isinstance(locations, list):
+            for item in locations:
+                if not isinstance(item, dict):
+                    continue
+                yield item.get("displayName")
+                yield item.get("locationUri")
+                yield item.get("uniqueId")
+
+        body = event_data.get("body")
+        if isinstance(body, dict):
+            yield body.get("content")
+        yield event_data.get("bodyPreview")
+
+    @staticmethod
+    def _google_join_link_candidates(event_data: dict[str, Any]) -> Iterable[Any]:
+        conference_data = event_data.get("conferenceData")
+        if isinstance(conference_data, dict):
+            entry_points = conference_data.get("entryPoints")
+            if isinstance(entry_points, list):
+                for entry in entry_points:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("entryPointType") == "video":
+                        yield entry.get("uri")
+        yield event_data.get("hangoutLink")
+        yield event_data.get("location")
+        yield event_data.get("description")
+
+    @staticmethod
+    def _generic_join_link_candidates(event_data: dict[str, Any]) -> Iterable[Any]:
+        yield event_data.get("conference_link")
+        yield event_data.get("location")
+        yield event_data.get("description")
+        yield event_data.get("bodyPreview")
+
+    @classmethod
+    def _unknown_provider_join_link_candidates(cls, event_data: dict[str, Any]) -> Iterable[Any]:
+        yield from cls._google_join_link_candidates(event_data)
+        yield from cls._microsoft_join_link_candidates(event_data)
+        yield from cls._generic_join_link_candidates(event_data)
+
     @classmethod
     def _apply_microsoft_online_meeting(
         cls,
         fields: dict[str, Any],
         event_data: dict[str, Any],
     ) -> None:
-        online_meeting = event_data.get("onlineMeeting")
-        if not isinstance(online_meeting, dict):
+        cls._apply_join_link_from_candidates(
+            fields,
+            cls._microsoft_join_link_candidates(event_data),
+        )
+
+        join_url = fields.get("conference_link")
+        if not isinstance(join_url, str):
             return
 
-        join_url = online_meeting.get("joinUrl")
-        fields["conference_link"] = join_url
-
-        # Only mark as Teams if the join URL actually points at Teams. Outlook
-        # events can carry third-party join URLs (Zoom, Webex via add-in) in
-        # this same field, and we don't want to mislabel those as Teams.
-        if join_url and "teams.microsoft.com" in join_url:
+        if fields.get("online_meeting_provider") == "teamsForBusiness":
             fields["online_meeting_provider"] = "teamsForBusiness"
             meeting_id = cls.extract_teams_meeting_id(join_url)
             if meeting_id:
@@ -547,6 +738,7 @@ class CalendarEventNormalizer:
 
     @staticmethod
     def extract_attendee_name(attendee_data: dict[str, Any]) -> str | None:
+        """Pull a display name from either Google attendee data or Graph emailAddress data."""
         display_name = attendee_data.get("displayName")
         if isinstance(display_name, str) and display_name:
             return display_name
@@ -580,6 +772,7 @@ class CalendarEventNormalizer:
 
     @staticmethod
     def extract_organizer_email(event_data: dict[str, Any]) -> str | None:
+        """Return the organizer email from either provider's top-level organizer block."""
         organizer = event_data.get("organizer")
         if not isinstance(organizer, dict):
             return None
@@ -597,10 +790,12 @@ class CalendarEventNormalizer:
 
     @staticmethod
     def parse_iso_datetime(value: str) -> datetime:
+        """Parse provider ISO datetimes, accepting the UTC `Z` suffix both APIs emit."""
         return datetime.fromisoformat(value.replace("Z", ISO_UTC_SUFFIX))
 
     @staticmethod
     def parse_iso_date(value: str) -> datetime:
+        """Parse all-day provider dates as midnight UTC datetimes for DB storage."""
         return datetime.fromisoformat(f"{value}T00:00:00{ISO_UTC_SUFFIX}")
 
     @staticmethod

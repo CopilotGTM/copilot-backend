@@ -41,10 +41,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationType,
-    KnowledgeIntegration,
-)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
@@ -65,16 +62,15 @@ from src.service.crm.access.meetings_access_service import (
     CRMMeetingsAccessServiceError,
 )
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
+)
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
 from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
 from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
-CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE,
-    IntegrationType.MICROSOFT,
-)
 REMOVABLE_RECORDING_STATUSES = {
     MeetingRecordingStatus.PENDING_SEND.value,
     MeetingRecordingStatus.SEND_QUEUED.value,
