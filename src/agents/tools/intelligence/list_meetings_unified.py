@@ -27,10 +27,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationType,
-    KnowledgeIntegration,
-)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
@@ -38,17 +35,15 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import get_context_anchor_utc
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
-
-CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE.value,
-    IntegrationType.MICROSOFT.value,
-)
 
 
 def normalize_meeting_limit(limit: int | None) -> int:

@@ -19,10 +19,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventUserState,
 )
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationType,
-    KnowledgeIntegration,
-)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
@@ -31,6 +28,9 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 from src.infra.config.configs import recall_config
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.calendar.integration_types import (
+    DISPATCH_CALENDAR_INTEGRATION_TYPES as ACTIVE_CALENDAR_INTEGRATION_TYPES,
+)
 from src.service.integrations.meeting_recording.providers import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
@@ -44,12 +44,6 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 
 logger = get_logger(__name__)
 
-ACTIVE_CALENDAR_INTEGRATION_TYPES = (
-    IntegrationType.GOOGLE,
-    IntegrationType.MICROSOFT,
-    IntegrationType.GOOGLE_CALENDAR,
-    IntegrationType.OUTLOOK_CALENDAR,
-)
 DEFAULT_RECALL_BOT_NAME = "Notetaker"
 
 

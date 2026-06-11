@@ -20,7 +20,11 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingTranscriptStatus,
 )
 from src.service.calendar_invites.models import CalendarInviteAttendee
-from src.service.meetings_tab_service import MeetingsTabService
+from src.service.integrations.calendar.integration_types import (
+    DISPATCH_CALENDAR_INTEGRATION_TYPES,
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES,
+)
+from src.service.meetings_tab_service import CALENDAR_INTEGRATION_TYPES, MeetingsTabService
 
 
 def _service() -> MeetingsTabService:
@@ -31,6 +35,11 @@ def _service() -> MeetingsTabService:
         user_id=uuid4(),
         user_timezone="UTC",
     )
+
+
+def test_meetings_tab_uses_provider_parent_calendar_integrations() -> None:
+    assert CALENDAR_INTEGRATION_TYPES == PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES
+    assert CALENDAR_INTEGRATION_TYPES != DISPATCH_CALENDAR_INTEGRATION_TYPES
 
 
 def test_existing_deal_association_is_used_as_link_fallback() -> None:

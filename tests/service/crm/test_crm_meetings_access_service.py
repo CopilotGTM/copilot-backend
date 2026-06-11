@@ -17,9 +17,13 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingTranscriptStatus,
 )
 from src.service.crm.access.meetings_access_service import (
+    CALENDAR_INTEGRATION_TYPES,
     CRMMeetingRecordingControlService,
     CRMMeetingsAccessService,
     CRMMeetingsAccessServiceError,
+)
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.integrations.meeting_recording.providers import RecallProviderError
 
@@ -79,6 +83,10 @@ def _calendar_event(
         conference_link=conference_link,
         status=status,
     )
+
+
+def test_crm_meetings_uses_provider_parent_calendar_integrations() -> None:
+    assert CALENDAR_INTEGRATION_TYPES == PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES
 
 
 def test_can_invite_bot_keeps_user_action_available_for_already_started_meeting() -> None:
