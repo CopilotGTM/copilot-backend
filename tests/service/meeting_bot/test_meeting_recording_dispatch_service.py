@@ -147,7 +147,7 @@ class TestMeetingRecordingDispatchService:
 
         service = MeetingRecordingDispatchService(organisation_id)
 
-        assert await service._resolve_bot_name() == "Acme Corp Notetaker (Copilot GTM)"  # noqa: SLF001
+        assert await service._resolve_bot_name() == "Acme Corp Notetaker (CopilotGTM)"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_resolve_bot_name_falls_back_to_notetaker_for_blank_org_name(
@@ -163,7 +163,7 @@ class TestMeetingRecordingDispatchService:
 
         service = MeetingRecordingDispatchService(organisation_id)
 
-        assert await service._resolve_bot_name() == "Notetaker (Copilot GTM)"  # noqa: SLF001
+        assert await service._resolve_bot_name() == "Notetaker (CopilotGTM)"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dispatch_event_skips_when_join_url_is_missing(
