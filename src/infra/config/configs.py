@@ -265,6 +265,15 @@ class DatabaseConfig:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "postgres")
     DATABASE_SSL_MODE: str = os.getenv("DATABASE_SSL_MODE", "require")
     DATABASE_SSL_ROOT_CERT: str | None = os.getenv("DATABASE_SSL_ROOT_CERT")
+    USE_SHARED_TENANT_DATABASE: bool = (
+        os.getenv("USE_SHARED_TENANT_DATABASE", "false").lower() == "true"
+    )
+    TENANT_DATABASE_USER: str = os.getenv("TENANT_DATABASE_USER", "")
+    TENANT_DATABASE_PASSWORD: str = os.getenv("TENANT_DATABASE_PASSWORD", "")
+    TENANT_DATABASE_PASSWORD_SECRET_NAME: str = os.getenv(
+        "TENANT_DATABASE_PASSWORD_SECRET_NAME",
+        "shared-tenant-db-password",
+    )
 
     # App-side pool settings (caches TCP connections to pgbouncer)
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))

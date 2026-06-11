@@ -34,6 +34,8 @@ from src.infra.database.sessions import (
     master_async_session_scope,
     master_session_scope,
 )
+from src.infra.database.tenant_runtime_config import validate_tenant_runtime_config
+from src.infra.database.tenant_runtime_grants import TenantRuntimeGrantService
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
@@ -167,15 +169,10 @@ class OrganizationManagementService:
                 fn()
                 provision_metrics[label] = round(time.perf_counter() - start, 4)
 
-            # Key Vault before internal CRM — CRM opens an org session that
-            # needs the tenant secret from Key Vault.
             time_step(
-                "db_role_schema",
-                lambda: self._create_database_role_and_schema(
-                    schema_name, role_name, role_password
-                ),
+                "tenant_database",
+                lambda: self._provision_tenant_database(schema_name, role_name, role_password),
             )
-            time_step("migrations", lambda: self._run_organization_migrations(schema_name))
             time_step(
                 "store_secret",
                 lambda: self._store_password_in_key_vault(organisation_id, role_password),
@@ -377,6 +374,50 @@ class OrganizationManagementService:
                 exc_info=True,
             )
             raise ProvisioningError(f"An unexpected error occurred during migration: {e}") from e
+
+    def _provision_tenant_database(
+        self,
+        schema_name: str,
+        role_name: str,
+        role_password: str,
+    ) -> None:
+        self._create_database_role_and_schema(schema_name, role_name, role_password)
+        self._run_organization_migrations(schema_name)
+        self._grant_tenant_runtime_role_access(schema_name, role_name)
+
+    def _grant_tenant_runtime_role_access(
+        self,
+        schema_name: str,
+        schema_owner_role: str,
+    ) -> None:
+        if not database_config.TENANT_DATABASE_USER:
+            return
+
+        config = validate_tenant_runtime_config(
+            database_user=database_config.DATABASE_USER,
+            tenant_database_user=database_config.TENANT_DATABASE_USER,
+            tenant_password=database_config.TENANT_DATABASE_PASSWORD,
+            tenant_password_secret_name=database_config.TENANT_DATABASE_PASSWORD_SECRET_NAME,
+        )
+        self._validate_identifier(schema_name, "schema_name")
+        self._validate_identifier(schema_owner_role, "schema_owner_role")
+        try:
+            with master_session_scope() as session, session.begin():
+                TenantRuntimeGrantService(session).grant_tenant_runtime_role_access(
+                    schema_name=schema_name,
+                    schema_owner_role=schema_owner_role,
+                    migration_owner_role=database_config.DATABASE_USER,
+                    runtime_role=config.user,
+                )
+        except SQLAlchemyError as e:
+            logger.error(
+                "Failed to grant tenant runtime role '%s' access to schema '%s': %s",
+                config.user,
+                schema_name,
+                e,
+                exc_info=True,
+            )
+            raise ProvisioningError(f"Failed to grant tenant runtime role access: {e}") from e
 
     async def _setup_internal_crm(self, organisation_id: UUID, admin_id: UUID) -> None:
         """Ensure internal CRM integration + default pipeline exist for the organisation."""
@@ -837,6 +878,9 @@ class OrganizationManagementService:
 
         if not re.fullmatch(r"[a-z0-9_]+", value):
             raise ValueError(f"Invalid {field} '{value}' – must match [a-z0-9_]+")
+
+    def _quote_identifier(self, value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
 
     async def rotate_organization_password(
         self, organisation_id: UUID, session: AsyncSession, admin_id: UUID

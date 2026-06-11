@@ -21,6 +21,12 @@ from celery.signals import (
     worker_ready,
 )
 
+from src.infra.database.tenant_runtime_config import (
+    validate_current_shared_tenant_runtime_startup,
+)
+from src.infra.database.tenant_runtime_credentials import (
+    validate_current_shared_tenant_runtime_password_sync,
+)
 from src.infra.observability.context import (
     generate_request_id,
     get_request_id,
@@ -32,6 +38,7 @@ from src.infra.observability.context import (
 from src.infra.observability.metrics import record_celery_task_memory, record_celery_task_run
 from src.infra.observability.process_memory import get_current_rss_mb
 from src.infra.observability.sentry import init_sentry
+from src.infra.secrets.master_key_vault_sync import get_master_key_vault_secret_sync
 from src.infra.utils.logger import get_logger, resolve_celery_component
 
 init_sentry()
@@ -40,6 +47,17 @@ _signals_registered = False
 
 _DEFAULT_CELERY_TASK_TIME_LIMIT_SECONDS = 300
 _DEFAULT_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS = 240
+
+
+def _validate_tenant_runtime_config_startup() -> None:
+    validate_current_shared_tenant_runtime_startup()
+
+
+def _validate_tenant_runtime_startup() -> None:
+    _validate_tenant_runtime_config_startup()
+    validate_current_shared_tenant_runtime_password_sync(
+        get_secret=get_master_key_vault_secret_sync,
+    )
 
 
 def _resolve_signal_app_name(sender: Any | None = None) -> str | None:
@@ -122,10 +140,18 @@ def _register_observability_signals() -> None:
         reset_after_fork()
 
     @worker_process_init.connect(weak=False)
+    def _validate_tenant_runtime_after_fork(sender=None, **kwargs):  # noqa: ARG001
+        _validate_tenant_runtime_config_startup()
+
+    @worker_process_init.connect(weak=False)
     def _init_otel_after_fork(sender=None, **kwargs):  # noqa: ARG001
         from src.infra.observability.otel import init_otel
 
         init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
+
+    @worker_ready.connect(weak=False)
+    def _validate_tenant_runtime_in_main_process(sender=None, **kwargs):  # noqa: ARG001
+        _validate_tenant_runtime_startup()
 
     @worker_ready.connect(weak=False)
     def _init_otel_in_main_process(sender=None, **kwargs):  # noqa: ARG001

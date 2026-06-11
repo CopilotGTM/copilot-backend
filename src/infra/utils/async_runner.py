@@ -43,16 +43,19 @@ def _clear_async_db_provider_cache() -> None:
                 for eng in provider._tenant_engines.values():
                     with contextlib.suppress(Exception):
                         eng.sync_engine.dispose()
+                if provider._shared_tenant_engine is not None:
+                    with contextlib.suppress(Exception):
+                        provider._shared_tenant_engine.sync_engine.dispose()
                 if provider._master_engine is not None:
                     with contextlib.suppress(Exception):
                         provider._master_engine.sync_engine.dispose()
 
-                if provider._tenant_engines:
+                if provider._tenant_engines or provider._shared_tenant_engine is not None:
                     logger.info(
-                        "Clearing %d stale async tenant engines after loop recreation",
-                        len(provider._tenant_engines),
+                        "Clearing stale async tenant engines after loop recreation",
                     )
                     provider._tenant_engines.clear()
+                    provider._shared_tenant_engine = None
                     provider._tenant_locks.clear()
                 if provider._master_engine is not None:
                     logger.info("Clearing stale async master engine after loop recreation")
@@ -79,16 +82,19 @@ def _clear_sync_db_provider_cache() -> None:
                 for eng in provider._tenant_engines.values():
                     with contextlib.suppress(Exception):
                         eng.dispose()
+                if provider._shared_tenant_engine is not None:
+                    with contextlib.suppress(Exception):
+                        provider._shared_tenant_engine.dispose()
                 if provider._master_engine is not None:
                     with contextlib.suppress(Exception):
                         provider._master_engine.dispose()
 
-                if provider._tenant_engines:
+                if provider._tenant_engines or provider._shared_tenant_engine is not None:
                     logger.info(
-                        "Clearing %d stale sync tenant engines after fork",
-                        len(provider._tenant_engines),
+                        "Clearing stale sync tenant engines after fork",
                     )
                     provider._tenant_engines.clear()
+                    provider._shared_tenant_engine = None
                     provider._tenant_locks.clear()
                 if provider._master_engine is not None:
                     logger.info("Clearing stale sync master engine after fork")
