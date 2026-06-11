@@ -137,7 +137,7 @@ class TestMeetingRecordingDispatchService:
     async def test_resolve_bot_name_uses_organisation_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Recall bot joins as the tenant company not the CopilotGTM brand."""
+        """Recall bot joins with tenant context plus Copilot GTM attribution."""
         organisation_id = uuid4()
         master_session = _FakeLookupSession("Acme Corp")
         monkeypatch.setattr(
@@ -147,13 +147,13 @@ class TestMeetingRecordingDispatchService:
 
         service = MeetingRecordingDispatchService(organisation_id)
 
-        assert await service._resolve_bot_name() == "Acme Corp Notetaker"  # noqa: SLF001
+        assert await service._resolve_bot_name() == "Acme Corp Notetaker (CopilotGTM)"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_resolve_bot_name_falls_back_to_notetaker_for_blank_org_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Blank or unavailable organisation names should not expose fallback branding."""
+        """Blank or unavailable organisation names still show the product attribution."""
         organisation_id = uuid4()
         master_session = _FakeLookupSession("   ")
         monkeypatch.setattr(
@@ -163,7 +163,7 @@ class TestMeetingRecordingDispatchService:
 
         service = MeetingRecordingDispatchService(organisation_id)
 
-        assert await service._resolve_bot_name() == "Notetaker"  # noqa: SLF001
+        assert await service._resolve_bot_name() == "Notetaker (CopilotGTM)"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dispatch_event_skips_when_join_url_is_missing(

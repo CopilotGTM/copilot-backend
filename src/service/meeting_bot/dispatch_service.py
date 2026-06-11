@@ -44,7 +44,7 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 
 logger = get_logger(__name__)
 
-DEFAULT_RECALL_BOT_NAME = "Notetaker"
+DEFAULT_RECALL_BOT_NAME = "Notetaker (CopilotGTM)"
 
 
 class MeetingRecordingDispatchService:
@@ -834,7 +834,7 @@ class MeetingRecordingDispatchService:
         name = organisation_name.strip() if isinstance(organisation_name, str) else ""
         if not name:
             return DEFAULT_RECALL_BOT_NAME
-        return f"{name} Notetaker"
+        return f"{name} Notetaker (CopilotGTM)"
 
     async def _adopt_provider_session(
         self,
