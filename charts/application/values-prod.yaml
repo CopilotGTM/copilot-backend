@@ -51,8 +51,11 @@ api:
       memory: 1Gi
 
 knowledge-upload-worker:
+  config:
+    concurrency: 1
   autoscaling:
     minReplicas: 0
+    maxReplicas: 1
   resources:
     requests:
       cpu: "250m"
@@ -60,6 +63,12 @@ knowledge-upload-worker:
     limits:
       cpu: "1500m"
       memory: "1.5Gi"
+
+knowledge-extract-worker:
+  config:
+    concurrency: 1
+  autoscaling:
+    maxReplicas: 1
 
 knowledge-beat:
   enabled: false
@@ -73,9 +82,11 @@ knowledge-beat:
 
 chat-worker:
   config:
-    concurrency: 3
+    concurrency: 1
     maxTasksPerChild: 25
     maxMemoryPerChildKb: 700000
+  autoscaling:
+    maxReplicas: 2
   resources:
     requests:
       cpu: "250m"
@@ -95,9 +106,13 @@ chat-beat:
 
 integrations-worker:
   config:
+    concurrency: 1
     memoryLogging:
       enabled: true
       minDeltaMb: 0
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 2
   resources:
     requests:
       cpu: "500m"
@@ -108,10 +123,13 @@ integrations-worker:
 
 deal-worker:
   config:
-    concurrency: 2
+    concurrency: 1
     memoryLogging:
       enabled: true
       minDeltaMb: 0
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 2
   resources:
     requests:
       cpu: "250m"
@@ -139,3 +157,9 @@ integrations-beat:
     limits:
       cpu: "150m"
       memory: "256Mi"
+
+organization-worker:
+  config:
+    concurrency: 1
+  autoscaling:
+    maxReplicas: 1

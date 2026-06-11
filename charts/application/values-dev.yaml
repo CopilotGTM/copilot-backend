@@ -36,6 +36,7 @@ api:
     SALESFORCE_REDIRECT_URI: "https://devapi.copilotgtm.com/users/integrations/copilot-oauth/callback"
     SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
     WHATSAPP_BOT_PHONE_NUMBER: "+15556300848"
+    DATABASE_PORT: "5432"
   autoscaling:
     minReplicas: 1
   # Actual usage: 4-8m CPU, ~500Mi memory; keep request above baseline so HPA does not scale dev API on idle memory.
@@ -49,10 +50,20 @@ api:
 
 knowledge-upload-worker:
   # Actual usage: 3m CPU, 985Mi memory
+  config:
+    concurrency: 1
+  autoscaling:
+    maxReplicas: 1
   resources:
     requests:
       cpu: "50m"
       memory: "1Gi"
+
+knowledge-extract-worker:
+  config:
+    concurrency: 1
+  autoscaling:
+    maxReplicas: 1
 
 knowledge-beat:
   enabled: false
@@ -68,9 +79,11 @@ knowledge-beat:
 chat-worker:
   # Actual usage: 3m CPU, 763Mi memory
   config:
-    concurrency: 3
+    concurrency: 1
     maxTasksPerChild: 25
     maxMemoryPerChildKb: 700000
+  autoscaling:
+    maxReplicas: 2
   resources:
     requests:
       cpu: "50m"
@@ -88,6 +101,11 @@ chat-beat:
 
 integrations-worker:
   # Actual usage: 3m CPU, 1081Mi memory
+  config:
+    concurrency: 1
+  autoscaling:
+    minReplicas: 0
+    maxReplicas: 1
   resources:
     requests:
       cpu: "50m"
@@ -95,6 +113,11 @@ integrations-worker:
 
 deal-worker:
   # Actual usage: 3m CPU, 744Mi memory
+  config:
+    concurrency: 1
+  autoscaling:
+    minReplicas: 0
+    maxReplicas: 1
   resources:
     requests:
       cpu: "50m"
@@ -114,3 +137,9 @@ integrations-beat:
   resources:
     requests:
       cpu: "10m"
+
+organization-worker:
+  config:
+    concurrency: 1
+  autoscaling:
+    maxReplicas: 1
