@@ -20,15 +20,11 @@ project_name        = "copilotgtm"
 db_location = "centralus" # Same as location - can be different if needed
 db_name     = "copilotgtm-postgresdb-centralus-dev"
 
-# PostgreSQL SKU - General Purpose required for PgBouncer
-# GP_Standard_D2s_v3 = 2 vCores, 8GB RAM (~$100/month)
-db_sku_name = "GP_Standard_D2s_v3"
+# PostgreSQL SKU - Burstable dev tier; PgBouncer requires General Purpose or higher.
+db_sku_name = "B_Standard_B1ms"
 
-# PgBouncer - Connection pooling to share DB connections across all workers
-pgbouncer_enabled           = true
-pgbouncer_default_pool_size = 200           # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
-pgbouncer_max_client_conn   = 500           # Max client connections from workers/API to PgBouncer
-pgbouncer_pool_mode         = "transaction" # Release connection after transaction
+# PgBouncer is disabled on the burstable dev tier, so DATABASE_PORT resolves to 5432.
+pgbouncer_enabled = false
 
 # -----------------------------------------------------------------
 # Networking
@@ -59,8 +55,8 @@ enable_storage_private_endpoints   = false
 # aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
 aks_vm_size             = "Standard_D2as_v6"
 aks_enable_auto_scaling = true
-aks_min_node_count      = 3
-aks_max_node_count      = 6
+aks_min_node_count      = 1
+aks_max_node_count      = 3
 # aks_os_disk_size_gb = 128                  # Default
 # aks_service_cidr   = "10.1.0.0/16"         # Default
 # aks_dns_service_ip = "10.1.0.10"           # Default
