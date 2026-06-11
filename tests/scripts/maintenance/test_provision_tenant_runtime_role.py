@@ -150,6 +150,36 @@ def test_creates_dedicated_runtime_role_and_stores_password(monkeypatch) -> None
     assert session.events == ["begin", "commit"]
 
 
+def test_direct_password_mode_does_not_build_key_vault_client(monkeypatch) -> None:
+    session = RecordingSession(role_exists=False)
+
+    @contextmanager
+    def fake_master_session_scope():
+        yield session
+
+    monkeypatch.setattr(provision_module, "master_session_scope", fake_master_session_scope)
+    monkeypatch.setattr(
+        provision_module,
+        "build_master_secret_client_sync",
+        lambda *, prefer_default_credential=False: (_ for _ in ()).throw(
+            AssertionError("direct password mode must not require Key Vault")
+        ),
+    )
+    _configure_runtime(monkeypatch)
+    monkeypatch.setattr(
+        provision_module.database_config,
+        "TENANT_DATABASE_PASSWORD",
+        "direct-password",
+        raising=False,
+    )
+
+    provision_module.provision_runtime_role(execute=True, rotate_password=False)
+
+    rendered_sql = "\n".join(session.statements)
+    assert 'CREATE ROLE "app_tenant_runtime" LOGIN PASSWORD :pwd' in rendered_sql
+    assert {"pwd": "direct-password"} in session.params
+
+
 def test_azure_unsupported_extension_move_does_not_abort_runtime_role_creation(
     monkeypatch,
 ) -> None:

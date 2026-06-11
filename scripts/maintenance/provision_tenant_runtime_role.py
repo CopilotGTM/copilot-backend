@@ -62,20 +62,23 @@ def provision_runtime_role(*, execute: bool, rotate_password: bool = False) -> N
     password = config.password or secrets.token_urlsafe(32)
     role_sql = quote_identifier(config.user)
     database_sql = quote_identifier(database_config.DATABASE_NAME)
+    uses_key_vault_secret = not bool(config.password)
 
     if not execute:
         print(f"dry-run provision tenant runtime role {config.user}")
         return
 
-    client = build_secret_client()
     with master_session_scope() as session:
         role_exists = session.execute(
             text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
             {"role_name": config.user},
         ).scalar_one_or_none()
 
-    should_store_secret = (not role_exists) or rotate_password
-    if not should_store_secret and not config.password:
+    should_store_secret = uses_key_vault_secret and ((not role_exists) or rotate_password)
+    client = build_secret_client() if uses_key_vault_secret else None
+    if uses_key_vault_secret and not should_store_secret:
+        if client is None:
+            raise RuntimeError("Tenant runtime Key Vault client was not initialized")
         ensure_existing_secret(client, config.password_secret_name)
 
     with master_session_scope() as session, session.begin():
@@ -109,6 +112,8 @@ def provision_runtime_role(*, execute: bool, rotate_password: bool = False) -> N
         session.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
         ensure_trusted_extension_schema(session, runtime_role=config.user)
         if should_store_secret:
+            if client is None:
+                raise RuntimeError("Tenant runtime Key Vault client was not initialized")
             client.set_secret(config.password_secret_name, password)
 
     if not should_store_secret:

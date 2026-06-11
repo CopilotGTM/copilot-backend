@@ -49,8 +49,12 @@ _DEFAULT_CELERY_TASK_TIME_LIMIT_SECONDS = 300
 _DEFAULT_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS = 240
 
 
-def _validate_tenant_runtime_startup() -> None:
+def _validate_tenant_runtime_config_startup() -> None:
     validate_current_shared_tenant_runtime_startup()
+
+
+def _validate_tenant_runtime_startup() -> None:
+    _validate_tenant_runtime_config_startup()
     validate_current_shared_tenant_runtime_password_sync(
         get_secret=get_master_key_vault_secret_sync,
     )
@@ -137,7 +141,7 @@ def _register_observability_signals() -> None:
 
     @worker_process_init.connect(weak=False)
     def _validate_tenant_runtime_after_fork(sender=None, **kwargs):  # noqa: ARG001
-        _validate_tenant_runtime_startup()
+        _validate_tenant_runtime_config_startup()
 
     @worker_process_init.connect(weak=False)
     def _init_otel_after_fork(sender=None, **kwargs):  # noqa: ARG001

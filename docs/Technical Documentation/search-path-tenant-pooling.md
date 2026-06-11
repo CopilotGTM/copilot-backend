@@ -30,6 +30,9 @@ The runtime password is stored in the master/shared Key Vault under
 `TENANT_DATABASE_PASSWORD` directly, but production should prefer Key Vault.
 API and Celery startup validate both the tenant runtime config and actual
 password availability before serving requests or running jobs.
+Celery prefork child initialization performs config-only validation; the
+network Key Vault password check runs in the main worker startup path to avoid
+blocking child fork startup.
 
 The runtime shape is:
 
@@ -72,6 +75,9 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 PostgreSQL extensions expose types, operators, and functions through a schema.
 This repo uses pgvector casts such as `::vector`, so tenant sessions need a
 trusted extension schema in the path without trusting `public`.
+Organization migrations also include `extensions` in their migration
+`search_path` because the initial org migration emits an unqualified pgvector
+`VECTOR` type.
 
 Phase 1 provisions:
 
@@ -141,6 +147,11 @@ Existing organizations are handled by the dry-run-first backfill script:
 uv run python -m scripts.maintenance.grant_tenant_runtime_schema_access --all-orgs
 uv run python -m scripts.maintenance.grant_tenant_runtime_schema_access --all-orgs --execute
 ```
+
+When `TENANT_DATABASE_PASSWORD` is supplied directly, provisioning creates or
+verifies the PostgreSQL role with that password and does not require a Key Vault
+client. In Key Vault mode, the script creates or verifies the secret in the
+master/shared vault.
 
 ## Rollback
 

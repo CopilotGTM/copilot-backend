@@ -215,7 +215,9 @@ def run_migrations_online() -> None:
             # This will automatically commit on success or rollback on error.
             if target_schema:
                 # Set search_path inside the transaction.
-                connection.execute(text(f"SET search_path TO {target_schema}, public"))
+                connection.execute(
+                    text(f"SET search_path TO {target_schema}, extensions, public")
+                )
 
             # Configure context within the transaction block.
             context.configure(

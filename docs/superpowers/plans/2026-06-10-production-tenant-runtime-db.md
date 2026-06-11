@@ -52,7 +52,7 @@ These are design constraints, not opinions:
    Verification: two org IDs return the same tenant runtime engine in the same process.
 
 3. Load the tenant runtime password through one credential contract.
-   Verification: when `TENANT_DATABASE_PASSWORD` is empty and `TENANT_DATABASE_PASSWORD_SECRET_NAME` is set, the async provider calls `master_secrets_manager` exactly once during engine creation, and the sync provider uses `src.infra.secrets.master_key_vault_sync` with the shared Azure credential strategy and without `asyncio.run()` in the provider. The provisioning script writes to `AZURE_MASTER_KEY_VAULT_URL`, not the org-specific vault.
+   Verification: when `TENANT_DATABASE_PASSWORD` is empty and `TENANT_DATABASE_PASSWORD_SECRET_NAME` is set, the async provider calls `master_secrets_manager` exactly once during engine creation, and the sync provider uses `src.infra.secrets.master_key_vault_sync` with the shared Azure credential strategy and without `asyncio.run()` in the provider. The provisioning script writes to `AZURE_MASTER_KEY_VAULT_URL`, not the org-specific vault. When `TENANT_DATABASE_PASSWORD` is supplied directly, provisioning must not require a Key Vault client.
 
 4. Keep per-org roles and passwords for rollback.
    Verification: no maintenance script deletes Key Vault secrets, drops per-org roles, or sets per-org roles to `NOLOGIN`.
@@ -70,10 +70,10 @@ These are design constraints, not opinions:
    Verification: re-running provisioning against an existing role does not change the PostgreSQL password or Key Vault secret unless `--rotate-password` is passed. When creating or rotating a password, the script must write the PostgreSQL password SQL inside an open transaction and store the Key Vault secret before that transaction exits, so a Key Vault failure rolls back the DB password change. PostgreSQL commit failure after Key Vault success remains the one non-atomic edge and must be called out in the rollback checklist.
 
 9. Keep trusted extension objects out of `public`.
-   Verification: provisioning creates or verifies an `extensions` schema, revokes `CREATE` on it from `PUBLIC`, grants `USAGE` to the tenant runtime role, grants `USAGE` to per-org owner roles only for rollback extension lookup, and ensures the `vector` extension lives in `extensions`. Shared tenant runtime sessions include `extensions` only so pgvector type casts/operators work without trusting `public`.
+   Verification: provisioning creates or verifies an `extensions` schema, revokes `CREATE` on it from `PUBLIC`, grants `USAGE` to the tenant runtime role, grants `USAGE` to per-org owner roles only for rollback extension lookup, and attempts to ensure the `vector` extension lives in `extensions` where PostgreSQL supports moving it. Shared tenant runtime sessions include `extensions` only so pgvector type casts/operators work without trusting `public`. Org Alembic migrations also include `extensions` in `search_path` so unqualified pgvector `VECTOR` types keep resolving.
 
 10. Shared-tenant misconfiguration must fail at process startup.
-    Verification: FastAPI lifespan and shared Celery worker startup hooks validate both config and actual tenant runtime password availability when `USE_SHARED_TENANT_DATABASE=true`; missing tenant runtime user/password secret config, master credential reuse, or missing Key Vault secret fails before serving requests or running jobs.
+    Verification: FastAPI lifespan and the main Celery worker startup path validate both config and actual tenant runtime password availability when `USE_SHARED_TENANT_DATABASE=true`; missing tenant runtime user/password secret config, master credential reuse, or missing Key Vault secret fails before serving requests or running jobs. Celery prefork child init remains config-only to avoid blocking child startup on Key Vault/auth latency.
 
 ## Files
 
@@ -2451,7 +2451,7 @@ Expected:
 Run:
 
 ```powershell
-uv run pytest tests\infra\test_tenant_runtime_config.py tests\infra\test_tenant_runtime_credentials.py tests\infra\test_tenant_search_path.py tests\infra\test_tenant_runtime_grants.py tests\infra\test_async_db_provider.py tests\infra\test_sync_db_provider.py tests\service\test_organization_management_shared_tenant.py tests\api\test_fastapi_app_tenant_runtime_startup.py tests\workers\test_celery_tenant_runtime_startup.py tests\scripts\maintenance\test_provision_tenant_runtime_role.py tests\scripts\maintenance\test_grant_tenant_runtime_schema_access.py tests\scripts\maintenance\test_check_tenant_runtime_bypasses.py -v
+uv run pytest tests\infra\test_tenant_runtime_config.py tests\infra\test_tenant_runtime_credentials.py tests\infra\test_tenant_search_path.py tests\infra\test_tenant_runtime_grants.py tests\infra\test_async_db_provider.py tests\infra\test_sync_db_provider.py tests\service\test_organization_management_shared_tenant.py tests\api\test_fastapi_app_tenant_runtime_startup.py tests\workers\test_celery_tenant_runtime_startup.py tests\scripts\maintenance\test_provision_tenant_runtime_role.py tests\scripts\maintenance\test_grant_tenant_runtime_schema_access.py tests\scripts\maintenance\test_check_tenant_runtime_bypasses.py tests\migrations\test_org_migration_search_path.py -v
 ```
 
 Expected: all selected tests pass.
@@ -2499,10 +2499,11 @@ Expected: exit code 0. Any finding is a release blocker unless it is moved behin
 6. Static tenant-runtime bypass checks are strict by default over runtime `src`; `--include-scripts` includes production scripts after allowing known migration/cleanup/maintenance engine usage and excluding `scripts/test_local/**`, while `--include-tests` and `--advisory` are only for local exploration while allowlists are tuned.
 7. Runtime role default `search_path` is set with `ALTER ROLE ... IN DATABASE ...`, not a global role setting. Shared tenant runtime sessions use `SET LOCAL search_path` with the tenant schema plus the locked `extensions` schema; `public` is not added to shared tenant runtime search paths. Legacy rollback sessions use tenant schema, `extensions`, then `public` so pre-shared per-org behavior remains available.
 8. Sync tenant runtime credential loading uses `src.infra.secrets.master_key_vault_sync` with the master/shared vault URL and the shared sync Azure credential strategy; it never calls `asyncio.run()` inside the provider and never builds `DefaultAzureCredential` directly in provider/provisioning code.
-9. Runtime role password creation/rotation stores the master/shared Key Vault secret inside the open PostgreSQL transaction after password SQL and before commit, so Key Vault write failure rolls back the DB password change.
+9. Runtime role password creation/rotation stores the master/shared Key Vault secret inside the open PostgreSQL transaction after password SQL and before commit in Key Vault mode, so Key Vault write failure rolls back the DB password change. Direct-password mode skips Key Vault client creation and secret writes.
 10. The release-gate static checker scans runtime `src` by default. Existing local investigation scripts and intentionally bad test examples are outside the production gate; maintenance scripts and the known top-level cleanup script remain allowlisted.
 11. Providers keep `_shared_tenant_engine` as the shared-runtime singleton field so existing fork/loop cleanup continues to clear the correct pooled engine.
 12. The trusted PostgreSQL extension schema is `extensions`; it exists only to expose extension objects such as pgvector to tenant sessions without trusting `public`.
+13. Org migrations set `search_path` to tenant schema, `extensions`, then `public` so initial unqualified pgvector `VECTOR` columns work after extension hardening.
 
 ## Self-Review
 
