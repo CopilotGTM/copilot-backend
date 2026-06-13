@@ -285,7 +285,7 @@ class ContactsAccessService:
             {
                 "deal": row.CRMDeal,
                 "relationship_role": row.CRMDealParticipant.relationship_role,
-                "stakeholder_id": row.CRMDealParticipant.participant_id,
+                "participant_id": row.CRMDealParticipant.participant_id,
             }
             for row in deal_rows
         ]

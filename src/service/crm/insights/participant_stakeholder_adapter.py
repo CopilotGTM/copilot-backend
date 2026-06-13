@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
-
-
-def participant_stakeholder_id(participant: CRMDealParticipant) -> UUID:
-    return participant.participant_id
 
 
 def _contact_external_links(contact: CRMContact | None) -> list[dict[str, Any]] | None:
@@ -23,9 +18,7 @@ def participant_to_stakeholder_detail_dict(
     *,
     contact: CRMContact | None = None,
 ) -> dict[str, Any]:
-    stakeholder_id = participant_stakeholder_id(participant)
     return {
-        "stakeholder_id": stakeholder_id,
         "participant_id": participant.participant_id,
         "deal_id": participant.deal_id,
         "contact_id": participant.related_local_id,

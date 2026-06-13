@@ -132,7 +132,6 @@ def _format_upsert_output(
     updates = updated_fields or []
     participant_id = getattr(stakeholder, "participant_id", None) or stakeholder.stakeholder_id
     return {
-        "stakeholder_id": str(participant_id),
         "participant_id": str(participant_id),
         "email": getattr(stakeholder, "email", None) or getattr(stakeholder, "related_email", None),
         "name": getattr(stakeholder, "name", None) or getattr(stakeholder, "related_name", None),

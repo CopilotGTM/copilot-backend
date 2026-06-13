@@ -313,11 +313,7 @@ class StakeholderDetail(BaseModel):
         - Additional discovery stakeholders are PENDING until approved
     """
 
-    stakeholder_id: UUID
-    participant_id: UUID | None = Field(
-        None,
-        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
-    )
+    participant_id: UUID = Field(..., description="Canonical CRMDealParticipant ID")
     deal_id: UUID
     contact_id: UUID | None = None
     email: str
@@ -371,11 +367,7 @@ class StakeholderFullDetail(BaseModel):
     - engagement_history: Up to 15 most recent snapshots showing metric changes
     """
 
-    stakeholder_id: UUID
-    participant_id: UUID | None = Field(
-        None,
-        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
-    )
+    participant_id: UUID = Field(..., description="Canonical CRMDealParticipant ID")
     deal_id: UUID
     contact_id: UUID | None = None
     email: str
@@ -714,7 +706,7 @@ class CreateStakeholderResponse(BaseModel):
 class StakeholderConflictResponse(BaseModel):
     """Metadata returned when a create request targets an existing stakeholder."""
 
-    stakeholder_id: UUID
+    participant_id: UUID
     approval_status: str
     is_deleted: bool
 

@@ -75,7 +75,7 @@ tools/
 
 **Returns**: List of stakeholder summaries with:
 
-- `stakeholder_id`, `email`, `name`, `job_title`, `department`
+- `participant_id`, `email`, `name`, `job_title`, `department`
 - `stance`: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, UNKNOWN
 - `decision_power`: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, UNKNOWN
 - `temperature`: HOT, WARM, COLD
@@ -91,7 +91,7 @@ tools/
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `stakeholder_id` | str | Yes | UUID of the stakeholder |
+| `stakeholder_id` | str | Yes | CRMDealParticipant UUID for the stakeholder |
 
 **Returns**: Detailed stakeholder info including:
 

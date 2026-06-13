@@ -174,7 +174,7 @@ async def get_deal_details(
                 participants = stakeholder_result.scalars().all()
                 output["stakeholders"] = [
                     {
-                        "stakeholder_id": str(participant.participant_id),
+                        "participant_id": str(participant.participant_id),
                         "name": participant.related_name,
                         "email": participant.related_email,
                         "job_title": participant.job_title,

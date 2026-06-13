@@ -200,7 +200,7 @@ async def get_contact_detail(
                 deal_name=d["deal"].name,
                 deal_status=str(d["deal"].deal_status) if d["deal"].deal_status else None,
                 stage_name=d["deal"].stage_name,
-                stakeholder_id=d["stakeholder_id"],
+                participant_id=d["participant_id"],
                 stance=None,
                 decision_power=None,
                 relationship_role=str(d["relationship_role"])

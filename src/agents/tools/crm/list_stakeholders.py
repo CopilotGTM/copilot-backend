@@ -105,7 +105,7 @@ async def list_deal_stakeholders(
             payload = participant_to_stakeholder_detail_dict(participant)
             output.append(
                 {
-                    "stakeholder_id": str(payload["stakeholder_id"]),
+                    "participant_id": str(payload["participant_id"]),
                     "email": payload["email"],
                     "name": payload["name"],
                     "job_title": payload["job_title"],

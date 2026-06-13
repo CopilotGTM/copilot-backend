@@ -88,7 +88,8 @@ async def test_list_deal_stakeholders_returns_participant_ids() -> None:
 
     result = await list_deal_stakeholders(context=context)  # type: ignore[arg-type]
 
-    assert result[0]["stakeholder_id"] == str(participant_id)
+    assert result[0]["participant_id"] == str(participant_id)
+    assert "stakeholder_id" not in result[0]
     assert result[0]["email"] == "buyer@example.com"
     assert result[0]["name"] == "Buyer Snapshot"
     assert "engagement_score" not in result[0]
@@ -111,7 +112,8 @@ async def test_get_stakeholder_details_resolves_participant_id() -> None:
     )
 
     assert result is not None
-    assert result["stakeholder_id"] == str(participant_id)
+    assert result["participant_id"] == str(participant_id)
+    assert "stakeholder_id" not in result
     assert result["contact_id"] == str(contact_id)
     assert result["email"] == "buyer@example.com"
     assert result["decision_power"] == "DECISION_MAKER"

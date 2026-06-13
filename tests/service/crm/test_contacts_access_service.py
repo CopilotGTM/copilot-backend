@@ -134,5 +134,6 @@ async def test_get_contact_detail_uses_participant_id_for_deal_involvement() -> 
     detail = await service.get_contact_detail(contact_id)
 
     assert detail["deals"][0]["deal"] == deal
-    assert detail["deals"][0]["stakeholder_id"] == participant_id
+    assert detail["deals"][0]["participant_id"] == participant_id
+    assert "stakeholder_id" not in detail["deals"][0]
     assert detail["deals"][0]["relationship_role"] == "economic_buyer"

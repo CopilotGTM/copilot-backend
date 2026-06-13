@@ -29,8 +29,8 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
 
     payload = participant_to_stakeholder_detail_dict(participant)
 
-    assert payload["stakeholder_id"] == participant.participant_id
     assert payload["participant_id"] == participant.participant_id
+    assert "stakeholder_id" not in payload
     assert payload["email"] == "alex@example.com"
     assert payload["job_title"] == "CFO"
     assert payload["phone_number"] == "+1 555 0100"
@@ -70,8 +70,8 @@ def test_participant_adapter_prefers_contact_profile_when_loaded() -> None:
 
     payload = participant_to_stakeholder_detail_dict(participant, contact=contact)
 
-    assert payload["stakeholder_id"] == participant.participant_id
     assert payload["participant_id"] == participant.participant_id
+    assert "stakeholder_id" not in payload
     assert payload["name"] == "New Person"
     assert payload["email"] == "new@example.com"
     assert payload["job_title"] == "CFO"

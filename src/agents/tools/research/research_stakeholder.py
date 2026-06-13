@@ -128,7 +128,7 @@ async def research_stakeholder(
                 return {
                     "success": False,
                     "error": "Stakeholder not found",
-                    "stakeholder_id": stakeholder_id,
+                    "participant_id": stakeholder_id,
                     "email": email,
                 }
 
@@ -173,7 +173,7 @@ async def research_stakeholder(
     if not profile_data:
         return {
             "success": False,
-            "stakeholder_id": str(s_id),
+            "participant_id": str(s_id),
             "error": "No matching person found in Apollo",
         }
 
@@ -181,7 +181,7 @@ async def research_stakeholder(
     # to populate structured fields and synthesize the markdown profile
     return {
         "success": True,
-        "stakeholder_id": str(s_id),
+        "participant_id": str(s_id),
         "data": {
             "apollo_id": profile_data.get("apollo_id"),
             "name": profile_data.get("name"),
@@ -255,8 +255,8 @@ def create_research_stakeholder(
 
         if result.get("success"):
             logger.info(
-                "[TOOL RESULT] research_stakeholder success: stakeholder=%s",
-                result.get("stakeholder_id"),
+                "[TOOL RESULT] research_stakeholder success: participant=%s",
+                result.get("participant_id"),
             )
         else:
             logger.info(

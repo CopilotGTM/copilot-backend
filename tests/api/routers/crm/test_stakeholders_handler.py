@@ -183,7 +183,8 @@ class TestCreateStakeholder:
 
         assert resp.status_code == 201
         body = resp.json()
-        assert body["data"]["stakeholder"]["stakeholder_id"] == str(removed.stakeholder_id)
+        assert body["data"]["stakeholder"]["participant_id"] == str(removed.participant_id)
+        assert "stakeholder_id" not in body["data"]["stakeholder"]
         assert body["data"]["stakeholder"]["approval_status"] == "APPROVED"
         assert body["data"]["stakeholder"]["name"] == "Restored Name"
         assert body["data"]["stakeholder"]["job_title"] == "Restored Title"
@@ -229,7 +230,7 @@ class TestCreateStakeholder:
         body = resp.json()
         assert body["status"] == "ERROR"
         assert body["data"] == {
-            "stakeholder_id": str(active.stakeholder_id),
+            "participant_id": str(active.participant_id),
             "approval_status": "APPROVED",
             "is_deleted": False,
         }
@@ -289,7 +290,8 @@ class TestGetDealStakeholders:
 
         data = body["data"]["stakeholders"][0]
         # Verify required fields
-        assert data["stakeholder_id"] == str(stakeholder.stakeholder_id)
+        assert data["participant_id"] == str(stakeholder.participant_id)
+        assert "stakeholder_id" not in data
         assert data["deal_id"] == str(test_deal_id)
         assert data["email"] == "john.doe@acme.com"
         assert data["name"] == "John Doe"
@@ -847,7 +849,8 @@ class TestAddContactsAsStakeholders:
         added = body["data"]["added"][0]
         assert added["email"] == "new.stakeholder@example.com"
         assert added["name"] == "New Stakeholder"
-        assert "stakeholder_id" in added
+        assert "participant_id" in added
+        assert "stakeholder_id" not in added
 
     def test_successfully_adds_multiple_contacts_as_stakeholders(
         self,
@@ -1138,7 +1141,8 @@ class TestGetStakeholderDetail:
         assert body["message"] == "Stakeholder detail retrieved"
 
         data = body["data"]
-        assert data["stakeholder_id"] == str(stakeholder.stakeholder_id)
+        assert data["participant_id"] == str(stakeholder.participant_id)
+        assert "stakeholder_id" not in data
         assert data["deal_id"] == str(test_deal_id)
         assert data["email"] == "john.doe@acme.com"
         assert data["name"] == "John Doe"
