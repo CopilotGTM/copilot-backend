@@ -327,7 +327,7 @@ export interface ContactDealInvolvement {
   deal_name: string | null;
   deal_status: string | null;         // "open" | "won" | "lost" | "closed"
   stage_name: string | null;          // Pipeline stage display name
-  stakeholder_id: UUID;               // The participant row ID used by stakeholder APIs
+  participant_id: UUID;               // The participant row ID used by stakeholder APIs
   stance: string | null;              // Reserved for future: AI-inferred stakeholder stance
   decision_power: string | null;      // Reserved for future: AI-inferred decision power
   relationship_role: string | null;   // Role label (e.g., "decision_maker", "evaluator")
@@ -676,7 +676,7 @@ Full contact detail including extended profile fields, research content, and dea
         "deal_name": "Acme Enterprise License",
         "deal_status": "open",
         "stage_name": "Negotiation",
-        "stakeholder_id": "f4a5b6c7-d8e9-0123-fabc-456789abcdef",
+        "participant_id": "f4a5b6c7-d8e9-0123-fabc-456789abcdef",
         "stance": null,
         "decision_power": null,
         "relationship_role": "decision_maker"
@@ -686,7 +686,7 @@ Full contact detail including extended profile fields, research content, and dea
         "deal_name": "Acme Support Renewal",
         "deal_status": "won",
         "stage_name": "Closed Won",
-        "stakeholder_id": "b6c7d8e9-f0a1-2345-bcda-6789abcdef01",
+        "participant_id": "b6c7d8e9-f0a1-2345-bcda-6789abcdef01",
         "stance": null,
         "decision_power": null,
         "relationship_role": "evaluator"

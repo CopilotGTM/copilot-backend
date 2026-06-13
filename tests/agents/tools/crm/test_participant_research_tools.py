@@ -115,7 +115,8 @@ async def test_research_stakeholder_reads_participant_context(monkeypatch) -> No
     )
 
     assert result["success"] is True
-    assert result["stakeholder_id"] == str(session.participant.participant_id)
+    assert result["participant_id"] == str(session.participant.participant_id)
+    assert "stakeholder_id" not in result
     assert result["data"]["title"] == "CFO"
     assert session.updates == []
 

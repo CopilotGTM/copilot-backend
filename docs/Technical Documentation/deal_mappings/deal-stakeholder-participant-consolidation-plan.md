@@ -4,7 +4,7 @@
 
 **Goal:** Make `crm_deal_participants` the canonical deal-person/stakeholder table, keep `crm_contacts` as the authoritative person/profile table, and retire `deal_stakeholders` only after backfill and production validation.
 
-**Architecture:** A stakeholder is an active `CONTACT` participant on a deal. Public API language can still say `stakeholder_id`, but the UUID behind it is `CRMDealParticipant.participant_id`. Durable contact profile and research live on `CRMContact`; deal-specific behavior and display snapshots live on `CRMDealParticipant` so list reads do not always need a contact join.
+**Architecture:** A stakeholder is an active `CONTACT` participant on a deal. Public API payloads expose `participant_id` as the canonical `CRMDealParticipant.participant_id`; "stakeholder" remains the feature/resource language, not a second durable ID. Durable contact profile and research live on `CRMContact`; deal-specific behavior and display snapshots live on `CRMDealParticipant` so list reads do not always need a contact join.
 
 **Tech Stack:** Python 3.11, SQLModel/SQLAlchemy async sessions, PostgreSQL JSONB, Alembic org migrations, FastAPI, Celery, pytest.
 
@@ -15,7 +15,7 @@
 ### Identity
 
 1. `CRMDealParticipant.participant_id` is the only durable stakeholder identity.
-2. Public payloads may keep `stakeholder_id`, but its value must equal `participant_id`.
+2. Public stakeholder/contact-involvement payloads expose `participant_id`, not a duplicate `stakeholder_id` alias.
 3. Do not add `legacy_stakeholder_id`, `old_stakeholder_id`, `canonical_stakeholder_participant_id`, or any other persisted alias for `DealStakeholder.stakeholder_id`.
 4. Do not add `is_stakeholder`. Every active `CONTACT` participant on a deal is the stakeholder row.
 5. Enforce one active contact participant per deal/contact and one active contact participant per deal/normalized email. The same email/contact must not appear twice as a participant on one deal after migration hardening.
@@ -124,7 +124,7 @@ Do not confuse this work with `integration_participants`. That table is cross-in
 
 | Current `DealStakeholder` field | Authoritative target | Participant read-model target |
 | --- | --- | --- |
-| `stakeholder_id` | migration input only; public `stakeholder_id` becomes `CRMDealParticipant.participant_id` | none |
+| `stakeholder_id` | migration input only; public identity is `CRMDealParticipant.participant_id` exposed as `participant_id` | none |
 | `deal_id` | existing `CRMDealParticipant.deal_id` | existing `CRMDealParticipant.deal_id` |
 | `contact_id` | existing `CRMContact.contact_id` when present | existing `CRMDealParticipant.related_local_id` |
 | `email` | existing `CRMContact.email` | existing `CRMDealParticipant.related_email` snapshot |
@@ -160,7 +160,7 @@ Do not confuse this work with `integration_participants`. That table is cross-in
 1. Every query must remain scoped by `organisation_id`.
 2. Participant-backed stakeholders are only `participant_type == CONTACT` and `is_deleted == False`.
 3. `USER`, `COMPANY`, `TICKET`, `LINE_ITEM`, and `CUSTOM` participants are not stakeholders.
-4. Keep `stakeholder_id` in API responses if product/API language still needs it, but populate it with `participant_id`.
+4. API responses should expose `participant_id`; keep `stakeholder_id` only where an existing persisted job/insight/timeline field or tool input name already requires that compatibility name.
 5. New jobs, insights, tools, and timeline rows should write participant IDs. Existing rows with old stakeholder UUIDs must be migrated before runtime reads cut over.
 6. Manual, CRM, calendar-discovered, and email-discovered stakeholders must work. Do not build a solution that only works for CRM-synced participants.
 7. `deal_stakeholders` is not dropped in the first PR. It is retired only after participant row-count validation and production runtime-reference checks pass.
@@ -267,7 +267,7 @@ Implementation note:
 - Test: `tests/service/crm/insights/test_participant_stakeholder_adapter.py`
 
 - [x] Add an adapter that converts `CRMDealParticipant` to stakeholder response dictionaries.
-- [x] Return `stakeholder_id == participant.participant_id`.
+- [x] Return `participant_id == participant.participant_id` without a duplicate `stakeholder_id` alias.
 - [x] Prefer loaded `CRMContact` profile and research fields when supplied.
 - [x] Fall back to participant display snapshots when no contact is supplied.
 - [x] Exclude `champion_potential`, `engagement_score`, `stakeholder_data`, and `stakeholder_engagement_history`.
@@ -281,7 +281,7 @@ Expected: adapter tests pass with and without a joined contact.
 
 Implementation note:
 - `participant_stakeholder_adapter` maps participant rows to stakeholder response dictionaries
-  while preserving `stakeholder_id` as product/API language for `participant_id`.
+  with `participant_id` as the only public identity field.
 
 ### Task 3: Add Backfill Helpers
 
@@ -404,7 +404,7 @@ is_deleted == False
 ```
 
 - [x] Do not filter by `is_stakeholder`.
-- [x] Return public `stakeholder_id` as `participant_id`.
+- [x] Return public `participant_id` as the canonical stakeholder route/detail identity.
 - [x] Use participant snapshots for list views.
 - [x] Left join `CRMContact` for detail/edit paths that need fresh canonical profile data.
 
@@ -430,23 +430,22 @@ Implementation note:
 - [x] Create/update `CRMContact` before writing contact profile fields.
 - [x] Create/reuse a single participant row for the deal/contact/email.
 - [x] Write only deal-specific fields to the participant.
-- [x] Return both IDs during transition:
+- [x] Return only the canonical participant ID in public response payloads:
 
 ```json
 {
-  "stakeholder_id": "<participant-id>",
   "participant_id": "<participant-id>"
 }
 ```
 
-- [x] Keep `stakeholder_id` as the public argument name for agent workflows, but resolve it as `CRMDealParticipant.participant_id`.
+- [x] Keep `stakeholder_id` as the argument name for existing agent/job workflows where changing the tool schema is out of scope, but resolve it as `CRMDealParticipant.participant_id` and return `participant_id` in tool outputs.
 
 Implementation note:
 - Manual API creates, updates, approve/reject/remove, add-from-contacts service logic,
   add-stakeholder agent/form flows, and direct upsert/create-if-missing agent helpers now
   resolve stakeholders through active `CONTACT` participants. Profile fields write to
   `CRMContact` when linked, participant snapshots are refreshed for list reads, and public
-  responses include `participant_id` equal to `stakeholder_id`.
+  responses expose `participant_id` without a duplicate `stakeholder_id`.
 
 ---
 
@@ -483,8 +482,9 @@ temperature
 
 Implementation note:
 - Research dispatch, retry sweep, research service, analysis service, and Apollo-backed
-  research/enrichment tools now resolve public `stakeholder_id` as
-  `CRMDealParticipant.participant_id` for active contact participants. Reusable profile
+  research/enrichment tools now resolve their existing `stakeholder_id` input as
+  `CRMDealParticipant.participant_id` for active contact participants and return
+  `participant_id` in outputs. Reusable profile
   research writes to `CRMContact`; deal-scoped display research and snapshots write to
   `CRMDealParticipant`. The `DealJobs.stakeholder_id` column name is still a compatibility
   name until Task 9 migrates/renames the jobs and insight surfaces.
@@ -521,7 +521,7 @@ Implementation note:
   participants by source participant ID, contact ID, or normalized email.
 - Timeline stakeholder events now use active approved contact participants and
   store `CRMDealParticipant.participant_id` as both `source_record_id` and the
-  public `stakeholder_id` metadata value.
+  timeline-compatible `stakeholder_id` metadata value.
 - Email/meeting matcher contact rosters and last-contact updates read/write
   active approved contact participants. Email-discovered and calendar-discovered
   stakeholders are now persisted as contact participants, and research dispatch
@@ -553,10 +553,10 @@ Expected remaining references before table drop:
 ```text
 migration files
 backfill/audit scripts
-API schema fields that intentionally expose stakeholder_id as participant_id
 product/API/tool/task names that still say stakeholder while using participant IDs
+existing job/insight/timeline compatibility fields named stakeholder_id while storing participant IDs
 DealStakeholderInsight model/table names, whose stakeholder_id now stores participant IDs
-tests that assert stakeholder_id equals participant_id
+tests that assert stakeholder API payloads do not include stakeholder_id
 ```
 
 - [x] Add temporary production validation comparing active old rows to active contact participants.
@@ -588,7 +588,7 @@ Implementation note:
 - [x] Keep the `DealStakeholder` model available while the physical table remains in the database.
 - [x] Stop runtime code from reading, writing, or privacy-scrubbing `deal_stakeholders`; it is stale legacy source data after cutover.
 - [ ] Run production validation and explicit data migration before a later table-retirement release.
-- [x] Update docs to explain that `stakeholder_id` is product/API language for `CRMDealParticipant.participant_id`.
+- [x] Update docs to explain that stakeholder API payloads use `participant_id` as the canonical `CRMDealParticipant.participant_id`.
 
 Implementation note:
 - No `063` drop migration is included in this branch.
@@ -677,7 +677,7 @@ uv run mypy src/
 1. Phase 1 is additive and rollback-safe: old code ignores new participant/contact columns.
 2. Backfill never deletes `deal_stakeholders`; rollback is switching reads back before read cutover.
 3. Read/write cutover must not depend on old `DealStakeholder.stakeholder_id` at runtime.
-4. Public `stakeholder_id` may remain in payloads, but the value is `participant_id`.
+4. Public stakeholder payloads use `participant_id`; compatibility `stakeholder_id` fields are limited to existing job/insight/timeline schemas and tool input names.
 5. Writer hardening is rollback-safe because it reuses one active contact participant row instead of introducing a second marker system.
 6. The schema migration containing uniqueness indexes must be applied only after duplicate audits return zero blocking rows in the target environment.
 7. Old-table drop must be a separate release after production validation.
@@ -693,7 +693,7 @@ uv run mypy src/
 5. Stakeholder research writes reusable research to contacts and deal-scoped display research to participants.
 6. Stakeholder analysis writes only accepted participant behavior fields.
 7. New `deal_jobs` and stakeholder insights store participant IDs.
-8. Existing API callers still receive `stakeholder_id` during transition, but the value is the participant UUID.
+8. API callers receive `participant_id` as the stakeholder row UUID.
 9. `deal_stakeholders` receives no new writes after the participant cutover.
 10. Existing old stakeholder UUID references are rewritten to participant IDs where a matching participant exists.
 11. Participant-backed create/readd paths are race-safe under duplicate normalized email writes and use savepoint recovery instead of broad session rollback.

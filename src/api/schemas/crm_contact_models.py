@@ -13,7 +13,7 @@ class ContactDealInvolvement(BaseModel):
     deal_name: str | None
     deal_status: str | None
     stage_name: str | None
-    stakeholder_id: UUID
+    participant_id: UUID
     stance: str | None
     decision_power: str | None
     relationship_role: str | None

@@ -41,12 +41,11 @@ All endpoints return the shared `GenericResponse` envelope.
 
 Stakeholders should belong to the company associated with the deal. The system enforces domain validation:
 
-Stakeholder APIs expose local IDs (`stakeholder_id`, `participant_id`, `deal_id`,
-`contact_id`) and do not expose provider contact IDs. During the participant
-cutover, `stakeholder_id` is public/product language for the canonical
-`CRMDealParticipant.participant_id`, so `stakeholder_id` and `participant_id`
-have the same UUID value. Provider identity is resolved internally via
-`crm_source_object_mappings`.
+Stakeholder APIs expose local IDs (`participant_id`, `deal_id`, `contact_id`)
+and do not expose provider contact IDs. `participant_id` is the canonical
+`CRMDealParticipant.participant_id` and is the ID used for stakeholder detail,
+edit, approval, removal, and research routes. Provider identity is resolved
+internally via `crm_source_object_mappings`.
 
 The legacy `deal_stakeholders` table is retained only as stale source data for
 migration/validation. Runtime stakeholder list/detail/write endpoints do not
@@ -178,8 +177,7 @@ export interface DealJobResponse {
  * Use this for displaying stakeholder cards/lists.
  */
 export interface StakeholderDetail {
-  stakeholder_id: UUID;
-  participant_id: UUID;              // Canonical CRMDealParticipant ID; same as stakeholder_id
+  participant_id: UUID;              // Canonical CRMDealParticipant ID
   deal_id: UUID;
   contact_id: UUID | null;           // Null if discovered (not from CRM contact)
   email: string;
@@ -268,7 +266,7 @@ export interface StakeholderLink {
 }
 
 /**
- * Partial update payload for PATCH /{deal_id}/stakeholders/{stakeholder_id}.
+ * Partial update payload for PATCH /{deal_id}/stakeholders/{participant_id}.
  * Only include fields that should be changed.
  */
 export interface UpdateStakeholderRequest {
@@ -302,7 +300,7 @@ export interface SkippedContact {
 }
 
 export interface AddContactsAsStakeholdersResponse {
-  // Added rows are CONTACT participants; stakeholder_id is the participant_id alias.
+  // Added rows are CONTACT participants; participant_id is the canonical row ID.
   added: StakeholderDetail[];
   skipped: SkippedContact[];
   total_requested: number;
@@ -356,7 +354,7 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
     "company_name": "Example Corp",
     "stakeholders": [
       {
-        "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "email": "jane.doe@example.com",
@@ -477,7 +475,7 @@ GET /{deal_id}/stakeholders/available-contacts
 - **Email Required**: Only contacts with a valid email address are returned, as email is required for participant-backed stakeholder identity
 - **Search**: The `query` parameter searches across `first_name`, `last_name`, `full_name`, `email`, and `company_name`
 - **Exclusion**: Contacts already added as stakeholders for this deal are automatically excluded
-- **Identity**: The follow-up add endpoint creates or restores `CONTACT` rows in `crm_deal_participants`; public `stakeholder_id` values map to `participant_id`
+- **Identity**: The follow-up add endpoint creates or restores `CONTACT` rows in `crm_deal_participants`; `participant_id` is the returned row ID.
 
 ### Error Responses (List Available Contacts)
 
@@ -544,7 +542,7 @@ POST /{deal_id}/stakeholders/add-from-contacts
   "data": {
     "added": [
       {
-        "stakeholder_id": "6fa85f64-5717-4562-b3fc-2c963f66afa9",
+        "participant_id": "6fa85f64-5717-4562-b3fc-2c963f66afa9",
         "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "email": "alice.smith@acmecorp.com",
@@ -720,7 +718,6 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
   "message": "Stakeholder created successfully",
   "data": {
     "stakeholder": {
-      "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
       "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
       "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "contact_id": null,
@@ -856,7 +853,7 @@ contact, then refresh the participant snapshot. Deal-specific fields (`stance`,
 ### Endpoint (Edit Stakeholder)
 
 ```http
-PATCH /{deal_id}/stakeholders/{stakeholder_id}
+PATCH /{deal_id}/stakeholders/{participant_id}
 ```
 
 ### Path Parameters (Edit Stakeholder)
@@ -864,7 +861,7 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
 
 ### Request Body (Edit Stakeholder)
 
@@ -898,7 +895,6 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
   "status": "SUCCESS",
   "message": "Stakeholder updated",
   "data": {
-    "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
     "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
     "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "john.smith@prospect.com",
@@ -949,7 +945,7 @@ Retrieves full details of a specific stakeholder including engagement history.
 ### Endpoint (Get Stakeholder Detail)
 
 ```http
-GET /{deal_id}/stakeholders/{stakeholder_id}
+GET /{deal_id}/stakeholders/{participant_id}
 ```
 
 ### Path Parameters (Get Stakeholder Detail)
@@ -957,7 +953,7 @@ GET /{deal_id}/stakeholders/{stakeholder_id}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
 
 ### Success Response (200) (Get Stakeholder Detail)
 
@@ -968,7 +964,7 @@ Returns `StakeholderFullDetail` with engagement history.
   "status": "SUCCESS",
   "message": "Stakeholder detail retrieved",
   "data": {
-    "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "jane.doe@example.com",
@@ -1062,7 +1058,7 @@ this endpoint is used when the user explicitly triggers research later.
 ### Endpoint (Trigger Stakeholder Research)
 
 ```http
-POST /{deal_id}/stakeholders/{stakeholder_id}/research
+POST /{deal_id}/stakeholders/{participant_id}/research
 ```
 
 ### Path Parameters (Trigger Stakeholder Research)
@@ -1070,7 +1066,7 @@ POST /{deal_id}/stakeholders/{stakeholder_id}/research
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The stakeholder to research |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID to research |
 
 ### Success Response (200) (Research Dispatched)
 
@@ -1116,7 +1112,7 @@ Approve a PENDING stakeholder for deal matching. Changes approval_status from PE
 ### Endpoint (Approve Stakeholder)
 
 ```http
-POST /{deal_id}/stakeholders/{stakeholder_id}/approve
+POST /{deal_id}/stakeholders/{participant_id}/approve
 ```
 
 ### Path Parameters (Approve Stakeholder)
@@ -1124,7 +1120,7 @@ POST /{deal_id}/stakeholders/{stakeholder_id}/approve
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
 
 ### When to Use
 
@@ -1140,7 +1136,7 @@ When stakeholders are discovered from calendar events or emails beyond the first
   "status": "SUCCESS",
   "message": "Stakeholder approved",
   "data": {
-    "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "discovered.contact@example.com",
     "name": "Discovered Contact",
     "approval_status": "APPROVED",
@@ -1175,7 +1171,7 @@ Reject a stakeholder to exclude from deal matching. Works for PENDING or APPROVE
 ### Endpoint (Reject Stakeholder)
 
 ```http
-POST /{deal_id}/stakeholders/{stakeholder_id}/reject
+POST /{deal_id}/stakeholders/{participant_id}/reject
 ```
 
 ### Path Parameters (Reject Stakeholder)
@@ -1183,7 +1179,7 @@ POST /{deal_id}/stakeholders/{stakeholder_id}/reject
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
 
 ### Use Cases
 
@@ -1198,7 +1194,7 @@ POST /{deal_id}/stakeholders/{stakeholder_id}/reject
   "status": "SUCCESS",
   "message": "Stakeholder rejected",
   "data": {
-    "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "irrelevant.contact@example.com",
     "name": "Irrelevant Contact",
     "approval_status": "REJECTED",
@@ -1239,7 +1235,7 @@ Remove an approved stakeholder from the deal. This is different from rejection -
 ### Endpoint (Remove Stakeholder)
 
 ```http
-DELETE /{deal_id}/stakeholders/{stakeholder_id}
+DELETE /{deal_id}/stakeholders/{participant_id}
 ```
 
 ### Path Parameters (Remove Stakeholder)
@@ -1247,7 +1243,7 @@ DELETE /{deal_id}/stakeholders/{stakeholder_id}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
 
 ### When to Use
 
@@ -1275,7 +1271,7 @@ Both REJECTED and REMOVED stakeholders are excluded from deal matching. The dist
   "status": "SUCCESS",
   "message": "Stakeholder removed",
   "data": {
-    "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "former.contact@example.com",
     "name": "Former Contact",
     "approval_status": "REMOVED",
@@ -1336,25 +1332,25 @@ curl -X DELETE "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa8
 
 3. **View Stakeholder Detail**:
     - User clicks on a stakeholder card
-    - Call `GET /{deal_id}/stakeholders/{stakeholder_id}` for full details
+    - Call `GET /{deal_id}/stakeholders/{participant_id}` for full details
     - Display engagement history as a trend visualization
 
 4. **Edit Stakeholder**:
    - User edits stakeholder profile fields in detail view
-   - Call `PATCH /{deal_id}/stakeholders/{stakeholder_id}` with only changed fields
+   - Call `PATCH /{deal_id}/stakeholders/{participant_id}` with only changed fields
    - Refresh stakeholder card/detail after success
    - Edits made through PATCH are preserved during stakeholder mapper sync
 
 5. **Manage Pending Stakeholders** (Approval Flow):
     - Display PENDING stakeholders with visual indicator (badge, different styling)
     - Show "Approve" and "Reject" action buttons for pending items
-    - On approve: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/approve`
-    - On reject: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/reject`
+    - On approve: Call `POST /{deal_id}/stakeholders/{participant_id}/approve`
+    - On reject: Call `POST /{deal_id}/stakeholders/{participant_id}/reject`
     - Update UI immediately (optimistic update) or refetch list
 
 6. **Remove Active Stakeholders**:
     - Show "Remove" action on APPROVED stakeholders (e.g., in dropdown menu or detail view)
-    - On remove: Call `DELETE /{deal_id}/stakeholders/{stakeholder_id}`
+    - On remove: Call `DELETE /{deal_id}/stakeholders/{participant_id}`
     - Show confirmation dialog: "Remove this stakeholder from the deal?"
     - Update UI immediately or refetch list
 

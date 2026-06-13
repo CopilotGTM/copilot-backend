@@ -128,7 +128,7 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
         ),
     )
 
-    assert result.stakeholder_id == participant.participant_id
+    assert result.participant_id == participant.participant_id
     assert result.email == "buyer@example.com"
     assert result.name == "Buyer"
     assert result.job_title == "Old Title"
@@ -171,7 +171,7 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
         ),
     )
 
-    assert result.stakeholder_id == participant.participant_id
+    assert result.participant_id == participant.participant_id
     assert contact.full_name == "New Buyer"
     assert contact.job_title == "CFO"
     assert contact.phone == "222"
@@ -198,20 +198,20 @@ async def test_approve_reject_and_remove_write_participant_status() -> None:
 
     approved = await service.approve_stakeholder(deal_id, participant.participant_id)
 
-    assert approved.stakeholder_id == participant.participant_id
+    assert approved.participant_id == participant.participant_id
     assert participant.approval_status == ApprovalStatus.APPROVED.value
 
     session._results.append(_FakeResult(scalar=participant))
     rejected = await service.reject_stakeholder(deal_id, participant.participant_id)
 
-    assert rejected.stakeholder_id == participant.participant_id
+    assert rejected.participant_id == participant.participant_id
     assert participant.approval_status == ApprovalStatus.REJECTED.value
 
     participant.approval_status = ApprovalStatus.APPROVED.value
     session._results.append(_FakeResult(scalar=participant))
     removed = await service.remove_stakeholder(deal_id, participant.participant_id)
 
-    assert removed.stakeholder_id == participant.participant_id
+    assert removed.participant_id == participant.participant_id
     assert participant.approval_status == ApprovalStatus.REMOVED.value
     assert participant.is_deleted is True
 
@@ -250,7 +250,6 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
 
     assert result.total_added == 1
     assert result.total_skipped == 0
-    assert result.added[0].stakeholder_id == participant.participant_id
     assert result.added[0].participant_id == participant.participant_id
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
     assert session.committed

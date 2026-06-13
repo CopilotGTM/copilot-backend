@@ -139,8 +139,8 @@ async def test_upsert_stakeholder_updates_existing_participant(monkeypatch) -> N
 
     assert result is not None
     assert result["action"] == "updated"
-    assert result["stakeholder_id"] == str(existing.participant_id)
     assert result["participant_id"] == str(existing.participant_id)
+    assert "stakeholder_id" not in result
     assert existing.related_name == "Buyer Name"
     assert existing.decision_power == DecisionPower.DECISION_MAKER.value
     assert session.commits == 1
@@ -199,7 +199,8 @@ async def test_upsert_stakeholder_creates_when_missing(monkeypatch) -> None:
 
     assert result is not None
     assert result["action"] == "created"
-    assert result["stakeholder_id"] == str(created.participant_id)
+    assert result["participant_id"] == str(created.participant_id)
+    assert "stakeholder_id" not in result
     assert service.create_calls[0][0] == context.deal_id
     research_dispatch.assert_awaited_once_with(
         organisation_id=context.organisation_id,

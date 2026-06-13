@@ -85,7 +85,7 @@ def _to_deal_job_response(job: Any) -> DealJobResponse:
 async def _dispatch_auto_stakeholder_research(
     *,
     organisation_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     deal_id: UUID,
     user_id: UUID | None,
 ) -> DealJobResponse | None:
@@ -97,7 +97,7 @@ async def _dispatch_auto_stakeholder_research(
 
         job_id = await dispatch_stakeholder_research_async(
             organisation_id=organisation_id,
-            stakeholder_id=stakeholder_id,
+            stakeholder_id=participant_id,
             deal_id=deal_id,
             user_id=user_id,
         )
@@ -113,7 +113,7 @@ async def _dispatch_auto_stakeholder_research(
             "Failed to dispatch stakeholder research",
             extra={
                 "organisation_id": str(organisation_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "deal_id": str(deal_id),
             },
             exc_info=True,
@@ -328,11 +328,11 @@ async def create_stakeholder(
         stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
             deal_id,
-            stakeholder.stakeholder_id,
+            stakeholder.participant_id,
         )
         research_job = await _dispatch_auto_stakeholder_research(
             organisation_id=service.organisation_id,
-            stakeholder_id=stakeholder.stakeholder_id,
+            participant_id=stakeholder.participant_id,
             deal_id=deal_id,
             user_id=user_ids.user_id,
         )
@@ -375,13 +375,13 @@ async def create_stakeholder(
 
 
 @stakeholders_router.get(
-    "/{deal_id}/stakeholders/{stakeholder_id}",
+    "/{deal_id}/stakeholders/{participant_id}",
     response_model=GenericResponse[StakeholderFullDetail],
     summary="Get stakeholder detail with engagement history",
 )
 async def get_stakeholder_detail(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
     deal_job_service: DealJobService = Depends(get_stakeholder_deal_job_service),
@@ -399,14 +399,14 @@ async def get_stakeholder_detail(
     (e.g., from COLD to WARM to HOT).
     """
     try:
-        detail = await service.get_stakeholder_detail(deal_id, stakeholder_id)
+        detail = await service.get_stakeholder_detail(deal_id, participant_id)
         if not detail:
             return Response.error_response(
                 message="Stakeholder not found", status_code=404, response=response
             )
         detail["active_research_job"] = await deal_job_service.get_active_stakeholder_research_job(
             deal_id,
-            stakeholder_id,
+            participant_id,
         )
         return Response.success_response(
             message="Stakeholder detail retrieved",
@@ -418,7 +418,7 @@ async def get_stakeholder_detail(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "failure_reason": e.message,
             },
         )
@@ -431,7 +431,7 @@ async def get_stakeholder_detail(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
             },
         )
         return Response.error_response(
@@ -440,13 +440,13 @@ async def get_stakeholder_detail(
 
 
 @stakeholders_router.patch(
-    "/{deal_id}/stakeholders/{stakeholder_id}",
+    "/{deal_id}/stakeholders/{participant_id}",
     response_model=GenericResponse[StakeholderDetail],
     summary="Edit stakeholder details",
 )
 async def update_stakeholder(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     request: UpdateStakeholderRequest,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
@@ -454,7 +454,7 @@ async def update_stakeholder(
     """Partially update editable stakeholder fields."""
     try:
         command = UpdateStakeholderCommand.model_validate(request.model_dump(exclude_unset=True))
-        stakeholder_result = await service.update_stakeholder(deal_id, stakeholder_id, command)
+        stakeholder_result = await service.update_stakeholder(deal_id, participant_id, command)
         stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         return Response.success_response(message="Stakeholder updated", data=stakeholder)
     except StakeholdersServiceError as e:
@@ -463,7 +463,7 @@ async def update_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "failure_reason": e.message,
             },
         )
@@ -476,7 +476,7 @@ async def update_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
             },
         )
         return Response.error_response(
@@ -485,13 +485,13 @@ async def update_stakeholder(
 
 
 @stakeholders_router.post(
-    "/{deal_id}/stakeholders/{stakeholder_id}/approve",
+    "/{deal_id}/stakeholders/{participant_id}/approve",
     response_model=GenericResponse[StakeholderDetail],
     summary="Approve a pending stakeholder",
 )
 async def approve_stakeholder(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
 ) -> GenericResponse[StakeholderDetail]:
@@ -503,7 +503,7 @@ async def approve_stakeholder(
     This endpoint changes the stakeholder's approval_status from PENDING to APPROVED.
     """
     try:
-        stakeholder = await service.approve_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await service.approve_stakeholder(deal_id, participant_id)
         return Response.success_response(
             message="Stakeholder approved",
             data=cast(StakeholderDetail, stakeholder),
@@ -514,7 +514,7 @@ async def approve_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "failure_reason": e.message,
             },
         )
@@ -527,7 +527,7 @@ async def approve_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
             },
         )
         return Response.error_response(
@@ -536,13 +536,13 @@ async def approve_stakeholder(
 
 
 @stakeholders_router.post(
-    "/{deal_id}/stakeholders/{stakeholder_id}/reject",
+    "/{deal_id}/stakeholders/{participant_id}/reject",
     response_model=GenericResponse[StakeholderDetail],
     summary="Reject a stakeholder",
 )
 async def reject_stakeholder(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
 ) -> GenericResponse[StakeholderDetail]:
@@ -557,7 +557,7 @@ async def reject_stakeholder(
     contacts that are not relevant to the deal.
     """
     try:
-        stakeholder = await service.reject_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await service.reject_stakeholder(deal_id, participant_id)
         return Response.success_response(
             message="Stakeholder rejected",
             data=cast(StakeholderDetail, stakeholder),
@@ -568,7 +568,7 @@ async def reject_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "failure_reason": e.message,
             },
         )
@@ -581,7 +581,7 @@ async def reject_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
             },
         )
         return Response.error_response(
@@ -590,13 +590,13 @@ async def reject_stakeholder(
 
 
 @stakeholders_router.post(
-    "/{deal_id}/stakeholders/{stakeholder_id}/research",
+    "/{deal_id}/stakeholders/{participant_id}/research",
     response_model=GenericResponse[DealJobResponse],
     summary="Trigger stakeholder research",
 )
 async def trigger_stakeholder_research(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholdersService = Depends(get_stakeholders_service),
@@ -610,7 +610,7 @@ async def trigger_stakeholder_research(
     """
     try:
         # Verify stakeholder exists and belongs to this deal
-        detail = await service.get_stakeholder_detail(deal_id, stakeholder_id)
+        detail = await service.get_stakeholder_detail(deal_id, participant_id)
         if not detail:
             return Response.error_response(
                 message="Stakeholder not found", status_code=404, response=response
@@ -622,7 +622,7 @@ async def trigger_stakeholder_research(
 
         job_id = await dispatch_stakeholder_research_async(
             organisation_id=service.organisation_id,
-            stakeholder_id=stakeholder_id,
+            stakeholder_id=participant_id,
             deal_id=deal_id,
             user_id=user_ids.user_id,
             force=True,
@@ -634,7 +634,7 @@ async def trigger_stakeholder_research(
                 extra={
                     "event": "stakeholder_research_triggered",
                     "organisation_id": str(service.organisation_id),
-                    "stakeholder_id": str(stakeholder_id),
+                    "participant_id": str(participant_id),
                     "deal_id": str(deal_id),
                     "job_id": job_id,
                     "user_id": str(user_ids.user_id),
@@ -666,7 +666,7 @@ async def trigger_stakeholder_research(
             "Failed to trigger research for stakeholder",
             extra={
                 "organisation_id": str(service.organisation_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "deal_id": str(deal_id),
             },
         )
@@ -676,13 +676,13 @@ async def trigger_stakeholder_research(
 
 
 @stakeholders_router.delete(
-    "/{deal_id}/stakeholders/{stakeholder_id}",
+    "/{deal_id}/stakeholders/{participant_id}",
     response_model=GenericResponse[StakeholderDetail],
     summary="Remove a stakeholder from the deal",
 )
 async def remove_stakeholder(
     deal_id: UUID,
-    stakeholder_id: UUID,
+    participant_id: UUID,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
 ) -> GenericResponse[StakeholderDetail]:
@@ -701,7 +701,7 @@ async def remove_stakeholder(
     for PENDING stakeholders.
     """
     try:
-        stakeholder = await service.remove_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await service.remove_stakeholder(deal_id, participant_id)
         return Response.success_response(
             message="Stakeholder removed",
             data=cast(StakeholderDetail, stakeholder),
@@ -712,7 +712,7 @@ async def remove_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
                 "failure_reason": e.message,
             },
         )
@@ -725,7 +725,7 @@ async def remove_stakeholder(
             extra={
                 "organisation_id": str(service.organisation_id),
                 "deal_id": str(deal_id),
-                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(participant_id),
             },
         )
         return Response.error_response(

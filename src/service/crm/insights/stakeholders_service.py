@@ -584,26 +584,26 @@ class StakeholdersService:
         )
 
     async def get_stakeholder(
-        self, deal_id: UUID, stakeholder_id: UUID
+        self, deal_id: UUID, participant_id: UUID
     ) -> CRMDealParticipant | None:
-        """Get the canonical participant-backed stakeholder by public ID."""
+        """Get the canonical participant-backed stakeholder by participant ID."""
         return await self._find_contact_participant(
             deal_id=deal_id,
-            participant_id=stakeholder_id,
+            participant_id=participant_id,
         )
 
-    async def get_stakeholder_detail(self, deal_id: UUID, stakeholder_id: UUID) -> dict | None:
+    async def get_stakeholder_detail(self, deal_id: UUID, participant_id: UUID) -> dict | None:
         """Get full participant-backed stakeholder detail.
 
         Args:
             deal_id: The deal ID.
-            stakeholder_id: The stakeholder ID.
+            participant_id: The CRMDealParticipant ID.
 
         Returns:
             Dict with full stakeholder detail and engagement history, or None if not found.
         """
         stmt = select(CRMDealParticipant).where(
-            col(CRMDealParticipant.participant_id) == stakeholder_id,
+            col(CRMDealParticipant.participant_id) == participant_id,
             col(CRMDealParticipant.deal_id) == deal_id,
             col(CRMDealParticipant.organisation_id) == self.organisation_id,
             col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
@@ -629,12 +629,12 @@ class StakeholdersService:
         payload["active_research_job"] = None
         return payload
 
-    async def approve_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> StakeholderDetail:
+    async def approve_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
         """Approve a PENDING stakeholder for deal matching.
 
         Args:
             deal_id: The deal ID.
-            stakeholder_id: The stakeholder to approve.
+            participant_id: The participant to approve.
 
         Returns:
             The updated stakeholder.
@@ -642,7 +642,7 @@ class StakeholdersService:
         Raises:
             StakeholdersServiceError: If stakeholder not found or already approved.
         """
-        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await self.get_stakeholder(deal_id, participant_id)
         if not stakeholder:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 
@@ -656,12 +656,12 @@ class StakeholdersService:
         contact = await self._get_participant_contact(stakeholder)
         return self._participant_detail(stakeholder, contact=contact)
 
-    async def reject_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> StakeholderDetail:
+    async def reject_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
         """Reject a stakeholder to exclude from deal matching.
 
         Args:
             deal_id: The deal ID.
-            stakeholder_id: The stakeholder to reject.
+            participant_id: The participant to reject.
 
         Returns:
             The updated stakeholder.
@@ -669,7 +669,7 @@ class StakeholdersService:
         Raises:
             StakeholdersServiceError: If stakeholder not found or already rejected.
         """
-        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await self.get_stakeholder(deal_id, participant_id)
         if not stakeholder:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 
@@ -683,7 +683,7 @@ class StakeholdersService:
         contact = await self._get_participant_contact(stakeholder)
         return self._participant_detail(stakeholder, contact=contact)
 
-    async def remove_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> StakeholderDetail:
+    async def remove_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
         """Remove an APPROVED stakeholder from the deal.
 
         This marks the stakeholder as REMOVED, excluding them from deal matching
@@ -692,7 +692,7 @@ class StakeholdersService:
 
         Args:
             deal_id: The deal ID.
-            stakeholder_id: The stakeholder to remove.
+            participant_id: The participant to remove.
 
         Returns:
             The updated stakeholder with REMOVED status.
@@ -700,7 +700,7 @@ class StakeholdersService:
         Raises:
             StakeholdersServiceError: If stakeholder not found or not in APPROVED status.
         """
-        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        stakeholder = await self.get_stakeholder(deal_id, participant_id)
         if not stakeholder:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 
@@ -794,7 +794,6 @@ class StakeholdersService:
         if existing_participant:
             status = existing_participant.approval_status
             conflict_data = {
-                "stakeholder_id": str(existing_participant.participant_id),
                 "participant_id": str(existing_participant.participant_id),
                 "approval_status": status.value if hasattr(status, "value") else str(status),
                 "is_deleted": existing_participant.is_deleted,
@@ -881,11 +880,11 @@ class StakeholdersService:
     async def update_stakeholder(
         self,
         deal_id: UUID,
-        stakeholder_id: UUID,
+        participant_id: UUID,
         request: UpdateStakeholderRequest,
     ) -> StakeholderDetail:
         """Partially update a stakeholder and mark fields as user-managed."""
-        participant = await self.get_stakeholder(deal_id, stakeholder_id)
+        participant = await self.get_stakeholder(deal_id, participant_id)
         if not participant:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 

@@ -40,11 +40,7 @@ class DealJobResponse(BaseModel):
 class StakeholderDetail(BaseModel):
     """Detailed view of a deal stakeholder."""
 
-    stakeholder_id: UUID
-    participant_id: UUID | None = Field(
-        None,
-        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
-    )
+    participant_id: UUID = Field(..., description="Canonical CRMDealParticipant ID")
     deal_id: UUID
     contact_id: UUID | None = None
     email: str

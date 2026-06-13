@@ -205,7 +205,7 @@ async def enrich_stakeholder(
                 return {
                     "success": False,
                     "error": "Stakeholder not found",
-                    "stakeholder_id": stakeholder_id,
+                    "participant_id": stakeholder_id,
                     "email": email,
                 }
 
@@ -227,7 +227,6 @@ async def enrich_stakeholder(
                 existing_enrichment = contact_properties.get("enrichment", {})
                 return {
                     "success": True,
-                    "stakeholder_id": str(participant.participant_id),
                     "participant_id": str(participant.participant_id),
                     "already_enriched": True,
                     "enriched_at": existing_enrichment.get("enriched_at"),
@@ -362,7 +361,6 @@ async def enrich_stakeholder(
 
     return {
         "success": True,
-        "stakeholder_id": str(s_id),
         "participant_id": str(s_id),
         "already_enriched": False,
         "data": {
@@ -450,8 +448,8 @@ def create_enrich_stakeholder(
 
         if result.get("success"):
             logger.info(
-                "[TOOL RESULT] enrich_stakeholder success: stakeholder=%s, credits=%s",
-                result.get("stakeholder_id"),
+                "[TOOL RESULT] enrich_stakeholder success: participant=%s, credits=%s",
+                result.get("participant_id"),
                 result.get("metadata", {}).get("credits_used", 0),
             )
         else:

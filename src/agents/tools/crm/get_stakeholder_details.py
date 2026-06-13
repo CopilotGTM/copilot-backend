@@ -90,7 +90,7 @@ async def get_stakeholder_details(
         # Transform to output format with full details (while session is active)
         payload = participant_to_stakeholder_detail_dict(participant)
         output: dict[str, Any] = {
-            "stakeholder_id": str(payload["stakeholder_id"]),
+            "participant_id": str(payload["participant_id"]),
             "deal_id": str(payload["deal_id"]),
             "email": payload["email"],
             "name": payload["name"],

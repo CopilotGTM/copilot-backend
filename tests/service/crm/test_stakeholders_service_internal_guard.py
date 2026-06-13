@@ -215,7 +215,7 @@ async def test_create_stakeholder_reactivates_removed_existing_participant() -> 
         ),
     )
 
-    assert result.stakeholder_id == removed.participant_id
+    assert result.participant_id == removed.participant_id
     assert removed.approval_status == ApprovalStatus.APPROVED.value
     assert removed.is_deleted is False
     assert removed.related_name == "Restored Buyer"
@@ -253,7 +253,6 @@ async def test_create_stakeholder_duplicate_active_error_includes_conflict_data(
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.data == {
-        "stakeholder_id": str(active.participant_id),
         "participant_id": str(active.participant_id),
         "approval_status": "APPROVED",
         "is_deleted": False,

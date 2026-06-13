@@ -71,7 +71,7 @@ async def test_list_stakeholders_reads_active_contact_participants() -> None:
     response = await service.list_stakeholders_by_deal(deal_id)
 
     assert response.company_domain == "acme.com"
-    assert response.stakeholders[0].stakeholder_id == participant_id
+    assert response.stakeholders[0].participant_id == participant_id
     assert response.stakeholders[0].contact_id == contact_id
     assert response.stakeholders[0].email == "buyer@example.com"
     assert response.stakeholders[0].name == "Buyer Snapshot"
@@ -114,8 +114,8 @@ async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profil
     detail = await service.get_stakeholder_detail(deal_id, participant_id)
 
     assert detail is not None
-    assert detail["stakeholder_id"] == participant_id
     assert detail["participant_id"] == participant_id
+    assert "stakeholder_id" not in detail
     assert detail["contact_id"] == contact_id
     assert detail["email"] == "fresh@example.com"
     assert detail["name"] == "Fresh Buyer"

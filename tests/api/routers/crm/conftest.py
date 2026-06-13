@@ -119,6 +119,7 @@ class FakeStakeholder:
         stakeholder_data: dict[str, Any] | None = None,
     ):
         self.stakeholder_id = stakeholder_id
+        self.participant_id = stakeholder_id
         self.deal_id = deal_id
         self.organisation_id = organisation_id
         self.email = email
@@ -280,7 +281,7 @@ class FakeStakeholdersService:
         # Convert to response format (StakeholderDetail)
         stakeholder_list = [
             {
-                "stakeholder_id": s.stakeholder_id,
+                "participant_id": s.participant_id,
                 "deal_id": s.deal_id,
                 "contact_id": s.contact_id,
                 "email": s.email,
@@ -435,7 +436,7 @@ class FakeStakeholdersService:
                 "A stakeholder with this email already exists for this deal",
                 status_code=409,
                 data={
-                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "participant_id": str(stakeholder.participant_id),
                     "approval_status": stakeholder.approval_status.value,
                     "is_deleted": stakeholder.is_deleted,
                 },
@@ -485,7 +486,7 @@ class FakeStakeholdersService:
                 )
 
         return {
-            "stakeholder_id": stakeholder.stakeholder_id,
+            "participant_id": stakeholder.participant_id,
             "deal_id": stakeholder.deal_id,
             "contact_id": stakeholder.contact_id,
             "email": stakeholder.email,
@@ -611,7 +612,7 @@ class FakeStakeholdersService:
             # Return full StakeholderDetail-compatible object
             added.append(
                 {
-                    "stakeholder_id": stakeholder.stakeholder_id,
+                    "participant_id": stakeholder.participant_id,
                     "deal_id": stakeholder.deal_id,
                     "contact_id": None,
                     "email": stakeholder.email,
