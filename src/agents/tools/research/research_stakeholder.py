@@ -12,11 +12,15 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.research.apollo_client import apollo_enrich_person
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -32,11 +36,11 @@ logger = logging.getLogger(__name__)
 _PERSONAL_EMAIL_DOMAINS = frozenset({"gmail.com", "yahoo.com", "hotmail.com", "outlook.com"})
 
 
-def _extract_linkedin_url(stakeholder: DealStakeholder) -> str | None:
-    """Extract LinkedIn URL from a stakeholder's external_links list."""
-    if not stakeholder.external_links:
+def _extract_linkedin_url(links: list[dict[str, Any]] | None) -> str | None:
+    """Extract LinkedIn URL from an external links list."""
+    if not links:
         return None
-    for link in stakeholder.external_links:
+    for link in links:
         if isinstance(link, dict) and link.get("platform", "").lower() == "linkedin":
             return link.get("url")
     return None
@@ -50,6 +54,20 @@ def _extract_domain_hint(email: str | None) -> str | None:
     return None if domain in _PERSONAL_EMAIL_DOMAINS else domain
 
 
+def _normalize_email(email: str | None) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _contact_external_links(contact: CRMContact | None) -> list[dict[str, Any]] | None:
+    if not contact or not isinstance(contact.properties, dict):
+        return None
+    links = contact.properties.get("external_links")
+    return links if isinstance(links, list) else None
+
+
 async def research_stakeholder(
     *,
     context: AgentContext,
@@ -60,7 +78,7 @@ async def research_stakeholder(
 ) -> dict[str, Any]:
     """Look up a stakeholder via Apollo and return enrichment data (read-only).
 
-    Reads the DealStakeholder record for lookup context, calls Apollo,
+    Reads the participant-backed stakeholder record for lookup context, calls Apollo,
     and returns the profile data. Does NOT write to the database.
 
     Args:
@@ -80,29 +98,33 @@ async def research_stakeholder(
     if not stakeholder_id and not email:
         return {"success": False, "error": "Must provide stakeholder_id or email"}
 
-    c = cast(Any, DealStakeholder).__table__.c
+    c = cast(Any, CRMDealParticipant).__table__.c
 
     # Phase 1: Read stakeholder for lookup context, then release session
     try:
         async with context.acquire_session() as session:
             if stakeholder_id:
-                stmt = select(DealStakeholder).where(
+                stmt = select(CRMDealParticipant).where(
                     c.organisation_id == organisation_id,
-                    c.stakeholder_id == UUID(stakeholder_id),
+                    c.participant_id == UUID(stakeholder_id),
+                    c.participant_type == CRMParticipantType.CONTACT.value,
+                    c.is_deleted.is_(False),
                 )
             else:
                 assert email is not None
-                stmt = select(DealStakeholder).where(
+                stmt = select(CRMDealParticipant).where(
                     c.organisation_id == organisation_id,
-                    c.email == email.lower().strip(),
+                    c.participant_type == CRMParticipantType.CONTACT.value,
+                    c.is_deleted.is_(False),
+                    func.lower(func.trim(c.related_email)) == email.lower().strip(),
                 )
                 if context.deal_id:
                     stmt = stmt.where(c.deal_id == context.deal_id)
 
             result = await session.execute(stmt)
-            stakeholder = result.scalar_one_or_none()
+            participant = result.scalar_one_or_none()
 
-            if not stakeholder:
+            if not participant:
                 return {
                     "success": False,
                     "error": "Stakeholder not found",
@@ -110,11 +132,20 @@ async def research_stakeholder(
                     "email": email,
                 }
 
+            contact = None
+            if participant.related_local_id:
+                contact = await session.get(CRMContact, participant.related_local_id)
+                if not contact or contact.organisation_id != organisation_id or contact.is_deleted:
+                    contact = None
+
             # Extract lookup context before releasing session
-            s_id = stakeholder.stakeholder_id
-            s_name = stakeholder.name
-            s_email = stakeholder.email
-            existing_linkedin = _extract_linkedin_url(stakeholder)
+            s_id = participant.participant_id
+            s_name = (contact.full_name if contact else None) or participant.related_name
+            s_email = _normalize_email(
+                (contact.email if contact else None) or participant.related_email
+            )
+            links = _contact_external_links(contact) or participant.external_links or []
+            existing_linkedin = _extract_linkedin_url(links)
             domain_hint = _extract_domain_hint(s_email or email)
 
     except Exception as e:

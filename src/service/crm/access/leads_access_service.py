@@ -365,34 +365,61 @@ class LeadsAccessService:
     ) -> int:
         copied_count = 0
         now = datetime.now(UTC)
+        seen_identities: set[tuple[str, str]] = set()
         for participant in lead_participants:
             if participant.related_local_id is None:
                 continue
+            participant_type = CRMParticipantType(self._enum_value(participant.participant_type))
+            identity_key = self._deal_participant_identity_key(
+                participant_type=participant_type,
+                related_local_id=participant.related_local_id,
+                email=participant.email,
+            )
+            if identity_key in seen_identities:
+                continue
+            seen_identities.add(identity_key)
             self.org_session.add(
                 CRMDealParticipant(
                     organisation_id=self.organisation_id,
                     integration_id=deal_integration_id,
                     deal_id=deal_id,
-                    participant_type=CRMParticipantType(
-                        self._enum_value(participant.participant_type)
-                    ),
+                    participant_type=participant_type,
                     relationship_role=participant.relationship_role,
                     related_local_id=participant.related_local_id,
                     related_name=participant.name,
-                    related_email=participant.email,
+                    related_email=self._normalize_email(participant.email),
                     synced_at=now,
                     source_modified_at=now,
                     last_seen_at=now,
-                    properties={
-                        "converted_from_lead_id": str(participant.lead_id),
-                        "lead_participant_id": str(participant.participant_id),
-                    },
+                    participant_source="MANUAL",
+                    source_reference_id=participant.participant_id,
                 )
             )
             copied_count += 1
         await self.org_session.flush()
         return copied_count
 
+    def _deal_participant_identity_key(
+        self,
+        *,
+        participant_type: CRMParticipantType,
+        related_local_id: UUID | None,
+        email: str | None,
+    ) -> tuple[str, str]:
+        if related_local_id is not None:
+            return participant_type.value, f"local:{related_local_id}"
+        normalized_email = self._normalize_email(email)
+        if participant_type == CRMParticipantType.CONTACT and normalized_email:
+            return participant_type.value, f"email:{normalized_email}"
+        return participant_type.value, ""
+
     @staticmethod
     def _enum_value(value: Any) -> Any:
         return value.value if hasattr(value, "value") else value
+
+    @staticmethod
+    def _normalize_email(value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized = value.strip().lower()
+        return normalized or None

@@ -41,9 +41,17 @@ All endpoints return the shared `GenericResponse` envelope.
 
 Stakeholders should belong to the company associated with the deal. The system enforces domain validation:
 
-Stakeholder APIs expose local IDs (`stakeholder_id`, `deal_id`, `contact_id`) and
-do not expose provider contact IDs. Provider identity is resolved internally via
+Stakeholder APIs expose local IDs (`stakeholder_id`, `participant_id`, `deal_id`,
+`contact_id`) and do not expose provider contact IDs. During the participant
+cutover, `stakeholder_id` is public/product language for the canonical
+`CRMDealParticipant.participant_id`, so `stakeholder_id` and `participant_id`
+have the same UUID value. Provider identity is resolved internally via
 `crm_source_object_mappings`.
+
+The legacy `deal_stakeholders` table is retained only as stale source data for
+migration/validation. Runtime stakeholder list/detail/write endpoints do not
+update it; they read and write active `CONTACT` rows in `crm_deal_participants`.
+Reusable profile fields live on `crm_contacts`.
 
 ### How It Works
 
@@ -171,6 +179,7 @@ export interface DealJobResponse {
  */
 export interface StakeholderDetail {
   stakeholder_id: UUID;
+  participant_id: UUID;              // Canonical CRMDealParticipant ID; same as stakeholder_id
   deal_id: UUID;
   contact_id: UUID | null;           // Null if discovered (not from CRM contact)
   email: string;
@@ -183,40 +192,10 @@ export interface StakeholderDetail {
   stance: StakeholderStance;         // Attitude toward solution (CHAMPION to BLOCKER)
   decision_power: DecisionPower;     // Role in buying process
 
-  /**
-   * Champion Potential Score (0-100)
-   *
-   * Measures likelihood this person will actively advocate for your solution internally.
-   *
-   * Score Ranges:
-   * - 80-100: High potential - actively promotes, introduces to others
-   * - 60-79: Moderate - supportive but not actively championing
-   * - 40-59: Low - neutral, needs more engagement
-   * - 0-39: Very low - unlikely to advocate
-   *
-   * Factors: Positive sentiment in communications, referrals, internal advocacy signals
-   */
-  champion_potential: number;
-
   motivation: string | null;         // AI-extracted: What drives this stakeholder
   pain_points: string[] | null;      // AI-extracted: Challenges they've mentioned
   keywords: string[] | null;         // AI-extracted: Key topics of interest
   last_contact_at: string | null;    // ISO8601 - Last interaction timestamp
-
-  /**
-   * Engagement Score (0-100)
-   *
-   * Measures overall engagement quality and quantity with this stakeholder.
-   *
-   * Score Ranges:
-   * - 80-100: Excellent - frequent, meaningful interactions
-   * - 60-79: Good - regular contact, positive engagement
-   * - 40-59: Moderate - some contact, room for improvement
-   * - 0-39: Low - needs immediate attention
-   *
-   * Factors: Meeting attendance, email responsiveness, interaction frequency
-   */
-  engagement_score: number;
 
   temperature: StakeholderTemperature;  // HOT/WARM/COLD based on recency
   source: StakeholderSource;            // How stakeholder was discovered
@@ -255,8 +234,6 @@ export interface StakeholderEngagementSnapshot {
   recorded_at: string;               // ISO8601 - When snapshot was taken
   stance: string | null;
   temperature: string | null;
-  engagement_score: number | null;
-  champion_potential: number | null;
   decision_power: string | null;
 }
 
@@ -301,7 +278,6 @@ export interface UpdateStakeholderRequest {
   department?: string | null;
   stance?: StakeholderStance;
   decision_power?: DecisionPower;
-  champion_potential?: number;       // 0..100
   motivation?: string | null;
   pain_points?: string[] | null;
   external_links?: StakeholderLink[] | null;
@@ -309,7 +285,7 @@ export interface UpdateStakeholderRequest {
 
 export interface AvailableContactItem {
   contact_id: UUID;
-  email: string;                     // Required - only contacts with email are returned
+  email: string;                     // Required for participant-backed stakeholder identity
   first_name: string | null;
   last_name: string | null;
   full_name: string | null;
@@ -326,6 +302,7 @@ export interface SkippedContact {
 }
 
 export interface AddContactsAsStakeholdersResponse {
+  // Added rows are CONTACT participants; stakeholder_id is the participant_id alias.
   added: StakeholderDetail[];
   skipped: SkippedContact[];
   total_requested: number;
@@ -396,12 +373,10 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
         ],
         "stance": "SUPPORTER",
         "decision_power": "DECISION_MAKER",
-        "champion_potential": 92.0,
         "motivation": "Reduce technical debt and improve team productivity",
         "pain_points": ["Legacy system maintenance", "Slow deployment cycles"],
         "keywords": ["digital transformation", "modernize legacy systems"],
         "last_contact_at": "2024-11-08T14:00:00Z",
-        "engagement_score": 75.0,
         "temperature": "WARM",
         "source": "CRM",
         "approval_status": "APPROVED"
@@ -432,7 +407,13 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 
 ## 2. List Available Contacts
 
-Lists CRM contacts that can be added as stakeholders for a deal. Only returns contacts with valid email addresses. Excludes contacts that are already stakeholders for this deal.
+Lists CRM contacts that can be added as stakeholders for a deal. This is the
+read-only contact picker endpoint for the add-from-contacts flow. It only
+returns contacts with valid email addresses and excludes contacts that already
+have a participant-backed stakeholder row for this deal.
+
+This endpoint reads from `crm_contacts`; it does not create participants and it
+does not write to the legacy `deal_stakeholders` table.
 
 ### Endpoint (List Available Contacts)
 
@@ -476,11 +457,27 @@ GET /{deal_id}/stakeholders/available-contacts
 }
 ```
 
+#### Response Schema (`AvailableContactItem`)
+
+| Field | Type | Nullable | Description |
+|-------|------|----------|-------------|
+| `contact_id` | UUID | No | Internal CRM contact identifier |
+| `email` | string | No | Primary email address; required before a contact can be added as a stakeholder |
+| `first_name` | string | Yes | Contact first name |
+| `last_name` | string | Yes | Contact last name |
+| `full_name` | string | Yes | Display name used by pickers and search results |
+| `job_title` | string | Yes | Current or latest known job title from the contact profile |
+| `company_name` | string | Yes | Associated company/account name |
+| `phone` | string | Yes | Primary phone number |
+| `lifecycle_stage` | string | Yes | CRM lifecycle stage, when available |
+| `last_activity_at` | datetime | Yes | Last known CRM activity timestamp |
+
 ### Notes
 
-- **Email Required**: Only contacts with a valid email address are returned, as email is required for stakeholder identification
+- **Email Required**: Only contacts with a valid email address are returned, as email is required for participant-backed stakeholder identity
 - **Search**: The `query` parameter searches across `first_name`, `last_name`, `full_name`, `email`, and `company_name`
 - **Exclusion**: Contacts already added as stakeholders for this deal are automatically excluded
+- **Identity**: The follow-up add endpoint creates or restores `CONTACT` rows in `crm_deal_participants`; public `stakeholder_id` values map to `participant_id`
 
 ### Error Responses (List Available Contacts)
 
@@ -501,7 +498,12 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/availab
 
 ## 3. Add Contacts as Stakeholders
 
-Add selected CRM contacts as stakeholders to a deal. Only contacts with valid email addresses will be added. Contacts without emails or those that already exist as stakeholders are skipped.
+Add selected CRM contacts as stakeholders to a deal. Only contacts with valid
+email addresses will be added. Contacts without emails or those that already
+exist as stakeholders are skipped.
+
+Added contacts are persisted as `CONTACT` participants in
+`crm_deal_participants`. The legacy `deal_stakeholders` table is not updated.
 
 ### Endpoint (Add Contacts as Stakeholders)
 
@@ -551,8 +553,6 @@ POST /{deal_id}/stakeholders/add-from-contacts
         "phone_number": "+1-555-123-4567",
         "stance": "UNKNOWN",
         "decision_power": "UNKNOWN",
-        "champion_potential": 0.0,
-        "engagement_score": 0.0,
         "temperature": "COLD",
         "source": "CRM"
       }
@@ -636,7 +636,6 @@ The request body includes UI metadata to help frontend developers build appropri
   "stance": "SUPPORTER",
   "decision_power": "DECISION_MAKER",
   "department": "Technology",
-  "champion_potential": 75,
   "motivation": "Looking to modernize their tech stack",
   "pain_points": ["Legacy systems", "Manual processes"],
   "external_links": [
@@ -676,12 +675,11 @@ Fields are categorized to help frontend build appropriate UI:
 | Field | Type | Default | Description | UI Component |
 |-------|------|---------|-------------|--------------|
 | `department` | string | null | Department | Text input |
-| `champion_potential` | number | **50** (neutral) | Assessment of advocacy potential (0-100) | Slider with presets |
 | `motivation` | string | null | What drives this person | Textarea |
 | `pain_points` | string[] | null | Challenges they've mentioned | Tag input |
 | `external_links` | array | null | Profile links | Link builder |
 
-> **Note on Defaults**: Fields with neutral defaults (like `champion_potential=50`, `stance=UNKNOWN`) allow users to skip fields they're unsure about. The AI analysis will refine these values over time based on actual interactions.
+> **Note on Defaults**: Fields with neutral defaults (like `stance=UNKNOWN`) allow users to skip fields they're unsure about. The AI analysis will refine these values over time based on actual interactions.
 
 ### Stance Options (for UI dropdown)
 
@@ -705,22 +703,16 @@ Fields are categorized to help frontend build appropriate UI:
 | `GATEKEEPER` | Gatekeeper | Controls access to decision makers |
 | `END_USER` | End User | Will use the product daily |
 
-### Champion Potential Presets (for UI slider)
-
-| Value | Label | Description |
-|-------|-------|-------------|
-| 0 | Very Low | Definitely won't advocate |
-| 25 | Low | Unlikely to advocate |
-| **50** | **Moderate (default)** | Unknown or neutral - AI will refine |
-| 75 | High | Likely to advocate |
-| 100 | Very High | Already advocating internally |
-
 ### Success Response (201) (Add Stakeholder)
 
 The stakeholder row is created synchronously. The response also returns three
 visible post-create processing jobs for related email rematch, calendar rematch,
 and stakeholder sync. Stakeholder research is not started here; use the manual
 research trigger endpoint when the user explicitly requests research.
+
+Writes are participant-backed: durable person/profile fields are written to
+`crm_contacts` when a contact can be resolved or created, and deal-specific
+behavior is written to the active `CONTACT` row in `crm_deal_participants`.
 
 ```json
 {
@@ -729,6 +721,7 @@ research trigger endpoint when the user explicitly requests research.
   "data": {
     "stakeholder": {
       "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
+      "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
       "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "contact_id": null,
       "email": "john.smith@prospect.com",
@@ -737,10 +730,8 @@ research trigger endpoint when the user explicitly requests research.
       "phone_number": "+1 (555) 123-4567",
       "stance": "SUPPORTER",
       "decision_power": "DECISION_MAKER",
-      "champion_potential": 75.0,
       "motivation": "Looking to modernize their tech stack",
       "pain_points": ["Legacy systems", "Manual processes"],
-      "engagement_score": 0.0,
       "temperature": "UNKNOWN",
       "source": "MANUAL",
       "approval_status": "APPROVED",
@@ -780,10 +771,8 @@ The following fields are automatically set or have neutral defaults:
 |-------|---------|--------|
 | `source` | `MANUAL` | Indicates manually added (not from CRM/discovery) |
 | `approval_status` | `APPROVED` | Manual additions are trusted |
-| `engagement_score` | `0` | Will be calculated by AI analysis |
 | `temperature` | `UNKNOWN` | Will be calculated based on interactions |
-| `contact_id` | `null` | No CRM contact link for manual adds |
-| `champion_potential` | `50` | Neutral default if not provided |
+| `contact_id` | `null` or contact UUID | Contact profile link when resolved or created |
 | `stance` | `UNKNOWN` | Neutral default if not provided |
 | `decision_power` | `UNKNOWN` | Neutral default if not provided |
 
@@ -793,7 +782,7 @@ The following fields are automatically set or have neutral defaults:
 |------|-------------|
 | `401` | Missing or invalid authentication token |
 | `409` | Stakeholder with this email already exists for this deal |
-| `422` | Validation error (e.g., invalid email format, champion_potential out of range) |
+| `422` | Validation error (e.g., invalid email format) |
 | `500` | Internal server error |
 
 ### Example cURL (Add Stakeholder)
@@ -808,8 +797,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
     "job_title": "CTO",
     "phone_number": "+1 (555) 123-4567",
     "stance": "SUPPORTER",
-    "decision_power": "DECISION_MAKER",
-    "champion_potential": 75
+    "decision_power": "DECISION_MAKER"
   }'
 ```
 
@@ -846,7 +834,6 @@ related activity when the jobs complete.
 │  ▶ More Details (collapsed by default)                      │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ Department: [_________________________]              │   │
-│  │ Champion Potential: [──────●──────] 50              │   │
 │  │ Motivation: [________________________]              │   │
 │  │ Pain Points: [tag1] [tag2] [+]                      │   │
 │  │ LinkedIn: [_________________________]               │   │
@@ -861,6 +848,10 @@ related activity when the jobs complete.
 ## 5. Edit Stakeholder
 
 Partially updates an existing stakeholder for a deal. Only fields included in the request are changed.
+Profile fields (`name`, `job_title`, `phone_number`, `department`,
+`external_links`) update `crm_contacts` first when the participant is linked to a
+contact, then refresh the participant snapshot. Deal-specific fields (`stance`,
+`decision_power`, `motivation`, `pain_points`) update only the participant row.
 
 ### Endpoint (Edit Stakeholder)
 
@@ -882,7 +873,6 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
   "name": "Jane Updated",
   "job_title": "Director of Engineering",
   "phone_number": "+44 20 7946 0958",
-  "champion_potential": 88,
   "motivation": "Accelerate engineering delivery"
 }
 ```
@@ -897,7 +887,6 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
 | `department` | string \| null | Department |
 | `stance` | enum | Stakeholder stance |
 | `decision_power` | enum | Buying-role classification |
-| `champion_potential` | number | 0 to 100 |
 | `motivation` | string \| null | Motivation summary |
 | `pain_points` | string[] \| null | Known pain points |
 | `external_links` | array \| null | External profile links |
@@ -910,12 +899,12 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
   "message": "Stakeholder updated",
   "data": {
     "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
+    "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
     "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "john.smith@prospect.com",
     "name": "Jane Updated",
     "job_title": "Director of Engineering",
     "phone_number": "+44 20 7946 0958",
-    "champion_potential": 88.0,
     "source": "MANUAL",
     "approval_status": "APPROVED"
   }
@@ -929,13 +918,13 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
 | `400` | Empty payload or invalid null for non-nullable fields |
 | `401` | Missing or invalid authentication token |
 | `404` | Stakeholder not found for this deal |
-| `422` | Validation error (e.g., champion_potential out of range) |
+| `422` | Validation error |
 | `500` | Internal server error |
 
 ### Sync Behavior Note
 
-- When users edit stakeholder fields through this endpoint, those fields are marked as manual overrides.
-- Later stakeholder mapper sync runs (`stakeholder.sync_deal_stakeholders`) do **not** overwrite manually overridden fields.
+- When users edit stakeholder fields through this endpoint, profile edits are owned by `crm_contacts` and deal-behavior edits are owned by `crm_deal_participants`.
+- Later stakeholder mapper sync runs (`stakeholder.sync_deal_stakeholders`) should not overwrite app-owned participant behavior fields.
 - Rejected stakeholders stay rejected during sync; mapper does not force them back to approved automatically.
 
 ### Example cURL (Edit Stakeholder)
@@ -947,8 +936,7 @@ curl -X PATCH "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/8fa85
   -d '{
     "name": "Jane Updated",
     "job_title": "Director of Engineering",
-    "phone_number": "+44 20 7946 0958",
-    "champion_potential": 88
+    "phone_number": "+44 20 7946 0958"
   }'
 ```
 
@@ -998,12 +986,10 @@ Returns `StakeholderFullDetail` with engagement history.
     ],
     "stance": "SUPPORTER",
     "decision_power": "DECISION_MAKER",
-    "champion_potential": 92.0,
     "motivation": "Reduce technical debt and improve team productivity",
     "pain_points": ["Legacy system maintenance", "Slow deployment cycles"],
     "keywords": ["digital transformation", "modernize legacy systems"],
     "last_contact_at": "2024-11-08T14:00:00Z",
-    "engagement_score": 75.0,
     "temperature": "WARM",
     "source": "CRM",
     "approval_status": "APPROVED",
@@ -1012,16 +998,12 @@ Returns `StakeholderFullDetail` with engagement history.
         "recorded_at": "2024-11-08T14:00:00Z",
         "stance": "SUPPORTER",
         "temperature": "WARM",
-        "engagement_score": 75.0,
-        "champion_potential": 92.0,
         "decision_power": "DECISION_MAKER"
       },
       {
         "recorded_at": "2024-10-25T10:00:00Z",
         "stance": "NEUTRAL",
         "temperature": "COLD",
-        "engagement_score": 45.0,
-        "champion_potential": 60.0,
         "decision_power": "INFLUENCER"
       }
     ],
@@ -1051,7 +1033,6 @@ The `engagement_history` array shows how the stakeholder's engagement has evolve
 
 Frontend can visualize this as:
 - A timeline showing stance changes
-- A graph of engagement_score over time
 - Temperature trend indicator
 
 ### Error Responses (Get Stakeholder Detail)
@@ -1385,8 +1366,6 @@ Display key metrics with appropriate indicators:
 |-------|-------------------|
 | `stance` | Color-coded badge (Green: CHAMPION/SUPPORTER, Yellow: NEUTRAL, Red: DETRACTOR/BLOCKER) |
 | `decision_power` | Icon + label (Crown: DECISION_MAKER, Megaphone: INFLUENCER, etc.) |
-| `champion_potential` | Progress bar or percentage badge |
-| `engagement_score` | Progress bar or percentage badge |
 | `temperature` | Colored indicator (Red: HOT, Orange: WARM, Blue: COLD) |
 | `approval_status` | PENDING: Yellow badge with action buttons; REMOVED: Gray badge (if shown) |
 

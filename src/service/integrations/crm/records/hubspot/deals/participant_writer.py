@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -84,7 +84,9 @@ class HubSpotDealParticipantWriter:
             return result
 
         now = datetime.now(UTC)
-        existing_by_external, existing_by_identity = await self._load_existing_rows()
+        existing_by_external, existing_by_identity = await self._load_existing_rows(
+            deal_ids=set(deal_pk_map.values())
+        )
 
         for participant in participants:
             deal_id = deal_pk_map.get(participant.deal_external_id)
@@ -106,16 +108,17 @@ class HubSpotDealParticipantWriter:
             else:
                 related_local_id = related_hit.internal_id
                 related_name = related_hit.name
-                related_email = related_hit.email
+                related_email = _normalize_email(related_hit.email)
 
-            identity_key = (
-                deal_id,
-                participant.participant_type,
-                related_local_id,
-            )
             existing = existing_by_external.get(external_id)
-            if existing is None and related_local_id is not None:
-                existing = existing_by_identity.get(identity_key)
+            if existing is None:
+                existing = _find_by_identity(
+                    existing_by_identity=existing_by_identity,
+                    deal_id=deal_id,
+                    participant_type=participant.participant_type,
+                    related_local_id=related_local_id,
+                    related_email=related_email,
+                )
             if existing is None:
                 row = self._new_row(
                     participant=participant,
@@ -129,6 +132,7 @@ class HubSpotDealParticipantWriter:
                 await self._upsert_source_mapping(
                     participant, external_id, row.participant_id, now=now
                 )
+                _remember_identity(existing_by_identity, row)
                 result.participants_created += 1
             else:
                 self._apply_updates(
@@ -143,6 +147,8 @@ class HubSpotDealParticipantWriter:
                 await self._upsert_source_mapping(
                     participant, external_id, existing.participant_id, now=now
                 )
+                existing_by_external[external_id] = existing
+                _remember_identity(existing_by_identity, existing)
                 result.participants_updated += 1
 
         await self.session.flush()
@@ -176,44 +182,50 @@ class HubSpotDealParticipantWriter:
 
     async def _load_existing_rows(
         self,
+        *,
+        deal_ids: set[UUID],
     ) -> tuple[
         dict[str, CRMDealParticipant],
-        dict[tuple[UUID, str, UUID | None], CRMDealParticipant],
+        dict[tuple[UUID, str, str], CRMDealParticipant],
     ]:
         external_to_local = await self.source_mappings.load_local_id_map(
             object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
             include_deleted=True,
         )
-        if not external_to_local:
-            return {}, {}
-        stmt = select(CRMDealParticipant).where(
-            col(CRMDealParticipant.organisation_id) == self.organisation_id,
-            col(CRMDealParticipant.integration_id) == self.integration_id,
-            col(CRMDealParticipant.participant_id).in_(set(external_to_local.values())),
-        )
-        rows = (await self.session.execute(stmt)).scalars().all()
+        rows_by_id: dict[UUID, CRMDealParticipant] = {}
+        if external_to_local:
+            stmt = select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_id).in_(set(external_to_local.values())),
+            )
+            rows = (await self.session.execute(stmt)).scalars().all()
+            rows_by_id.update({row.participant_id: row for row in rows})
+
+        if deal_ids:
+            stmt = select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id).in_(deal_ids),
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
+                or_(
+                    col(CRMDealParticipant.related_local_id).is_not(None),
+                    col(CRMDealParticipant.related_email).is_not(None),
+                ),
+            )
+            rows = (await self.session.execute(stmt)).scalars().all()
+            rows_by_id.update({row.participant_id: row for row in rows})
+
         local_to_external = {
             local_id: external_id for external_id, local_id in external_to_local.items()
         }
         by_external = {
             local_to_external[row.participant_id]: row
-            for row in rows
+            for row in rows_by_id.values()
             if row.participant_id in local_to_external
         }
-        by_identity: dict[tuple[UUID, str, UUID | None], CRMDealParticipant] = {}
-        for row in rows:
-            if row.related_local_id is None:
-                continue
-            key = (
-                row.deal_id,
-                _participant_type_value(row.participant_type),
-                row.related_local_id,
-            )
-            existing = by_identity.get(key)
-            if existing is None or _role_rank(row.relationship_role) > _role_rank(
-                existing.relationship_role
-            ):
-                by_identity[key] = row
+        by_identity: dict[tuple[UUID, str, str], CRMDealParticipant] = {}
+        for row in rows_by_id.values():
+            _remember_identity(by_identity, row)
         return by_external, by_identity
 
     async def _upsert_source_mapping(
@@ -269,9 +281,12 @@ class HubSpotDealParticipantWriter:
         now: datetime,
     ) -> None:
         row.relationship_role = participant.relationship_role
-        row.related_local_id = related_local_id
-        row.related_name = related_name
-        row.related_email = related_email
+        if related_local_id is not None:
+            row.related_local_id = related_local_id
+        if related_name is not None:
+            row.related_name = related_name
+        if related_email is not None:
+            row.related_email = related_email
         row.synced_at = now
         row.last_seen_at = now
 
@@ -302,3 +317,55 @@ def _participant_type_value(participant_type: CRMParticipantType | str) -> str:
         if isinstance(participant_type, CRMParticipantType)
         else str(participant_type)
     )
+
+
+def _normalize_email(email: str | None) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _identity_keys(row: CRMDealParticipant) -> list[tuple[UUID, str, str]]:
+    participant_type = _participant_type_value(row.participant_type)
+    keys: list[tuple[UUID, str, str]] = []
+    if row.related_local_id is not None:
+        keys.append((row.deal_id, participant_type, f"local:{row.related_local_id}"))
+    normalized_email = _normalize_email(row.related_email)
+    if normalized_email:
+        keys.append((row.deal_id, participant_type, f"email:{normalized_email}"))
+    return keys
+
+
+def _remember_identity(
+    existing_by_identity: dict[tuple[UUID, str, str], CRMDealParticipant],
+    row: CRMDealParticipant,
+) -> None:
+    if row.is_deleted:
+        return
+    for key in _identity_keys(row):
+        existing = existing_by_identity.get(key)
+        if existing is None or _role_rank(row.relationship_role) > _role_rank(
+            existing.relationship_role
+        ):
+            existing_by_identity[key] = row
+
+
+def _find_by_identity(
+    *,
+    existing_by_identity: dict[tuple[UUID, str, str], CRMDealParticipant],
+    deal_id: UUID,
+    participant_type: str,
+    related_local_id: UUID | None,
+    related_email: str | None,
+) -> CRMDealParticipant | None:
+    if related_local_id is not None:
+        existing = existing_by_identity.get(
+            (deal_id, participant_type, f"local:{related_local_id}")
+        )
+        if existing is not None:
+            return existing
+    normalized_email = _normalize_email(related_email)
+    if normalized_email:
+        return existing_by_identity.get((deal_id, participant_type, f"email:{normalized_email}"))
+    return None

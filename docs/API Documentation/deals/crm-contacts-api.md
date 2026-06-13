@@ -38,7 +38,7 @@ of the contact response contract.
 ```
 Contact (CRMContact)
   ↓ contact_id FK
-Stakeholder (DealStakeholder)  ←  lives on a specific deal
+Deal Participant (CRMDealParticipant, participant_type=CONTACT)  ←  lives on a specific deal
   ↓ deal_id FK
 Deal (CRMDeal)
 ```
@@ -144,9 +144,9 @@ This means:
 - If `company_id` is not explicitly set and no account with a matching domain exists, `company_id` is `null` but `company_domain` still shows the email domain
 - When `company_id` is explicitly set, `company_name` is auto-resolved from the linked account
 
-### Contact → Deals (via Stakeholder)
+### Contact → Deals (via Deal Participant)
 
-Contacts are linked to deals through `DealStakeholder` records. The `deal_count` field counts only **approved** stakeholders (`approval_status = APPROVED`). Removed, rejected, and pending stakeholders are excluded from the count and from the `deal_involvement` array in the detail view.
+Contacts are linked to deals through active `CRMDealParticipant` rows where `participant_type = CONTACT`. The `deal_count` field counts only **approved** participants (`approval_status = APPROVED`). Removed, rejected, and pending participants are excluded from the count and from the `deal_involvement` array in the detail view.
 
 ### Source (Integration Type)
 
@@ -248,7 +248,7 @@ type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:
  * Contact item returned in list views (GET /contacts).
  * Use for table rows, cards, and search results.
  *
- * deal_count is computed from DealStakeholder records.
+ * deal_count is computed from approved contact participant records.
  * company_id is the stored FK when explicitly set, with email domain matching as fallback.
  * company_domain is extracted from the contact's email address.
  * source is derived from the integration type.
@@ -327,7 +327,7 @@ export interface ContactDealInvolvement {
   deal_name: string | null;
   deal_status: string | null;         // "open" | "won" | "lost" | "closed"
   stage_name: string | null;          // Pipeline stage display name
-  stakeholder_id: UUID;               // The DealStakeholder record linking this contact to the deal
+  stakeholder_id: UUID;               // The participant row ID used by stakeholder APIs
   stance: string | null;              // Reserved for future: AI-inferred stakeholder stance
   decision_power: string | null;      // Reserved for future: AI-inferred decision power
   relationship_role: string | null;   // Role label (e.g., "decision_maker", "evaluator")
@@ -414,7 +414,7 @@ function getContactDisplayName(contact: ContactListItem): string {
 ```ts
 /**
  * Contact enrichment requires the contact to be linked to at least one deal
- * via a DealStakeholder record. Use deal_count from list or deal_involvement
+ * via an approved contact participant. Use deal_count from list or deal_involvement
  * from detail to check.
  */
 function isEnrichable(contact: ContactListItem): boolean {
@@ -700,7 +700,7 @@ Full contact detail including extended profile fields, research content, and dea
 
 - `deal_count` equals the length of `deal_involvement` array
 - `stance` and `decision_power` are reserved for future AI-inferred values (currently always `null`)
-- `relationship_role` comes from the `source_reference_id` on the `DealStakeholder` record
+- `relationship_role` comes from the contact participant's `relationship_role`
 - `company_id` and `company_domain` are `null` in the detail response (not computed in this endpoint — use the list endpoint for resolved company association)
 - `linkedin_url` is extracted from `properties.linkedin_url` JSONB — it is `null` if not set
 
@@ -831,11 +831,11 @@ Returns the updated `ContactListItem`. `deal_count` is `0`, `company_id` and `co
 POST /users/crm/contacts/{contact_id}/enrich
 ```
 
-Trigger research enrichment for a contact. Enrichment piggybacks on the **stakeholder research pipeline**, which requires the contact to be linked to at least one deal via a `DealStakeholder` record.
+Trigger research enrichment for a contact. Enrichment piggybacks on the **stakeholder research pipeline**, which requires the contact to be linked to at least one deal via an approved contact participant.
 
 #### Prerequisites
 
-The contact must have at least one `DealStakeholder` record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
+The contact must have at least one approved contact participant record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
 
 #### Path Parameters
 
@@ -862,7 +862,7 @@ Contact has a stakeholder record and research was queued:
 
 **Scenario B: Not linked to any deal (200)**
 
-Contact has no `DealStakeholder` records:
+Contact has no approved contact participant records:
 
 ```json
 {
@@ -923,15 +923,15 @@ POST /users/crm/contacts/{contact_id}/add-to-deal
 Associate a contact with a deal as a participant. This is a **two-phase process**:
 
 1. **Synchronous**: Creates a `CRMDealParticipant` record linking the contact to the deal
-2. **Asynchronous**: Dispatches a `stakeholder.sync_deal_stakeholders` worker task that creates the corresponding `DealStakeholder` record (with `contact_id`, engagement metrics, and matching)
+2. **Asynchronous**: Dispatches follow-up deal processing jobs for rematching and stakeholder read-model compatibility where needed
 
-The `DealStakeholder` record is what powers the contact detail's `deal_involvement` array and the deal's stakeholder list. Because phase 2 is async, there may be a brief delay (typically < 5 seconds) before the contact appears in `deal_involvement`.
+The `CRMDealParticipant` record powers the contact detail's `deal_involvement` array and the deal's stakeholder list. Because follow-up processing is async, there may be a brief delay (typically < 5 seconds) before related downstream surfaces refresh.
 
 Duplicate detection is handled — if the contact is already on the deal, it is reported in the `skipped` array instead of creating a duplicate.
 
 #### Prerequisites
 
-The contact **must have an email address**. Email is required for the `DealStakeholder` unique constraint `(deal_id, email)` and for stakeholder matching. If the contact has no email, the endpoint returns `400` with a message to add an email first.
+The contact **must have an email address**. Email is required for stakeholder matching and duplicate detection. If the contact has no email, the endpoint returns `400` with a message to add an email first.
 
 **Frontend implementation:**
 
@@ -1162,7 +1162,7 @@ Consolidated reference of all error responses across all endpoints.
 - Receives `org_session` and `organisation_id` at construction
 - All queries filter by `organisation_id` and `is_deleted = False`
 - `list_contacts()` uses:
-  - Correlated subquery for `deal_count` (count of DealStakeholder records)
+  - Correlated subquery for `deal_count` (count of approved contact participant records)
   - Batch-resolved `integration_type` for `source` annotation
   - `company_id` resolved from stored FK (when set) with email domain matching as fallback
 - `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; accepts optional `company_id` to set explicit account link
@@ -1199,7 +1199,7 @@ Contact enrichment flows through the stakeholder research pipeline:
 
 ```
 POST /contacts/{id}/enrich
-  → Find DealStakeholder for this contact
+  → Find an approved contact participant for this contact
     → dispatch_stakeholder_research_async()
       → Creates a deal_job in the deal_worker
         → Runs stakeholder research agent

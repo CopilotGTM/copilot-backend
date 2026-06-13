@@ -320,11 +320,9 @@ export interface StakeholderDetailEventData {
   source: StakeholderSource;
   stance: StakeholderStance;
   decision_power: DecisionPower;
-  champion_potential: number;        // 0-100 scale
 
   // Engagement indicators
   temperature: StakeholderTemperature;
-  engagement_score: number;          // 0-100 scale
   last_contact_at: string | null;    // ISO8601
 }
 
@@ -740,9 +738,7 @@ For full details (engagement history), use: `GET /deals/{deal_id}/stakeholders/{
       "source": "CALENDAR_DISCOVERY",
       "stance": "NEUTRAL",
       "decision_power": "DECISION_MAKER",
-      "champion_potential": 45.0,
       "temperature": "WARM",
-      "engagement_score": 62.5,
       "last_contact_at": "2025-01-15T10:00:00Z"
     },
     "excluded_at": null,
@@ -810,7 +806,7 @@ Both list and detail endpoints return the same `TimelineEvent` interface. The di
   - Email: adds `from_name`, `to_emails`, `cc_emails`, `thread_id`, `body_text`, `body_html`, `body_truncated`, `body_length`, `has_attachments`, `attachments`, `received_at`, `sent_at`, `direction`
   - Meeting: adds `attendees[]`, `meeting_summary`
   - **Risk/Blocker events**: Fetches from `deal_risks_blockers` table - adds `status`, `title`, `description`, `quote`, `source_type`, `source_context`, `owner_name`, `resolution_notes`
-  - **Stakeholder events**: Fetches from `deal_stakeholders` table - adds `decision_power`, `champion_potential`, `temperature`, `engagement_score`, `last_contact_at`
+  - **Stakeholder events**: Fetches stakeholder read data - adds `decision_power`, `temperature`, `last_contact_at`
   - Stage Change / Deal Created: Same as list (all data already in metadata)
 
 ### Event Categories

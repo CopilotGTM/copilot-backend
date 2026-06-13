@@ -19,9 +19,9 @@ from src.domain.models.master_tables.organisation_models import (
     OrganisationStatus,
 )
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
 )
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
@@ -218,11 +218,14 @@ def retry_pending_research_org(self: Task, organisation_id: str):
 
             async for session in acquire_org_async_session(org_uuid):
                 stmt = (
-                    select(DealStakeholder)
+                    select(CRMDealParticipant)
                     .where(
-                        col(DealStakeholder.organisation_id) == org_uuid,
-                        col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
-                        col(DealStakeholder.last_researched_at).is_(None),
+                        col(CRMDealParticipant.organisation_id) == org_uuid,
+                        col(CRMDealParticipant.participant_type)
+                        == CRMParticipantType.CONTACT.value,
+                        col(CRMDealParticipant.is_deleted).is_(False),
+                        col(CRMDealParticipant.approval_status) == "APPROVED",
+                        col(CRMDealParticipant.last_researched_at).is_(None),
                     )
                     .limit(_RETRY_BATCH_LIMIT)
                 )
@@ -230,7 +233,7 @@ def retry_pending_research_org(self: Task, organisation_id: str):
                 pending = result.scalars().all()
 
                 # Extract IDs before releasing session
-                stakeholder_infos = [(s.stakeholder_id, s.deal_id) for s in pending]
+                stakeholder_infos = [(s.participant_id, s.deal_id) for s in pending]
 
             dispatched = 0
             for s_id, d_id in stakeholder_infos:

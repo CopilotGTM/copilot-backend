@@ -238,9 +238,11 @@ class DealStakeholderInsight(SQLModel, table=True):
     )
     stakeholder_id: UUID | None = Field(
         default=None,
-        foreign_key="deal_stakeholders.stakeholder_id",
         index=True,
-        description="Stakeholder this insight is about (null for deal-level insights).",
+        description=(
+            "Stakeholder this insight is about (null for deal-level insights). During the "
+            "participant-backed transition this stores CRMDealParticipant.participant_id."
+        ),
     )
 
     # Classification

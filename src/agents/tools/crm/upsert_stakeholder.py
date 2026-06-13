@@ -9,27 +9,32 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.contracts.crm.stakeholders import CreateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
     DecisionPower,
     StakeholderSource,
     StakeholderStance,
     StakeholderTemperature,
 )
 from src.service.crm.guards.internal_user_guard import is_internal_email
+from src.service.crm.insights.stakeholders_service import (
+    StakeholdersService,
+    StakeholdersServiceError,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 class UpsertStakeholderInput(BaseModel):
@@ -43,8 +48,6 @@ class UpsertStakeholderInput(BaseModel):
     temperature: Annotated[StakeholderTemperature | None, Field(default=None)] = None
     motivation: Annotated[str | None, Field(default=None, description="Motivation")] = None
     pain_points: Annotated[list[str] | None, Field(default=None, description="Pain points")] = None
-    champion_potential: Annotated[float | None, Field(default=None, ge=0.0, le=100.0)] = None
-    engagement_score: Annotated[float | None, Field(default=None, ge=0.0, le=100.0)] = None
     only_fill_missing: Annotated[bool, Field(default=True)] = True
     create_if_missing: Annotated[bool, Field(default=True)] = True
 
@@ -121,19 +124,21 @@ def _is_unknown_enum(value: Any) -> bool:
 
 
 def _format_upsert_output(
-    stakeholder: DealStakeholder,
+    stakeholder: Any,
     *,
     action: str,
     updated_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     updates = updated_fields or []
+    participant_id = getattr(stakeholder, "participant_id", None) or stakeholder.stakeholder_id
     return {
-        "stakeholder_id": str(stakeholder.stakeholder_id),
-        "email": stakeholder.email,
-        "name": stakeholder.name,
+        "stakeholder_id": str(participant_id),
+        "participant_id": str(participant_id),
+        "email": getattr(stakeholder, "email", None) or getattr(stakeholder, "related_email", None),
+        "name": getattr(stakeholder, "name", None) or getattr(stakeholder, "related_name", None),
         "job_title": stakeholder.job_title,
         "phone_number": stakeholder.phone_number,
-        "department": stakeholder.department,
+        "department": getattr(stakeholder, "department", None),
         "stance": stakeholder.stance.value
         if isinstance(stakeholder.stance, StakeholderStance)
         else stakeholder.stance,
@@ -145,8 +150,6 @@ def _format_upsert_output(
         else stakeholder.temperature,
         "motivation": stakeholder.motivation,
         "pain_points": stakeholder.pain_points,
-        "champion_potential": stakeholder.champion_potential,
-        "engagement_score": stakeholder.engagement_score,
         "updated_fields": updates,
         "updated": bool(updates),
         "created": action == "created",
@@ -190,27 +193,35 @@ async def upsert_stakeholder(
             ),
         }
 
-    c = DealStakeholder.__table__.c
-    stmt = select(DealStakeholder).where(
-        c.organisation_id == organisation_id,
-        c.deal_id == actual_deal_id,
-        c.email == email,
-    )
-
     async with context.acquire_session() as session:
         try:
-            existing_result = await session.execute(stmt)
-            stakeholder = existing_result.scalar_one_or_none()
+            service = StakeholdersService(
+                session,
+                organisation_id,
+                user_id=context.user_id or AUTOMATED_PIPELINE_USER_ID,
+            )
+
+            async def _already_checked_internal_email(email: str) -> bool:
+                _ = email
+                return False
+
+            service._is_internal_email = _already_checked_internal_email  # type: ignore[method-assign]
+            stakeholder = await service._find_contact_participant(
+                deal_id=actual_deal_id,
+                email=email,
+                include_deleted=True,
+            )
 
             if stakeholder:
                 # If previously removed/rejected/deleted, reactivate first
                 if (
-                    stakeholder.approval_status in (ApprovalStatus.REMOVED, ApprovalStatus.REJECTED)
+                    stakeholder.approval_status
+                    in (ApprovalStatus.REMOVED.value, ApprovalStatus.REJECTED.value)
                     or stakeholder.is_deleted
                 ):
-                    stakeholder.approval_status = ApprovalStatus.APPROVED
+                    stakeholder.approval_status = ApprovalStatus.APPROVED.value
                     stakeholder.is_deleted = False
-                    stakeholder.source = StakeholderSource.MANUAL
+                    stakeholder.participant_source = StakeholderSource.MANUAL.value
                     # Reset research so it gets re-researched
                     stakeholder.stakeholder_research = None
                     stakeholder.last_researched_at = None
@@ -220,9 +231,9 @@ async def upsert_stakeholder(
 
                 cleaned_name = _clean_text(input_data.name)
                 if cleaned_name is not None and (
-                    not only_fill_missing or _is_missing_text(stakeholder.name)
+                    not only_fill_missing or _is_missing_text(stakeholder.related_name)
                 ):
-                    stakeholder.name = cleaned_name
+                    stakeholder.related_name = cleaned_name
                     updated_fields.append("name")
 
                 cleaned_job_title = _clean_text(input_data.job_title)
@@ -249,19 +260,19 @@ async def upsert_stakeholder(
                 if input_data.stance is not None and (
                     not only_fill_missing or _is_unknown_enum(stakeholder.stance)
                 ):
-                    stakeholder.stance = input_data.stance
+                    stakeholder.stance = input_data.stance.value
                     updated_fields.append("stance")
 
                 if input_data.decision_power is not None and (
                     not only_fill_missing or _is_unknown_enum(stakeholder.decision_power)
                 ):
-                    stakeholder.decision_power = input_data.decision_power
+                    stakeholder.decision_power = input_data.decision_power.value
                     updated_fields.append("decision_power")
 
                 if input_data.temperature is not None and (
                     not only_fill_missing or _is_unknown_enum(stakeholder.temperature)
                 ):
-                    stakeholder.temperature = input_data.temperature
+                    stakeholder.temperature = input_data.temperature.value
                     updated_fields.append("temperature")
 
                 cleaned_motivation = _clean_text(input_data.motivation)
@@ -276,18 +287,6 @@ async def upsert_stakeholder(
                 ):
                     stakeholder.pain_points = input_data.pain_points
                     updated_fields.append("pain_points")
-
-                if input_data.champion_potential is not None and (
-                    not only_fill_missing or (stakeholder.champion_potential or 0.0) <= 0.0
-                ):
-                    stakeholder.champion_potential = input_data.champion_potential
-                    updated_fields.append("champion_potential")
-
-                if input_data.engagement_score is not None and (
-                    not only_fill_missing or (stakeholder.engagement_score or 0.0) <= 0.0
-                ):
-                    stakeholder.engagement_score = input_data.engagement_score
-                    updated_fields.append("engagement_score")
 
                 if updated_fields:
                     stakeholder.updated_at = datetime.now(UTC)
@@ -306,13 +305,13 @@ async def upsert_stakeholder(
 
                             await dispatch_stakeholder_research_async(
                                 organisation_id=organisation_id,
-                                stakeholder_id=stakeholder.stakeholder_id,
+                                stakeholder_id=stakeholder.participant_id,
                                 deal_id=actual_deal_id,
                             )
                         except Exception:
                             logger.warning(
                                 "Failed to dispatch research for reactivated %s",
-                                stakeholder.stakeholder_id,
+                                stakeholder.participant_id,
                                 exc_info=True,
                             )
 
@@ -333,41 +332,24 @@ async def upsert_stakeholder(
                     "message": "Stakeholder not found and creation disabled",
                 }
 
-            stakeholder_data: dict[str, Any] = {
-                "stakeholder_id": uuid4(),
-                "organisation_id": organisation_id,
-                "integration_id": None,
-                "deal_id": actual_deal_id,
-                "contact_id": None,
-                "email": email,
-                "name": _clean_text(input_data.name),
-                "job_title": _clean_text(input_data.job_title),
-                "phone_number": _clean_text(input_data.phone_number),
-                "department": _clean_text(input_data.department),
-                "stance": input_data.stance or StakeholderStance.UNKNOWN,
-                "decision_power": input_data.decision_power or DecisionPower.UNKNOWN,
-                "temperature": input_data.temperature or StakeholderTemperature.UNKNOWN,
-                "motivation": _clean_text(input_data.motivation),
-                "pain_points": input_data.pain_points or None,
-                "keywords": None,
-                "champion_potential": input_data.champion_potential or 0.0,
-                "engagement_score": input_data.engagement_score or 0.0,
-                "external_links": None,
-                "source": StakeholderSource.MANUAL,
-                "source_reference_id": None,
-                "approval_status": ApprovalStatus.APPROVED,
-                "last_contact_at": None,
-                "stakeholder_data": None,
-                "stakeholder_engagement_history": None,
-                "is_deleted": False,
-                "created_at": datetime.now(UTC),
-                "updated_at": datetime.now(UTC),
-            }
-
-            new_stakeholder = DealStakeholder.model_validate(stakeholder_data)
-            session.add(new_stakeholder)
-            await session.commit()
-            await session.refresh(new_stakeholder)
+            try:
+                new_stakeholder = await service.create_stakeholder(
+                    actual_deal_id,
+                    CreateStakeholderRequest(
+                        email=email,
+                        name=_clean_text(input_data.name),
+                        job_title=_clean_text(input_data.job_title),
+                        phone_number=_clean_text(input_data.phone_number),
+                        department=_clean_text(input_data.department),
+                        stance=input_data.stance or StakeholderStance.UNKNOWN,
+                        decision_power=input_data.decision_power or DecisionPower.UNKNOWN,
+                        motivation=_clean_text(input_data.motivation),
+                        pain_points=input_data.pain_points or None,
+                    ),
+                )
+            except StakeholdersServiceError:
+                logger.exception("upsert_stakeholder: service create failed")
+                return None
 
             # Dispatch stakeholder research for newly created stakeholder
             try:
@@ -412,8 +394,6 @@ def create_upsert_stakeholder(
         temperature: StakeholderTemperature | str | None = None,
         motivation: str | None = None,
         pain_points: list[str] | None = None,
-        champion_potential: float | None = None,
-        engagement_score: float | None = None,
         only_fill_missing: bool = True,
         create_if_missing: bool = True,
     ) -> dict[str, Any] | None:
@@ -455,8 +435,6 @@ def create_upsert_stakeholder(
             temperature=normalized_temperature,
             motivation=motivation,
             pain_points=pain_points,
-            champion_potential=champion_potential,
-            engagement_score=engagement_score,
             only_fill_missing=only_fill_missing,
             create_if_missing=create_if_missing,
         )

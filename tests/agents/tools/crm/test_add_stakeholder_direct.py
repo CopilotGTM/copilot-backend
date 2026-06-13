@@ -45,7 +45,6 @@ def _stakeholder(*, stakeholder_id: UUID | None = None, deal_id: UUID | None = N
         phone_number="+1 555 0100",
         stance="CHAMPION",
         decision_power="DECISION_MAKER",
-        champion_potential=75.0,
         approval_status="APPROVED",
     )
 
@@ -157,7 +156,6 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
             phone_number=" +1 555 0100 ",
             stance="CHAMPION",
             decision_power="DECISION_MAKER",
-            champion_potential=75,
             motivation="Expansion project",
             pain_points=["Manual reporting"],
         )
@@ -183,6 +181,7 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
     assert result["stakeholder_id"] == str(stakeholder_id)
     assert result["deal_id"] == str(deal_id)
     assert result["deal_name"] == "Acme Expansion"
+    assert "champion_potential" not in result
     assert len(result["processing_jobs"]) == 2
     assert result["research_job"] == {
         "job_id": str(research_job_id),

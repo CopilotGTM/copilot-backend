@@ -26,12 +26,6 @@ class StakeholderAnalysisData(BaseModel):
     stance: StakeholderStance
     decision_power: DecisionPower
     temperature: StakeholderTemperature
-    champion_potential: float = Field(
-        ...,
-        ge=0.0,
-        le=100.0,
-        description="A 0-100 score indicating the potential for this stakeholder to become a champion for the deal",
-    )
     motivation: str = Field(
         ...,
         description=(

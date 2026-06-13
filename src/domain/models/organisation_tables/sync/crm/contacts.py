@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, text
+from sqlalchemy import Column, DateTime, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -133,6 +133,16 @@ class CRMContact(SyncedRecordMixin, table=True):
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent time this contact was observed during sync.",
+    )
+    contact_research: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Contact-level research profile for this person.",
+    )
+    last_researched_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time contact research was completed.",
     )
 
     # Payloads

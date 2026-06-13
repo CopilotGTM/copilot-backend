@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -522,6 +523,14 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
             "participant_type",
             "is_deleted",
         ),
+        Index(
+            "ix_crm_deal_participant_contact_lookup",
+            "organisation_id",
+            "deal_id",
+            "participant_type",
+            "approval_status",
+            "is_deleted",
+        ),
     )
 
     # Identity
@@ -561,6 +570,61 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(255)),
         description="Email of the related entity, if applicable.",
+    )
+    created_by_user_id: UUID | None = Field(default=None, index=True)
+    job_title: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Denormalized CRMContact job title snapshot for list reads.",
+    )
+    department: str | None = Field(default=None)
+    phone_number: str | None = Field(
+        default=None,
+        sa_column=Column(String(50), nullable=True),
+        description="Denormalized CRMContact phone snapshot for list reads.",
+    )
+    external_links: list[dict] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+        description="Denormalized CRMContact external links snapshot for list reads.",
+    )
+    stance: str = Field(
+        default="UNKNOWN",
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
+    decision_power: str = Field(
+        default="UNKNOWN",
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
+    motivation: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    pain_points: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    keywords: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    last_contact_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    temperature: str = Field(
+        default="UNKNOWN",
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
+    participant_source: str = Field(
+        default="CRM",
+        sa_column=Column(String(64), nullable=False, server_default=text("'CRM'")),
+    )
+    source_reference_id: UUID | None = Field(default=None, index=True)
+    approval_status: str = Field(
+        default="APPROVED",
+        sa_column=Column(String(64), nullable=False, index=True, server_default=text("'APPROVED'")),
+    )
+    stakeholder_research: str | None = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True),
+        description="Display/cache copy of the latest stakeholder research.",
+    )
+    last_researched_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time stakeholder research was completed.",
     )
 
     # Sync meta

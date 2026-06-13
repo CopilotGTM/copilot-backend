@@ -16,6 +16,10 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from src.api.schemas.crm_models import UpdateStakeholderRequest
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
 )
@@ -198,69 +202,64 @@ def _service() -> StakeholdersService:
 @pytest.mark.asyncio
 async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> None:
     service = _service()
-    stakeholder = SimpleNamespace(
-        stakeholder_id=uuid4(),
+    participant = CRMDealParticipant(
+        participant_id=uuid4(),
         deal_id=uuid4(),
-        email="person@example.com",
-        name="Test",
-        job_title=None,
-        phone_number=None,
-        department=None,
-        external_links=None,
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+        participant_type=CRMParticipantType.CONTACT,
+        related_email="person@example.com",
+        related_name="Test",
         stance="UNKNOWN",
         decision_power="UNKNOWN",
-        champion_potential=10.0,
-        motivation=None,
-        pain_points=None,
-        keywords=None,
-        last_contact_at=None,
-        engagement_score=0.0,
         temperature="UNKNOWN",
-        source="MANUAL",
+        participant_source="MANUAL",
         approval_status="APPROVED",
-        stakeholder_data=None,
     )
-    service.get_stakeholder = AsyncMock(return_value=stakeholder)  # type: ignore[method-assign]
+    service.get_stakeholder = AsyncMock(return_value=participant)  # type: ignore[method-assign]
 
     request = UpdateStakeholderRequest(phone_number="+1 555-9999")
-    result = await service.update_stakeholder(uuid4(), stakeholder.stakeholder_id, request)
+    result = await service.update_stakeholder(uuid4(), participant.participant_id, request)
 
     assert result.phone_number == "+1 555-9999"
-    assert "phone_number" in stakeholder.stakeholder_data["manual_overrides"]
+    assert participant.phone_number == "+1 555-9999"
     service.session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_get_stakeholder_detail_includes_phone_number() -> None:
     service = _service()
-    stakeholder = SimpleNamespace(
-        stakeholder_id=uuid4(),
+    participant = SimpleNamespace(
+        participant_id=uuid4(),
         deal_id=uuid4(),
-        contact_id=None,
-        email="detail@example.com",
-        name="Detail",
+        related_local_id=None,
+        related_email="detail@example.com",
+        related_name="Detail",
         job_title="CTO",
         phone_number="+49 30 12345678",
         department="Engineering",
         external_links=None,
         stance="CHAMPION",
         decision_power="DECISION_MAKER",
-        champion_potential=90.0,
         motivation="Scale infra",
         pain_points=["reliability"],
         keywords=["cloud"],
         last_contact_at=None,
-        engagement_score=80.0,
         temperature="HOT",
         source="CRM",
+        participant_source="CRM",
+        source_reference_id=None,
         approval_status="APPROVED",
-        stakeholder_engagement_history=[],
+        stakeholder_research=None,
+        last_researched_at=None,
+        is_deleted=False,
         created_at=None,
         updated_at=None,
     )
-    service.get_stakeholder = AsyncMock(return_value=stakeholder)  # type: ignore[method-assign]
+    result_mock = SimpleNamespace(scalar_one_or_none=lambda: participant)
+    service.session.execute = AsyncMock(return_value=result_mock)
 
-    result = await service.get_stakeholder_detail(uuid4(), stakeholder.stakeholder_id)
+    result = await service.get_stakeholder_detail(participant.deal_id, participant.participant_id)
 
     assert result is not None
     assert result["phone_number"] == "+49 30 12345678"
@@ -410,39 +409,74 @@ from src.agents.tools.crm.upsert_stakeholder import (  # noqa: E402
 from src.agents.tools.crm.upsert_stakeholder import (
     upsert_stakeholder as agent_upsert_stakeholder,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (  # noqa: E402
-    DealStakeholder,
-)
 
 
 class _FakeScalarResult:
-    def __init__(self, obj: DealStakeholder | None):
+    def __init__(self, obj=None, rows=None):
         self._obj = obj
+        self._rows = rows or []
 
-    def scalar_one_or_none(self) -> DealStakeholder | None:
+    def scalar_one_or_none(self):
         return self._obj
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self._obj
+
+    def all(self):
+        return self._rows
 
 
 class _FakeSession:
-    def __init__(self, records: dict[str, DealStakeholder]):
+    def __init__(self, records: dict[str, CRMDealParticipant], org_id, deal_id):
         self.records = records
-        self.pending: DealStakeholder | None = None
+        self.org_id = org_id
+        self.deal_id = deal_id
+        self.integration_id = uuid4()
+        self.pending: CRMDealParticipant | None = None
 
     async def execute(self, stmt):
+        compiled_text = str(stmt).lower()
+        if "knowledge_integrations" in compiled_text:
+            return _FakeScalarResult(SimpleNamespace(integration_id=self.integration_id))
+        if "crm_pipelines" in compiled_text or "crm_deal_stages" in compiled_text:
+            return _FakeScalarResult(rows=[])
+        if "crm_deals" in compiled_text:
+            return _FakeScalarResult(
+                SimpleNamespace(
+                    deal_id=self.deal_id,
+                    organisation_id=self.org_id,
+                    integration_id=uuid4(),
+                )
+            )
+        if "crm_contacts" in compiled_text:
+            return _FakeScalarResult(None)
+        if "crm_deal_participants" not in compiled_text:
+            return _FakeScalarResult(None)
+
         params = stmt.compile().params
-        email_param = next((v for k, v in params.items() if k.startswith("email_")), None)
+        email_param = next(
+            (v for k, v in params.items() if k.startswith("lower_") or k.startswith("email_")),
+            None,
+        )
         email = str(email_param).lower() if email_param else ""
         return _FakeScalarResult(self.records.get(email))
 
-    def add(self, obj: DealStakeholder) -> None:
-        self.pending = obj
+    def add(self, obj) -> None:
+        if isinstance(obj, CRMDealParticipant):
+            self.pending = obj
 
     async def commit(self) -> None:
         if self.pending is not None:
-            self.records[self.pending.email.lower()] = self.pending
+            self.records[self.pending.related_email.lower()] = self.pending
             self.pending = None
 
-    async def refresh(self, _obj: DealStakeholder) -> None:
+    async def flush(self) -> None:
+        return None
+
+    async def refresh(self, _obj) -> None:
         return None
 
     async def rollback(self) -> None:
@@ -454,6 +488,7 @@ class _FakeContext:
     organisation_id: object
     deal_id: object
     session: _FakeSession
+    user_id: object
     metadata: dict = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -466,17 +501,23 @@ class _FakeContext:
 
 
 def _make_context(
-    records: dict[str, DealStakeholder] | None = None,
-) -> tuple[_FakeContext, dict[str, DealStakeholder]]:
-    store: dict[str, DealStakeholder] = records if records is not None else {}
-    session = _FakeSession(store)
+    records: dict[str, CRMDealParticipant] | None = None,
+) -> tuple[_FakeContext, dict[str, CRMDealParticipant]]:
+    store: dict[str, CRMDealParticipant] = records if records is not None else {}
+    org_id = uuid4()
+    deal_id = uuid4()
+    session = _FakeSession(store, org_id, deal_id)
     metadata = {
         "_internal_guard_loaded": True,
         "_internal_domains": set(),
         "_internal_emails": set(),
     }
     context = _FakeContext(
-        organisation_id=uuid4(), deal_id=uuid4(), session=session, metadata=metadata
+        organisation_id=org_id,
+        deal_id=deal_id,
+        session=session,
+        user_id=uuid4(),
+        metadata=metadata,
     )
     return context, store
 

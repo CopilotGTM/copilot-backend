@@ -8,11 +8,12 @@ This handler demonstrates the clean pattern for FastAPI responses:
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -21,6 +22,9 @@ from src.api.dependencies.organisation_dependencies import (
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
+    AddContactsAsStakeholdersRequest,
+    AddContactsAsStakeholdersResponse,
+    AvailableContactItem,
     CreateStakeholderRequest,
     CreateStakeholderResponse,
     DealJobResponse,
@@ -31,6 +35,10 @@ from src.api.schemas.crm_models import (
     UpdateStakeholderRequest,
 )
 from src.api.utils.http_response import Response
+from src.contracts.crm.stakeholders import (
+    CreateStakeholderCommand,
+    UpdateStakeholderCommand,
+)
 from src.infra.utils.logger import get_logger
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
@@ -47,6 +55,16 @@ logger = get_logger(__name__)
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 stakeholders_router = APIRouter()
+ApiModelT = TypeVar("ApiModelT", bound=BaseModel)
+
+
+def _to_api_model(model_type: type[ApiModelT], value: Any) -> ApiModelT:
+    """Normalize service DTOs and ORM-like fakes into the API response model."""
+    if isinstance(value, model_type):
+        return value
+    if isinstance(value, BaseModel):
+        return model_type.model_validate(value.model_dump())
+    return model_type.model_validate(value)
 
 
 def _enum_or_string_value(value: object) -> str:
@@ -178,7 +196,10 @@ async def get_deal_stakeholders(
             include_pending=include_pending,
             include_rejected=include_rejected,
         )
-        return Response.success_response(message="Stakeholders retrieved", data=result)
+        return Response.success_response(
+            message="Stakeholders retrieved",
+            data=_to_api_model(StakeholderListResponse, result),
+        )
     except StakeholdersServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
@@ -190,80 +211,87 @@ async def get_deal_stakeholders(
         )
 
 
-# @stakeholders_router.get(
-#     "/{deal_id}/stakeholders/available-contacts",
-#     response_model=GenericResponse[list[AvailableContactItem]],
-#     summary="List available contacts for adding as stakeholders",
-# )
-# async def list_available_contacts(
-#     deal_id: UUID,
-#     response: FastAPIResponse,
-#     query: str | None = None,
-#     limit: int = 50,
-#     service: StakeholdersService = Depends(get_stakeholders_service),
-# ) -> GenericResponse[list[AvailableContactItem]]:
-#     """
-#     List contacts that can be added as stakeholders to the deal.
+@stakeholders_router.get(
+    "/{deal_id}/stakeholders/available-contacts",
+    response_model=GenericResponse[list[AvailableContactItem]],
+    summary="List available contacts for adding as stakeholders",
+)
+async def list_available_contacts(
+    deal_id: UUID,
+    response: FastAPIResponse,
+    query: str | None = None,
+    limit: int = 50,
+    service: StakeholdersService = Depends(get_stakeholders_service),
+) -> GenericResponse[list[AvailableContactItem]]:
+    """
+    List contacts that can be added as stakeholders to the deal.
 
-#     Only returns contacts that have a valid email address, as email is required
-#     for stakeholder identification and communication.
+    Only returns contacts that have a valid email address, as email is required
+    for stakeholder identification and communication.
 
-#     Response includes:
-#     - Contact identity (name, email)
-#     - Professional context (job title, company name)
-#     - CRM metadata for reference
-#     """
-#     try:
-#         contacts = await service.list_available_contacts(deal_id, query, limit)
-#         return Response.success_response(message="Available contacts retrieved", data=contacts)
-#     except StakeholdersServiceError as e:
-#         logger.warning("Available contacts service error: %s", e.message)
-#         return Response.error_response(
-#             message=e.message, status_code=e.status_code, response=response
-#         )
-#     except Exception:
-#         logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
-#         return Response.error_response(
-#             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-#         )
+    Response includes:
+    - Contact identity (name, email)
+    - Professional context (job title, company name)
+    - CRM metadata for reference
+    """
+    try:
+        contacts = await service.list_available_contacts(deal_id, query, limit)
+        return Response.success_response(
+            message="Available contacts retrieved",
+            data=[_to_api_model(AvailableContactItem, contact) for contact in contacts],
+        )
+    except StakeholdersServiceError as e:
+        logger.warning("Available contacts service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception as e:
+        logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
-# @stakeholders_router.post(
-#     "/{deal_id}/stakeholders/add-from-contacts",
-#     response_model=GenericResponse[AddContactsAsStakeholdersResponse],
-#     summary="Add selected contacts as stakeholders",
-# )
-# async def add_contacts_as_stakeholders(
-#     deal_id: UUID,
-#     request: AddContactsAsStakeholdersRequest,
-#     response: FastAPIResponse,
-#     service: StakeholdersService = Depends(get_stakeholders_service),
-# ) -> GenericResponse[AddContactsAsStakeholdersResponse]:
-#     """
-#     Add selected contacts as stakeholders to a deal.
+@stakeholders_router.post(
+    "/{deal_id}/stakeholders/add-from-contacts",
+    response_model=GenericResponse[AddContactsAsStakeholdersResponse],
+    summary="Add selected contacts as stakeholders",
+)
+async def add_contacts_as_stakeholders(
+    deal_id: UUID,
+    request: AddContactsAsStakeholdersRequest,
+    response: FastAPIResponse,
+    service: StakeholdersService = Depends(get_stakeholders_service),
+) -> GenericResponse[AddContactsAsStakeholdersResponse]:
+    """
+    Add selected contacts as stakeholders to a deal.
 
-#     Only contacts with valid email addresses will be added. Contacts without
-#     email addresses are skipped and reported in the response.
+    Only contacts with valid email addresses will be added. Contacts without
+    email addresses are skipped and reported in the response.
 
-#     Returns:
-#     - List of successfully added stakeholders
-#     - List of skipped contact IDs (no email or already exists)
-#     """
-#     try:
-#         result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
-#         if result.total_added > 0:
-#             await _trigger_deal_mapping_if_ready(service, deal_id)
-#         return Response.success_response(message="Stakeholders added from contacts", data=result)
-#     except StakeholdersServiceError as e:
-#         logger.warning("Add contacts as stakeholders error: %s", e.message)
-#         return Response.error_response(
-#             message=e.message, status_code=e.status_code, response=response
-#         )
-#     except Exception:
-#         logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
-#         return Response.error_response(
-#             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-#         )
+    Returns:
+    - List of successfully added stakeholders
+    - List of skipped contact IDs (no email or already exists)
+    """
+    try:
+        result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
+        response_data = _to_api_model(AddContactsAsStakeholdersResponse, result)
+        if response_data.total_added > 0:
+            await service.trigger_deal_mapping_if_ready(deal_id)
+        return Response.success_response(
+            message="Stakeholders added from contacts",
+            data=response_data,
+        )
+    except StakeholdersServiceError as e:
+        logger.warning("Add contacts as stakeholders error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @stakeholders_router.post(
@@ -289,13 +317,15 @@ async def create_stakeholder(
     Request Fields:
     - REQUIRED: email (must be unique per deal)
     - PRIMARY: name, job_title, stance, decision_power
-    - SECONDARY: department, champion_potential, motivation, pain_points, external_links
+    - SECONDARY: department, motivation, pain_points, external_links
 
     The request schema includes UI hints (ui_category, ui_component) for frontend form building.
     Check the OpenAPI schema for field-level metadata.
     """
     try:
-        stakeholder = await service.create_stakeholder(deal_id, request)
+        command = CreateStakeholderCommand.model_validate(request.model_dump())
+        stakeholder_result = await service.create_stakeholder(deal_id, command)
+        stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
             deal_id,
             stakeholder.stakeholder_id,
@@ -360,12 +390,12 @@ async def get_stakeholder_detail(
 
     This endpoint returns comprehensive stakeholder information including:
     - All stakeholder fields (name, job_title, department, etc.)
-    - Current engagement metrics (stance, temperature, engagement_score)
+    - Current deal context (stance, temperature, decision_power)
     - Historical engagement snapshots showing how metrics changed over time
 
     The engagement_history field contains up to 15 snapshots (newest first)
-    tracking changes in stance, temperature, engagement_score, champion_potential,
-    and decision_power. This allows visualizing the stakeholder's journey
+    tracking changes in stance, temperature, and decision_power. This allows
+    visualizing the stakeholder's journey
     (e.g., from COLD to WARM to HOT).
     """
     try:
@@ -423,7 +453,9 @@ async def update_stakeholder(
 ) -> GenericResponse[StakeholderDetail]:
     """Partially update editable stakeholder fields."""
     try:
-        stakeholder = await service.update_stakeholder(deal_id, stakeholder_id, request)
+        command = UpdateStakeholderCommand.model_validate(request.model_dump(exclude_unset=True))
+        stakeholder_result = await service.update_stakeholder(deal_id, stakeholder_id, command)
+        stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         return Response.success_response(message="Stakeholder updated", data=stakeholder)
     except StakeholdersServiceError as e:
         logger.warning(

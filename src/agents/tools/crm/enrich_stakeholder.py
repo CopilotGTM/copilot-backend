@@ -1,11 +1,11 @@
 """Stakeholder enrichment tool using Apollo.io API.
 
-Enriches stakeholder records with LinkedIn profile data including:
+Enriches participant-backed stakeholder contacts with LinkedIn profile data including:
 - Full name, job title, department
 - LinkedIn URL (stored in external_links)
 - Work experience
 
-Tracks enrichment status in stakeholder_data to avoid re-processing.
+Tracks enrichment status in CRMContact.properties to avoid re-processing.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -20,11 +20,15 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.research.apollo_client import apollo_enrich_person
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -35,24 +39,24 @@ logger = logging.getLogger(__name__)
 ENRICHMENT_COOLDOWN_DAYS = 30
 
 
-def _extract_linkedin_url(stakeholder: DealStakeholder) -> str | None:
-    """Extract LinkedIn URL from stakeholder's external_links."""
-    if not stakeholder.external_links:
+def _extract_linkedin_url(links: list[dict[str, Any]] | None) -> str | None:
+    """Extract LinkedIn URL from an external links list."""
+    if not links:
         return None
 
-    for link in stakeholder.external_links:
+    for link in links:
         if isinstance(link, dict) and link.get("platform", "").lower() == "linkedin":
             return link.get("url")
 
     return None
 
 
-def _is_recently_enriched(stakeholder: DealStakeholder) -> bool:
-    """Check if stakeholder was enriched recently."""
-    if not stakeholder.stakeholder_data:
+def _is_recently_enriched(properties: dict[str, Any] | None) -> bool:
+    """Check if a contact profile was enriched recently."""
+    if not properties:
         return False
 
-    enrichment = stakeholder.stakeholder_data.get("enrichment", {})
+    enrichment = properties.get("enrichment", {})
     enriched_at_str = enrichment.get("enriched_at")
 
     if not enriched_at_str:
@@ -71,7 +75,7 @@ def _build_enrichment_metadata(
     credits_used: int,
     raw_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build enrichment metadata for stakeholder_data."""
+    """Build enrichment metadata for CRMContact.properties."""
     metadata: dict[str, Any] = {
         "enriched_at": datetime.now(UTC).isoformat(),
         "enrichment_source": "apollo",
@@ -137,6 +141,20 @@ def _extract_domain_hint(email: str | None) -> str | None:
     return domain
 
 
+def _normalize_email(email: str | None) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _contact_external_links(contact: CRMContact | None) -> list[dict[str, Any]] | None:
+    if not contact or not isinstance(contact.properties, dict):
+        return None
+    links = contact.properties.get("external_links")
+    return links if isinstance(links, list) else None
+
+
 async def enrich_stakeholder(
     *,
     context: AgentContext,
@@ -157,29 +175,33 @@ async def enrich_stakeholder(
     if not stakeholder_id and not email:
         return {"success": False, "error": "Must provide stakeholder_id or email"}
 
-    c = cast(Any, DealStakeholder).__table__.c
+    c = cast(Any, CRMDealParticipant).__table__.c
 
     # Phase 1: Read stakeholder, extract local vars, release session
     try:
         async with context.acquire_session() as session:
             if stakeholder_id:
-                stmt = select(DealStakeholder).where(
+                stmt = select(CRMDealParticipant).where(
                     c.organisation_id == organisation_id,
-                    c.stakeholder_id == UUID(stakeholder_id),
+                    c.participant_id == UUID(stakeholder_id),
+                    c.participant_type == CRMParticipantType.CONTACT.value,
+                    c.is_deleted.is_(False),
                 )
             else:
                 assert email is not None
-                stmt = select(DealStakeholder).where(
+                stmt = select(CRMDealParticipant).where(
                     c.organisation_id == organisation_id,
-                    c.email == email.lower().strip(),
+                    c.participant_type == CRMParticipantType.CONTACT.value,
+                    c.is_deleted.is_(False),
+                    func.lower(func.trim(c.related_email)) == email.lower().strip(),
                 )
                 if deal_id:
                     stmt = stmt.where(c.deal_id == deal_id)
 
             result = await session.execute(stmt)
-            stakeholder = result.scalar_one_or_none()
+            participant = result.scalar_one_or_none()
 
-            if not stakeholder:
+            if not participant:
                 return {
                     "success": False,
                     "error": "Stakeholder not found",
@@ -187,38 +209,54 @@ async def enrich_stakeholder(
                     "email": email,
                 }
 
+            contact = None
+            if participant.related_local_id:
+                contact = await session.get(CRMContact, participant.related_local_id)
+                if not contact or contact.organisation_id != organisation_id or contact.is_deleted:
+                    contact = None
+
+            contact_properties = dict(contact.properties or {}) if contact else {}
+            external_links = _contact_external_links(contact) or participant.external_links or []
+
             # Check if recently enriched
-            if not force_refresh and _is_recently_enriched(stakeholder):
+            if not force_refresh and _is_recently_enriched(contact_properties):
                 logger.info(
                     "enrich_stakeholder: skipping recently enriched stakeholder %s",
-                    stakeholder.stakeholder_id,
+                    participant.participant_id,
                 )
-                existing_enrichment = (stakeholder.stakeholder_data or {}).get("enrichment", {})
+                existing_enrichment = contact_properties.get("enrichment", {})
                 return {
                     "success": True,
-                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "stakeholder_id": str(participant.participant_id),
+                    "participant_id": str(participant.participant_id),
                     "already_enriched": True,
                     "enriched_at": existing_enrichment.get("enriched_at"),
                     "data": {
-                        "name": stakeholder.name,
-                        "job_title": stakeholder.job_title,
-                        "department": stakeholder.department,
-                        "linkedin_url": _extract_linkedin_url(stakeholder),
+                        "name": (contact.full_name if contact else None)
+                        or participant.related_name,
+                        "job_title": (contact.job_title if contact else None)
+                        or participant.job_title,
+                        "department": contact_properties.get("department")
+                        or participant.department,
+                        "linkedin_url": _extract_linkedin_url(external_links),
                     },
                 }
 
             # Extract all needed data into local vars before releasing session
-            s_id = stakeholder.stakeholder_id
-            s_name = stakeholder.name
-            s_job_title = stakeholder.job_title
-            s_department = stakeholder.department
-            s_email = stakeholder.email
-            s_external_links = stakeholder.external_links or []
-            s_stakeholder_data = stakeholder.stakeholder_data or {}
+            s_id = participant.participant_id
+            s_contact_id = contact.contact_id if contact else None
+            s_name = (contact.full_name if contact else None) or participant.related_name
+            s_job_title = (contact.job_title if contact else None) or participant.job_title
+            s_department = contact_properties.get("department") or participant.department
+            s_email = _normalize_email(
+                (contact.email if contact else None) or participant.related_email
+            )
+            s_external_links = list(external_links)
+            s_contact_properties = contact_properties
             search_email = email or s_email
             search_name = name or s_name
             search_company = company_name
-            linkedin_url = _extract_linkedin_url(stakeholder)
+            linkedin_url = _extract_linkedin_url(s_external_links)
             domain_hint = _extract_domain_hint(search_email)
         # Session released here before the external API call
 
@@ -242,21 +280,25 @@ async def enrich_stakeholder(
         linkedin_url = profile_data.get("linkedin_url") or linkedin_url
 
     # Prepare updates
-    updates: dict[str, Any] = {}
+    participant_updates: dict[str, Any] = {}
+    contact_updates: dict[str, Any] = {}
 
     if profile_data:
         profile_name = profile_data.get("name")
         if profile_name and (not s_name or len(profile_name) > len(s_name)):
-            updates["name"] = profile_name
+            participant_updates["related_name"] = profile_name
+            contact_updates["full_name"] = profile_name
 
         profile_title = profile_data.get("title") or profile_data.get("headline")
         if profile_title:
-            updates["job_title"] = profile_title
+            participant_updates["job_title"] = profile_title
+            contact_updates["job_title"] = profile_title
 
         if not s_department:
             department = _infer_department(profile_title)
             if department:
-                updates["department"] = department
+                participant_updates["department"] = department
+                s_contact_properties["department"] = department
 
     if linkedin_url:
         has_linkedin = any(
@@ -270,29 +312,43 @@ async def enrich_stakeholder(
                 "label": "LinkedIn",
                 "added_at": datetime.now(UTC).isoformat(),
             }
-            updates["external_links"] = s_external_links + [new_link]
+            participant_updates["external_links"] = s_external_links + [new_link]
+            s_contact_properties["external_links"] = participant_updates["external_links"]
 
-    s_stakeholder_data["enrichment"] = _build_enrichment_metadata(
+    s_contact_properties["enrichment"] = _build_enrichment_metadata(
         linkedin_url=linkedin_url,
         credits_used=credits_used,
         raw_profile=profile_data,
     )
-    updates["stakeholder_data"] = s_stakeholder_data
-    updates["updated_at"] = datetime.now(UTC)
+    participant_updates["updated_at"] = datetime.now(UTC)
+    if s_contact_id:
+        contact_updates["properties"] = s_contact_properties
+        contact_updates["updated_at"] = datetime.now(UTC)
 
     # Phase 3: Write updates back (fresh session)
     try:
         async with context.acquire_session() as session:
-            if updates:
+            if participant_updates:
                 update_stmt = (
-                    update(DealStakeholder)
+                    update(CRMDealParticipant)
                     .where(
                         c.organisation_id == organisation_id,
-                        c.stakeholder_id == s_id,
+                        c.participant_id == s_id,
                     )
-                    .values(**updates)
+                    .values(**participant_updates)
                 )
                 await session.execute(update_stmt)
+            if s_contact_id and contact_updates:
+                contact_columns = cast(Any, CRMContact).__table__.c
+                await session.execute(
+                    update(CRMContact)
+                    .where(
+                        contact_columns.organisation_id == organisation_id,
+                        contact_columns.contact_id == s_contact_id,
+                    )
+                    .values(**contact_updates)
+                )
+            if participant_updates or contact_updates:
                 await session.commit()
     except Exception as e:
         logger.exception("enrich_stakeholder write phase failed: %s", e)
@@ -307,11 +363,12 @@ async def enrich_stakeholder(
     return {
         "success": True,
         "stakeholder_id": str(s_id),
+        "participant_id": str(s_id),
         "already_enriched": False,
         "data": {
-            "name": updates.get("name", s_name),
-            "job_title": updates.get("job_title", s_job_title),
-            "department": updates.get("department", s_department),
+            "name": participant_updates.get("related_name", s_name),
+            "job_title": participant_updates.get("job_title", s_job_title),
+            "department": participant_updates.get("department", s_department),
             "linkedin_url": linkedin_url,
         },
         "metadata": {

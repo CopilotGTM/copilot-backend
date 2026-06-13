@@ -12,7 +12,7 @@ class StakeholderResearchResult(BaseModel):
 
     The agent populates identity fields (for direct DB writes) plus a
     full markdown profile blob. The service layer persists these to the
-    DealStakeholder row.
+    participant-backed stakeholder record.
     """
 
     status: Literal["found", "not_found", "error"] = Field(

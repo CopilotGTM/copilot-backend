@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -13,7 +14,6 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
-    DealStakeholder,
 )
 from src.service.integrations.webhooks.hubspot.contacts.privacy_deletion import (
     HubSpotContactPrivacyDeletionHandler,
@@ -39,19 +39,8 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         address="1 Main St",
         properties={"email": "ada@example.com"},
         metrics={"touches": 3},
-    )
-    stakeholder = DealStakeholder(
-        organisation_id=organisation_id,
-        integration_id=integration_id,
-        deal_id=uuid4(),
-        contact_id=contact.contact_id,
-        email="ada@example.com",
-        name="Ada Lovelace",
-        job_title="CTO",
-        phone_number="+155501",
-        external_links=[{"url": "https://linkedin.example/ada"}],
-        stakeholder_data={"email": "ada@example.com"},
-        stakeholder_research="profile text",
+        contact_research="Reusable profile research",
+        last_researched_at=datetime.now(UTC),
     )
     activity = CRMActivity(
         organisation_id=organisation_id,
@@ -74,6 +63,17 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         related_local_id=contact.contact_id,
         related_name="Ada Lovelace",
         related_email="ada@example.com",
+        job_title="CTO",
+        department="Engineering",
+        phone_number="+155501",
+        external_links=[{"url": "https://linkedin.example/ada"}],
+        motivation="Improve forecasting",
+        pain_points=["manual reporting"],
+        keywords=["forecasting"],
+        last_contact_at=datetime.now(UTC),
+        stakeholder_research="Deal-scoped research",
+        last_researched_at=datetime.now(UTC),
+        approval_status=ApprovalStatus.APPROVED.value,
     )
     deal = CRMDeal(
         organisation_id=organisation_id,
@@ -85,7 +85,6 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
 
     HubSpotContactPrivacyDeletionHandler.scrub_records_for_contact_privacy_deletion(
         contact=contact,
-        stakeholders=[stakeholder],
         activities=[activity],
         deal_participants=[participant],
         deals=[deal],
@@ -96,16 +95,9 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert contact.full_name is None
     assert contact.properties == {"privacy_deleted": True}
     assert contact.metrics == {"privacy_deleted": True}
+    assert contact.contact_research is None
+    assert contact.last_researched_at is None
     assert not hasattr(contact, "data_payload")
-
-    assert stakeholder.is_deleted is True
-    assert stakeholder.email.startswith("privacy-deleted-")
-    assert stakeholder.email.endswith("@privacy-deleted.invalid")
-    assert stakeholder.name is None
-    assert stakeholder.job_title is None
-    assert stakeholder.approval_status == ApprovalStatus.REMOVED
-    assert stakeholder.stakeholder_data == {"privacy_deleted": True}
-    assert stakeholder.stakeholder_research is None
 
     assert activity.is_deleted is True
     assert not hasattr(activity, "contact_external_id")
@@ -120,6 +112,17 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert participant.related_local_id is None
     assert participant.related_name is None
     assert participant.related_email is None
+    assert participant.job_title is None
+    assert participant.department is None
+    assert participant.phone_number is None
+    assert participant.external_links is None
+    assert participant.motivation is None
+    assert participant.pain_points is None
+    assert participant.keywords is None
+    assert participant.last_contact_at is None
+    assert participant.stakeholder_research is None
+    assert participant.last_researched_at is None
+    assert participant.approval_status == ApprovalStatus.REMOVED.value
     assert not hasattr(participant, "data_payload")
 
     assert deal.primary_contact_id is None

@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import (
     DealJobs,
     DealJobType,
     JobStatus,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
 )
 from src.infra.database.sessions import acquire_org_async_session
 
@@ -49,11 +51,10 @@ async def dispatch_stakeholder_research_async(
         job_id string, or None if skipped (cooldown / not approved)
     """
     async for session in acquire_org_async_session(organisation_id):
-        # Check stakeholder exists and is approved
-        stakeholder = await session.get(DealStakeholder, stakeholder_id)
-        if not stakeholder:
+        participant = await _load_research_participant(session, organisation_id, stakeholder_id)
+        if not participant:
             logger.warning(
-                "dispatch_stakeholder_research: stakeholder %s not found",
+                "dispatch_stakeholder_research: participant stakeholder %s not found",
                 stakeholder_id,
                 extra={
                     "event": "stakeholder_research_dispatch_not_found",
@@ -63,52 +64,68 @@ async def dispatch_stakeholder_research_async(
             )
             return None
 
-        if stakeholder.approval_status != ApprovalStatus.APPROVED:
+        if _status_value(participant.approval_status) != "APPROVED":
             logger.debug(
                 "dispatch_stakeholder_research: skipping non-approved stakeholder %s",
                 stakeholder_id,
             )
             return None
 
-        email = stakeholder.email
-        resolved_deal_id = deal_id or stakeholder.deal_id
+        contact = await _load_contact(session, organisation_id, participant.related_local_id)
+        email = _normalize_email(
+            contact.email if contact and contact.email else participant.related_email
+        )
+        if not email:
+            logger.warning(
+                "dispatch_stakeholder_research: participant %s has no email",
+                stakeholder_id,
+            )
+            return None
+
+        resolved_deal_id = deal_id or participant.deal_id
 
         # When force=True (manual trigger), skip cooldown — user explicitly wants fresh research
         if not force:
-            # Email-based dedup: check if ANY stakeholder with this email was
-            # recently researched (same person can appear on multiple deals)
-            recent_research_stmt = (
-                select(DealStakeholder)
-                .where(
-                    col(DealStakeholder.organisation_id) == organisation_id,
-                    col(DealStakeholder.email) == email,
-                    col(DealStakeholder.last_researched_at).isnot(None),
-                )
-                .order_by(col(DealStakeholder.last_researched_at).desc())
-                .limit(1)
+            already_researched = await _find_recent_contact_research(
+                session,
+                organisation_id,
+                email,
             )
-            result = await session.execute(recent_research_stmt)
-            already_researched = result.scalar_one_or_none()
 
             if already_researched and already_researched.last_researched_at:
                 age = datetime.now(UTC) - already_researched.last_researched_at
                 if age < timedelta(days=RESEARCH_COOLDOWN_DAYS):
-                    # Copy research from the existing record to avoid re-researching
-                    if already_researched.stakeholder_research:
-                        from sqlalchemy import update
-
+                    if already_researched.contact_research:
                         copy_stmt = (
-                            update(DealStakeholder)
+                            update(CRMDealParticipant)
                             .where(
-                                col(DealStakeholder.organisation_id) == organisation_id,
-                                col(DealStakeholder.stakeholder_id) == stakeholder_id,
+                                col(CRMDealParticipant.organisation_id) == organisation_id,
+                                col(CRMDealParticipant.participant_id) == stakeholder_id,
                             )
                             .values(
-                                stakeholder_research=already_researched.stakeholder_research,
+                                stakeholder_research=already_researched.contact_research,
                                 last_researched_at=already_researched.last_researched_at,
+                                updated_at=datetime.now(UTC),
                             )
                         )
                         await session.execute(copy_stmt)
+                        if (
+                            contact
+                            and contact.contact_id != already_researched.contact_id
+                            and not contact.contact_research
+                        ):
+                            await session.execute(
+                                update(CRMContact)
+                                .where(
+                                    col(CRMContact.organisation_id) == organisation_id,
+                                    col(CRMContact.contact_id) == contact.contact_id,
+                                )
+                                .values(
+                                    contact_research=already_researched.contact_research,
+                                    last_researched_at=already_researched.last_researched_at,
+                                    updated_at=datetime.now(UTC),
+                                )
+                            )
                         await session.commit()
                         logger.info(
                             "Stakeholder research copied from recent result",
@@ -116,7 +133,7 @@ async def dispatch_stakeholder_research_async(
                                 "event": "stakeholder_research_reused",
                                 "organisation_id": str(organisation_id),
                                 "stakeholder_id": str(stakeholder_id),
-                                "source_stakeholder_id": str(already_researched.stakeholder_id),
+                                "source_contact_id": str(already_researched.contact_id),
                             },
                         )
                     return None
@@ -125,12 +142,14 @@ async def dispatch_stakeholder_research_async(
         existing_job_stmt = (
             select(DealJobs)
             .join(
-                DealStakeholder,
-                col(DealJobs.stakeholder_id) == col(DealStakeholder.stakeholder_id),
+                CRMDealParticipant,
+                col(DealJobs.stakeholder_id) == col(CRMDealParticipant.participant_id),
             )
             .where(
                 col(DealJobs.organisation_id) == organisation_id,
-                col(DealStakeholder.email) == email,
+                func.lower(func.trim(col(CRMDealParticipant.related_email))) == email,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
                 col(DealJobs.job_type) == DealJobType.STAKEHOLDER_RESEARCH,
                 col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
             )
@@ -236,3 +255,63 @@ async def dispatch_stakeholder_research_async(
         },
     )
     return job_id_str
+
+
+async def _load_research_participant(
+    session,
+    organisation_id: UUID,
+    participant_id: UUID,
+) -> CRMDealParticipant | None:
+    stmt = select(CRMDealParticipant).where(
+        col(CRMDealParticipant.organisation_id) == organisation_id,
+        col(CRMDealParticipant.participant_id) == participant_id,
+        col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+        col(CRMDealParticipant.is_deleted).is_(False),
+    )
+    result = await session.execute(stmt)
+    return cast(CRMDealParticipant | None, result.scalar_one_or_none())
+
+
+async def _load_contact(
+    session,
+    organisation_id: UUID,
+    contact_id: UUID | None,
+) -> CRMContact | None:
+    if not contact_id:
+        return None
+    contact = await session.get(CRMContact, contact_id)
+    if not contact or contact.organisation_id != organisation_id or contact.is_deleted:
+        return None
+    return cast(CRMContact, contact)
+
+
+async def _find_recent_contact_research(
+    session,
+    organisation_id: UUID,
+    email: str,
+) -> CRMContact | None:
+    stmt = (
+        select(CRMContact)
+        .where(
+            col(CRMContact.organisation_id) == organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            func.lower(func.trim(col(CRMContact.email))) == email,
+            col(CRMContact.contact_research).isnot(None),
+            col(CRMContact.last_researched_at).isnot(None),
+        )
+        .order_by(col(CRMContact.last_researched_at).desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return cast(CRMContact | None, result.scalar_one_or_none())
+
+
+def _normalize_email(email: str | None) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _status_value(status: object) -> str:
+    return str(getattr(status, "value", status))

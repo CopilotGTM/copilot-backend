@@ -273,8 +273,6 @@ class TestGetDealStakeholders:
             stance=StakeholderStance.CHAMPION,
             temperature=StakeholderTemperature.HOT,
             decision_power=DecisionPower.DECISION_MAKER,
-            engagement_score=85.5,
-            champion_potential=0.92,
             motivation="Looking to modernize tech stack",
             pain_points=["Legacy systems", "Slow deployments"],
             keywords=["automation", "cloud", "DevOps"],
@@ -303,9 +301,8 @@ class TestGetDealStakeholders:
         assert data["temperature"] == "HOT"
         assert data["decision_power"] == "DECISION_MAKER"
 
-        # Verify numeric fields
-        assert data["engagement_score"] == 85.5
-        assert data["champion_potential"] == 0.92
+        assert "engagement_score" not in data
+        assert "champion_potential" not in data
 
         # Verify list fields
         assert data["pain_points"] == ["Legacy systems", "Slow deployments"]
@@ -1125,8 +1122,6 @@ class TestGetStakeholderDetail:
             stance=StakeholderStance.CHAMPION,
             temperature=StakeholderTemperature.HOT,
             decision_power=DecisionPower.DECISION_MAKER,
-            engagement_score=85.5,
-            champion_potential=92.0,
             motivation="Looking to modernize tech stack",
             pain_points=["Legacy systems", "Slow deployments"],
             keywords=["automation", "cloud"],
@@ -1152,8 +1147,8 @@ class TestGetStakeholderDetail:
         assert data["stance"] == "CHAMPION"
         assert data["temperature"] == "HOT"
         assert data["decision_power"] == "DECISION_MAKER"
-        assert data["engagement_score"] == 85.5
-        assert data["champion_potential"] == 92.0
+        assert "engagement_score" not in data
+        assert "champion_potential" not in data
         assert data["source"] == "CRM"
         assert data["approval_status"] == "APPROVED"
         assert "engagement_history" in data
@@ -1219,24 +1214,18 @@ class TestGetStakeholderDetail:
                 "recorded_at": "2025-01-15T10:00:00Z",
                 "stance": "CHAMPION",
                 "temperature": "HOT",
-                "engagement_score": 90.0,
-                "champion_potential": 95.0,
                 "decision_power": "DECISION_MAKER",
             },
             {
                 "recorded_at": "2025-01-10T10:00:00Z",
                 "stance": "SUPPORTER",
                 "temperature": "WARM",
-                "engagement_score": 70.0,
-                "champion_potential": 75.0,
                 "decision_power": "INFLUENCER",
             },
             {
                 "recorded_at": "2025-01-01T10:00:00Z",
                 "stance": "NEUTRAL",
                 "temperature": "COLD",
-                "engagement_score": 30.0,
-                "champion_potential": 40.0,
                 "decision_power": "UNKNOWN",
             },
         ]
@@ -1249,8 +1238,6 @@ class TestGetStakeholderDetail:
             name="Evolving Stakeholder",
             stance=StakeholderStance.CHAMPION,
             temperature=StakeholderTemperature.HOT,
-            engagement_score=90.0,
-            champion_potential=95.0,
             decision_power=DecisionPower.DECISION_MAKER,
             stakeholder_engagement_history=history,
         )
@@ -1269,6 +1256,8 @@ class TestGetStakeholderDetail:
         assert data["engagement_history"][0]["temperature"] == "HOT"
         assert data["engagement_history"][1]["temperature"] == "WARM"
         assert data["engagement_history"][2]["temperature"] == "COLD"
+        assert "engagement_score" not in data["engagement_history"][0]
+        assert "champion_potential" not in data["engagement_history"][0]
 
         # Verify we can trace the journey from COLD to HOT
         assert data["engagement_history"][2]["stance"] == "NEUTRAL"
@@ -1388,7 +1377,7 @@ class TestUpdateStakeholder:
             json={
                 "name": "Jane Updated",
                 "job_title": "Director of Engineering",
-                "champion_potential": 88.0,
+                "motivation": "Improve operational reliability",
             },
         )
 
@@ -1398,7 +1387,7 @@ class TestUpdateStakeholder:
         assert body["message"] == "Stakeholder updated"
         assert body["data"]["name"] == "Jane Updated"
         assert body["data"]["job_title"] == "Director of Engineering"
-        assert body["data"]["champion_potential"] == 88.0
+        assert body["data"]["motivation"] == "Improve operational reliability"
 
         updated = fake_stakeholders_service._get_stakeholder(
             test_deal_id,
@@ -1409,7 +1398,7 @@ class TestUpdateStakeholder:
         assert set(updated.stakeholder_data["manual_overrides"]) >= {
             "name",
             "job_title",
-            "champion_potential",
+            "motivation",
         }
 
     def test_returns_404_for_unknown_stakeholder(
@@ -1455,7 +1444,7 @@ class TestUpdateStakeholder:
         assert body["status"] == "ERROR"
         assert body["message"] == "No fields provided for update"
 
-    def test_returns_422_for_invalid_champion_potential(
+    def test_returns_422_for_invalid_decision_power(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
@@ -1463,7 +1452,7 @@ class TestUpdateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
-        """Champion potential outside allowed range should return validation error."""
+        """Unknown decision power value should return validation error."""
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -1473,7 +1462,7 @@ class TestUpdateStakeholder:
 
         resp = client.patch(
             f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}",
-            json={"champion_potential": 120},
+            json={"decision_power": "NOT_A_ROLE"},
         )
 
         assert resp.status_code == 422

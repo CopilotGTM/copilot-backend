@@ -15,8 +15,12 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivitySource,
     CRMActivityType,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.utils.pipeline_dispatch import (
@@ -171,11 +175,7 @@ class DealNotesService:
         return items, next_cursor, total_count, participants
 
     async def _get_deal_participants(self, deal_id: UUID, deal: CRMDeal) -> list[ParticipantInfo]:
-        """Fetch all participants for a deal (owner + stakeholders).
-
-        Simple approach: separate query for stakeholders, add deal owner from deal object.
-        No complex joins needed.
-        """
+        """Fetch all participants for a deal (owner + contact participants)."""
         participants: list[ParticipantInfo] = []
         seen_emails: set[str] = set()
 
@@ -190,26 +190,28 @@ class DealNotesService:
                 )
             )
 
-        # Fetch stakeholders for this deal
-        stakeholders_stmt = select(DealStakeholder).where(
-            col(DealStakeholder.deal_id) == deal_id,
-            col(DealStakeholder.organisation_id) == self.organisation_id,
+        participants_stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
         )
-        result = await self.org_session.execute(stakeholders_stmt)
-        stakeholders = list(result.scalars().all())
+        result = await self.org_session.execute(participants_stmt)
+        contact_participants = list(result.scalars().all())
 
-        for s in stakeholders:
-            if not s.email:
+        for participant in contact_participants:
+            if not participant.related_email:
                 continue
-            email_lower = s.email.lower()
+            email_lower = participant.related_email.lower()
             # Avoid duplicates (e.g., owner is also a stakeholder)
             if email_lower in seen_emails:
                 continue
             seen_emails.add(email_lower)
             participants.append(
                 ParticipantInfo(
-                    email=s.email,
-                    name=s.name,
+                    email=participant.related_email,
+                    name=participant.related_name,
                 )
             )
 

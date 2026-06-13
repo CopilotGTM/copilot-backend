@@ -118,9 +118,8 @@ Key tables (internal CRM):
 - `crm_deals` → core deal record
 - `crm_deal_stages` / `crm_pipelines` → pipeline configuration
 - `crm_deal_stage_history` → stage change history
-- `crm_deal_participants` → users/companies/contacts linked to deal
+- `crm_deal_participants` → users/companies/contacts linked to deal and stakeholder list reads
 - `crm_companies` → account records
-- `deal_stakeholders` → stakeholder list (separate flow)
 
 ---
 

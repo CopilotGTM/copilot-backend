@@ -537,7 +537,6 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                         "END_USER",
                     ],
                 },
-                "champion_potential": {"type": "number"},
                 "motivation": {"type": "string"},
                 "pain_points": {
                     "type": "array",

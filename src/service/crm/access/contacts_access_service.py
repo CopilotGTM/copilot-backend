@@ -11,11 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationScope,
     IntegrationType,
@@ -114,14 +115,21 @@ class ContactsAccessService:
         if page < 1:
             raise ContactsAccessServiceError("Page must be >= 1", status_code=400)
 
-        # Subquery: count deals where this contact is an active (approved) stakeholder
+        contact_participant_match = or_(
+            col(CRMDealParticipant.related_local_id) == col(CRMContact.contact_id),
+            func.lower(func.trim(col(CRMDealParticipant.related_email)))
+            == func.lower(func.trim(col(CRMContact.email))),
+        )
+
+        # Subquery: count deals where this contact is an active approved contact participant.
         deal_count_sub = (
-            select(func.count(col(DealStakeholder.stakeholder_id)))
+            select(func.count(col(CRMDealParticipant.participant_id)))
             .where(
-                col(DealStakeholder.contact_id) == col(CRMContact.contact_id),
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.is_deleted).is_(False),
-                col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED.value,
+                contact_participant_match,
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
+                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
             )
             .correlate(CRMContact)
             .scalar_subquery()
@@ -233,7 +241,7 @@ class ContactsAccessService:
         return result, total_count
 
     async def get_contact_detail(self, contact_id: UUID) -> dict:
-        """Full contact + deal involvement via DealStakeholder JOIN CRMDeal."""
+        """Full contact + deal involvement via contact participants."""
         stmt = select(CRMContact).where(
             col(CRMContact.contact_id) == contact_id,
             col(CRMContact.organisation_id) == self.organisation_id,
@@ -245,16 +253,25 @@ class ContactsAccessService:
         if not contact:
             raise ContactsAccessServiceError("Contact not found", status_code=404)
 
-        # Fetch deals this contact is actively involved in (approved stakeholders only)
+        participant_contact_match = col(CRMDealParticipant.related_local_id) == contact_id
+        if contact.email:
+            participant_contact_match = or_(
+                participant_contact_match,
+                func.lower(func.trim(col(CRMDealParticipant.related_email)))
+                == contact.email.strip().lower(),
+            )
+
+        # Fetch deals this contact is actively involved in (approved contact participants only)
         deal_stmt = (
-            select(CRMDeal, DealStakeholder)
+            select(CRMDeal, CRMDealParticipant)
             .join(
-                DealStakeholder,
-                (col(DealStakeholder.deal_id) == col(CRMDeal.deal_id))
-                & (col(DealStakeholder.contact_id) == contact_id)
-                & (col(DealStakeholder.organisation_id) == self.organisation_id)
-                & (col(DealStakeholder.is_deleted).is_(False))
-                & (col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED.value),
+                CRMDealParticipant,
+                (col(CRMDealParticipant.deal_id) == col(CRMDeal.deal_id))
+                & participant_contact_match
+                & (col(CRMDealParticipant.organisation_id) == self.organisation_id)
+                & (col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value)
+                & (col(CRMDealParticipant.is_deleted).is_(False))
+                & (col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value),
             )
             .where(
                 col(CRMDeal.organisation_id) == self.organisation_id,
@@ -267,8 +284,8 @@ class ContactsAccessService:
         deals = [
             {
                 "deal": row.CRMDeal,
-                "relationship_role": row.DealStakeholder.source_reference_id,
-                "stakeholder_id": row.DealStakeholder.stakeholder_id,
+                "relationship_role": row.CRMDealParticipant.relationship_role,
+                "stakeholder_id": row.CRMDealParticipant.participant_id,
             }
             for row in deal_rows
         ]
@@ -277,24 +294,27 @@ class ContactsAccessService:
         resolved_company_id = contact.company_id
         resolved_company_domain: str | None = None
         if resolved_company_id:
-            co_stmt = select(col(CRMCompany.domain)).where(
+            company_domain_stmt = select(col(CRMCompany.domain)).where(
                 col(CRMCompany.company_id) == resolved_company_id,
                 col(CRMCompany.organisation_id) == self.organisation_id,
                 col(CRMCompany.is_deleted).is_(False),
             )
-            co_res = await self.org_session.execute(co_stmt)
-            resolved_company_domain = co_res.scalar()
+            company_domain_res = await self.org_session.execute(company_domain_stmt)
+            resolved_company_domain = company_domain_res.scalar()
         if not resolved_company_id:
             # Fallback to domain matching
             email_domain = self._extract_domain(contact.email) if contact.email else None
             if email_domain:
-                co_stmt = select(col(CRMCompany.company_id), col(CRMCompany.domain)).where(
+                company_match_stmt = select(
+                    col(CRMCompany.company_id),
+                    col(CRMCompany.domain),
+                ).where(
                     col(CRMCompany.organisation_id) == self.organisation_id,
                     col(CRMCompany.is_deleted).is_(False),
                     col(CRMCompany.domain) == email_domain,
                 )
-                co_res = await self.org_session.execute(co_stmt)
-                row = co_res.first()
+                company_match_res = await self.org_session.execute(company_match_stmt)
+                row = company_match_res.first()
                 if row:
                     resolved_company_id = row[0]
                     resolved_company_domain = row[1]
@@ -508,10 +528,10 @@ class ContactsAccessService:
         relationship_role: str | None = None,
         actor_user_id: UUID | None = None,
     ) -> dict:
-        """Add a contact to a deal as a participant (CRMDealParticipant + DealStakeholder).
+        """Add a contact to a deal as a participant.
 
         Delegates to DealParticipantService to keep participant creation, duplicate
-        detection, and stakeholder sync logic centralized in one place.
+        detection, and stakeholder compatibility logic centralized in one place.
         Import is deferred inside the method to avoid circular imports between
         the access and internal service layers.
 
@@ -589,18 +609,19 @@ class ContactsAccessService:
         if integration:
             return integration
 
-        # Create the internal integration on first use — idempotent with InternalCRMSetupService
-        integration = KnowledgeIntegration(
-            organisation_id=self.organisation_id,
-            # Sentinel user — this path is hit when no user context is available
-            created_by_user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            created_by_admin=False,
-            integration_type=IntegrationType.INTERNAL_CRM,
-            integration_scope=IntegrationScope.ORGANIZATION,
-            name="Copilot CRM",
-            credentials={},
-            connection_metadata={"source": "internal_crm", "internal": True},
-            is_active=True,
+        integration = KnowledgeIntegration.model_validate(
+            {
+                "organisation_id": self.organisation_id,
+                # Sentinel user — this path is hit when no user context is available
+                "created_by_user_id": UUID("00000000-0000-0000-0000-000000000001"),
+                "created_by_admin": False,
+                "integration_type": IntegrationType.INTERNAL_CRM,
+                "integration_scope": IntegrationScope.ORGANIZATION,
+                "name": "Copilot CRM",
+                "credentials": {},
+                "connection_metadata": {"source": "internal_crm", "internal": True},
+                "is_active": True,
+            }
         )
         self.org_session.add(integration)
         await self.org_session.flush()

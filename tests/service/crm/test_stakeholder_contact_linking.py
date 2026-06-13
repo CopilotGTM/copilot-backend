@@ -170,6 +170,8 @@ class DealParticipantFakeSession(FakeSession):
         compiled = str(stmt).lower()
         if "crm_deal_participants" in compiled:
             return FakeScalarResult(self.existing_participant)
+        if "crm_deals" in compiled:
+            return FakeScalarResult(self.deal)
         return await super().execute(stmt)
 
     async def get(self, model_class, pk):
@@ -196,23 +198,24 @@ async def test_ensure_deal_participant_creates_for_internal_deal() -> None:
     service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     contact_id = uuid4()
-    created = await service._ensure_deal_participant(
+    participant = await service._ensure_deal_participant(
         deal_id=DEAL_ID,
         contact_id=contact_id,
         email="buyer@customer.com",
         name="Buyer Name",
     )
 
-    assert created is True
+    assert participant is not None
     participants = [obj for obj in session.added if isinstance(obj, CRMDealParticipant)]
     assert len(participants) == 1
-    assert participants[0].related_email == "buyer@customer.com"
-    assert participants[0].related_local_id == contact_id
+    assert participant is participants[0]
+    assert participant.related_email == "buyer@customer.com"
+    assert participant.related_local_id == contact_id
 
 
 @pytest.mark.asyncio
-async def test_ensure_deal_participant_skips_external_deal() -> None:
-    """Skip CRMDealParticipant when deal belongs to external CRM."""
+async def test_ensure_deal_participant_creates_for_external_deal() -> None:
+    """Manual stakeholders on external deals get app-owned participants."""
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 
     external_integration_id = uuid4()
@@ -228,16 +231,18 @@ async def test_ensure_deal_participant_skips_external_deal() -> None:
     )
     service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
-    created = await service._ensure_deal_participant(
+    participant = await service._ensure_deal_participant(
         deal_id=DEAL_ID,
         contact_id=uuid4(),
         email="buyer@customer.com",
         name="Buyer Name",
     )
 
-    assert created is False
+    assert participant is not None
     participants = [obj for obj in session.added if isinstance(obj, CRMDealParticipant)]
-    assert len(participants) == 0
+    assert len(participants) == 1
+    assert participant is participants[0]
+    assert participant.integration_id == INTEGRATION_ID
 
 
 @pytest.mark.asyncio
@@ -251,9 +256,16 @@ async def test_ensure_deal_participant_skips_when_already_exists() -> None:
         integration_id=INTEGRATION_ID,
         organisation_id=ORG_ID,
     )
-    existing_participant = SimpleNamespace(
+    existing_participant = CRMDealParticipant(
+        organisation_id=ORG_ID,
+        integration_id=INTEGRATION_ID,
         participant_id=uuid4(),
+        deal_id=DEAL_ID,
+        participant_type="contact",
         related_email="buyer@customer.com",
+        related_name="Buyer Name",
+        approval_status="APPROVED",
+        participant_source="MANUAL",
     )
     session = DealParticipantFakeSession(
         internal_integration=internal_integration,
@@ -262,14 +274,14 @@ async def test_ensure_deal_participant_skips_when_already_exists() -> None:
     )
     service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
-    created = await service._ensure_deal_participant(
+    participant = await service._ensure_deal_participant(
         deal_id=DEAL_ID,
         contact_id=uuid4(),
         email="buyer@customer.com",
         name="Buyer Name",
     )
 
-    assert created is False
+    assert participant is existing_participant
     participants = [obj for obj in session.added if isinstance(obj, CRMDealParticipant)]
     assert len(participants) == 0
 

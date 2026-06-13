@@ -12,9 +12,12 @@ from sqlmodel import col
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
 from src.domain.models.master_tables.user_models import SupabaseUserStatus, User
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
 )
 from src.service.calendar_invites.models import CalendarInviteAttendee
 
@@ -222,32 +225,33 @@ class CalendarInviteAttendeeResolver:
         deal_id: UUID | None,
     ) -> list[AttendeeCandidate]:
         lower_search = search.strip().lower()
-        name_expr = func.lower(col(DealStakeholder.name))
-        email_expr = func.lower(col(DealStakeholder.email))
+        name_expr = func.lower(col(CRMDealParticipant.related_name))
+        email_expr = func.lower(col(CRMDealParticipant.related_email))
         stmt = (
-            select(DealStakeholder)
+            select(CRMDealParticipant)
             .where(
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.is_deleted) == False,  # noqa: E712
-                col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
+                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
                 or_(
                     name_expr == lower_search,
                     email_expr == lower_search,
-                    col(DealStakeholder.name).ilike(f"%{search}%"),
-                    col(DealStakeholder.email).ilike(f"%{search}%"),
+                    col(CRMDealParticipant.related_name).ilike(f"%{search}%"),
+                    col(CRMDealParticipant.related_email).ilike(f"%{search}%"),
                 ),
             )
             .limit(10)
         )
         if deal_id:
-            stmt = stmt.where(col(DealStakeholder.deal_id) == deal_id)
+            stmt = stmt.where(col(CRMDealParticipant.deal_id) == deal_id)
 
         result = await self.session.execute(stmt)
-        stakeholders = result.scalars().all()
+        participants = result.scalars().all()
         return [
-            self._candidate_from_stakeholder(stakeholder, search)
-            for stakeholder in stakeholders
-            if stakeholder.email
+            self._candidate_from_participant(participant, search)
+            for participant in participants
+            if participant.related_email
         ]
 
     async def _search_contacts(self, search: str) -> list[AttendeeCandidate]:
@@ -309,25 +313,29 @@ class CalendarInviteAttendeeResolver:
         deal_id: UUID,
     ) -> tuple[list[AttendeeCandidate], list[dict[str, Any]]]:
         stmt = (
-            select(DealStakeholder)
+            select(CRMDealParticipant)
             .where(
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.deal_id) == deal_id,
-                col(DealStakeholder.is_deleted) == False,  # noqa: E712
-                col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id) == deal_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
+                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
             )
-            .order_by(col(DealStakeholder.name), col(DealStakeholder.email))
+            .order_by(
+                col(CRMDealParticipant.related_name),
+                col(CRMDealParticipant.related_email),
+            )
         )
         result = await self.session.execute(stmt)
-        stakeholders = result.scalars().all()
+        participants = result.scalars().all()
 
         candidates: list[AttendeeCandidate] = []
         missing: list[dict[str, Any]] = []
-        for stakeholder in stakeholders:
-            if stakeholder.email:
+        for participant in participants:
+            if participant.related_email:
                 candidates.append(
-                    self._candidate_from_stakeholder(
-                        stakeholder,
+                    self._candidate_from_participant(
+                        participant,
                         "all stakeholders",
                         confidence="deal_group",
                     )
@@ -335,14 +343,14 @@ class CalendarInviteAttendeeResolver:
                 continue
             missing.append(
                 {
-                    "input": stakeholder.name or str(stakeholder.stakeholder_id),
+                    "input": participant.related_name or str(participant.participant_id),
                     "source": "deal_stakeholder",
-                    "source_id": str(stakeholder.stakeholder_id),
+                    "source_id": str(participant.participant_id),
                     "reason": "missing_email",
                 }
             )
 
-        if not stakeholders:
+        if not participants:
             missing.append(
                 {
                     "input": "all stakeholders",
@@ -431,20 +439,24 @@ class CalendarInviteAttendeeResolver:
             return "exact_name"
         return "partial_name"
 
-    def _candidate_from_stakeholder(
+    def _candidate_from_participant(
         self,
-        stakeholder: DealStakeholder,
+        participant: CRMDealParticipant,
         search: str,
         *,
         confidence: str | None = None,
     ) -> AttendeeCandidate:
         return AttendeeCandidate(
-            email=CalendarInviteAttendee(email=stakeholder.email).email,
-            name=stakeholder.name,
+            email=CalendarInviteAttendee(email=participant.related_email or "").email,
+            name=participant.related_name,
             source="deal_stakeholder",
-            source_id=str(stakeholder.stakeholder_id),
+            source_id=str(participant.participant_id),
             confidence=confidence
-            or self._confidence_for(search, name=stakeholder.name, email=stakeholder.email),
+            or self._confidence_for(
+                search,
+                name=participant.related_name,
+                email=participant.related_email,
+            ),
             input_value=search,
         )
 

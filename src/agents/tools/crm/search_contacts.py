@@ -25,10 +25,11 @@ from sqlalchemy.orm import selectinload
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -72,7 +73,7 @@ async def search_contacts(
 
     # Table columns for type-safe queries
     contact_c = cast(Any, CRMContact).__table__.c
-    stakeholder_c = cast(Any, DealStakeholder).__table__.c
+    participant_c = cast(Any, CRMDealParticipant).__table__.c
 
     # Build contact query
     stmt = select(CRMContact).where(
@@ -115,46 +116,55 @@ async def search_contacts(
 
         # Get deal associations for these contacts
         contact_ids = [c.contact_id for c in contacts]
+        email_to_contact_id = {
+            c.email.strip().lower(): c.contact_id for c in contacts if c.email and c.email.strip()
+        }
+        participant_match_filters = [participant_c.related_local_id.in_(contact_ids)]
+        if email_to_contact_id:
+            participant_match_filters.append(
+                func.lower(func.trim(participant_c.related_email)).in_(
+                    list(email_to_contact_id.keys())
+                )
+            )
 
-        stakeholder_stmt = (
-            select(DealStakeholder)
-            .options(selectinload(cast(Any, DealStakeholder).deal))
+        participant_stmt = (
+            select(CRMDealParticipant)
+            .options(selectinload(cast(Any, CRMDealParticipant).deal))
             .where(
-                stakeholder_c.organisation_id == organisation_id,
-                stakeholder_c.contact_id.in_(contact_ids),
-                stakeholder_c.approval_status == ApprovalStatus.APPROVED,
-                stakeholder_c.is_deleted.is_(False),
+                participant_c.organisation_id == organisation_id,
+                participant_c.participant_type == CRMParticipantType.CONTACT.value,
+                participant_c.approval_status == ApprovalStatus.APPROVED.value,
+                participant_c.is_deleted.is_(False),
+                or_(*participant_match_filters),
             )
         )
 
         try:
-            stakeholder_result = await session.execute(stakeholder_stmt)
-            stakeholders = stakeholder_result.scalars().all()
+            participant_result = await session.execute(participant_stmt)
+            participants = participant_result.scalars().all()
         except Exception as e:
             logger.exception(f"search_contacts: error fetching stakeholders: {e}")
-            stakeholders = []
+            participants = []
 
-        # Group stakeholders by contact_id
+        # Group participant-backed stakeholder rows by contact_id
         contact_deals: dict[Any, list[dict[str, Any]]] = {}
-        for s in stakeholders:
-            if s.contact_id not in contact_deals:
-                contact_deals[s.contact_id] = []
-            if s.deal:
-                contact_deals[s.contact_id].append(
+        for participant in participants:
+            contact_id = participant.related_local_id
+            if contact_id is None and participant.related_email:
+                contact_id = email_to_contact_id.get(participant.related_email.strip().lower())
+            if contact_id is None:
+                continue
+
+            if contact_id not in contact_deals:
+                contact_deals[contact_id] = []
+            if participant.deal:
+                contact_deals[contact_id].append(
                     {
-                        "deal_id": str(s.deal.deal_id),
-                        "name": s.deal.name,
-                        "company_name": s.deal.company_name,
-                        "role": (
-                            s.decision_power.value
-                            if hasattr(s.decision_power, "value")
-                            else s.decision_power
-                        )
-                        if s.decision_power
-                        else None,
-                        "stance": (s.stance.value if hasattr(s.stance, "value") else s.stance)
-                        if s.stance
-                        else None,
+                        "deal_id": str(participant.deal.deal_id),
+                        "name": participant.deal.name,
+                        "company_name": participant.deal.company_name,
+                        "role": participant.decision_power,
+                        "stance": participant.stance,
                     }
                 )
 

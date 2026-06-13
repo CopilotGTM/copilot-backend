@@ -40,11 +40,11 @@ class DealJobResponse(BaseModel):
 class StakeholderDetail(BaseModel):
     """Detailed view of a deal stakeholder."""
 
-    # NOTE: These contract fields are the canonical response shape for all
-    # stakeholders endpoints and should not be changed without versioning the
-    # API contract or coordinating worker-side consumers.
-
     stakeholder_id: UUID
+    participant_id: UUID | None = Field(
+        None,
+        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
+    )
     deal_id: UUID
     contact_id: UUID | None = None
     email: str
@@ -54,12 +54,10 @@ class StakeholderDetail(BaseModel):
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
-    champion_potential: float = Field(..., description="Champion potential score (0-100)")
     motivation: str | None = None
     pain_points: list[str] | None = None
     keywords: list[str] | None = None
     last_contact_at: datetime | None = None
-    engagement_score: float = Field(..., description="Engagement score (0-100)")
     temperature: StakeholderTemperature
     source: StakeholderSource = Field(..., description="Stakeholder source")
     approval_status: ApprovalStatus = Field(..., description="Approval status")
@@ -78,7 +76,6 @@ class CreateStakeholderCommand(BaseModel):
     stance: StakeholderStance = StakeholderStance.UNKNOWN
     decision_power: DecisionPower = DecisionPower.UNKNOWN
     department: str | None = None
-    champion_potential: float | None = Field(None, ge=0, le=100)
     motivation: str | None = None
     pain_points: list[str] | None = None
     external_links: list[StakeholderLink] | None = None
@@ -93,7 +90,6 @@ class UpdateStakeholderCommand(BaseModel):
     department: str | None = None
     stance: StakeholderStance | None = None
     decision_power: DecisionPower | None = None
-    champion_potential: float | None = Field(None, ge=0, le=100)
     motivation: str | None = None
     pain_points: list[str] | None = None
     external_links: list[StakeholderLink] | None = None

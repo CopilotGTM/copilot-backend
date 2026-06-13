@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.service.crm.internal.deal_participant_service import DealParticipantService
 
 
@@ -77,3 +82,48 @@ async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
     assert deal.company_id == company_id
     assert deal.company_name == "Acme"
     assert deal.company_domain == "acme.com"
+
+
+@pytest.mark.asyncio
+async def test_add_participants_reuses_contact_when_same_contact_has_multiple_roles() -> None:
+    session = _FakeSession()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+
+    service = DealParticipantService(
+        session=session,
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+    )
+    service._get_internal_deal = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(deal_id=deal_id), integration_id)
+    )
+    service._resolve_participant_entity = AsyncMock(  # type: ignore[method-assign]
+        return_value=(contact_id, "Ada Lovelace", "ada@example.com")
+    )
+    service._find_existing_participant = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    created, skipped, changed, _ = await service.add_participants(
+        deal_id,
+        [
+            {
+                "participant_type": CRMParticipantType.CONTACT.value,
+                "related_id": contact_id,
+                "relationship_role": "decision_maker",
+            },
+            {
+                "participant_type": CRMParticipantType.CONTACT.value,
+                "related_id": contact_id,
+                "relationship_role": "primary_contact",
+            },
+        ],
+    )
+
+    assert len(created) == 1
+    assert len(skipped) == 1
+    assert skipped[0].reason == "Duplicate participant in request"
+    assert changed is True
+    assert isinstance(created[0], CRMDealParticipant)
+    assert getattr(created[0], "properties", None) is None

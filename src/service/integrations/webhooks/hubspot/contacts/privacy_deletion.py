@@ -22,7 +22,6 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMDealParticipant,
     CRMParticipantType,
     CRMSourceObjectType,
-    DealStakeholder,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
@@ -41,7 +40,6 @@ class HubSpotContactPrivacyDeletionHandler:
     def scrub_records_for_contact_privacy_deletion(
         *,
         contact: CRMContact,
-        stakeholders: list[DealStakeholder],
         activities: list[CRMActivity],
         deal_participants: list[CRMDealParticipant] | None = None,
         deals: list[CRMDeal] | None = None,
@@ -50,7 +48,7 @@ class HubSpotContactPrivacyDeletionHandler:
 
         The handler keeps historical rows as tombstones for audit and FK
         stability, but removes person-identifying fields from the contact and
-        directly linked stakeholder/activity/deal participant records.
+        directly linked activity/deal participant records.
         """
         contact.is_deleted = True
         contact.first_name = None
@@ -74,25 +72,8 @@ class HubSpotContactPrivacyDeletionHandler:
         contact.timezone = None
         contact.properties = dict(_PRIVACY_DELETED_PAYLOAD)
         contact.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
-
-        for stakeholder in stakeholders:
-            stakeholder.is_deleted = True
-            stakeholder.email = (
-                f"privacy-deleted-{stakeholder.stakeholder_id}@privacy-deleted.invalid"
-            )
-            stakeholder.name = None
-            stakeholder.job_title = None
-            stakeholder.department = None
-            stakeholder.phone_number = None
-            stakeholder.external_links = None
-            stakeholder.motivation = None
-            stakeholder.pain_points = None
-            stakeholder.keywords = None
-            stakeholder.approval_status = ApprovalStatus.REMOVED
-            stakeholder.stakeholder_data = dict(_PRIVACY_DELETED_PAYLOAD)
-            stakeholder.stakeholder_engagement_history = None
-            stakeholder.stakeholder_research = None
-            stakeholder.last_researched_at = None
+        contact.contact_research = None
+        contact.last_researched_at = None
 
         for activity in activities:
             activity.is_deleted = True
@@ -113,6 +94,20 @@ class HubSpotContactPrivacyDeletionHandler:
             participant.related_local_id = None
             participant.related_name = None
             participant.related_email = None
+            participant.job_title = None
+            participant.department = None
+            participant.phone_number = None
+            participant.external_links = None
+            participant.motivation = None
+            participant.pain_points = None
+            participant.keywords = None
+            participant.last_contact_at = None
+            participant.stance = "UNKNOWN"
+            participant.decision_power = "UNKNOWN"
+            participant.temperature = "UNKNOWN"
+            participant.approval_status = ApprovalStatus.REMOVED.value
+            participant.stakeholder_research = None
+            participant.last_researched_at = None
 
         for deal in deals or []:
             deal.primary_contact_id = None
@@ -182,11 +177,6 @@ class HubSpotContactPrivacyDeletionHandler:
                     continue
 
                 contact_ids = [contact.contact_id for contact in contacts]
-                stakeholders = await cls._stakeholders_for_contacts(
-                    org_session=org_session,
-                    organisation_id=organisation_id,
-                    contact_ids=contact_ids,
-                )
                 activities = await cls._activities_for_contacts(
                     org_session=org_session,
                     organisation_id=organisation_id,
@@ -209,11 +199,6 @@ class HubSpotContactPrivacyDeletionHandler:
                 for contact in contacts:
                     cls.scrub_records_for_contact_privacy_deletion(
                         contact=contact,
-                        stakeholders=[
-                            stakeholder
-                            for stakeholder in stakeholders
-                            if stakeholder.contact_id == contact.contact_id
-                        ],
                         activities=[
                             activity
                             for activity in activities
@@ -231,8 +216,6 @@ class HubSpotContactPrivacyDeletionHandler:
                     org_session.add(contact)
                     touched_contacts += 1
 
-                for stakeholder in stakeholders:
-                    org_session.add(stakeholder)
                 for activity in activities:
                     org_session.add(activity)
                 for participant in deal_participants:
@@ -295,23 +278,6 @@ class HubSpotContactPrivacyDeletionHandler:
             col(CRMContact.organisation_id) == organisation_id,
             col(CRMContact.integration_id) == integration_id,
             col(CRMContact.contact_id) == contact_id,
-        )
-        result = await org_session.execute(statement)
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def _stakeholders_for_contacts(
-        *,
-        org_session,
-        organisation_id: UUID,
-        contact_ids: list[UUID],
-    ) -> list[DealStakeholder]:
-        """Load stakeholders linked to the deleted contacts."""
-        if not contact_ids:
-            return []
-        statement = select(DealStakeholder).where(
-            col(DealStakeholder.organisation_id) == organisation_id,
-            col(DealStakeholder.contact_id).in_(contact_ids),
         )
         result = await org_session.execute(statement)
         return list(result.scalars().all())

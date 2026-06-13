@@ -33,7 +33,6 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
     StakeholderSource,
     StakeholderStance,
     StakeholderTemperature,
@@ -92,7 +91,7 @@ class DealMeetingMatcher:
         self._suppress_research_dispatch = suppress_research_dispatch
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
-        self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
+        self._pending_research: list[tuple[UUID, UUID]] = []  # (participant_id, deal_id)
         # Recording rows are created inside the DB transaction, but the Celery
         # dispatch happens only after commit so workers never see rolled-back rows.
         self._pending_recording_event_ids: set[UUID] = set()
@@ -157,30 +156,22 @@ class DealMeetingMatcher:
         return contact
 
     async def _collect_contact_emails(self, session: AsyncSession, deal: CRMDeal) -> set[str]:
-        """Collect all approved stakeholder emails for a deal.
-
-        Uses DealStakeholder table which contains:
-        - CRM-synced contacts (source=CRM)
-        - Discovered contacts from calendar (source=CALENDAR_DISCOVERY)
-
-        Only returns APPROVED stakeholders (not PENDING or REJECTED).
-        """
+        """Collect all active approved contact participant emails for a deal."""
         emails: set[str] = set()
 
-        # DealStakeholder is the product-owned roster, so matcher ignores raw CRM
-        # contacts that users have not approved for this deal.
-        stmt = select(col(DealStakeholder.email)).where(
-            col(DealStakeholder.deal_id) == deal.deal_id,
-            col(DealStakeholder.is_deleted).is_(False),
-            col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
-        )
-        result = await session.execute(stmt)
-        stakeholder_emails = result.scalars().all()
-
-        for email in stakeholder_emails:
-            normalized = self._normalize_email(email)
+        for participant in self._get_participants(deal):
+            if participant.participant_type != CRMParticipantType.CONTACT:
+                continue
+            if participant.is_deleted:
+                continue
+            if participant.approval_status != ApprovalStatus.APPROVED.value:
+                continue
+            normalized = self._normalize_email(participant.related_email)
             if normalized:
                 emails.add(normalized)
+            if participant.related_local_id:
+                contact = await self._get_contact_by_id(session, participant.related_local_id)
+                self._add_contact_emails(contact, emails)
 
         return emails
 
@@ -382,6 +373,10 @@ class DealMeetingMatcher:
         for participant in self._get_participants(deal):
             if participant.participant_type != CRMParticipantType.CONTACT:
                 continue
+            if participant.is_deleted:
+                continue
+            if participant.approval_status != ApprovalStatus.APPROVED.value:
+                continue
             if participant.related_email:
                 domain = self._extract_domain(participant.related_email)
                 if domain:
@@ -509,24 +504,20 @@ class DealMeetingMatcher:
                 )
                 continue
 
-            # Discovery is idempotent across matcher reruns; an attendee already on
-            # the deal should not receive a duplicate calendar-discovered row.
-            stmt = select(DealStakeholder).where(
-                col(DealStakeholder.deal_id) == deal.deal_id,
-                col(DealStakeholder.email) == email,
+            existing = await self._find_contact_participant_by_email(
+                session,
+                deal_id=deal.deal_id,
+                email=email,
             )
-            result = await session.execute(stmt)
-            existing = result.scalars().first()
             if existing:
                 continue
 
             # Count existing discovered stakeholders for 5-limit
-            count_stmt = select(func.count()).where(
-                col(DealStakeholder.deal_id) == deal.deal_id,
-                col(DealStakeholder.source) == StakeholderSource.CALENDAR_DISCOVERY,
+            current_count = await self._count_discovered_participants(
+                session,
+                deal_id=deal.deal_id,
+                source=StakeholderSource.CALENDAR_DISCOVERY,
             )
-            count_result = await session.execute(count_stmt)
-            current_count = count_result.scalar() or 0
 
             approval_status = (
                 ApprovalStatus.APPROVED
@@ -542,25 +533,35 @@ class DealMeetingMatcher:
             contact_result = await session.execute(contact_stmt)
             found_contact_id = contact_result.scalar_one_or_none()
 
-            # Calendar-discovered stakeholders start with neutral signals because
-            # research and user approval happen after the meeting match commits.
-            stakeholder = DealStakeholder(
+            if deal.integration_id is None:
+                logger.warning(
+                    "Skipping calendar-discovered participant without deal integration",
+                    extra={
+                        "event": "deal_meeting_discovery_missing_integration",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal.deal_id),
+                        "attendee_email": email,
+                    },
+                )
+                continue
+
+            participant = CRMDealParticipant(
                 organisation_id=self.organisation_id,
                 integration_id=deal.integration_id,
                 deal_id=deal.deal_id,
-                email=email,
-                name=attendee.display_name,
-                contact_id=found_contact_id,
-                source=StakeholderSource.CALENDAR_DISCOVERY,
-                approval_status=approval_status,
-                stance=StakeholderStance.UNKNOWN,
-                temperature=StakeholderTemperature.UNKNOWN,
-                engagement_score=0.0,
+                participant_type=CRMParticipantType.CONTACT,
+                related_local_id=found_contact_id,
+                related_name=attendee.display_name,
+                related_email=email,
+                participant_source=StakeholderSource.CALENDAR_DISCOVERY.value,
+                approval_status=approval_status.value,
+                stance=StakeholderStance.UNKNOWN.value,
+                temperature=StakeholderTemperature.UNKNOWN.value,
                 last_contact_at=contact_time,
             )
-            session.add(stakeholder)
+            session.add(participant)
             await session.flush()
-            self._pending_research.append((stakeholder.stakeholder_id, deal.deal_id))
+            self._pending_research.append((participant.participant_id, deal.deal_id))
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -592,6 +593,39 @@ class DealMeetingMatcher:
             )
 
         return discovered
+
+    async def _find_contact_participant_by_email(
+        self,
+        session: AsyncSession,
+        *,
+        deal_id: UUID,
+        email: str,
+    ) -> CRMDealParticipant | None:
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            func.lower(func.trim(col(CRMDealParticipant.related_email))) == email,
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def _count_discovered_participants(
+        self,
+        session: AsyncSession,
+        *,
+        deal_id: UUID,
+        source: StakeholderSource,
+    ) -> int:
+        stmt = select(func.count()).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.participant_source) == source.value,
+        )
+        result = await session.execute(stmt)
+        return result.scalar() or 0
 
     async def _dispatch_pending_research(self) -> None:
         """Dispatch research for stakeholders queued during sync."""
@@ -1079,21 +1113,23 @@ class DealMeetingMatcher:
         if not participant_emails:
             return 0
 
-        stmt = select(DealStakeholder).where(
-            col(DealStakeholder.organisation_id) == self.organisation_id,
-            col(DealStakeholder.deal_id) == deal_id,
-            col(DealStakeholder.is_deleted).is_(False),
-            func.lower(DealStakeholder.email).in_(participant_emails),
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
+            func.lower(CRMDealParticipant.related_email).in_(participant_emails),
         )
         result = await session.execute(stmt)
-        stakeholders = list(result.scalars().all())
+        participants = list(result.scalars().all())
 
         updated_count = 0
         updated_at = datetime.now(UTC)
-        for stakeholder in stakeholders:
-            if stakeholder.last_contact_at is None or contact_time > stakeholder.last_contact_at:
-                stakeholder.last_contact_at = contact_time
-                stakeholder.updated_at = updated_at
+        for participant in participants:
+            if participant.last_contact_at is None or contact_time > participant.last_contact_at:
+                participant.last_contact_at = contact_time
+                participant.updated_at = updated_at
                 updated_count += 1
 
         return updated_count

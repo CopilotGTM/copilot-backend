@@ -79,7 +79,6 @@ tools/
 - `stance`: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, UNKNOWN
 - `decision_power`: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, UNKNOWN
 - `temperature`: HOT, WARM, COLD
-- `engagement_score`: 0-100
 - `last_contact_at`, `source`
 
 ---
@@ -97,7 +96,7 @@ tools/
 **Returns**: Detailed stakeholder info including:
 
 - All fields from `list_deal_stakeholders`
-- `deal_id`, `champion_potential` (0-100 score)
+- `deal_id`
 - `motivation`: AI-extracted motivation/goals
 - `pain_points`: List of AI-extracted pain points
 - `keywords`: List of relevant topics
@@ -358,8 +357,8 @@ def _register_tool_factories(self) -> None:
 Always use `cast(Any, Model).__table__.c` for SQLModel column access to satisfy type checker:
 
 ```python
-c = cast(Any, DealStakeholder).__table__.c
-stmt = select(DealStakeholder).where(c.organisation_id == org_id)
+c = cast(Any, CRMDealParticipant).__table__.c
+stmt = select(CRMDealParticipant).where(c.organisation_id == org_id)
 ```
 
 ### Session Locking

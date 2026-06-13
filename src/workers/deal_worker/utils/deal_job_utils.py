@@ -18,8 +18,12 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
 # Re-export from shared module so existing imports keep working
@@ -76,7 +80,7 @@ async def get_event(
 
 async def get_stakeholders(
     session: AsyncSession, org_id: UUID, deal_id: UUID
-) -> list[DealStakeholder]:
+) -> list[CRMDealParticipant]:
     """Load all stakeholders for a deal.
 
     Args:
@@ -85,11 +89,14 @@ async def get_stakeholders(
         deal_id: Deal ID to load stakeholders for
 
     Returns:
-        List of DealStakeholder entities
+        List of contact participant entities
     """
-    stmt = select(DealStakeholder).where(
-        col(DealStakeholder.deal_id) == deal_id,
-        col(DealStakeholder.organisation_id) == org_id,
+    stmt = select(CRMDealParticipant).where(
+        col(CRMDealParticipant.deal_id) == deal_id,
+        col(CRMDealParticipant.organisation_id) == org_id,
+        col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
+        col(CRMDealParticipant.is_deleted).is_(False),
+        col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -331,10 +338,13 @@ async def count_deal_stakeholders(
 
     stmt = (
         select(func.count())
-        .select_from(DealStakeholder)
+        .select_from(CRMDealParticipant)
         .where(
-            col(DealStakeholder.deal_id) == deal_id,
-            col(DealStakeholder.organisation_id) == org_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.organisation_id) == org_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
         )
     )
     result = await session.execute(stmt)
@@ -709,7 +719,7 @@ def _get_event_attendees_info(event: CalendarEvent) -> str:
 def build_briefing_context_string(
     deal: CRMDeal,
     event: CalendarEvent,
-    stakeholders: list[DealStakeholder],
+    stakeholders: list[CRMDealParticipant],
     previous_meeting_transcripts: list[dict] | None = None,
 ) -> str:
     """Build the context string for the briefing agent.
@@ -725,7 +735,10 @@ def build_briefing_context_string(
         Formatted context string for the briefing agent
     """
     stakeholder_info = "\n".join(
-        [f"- {s.name} ({s.job_title}): {s.stance} (Temp: {s.temperature})" for s in stakeholders]
+        [
+            f"- {s.related_name} ({s.job_title}): {s.stance} (Temp: {s.temperature})"
+            for s in stakeholders
+        ]
     )
 
     # Get attendees for the upcoming meeting
@@ -780,7 +793,7 @@ def build_summary_context_string(
     deal: CRMDeal,
     event: CalendarEvent,
     transcript: str,
-    stakeholders: list[DealStakeholder] | None = None,
+    stakeholders: list[CRMDealParticipant] | None = None,
 ) -> str:
     """Build the context string for the summary agent.
 
@@ -796,7 +809,7 @@ def build_summary_context_string(
     stakeholder_info = ""
     if stakeholders:
         stakeholder_info = "\n".join(
-            [f"- {s.name} ({s.job_title}): {s.stance}" for s in stakeholders]
+            [f"- {s.related_name} ({s.job_title}): {s.stance}" for s in stakeholders]
         )
 
     attendees_info = ""

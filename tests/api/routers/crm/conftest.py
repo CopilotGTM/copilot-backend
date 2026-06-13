@@ -109,8 +109,6 @@ class FakeStakeholder:
         stance: StakeholderStance = StakeholderStance.UNKNOWN,
         temperature: StakeholderTemperature = StakeholderTemperature.UNKNOWN,
         decision_power: DecisionPower = DecisionPower.UNKNOWN,
-        engagement_score: float = 0.0,
-        champion_potential: float = 0.0,
         last_contact_at: datetime | None = None,
         contact_id: UUID | None = None,
         motivation: str | None = None,
@@ -133,8 +131,6 @@ class FakeStakeholder:
         self.stance = stance
         self.temperature = temperature
         self.decision_power = decision_power
-        self.engagement_score = engagement_score
-        self.champion_potential = champion_potential
         self.last_contact_at = last_contact_at
         self.contact_id = contact_id
         self.motivation = motivation
@@ -296,12 +292,10 @@ class FakeStakeholdersService:
                 "decision_power": s.decision_power.value
                 if hasattr(s.decision_power, "value")
                 else s.decision_power,
-                "champion_potential": s.champion_potential,
                 "motivation": s.motivation,
                 "pain_points": s.pain_points,
                 "keywords": s.keywords,
                 "last_contact_at": s.last_contact_at,
-                "engagement_score": s.engagement_score,
                 "temperature": s.temperature.value
                 if hasattr(s.temperature, "value")
                 else s.temperature,
@@ -387,7 +381,7 @@ class FakeStakeholdersService:
         if not updates:
             raise StakeholdersServiceError("No fields provided for update", status_code=400)
 
-        non_nullable_fields = {"stance", "decision_power", "champion_potential"}
+        non_nullable_fields = {"stance", "decision_power"}
         null_non_nullable = [
             field for field in non_nullable_fields if field in updates and updates[field] is None
         ]
@@ -429,8 +423,6 @@ class FakeStakeholdersService:
                 stakeholder.department = request.department
                 stakeholder.stance = request.stance
                 stakeholder.decision_power = request.decision_power
-                if request.champion_potential is not None:
-                    stakeholder.champion_potential = request.champion_potential
                 stakeholder.motivation = request.motivation
                 stakeholder.pain_points = request.pain_points or []
                 stakeholder.external_links = [
@@ -462,9 +454,6 @@ class FakeStakeholdersService:
             approval_status=ApprovalStatus.APPROVED,
             stance=request.stance,
             decision_power=request.decision_power,
-            champion_potential=request.champion_potential
-            if request.champion_potential is not None
-            else 50.0,
             motivation=request.motivation,
             pain_points=request.pain_points,
             external_links=[link.model_dump() for link in request.external_links or []],
@@ -491,8 +480,6 @@ class FakeStakeholdersService:
                         "recorded_at": snapshot.get("recorded_at"),
                         "stance": snapshot.get("stance"),
                         "temperature": snapshot.get("temperature"),
-                        "engagement_score": snapshot.get("engagement_score"),
-                        "champion_potential": snapshot.get("champion_potential"),
                         "decision_power": snapshot.get("decision_power"),
                     }
                 )
@@ -513,12 +500,10 @@ class FakeStakeholdersService:
             "decision_power": stakeholder.decision_power.value
             if hasattr(stakeholder.decision_power, "value")
             else stakeholder.decision_power,
-            "champion_potential": stakeholder.champion_potential,
             "motivation": stakeholder.motivation,
             "pain_points": stakeholder.pain_points,
             "keywords": stakeholder.keywords,
             "last_contact_at": stakeholder.last_contact_at,
-            "engagement_score": stakeholder.engagement_score,
             "temperature": stakeholder.temperature.value
             if hasattr(stakeholder.temperature, "value")
             else stakeholder.temperature,
@@ -634,8 +619,6 @@ class FakeStakeholdersService:
                     "job_title": stakeholder.job_title,
                     "stance": stakeholder.stance.value,
                     "decision_power": stakeholder.decision_power.value,
-                    "champion_potential": stakeholder.champion_potential,
-                    "engagement_score": stakeholder.engagement_score,
                     "temperature": stakeholder.temperature.value,
                     "source": stakeholder.source.value,
                     "approval_status": stakeholder.approval_status.value,

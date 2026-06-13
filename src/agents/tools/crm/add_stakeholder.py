@@ -129,7 +129,7 @@ def _job_summary(job: Any) -> dict[str, str]:
     }
 
 
-def _research_job_summary(job_id: UUID | None) -> dict[str, str | None] | None:
+def _research_job_summary(job_id: UUID | str | None) -> dict[str, str | None] | None:
     if not job_id:
         return None
     return {
@@ -152,7 +152,7 @@ def _post_create_status(
 
 
 def _stakeholder_name(stakeholder: Any) -> str:
-    return stakeholder.name or stakeholder.email
+    return str(stakeholder.name or stakeholder.email)
 
 
 def _stakeholder_added_text_fallback(stakeholder: Any, deal_name: str) -> str:
@@ -262,7 +262,7 @@ def _created_stakeholder_result(
     deal_name: str,
     stakeholder: Any,
     processing_jobs: list[Any],
-    research_job_id: UUID | None,
+    research_job_id: UUID | str | None,
     processing_error: str | None = None,
     research_error: str | None = None,
 ) -> dict[str, Any]:
@@ -278,7 +278,6 @@ def _created_stakeholder_result(
         "phone_number": getattr(stakeholder, "phone_number", None),
         "stance": _enum_value(getattr(stakeholder, "stance", None)),
         "decision_power": _enum_value(getattr(stakeholder, "decision_power", None)),
-        "champion_potential": getattr(stakeholder, "champion_potential", None),
         "approval_status": _enum_value(getattr(stakeholder, "approval_status", None)),
         "processing_jobs": processing_job_summaries,
         "research_job": _research_job_summary(research_job_id),
@@ -315,7 +314,6 @@ async def add_stakeholder_direct(
     department: str | None = None,
     stance: str | None = None,
     decision_power: str | None = None,
-    champion_potential: float | None = None,
     motivation: str | None = None,
     pain_points: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -368,7 +366,6 @@ async def add_stakeholder_direct(
             department=_clean_optional(department),
             stance=parsed_stance or StakeholderStance.UNKNOWN,
             decision_power=parsed_decision_power or DecisionPower.UNKNOWN,
-            champion_potential=champion_potential,
             motivation=_clean_optional(motivation),
             pain_points=pain_points,
             external_links=None,
@@ -599,23 +596,23 @@ async def add_stakeholder_form(
     if channel == "slack":
         from src.service.bots.slack_bot_service import SlackBotService
 
-        bot_service = SlackBotService()
+        slack_bot_service = SlackBotService()
         blocks = card_payload.get("blocks")
         text_fallback = card_payload.get("text") or "Add stakeholder to deal form"
         if blocks:
-            sent = await bot_service.send_block_kit_message(
+            sent = await slack_bot_service.send_block_kit_message(
                 team_id=team_id,
                 channel_id=channel_id,
                 blocks=blocks,
                 text_fallback=text_fallback,
             )
         else:
-            sent = await bot_service._send_message(team_id, channel_id, text_fallback)
+            sent = await slack_bot_service._send_message(team_id, channel_id, text_fallback)
     else:
         from src.service.bots.teams_bot_service import TeamsBotService
 
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
+        teams_bot_service = TeamsBotService()
+        sent = await teams_bot_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
             payload=card_payload,
@@ -657,7 +654,6 @@ def create_add_stakeholder(
         department: str | None = None,
         stance: str | None = None,
         decision_power: str | None = None,
-        champion_potential: float | None = None,
         motivation: str | None = None,
         pain_points: list[str] | None = None,
     ) -> dict[str, Any] | None:
@@ -692,7 +688,6 @@ def create_add_stakeholder(
                     NEUTRAL/DETRACTOR/BLOCKER)
             decision_power: Optional decision power (UNKNOWN/
                            DECISION_MAKER/INFLUENCER/EVALUATOR/GATEKEEPER/END_USER)
-            champion_potential: Optional 0-100 champion potential score
             motivation: Optional motivation/context
             pain_points: Optional list of pain points
 
@@ -725,7 +720,6 @@ def create_add_stakeholder(
                 "department": department,
                 "stance": stance,
                 "decision_power": decision_power,
-                "champion_potential": champion_potential,
                 "motivation": motivation,
                 "pain_points": pain_points,
             },

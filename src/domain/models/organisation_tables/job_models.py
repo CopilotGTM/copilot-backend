@@ -262,9 +262,11 @@ class DealJobs(TimestampMixin, table=True):
     )
     stakeholder_id: UUID | None = Field(
         default=None,
-        foreign_key="deal_stakeholders.stakeholder_id",
         index=True,
-        description="Optional: Specific stakeholder (for stakeholder-related jobs)",
+        description=(
+            "Optional: Specific stakeholder for stakeholder-related jobs. During the "
+            "participant-backed transition this stores CRMDealParticipant.participant_id."
+        ),
     )
 
     # Job state
