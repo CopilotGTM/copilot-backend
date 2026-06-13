@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
     AUTOMATED_PIPELINE_USER_ID,
@@ -29,14 +30,13 @@ class _Result:
 class _Session:
     """Fake org session for dispatch helper tests."""
 
-    def __init__(self, stakeholder, *execute_rows):
-        self.stakeholder = stakeholder
+    def __init__(self, *execute_rows):
         self.execute_rows = list(execute_rows)
         self.commits = 0
 
     async def get(self, model, item_id):
-        """Return the stakeholder under test."""
-        return self.stakeholder
+        """Dispatch should look up participants with scoped SELECT statements."""
+        return None
 
     async def execute(self, stmt):
         """Return the next configured query result."""
@@ -63,12 +63,15 @@ async def test_user_dispatch_claims_same_deal_automated_active_job(monkeypatch) 
     """Returned research jobs must be owned by the requesting user for SSE access."""
     organisation_id = uuid4()
     deal_id = uuid4()
-    stakeholder_id = uuid4()
+    participant_id = uuid4()
     user_id = uuid4()
-    stakeholder = SimpleNamespace(
-        stakeholder_id=stakeholder_id,
-        approval_status=ApprovalStatus.APPROVED,
-        email="buyer@example.com",
+    participant = SimpleNamespace(
+        participant_id=participant_id,
+        participant_type=CRMParticipantType.CONTACT,
+        is_deleted=False,
+        approval_status=ApprovalStatus.APPROVED.value,
+        related_local_id=None,
+        related_email="buyer@example.com",
         deal_id=deal_id,
     )
     existing_job = SimpleNamespace(
@@ -77,10 +80,10 @@ async def test_user_dispatch_claims_same_deal_automated_active_job(monkeypatch) 
         status=JobStatus.IN_PROGRESS,
         created_at=datetime.now(UTC),
         deal_id=deal_id,
-        stakeholder_id=stakeholder_id,
+        stakeholder_id=participant_id,
         job_metadata={"trigger": "stakeholder_created"},
     )
-    session = _Session(stakeholder, None, existing_job)
+    session = _Session(participant, None, existing_job)
 
     monkeypatch.setattr(
         "src.workers.deal_worker.utils.stakeholder_research_dispatch.acquire_org_async_session",
@@ -89,7 +92,7 @@ async def test_user_dispatch_claims_same_deal_automated_active_job(monkeypatch) 
 
     returned_job_id = await dispatch_stakeholder_research_async(
         organisation_id=organisation_id,
-        stakeholder_id=stakeholder_id,
+        stakeholder_id=participant_id,
         deal_id=deal_id,
         user_id=user_id,
     )
@@ -97,6 +100,6 @@ async def test_user_dispatch_claims_same_deal_automated_active_job(monkeypatch) 
     assert returned_job_id == str(existing_job.job_id)
     assert existing_job.user_id == user_id
     assert existing_job.deal_id == deal_id
-    assert existing_job.stakeholder_id == stakeholder_id
+    assert existing_job.stakeholder_id == participant_id
     assert existing_job.job_metadata["claimed_from"] == "automated_pipeline"
     assert session.commits == 1

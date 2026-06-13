@@ -1,4 +1,4 @@
-"""Tests for stakeholder sync manual override protections."""
+"""Tests for participant-backed stakeholder sync behavior."""
 
 from __future__ import annotations
 
@@ -10,12 +10,11 @@ from uuid import uuid4
 import pytest
 import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import IntegrityError
-from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    StakeholderSource,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
     OrgStakeholderSyncResult,
     StakeholderSyncResult,
@@ -23,273 +22,119 @@ from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_serv
 )
 
 
-def test_get_manual_overrides_reads_stakeholder_data() -> None:
-    service = StakeholderSyncService(uuid4())
-    stakeholder = SimpleNamespace(stakeholder_data={"manual_overrides": ["name", "job_title"]})
-
-    overrides = service._get_manual_overrides(stakeholder)  # noqa: SLF001 - internal behavior test
-
-    assert overrides == {"name", "job_title"}
-
-
-@pytest.mark.asyncio
-async def test_ensure_stakeholder_keeps_rejected_status_and_manual_fields() -> None:
-    service = StakeholderSyncService(uuid4())
-    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    session = SimpleNamespace(add=MagicMock())
-    participant_id = uuid4()
-    participant = SimpleNamespace(
-        related_email="person@example.com",
-        related_name="CRM Name",
-        participant_id=participant_id,
-    )
-    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
-    existing = SimpleNamespace(
-        approval_status=ApprovalStatus.REJECTED,
-        source=StakeholderSource.CRM,
-        source_reference_id=None,
-        is_deleted=True,
-        updated_at=None,
-        name="Manual Name",
-        stakeholder_data={"manual_overrides": ["name", "job_title"]},
-    )
-
-    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
-        session=session,
-        deal=deal,
-        participant=participant,
-        existing=existing,
-    )
-
-    assert was_created is False
-    assert existing.approval_status == ApprovalStatus.REJECTED
-    assert existing.is_deleted is True
-    assert existing.name == "Manual Name"
-    assert existing.source_reference_id == participant_id
-    session.add.assert_called_once_with(existing)
-    service._enrich_from_contact.assert_awaited_once()  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_ensure_stakeholder_does_not_convert_manual_source() -> None:
-    service = StakeholderSyncService(uuid4())
-    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    session = SimpleNamespace(add=MagicMock())
-    participant = SimpleNamespace(
-        related_email="person@example.com",
-        related_name="CRM Name",
-        participant_id=uuid4(),
-    )
-    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
-    existing = SimpleNamespace(
-        approval_status=ApprovalStatus.APPROVED,
-        source=StakeholderSource.MANUAL,
-        source_reference_id=None,
-        is_deleted=True,
-        updated_at=None,
-        name=None,
-        stakeholder_data={},
-    )
-
-    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
-        session=session,
-        deal=deal,
-        participant=participant,
-        existing=existing,
-    )
-
-    assert was_created is False
-    assert existing.source == StakeholderSource.MANUAL
-    assert existing.approval_status == ApprovalStatus.APPROVED
-    assert existing.is_deleted is False
-
-
-@pytest.mark.asyncio
-async def test_ensure_stakeholder_skips_write_when_no_values_change() -> None:
-    service = StakeholderSyncService(uuid4())
-    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    session = SimpleNamespace(add=MagicMock())
-    participant_id = uuid4()
-    participant = SimpleNamespace(
-        related_email="person@example.com",
-        related_name="Same Name",
-        participant_id=participant_id,
-    )
-    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
-    original_updated_at = object()
-    existing = SimpleNamespace(
-        approval_status=ApprovalStatus.APPROVED,
-        source=StakeholderSource.CRM,
-        source_reference_id=participant_id,
-        is_deleted=False,
-        updated_at=original_updated_at,
-        name="Same Name",
-        stakeholder_data={},
-    )
-
-    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
-        session=session,
-        deal=deal,
-        participant=participant,
-        existing=existing,
-    )
-
-    assert was_created is False
-    assert existing.updated_at is original_updated_at
-    session.add.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_ensure_stakeholder_skips_whitespace_only_email() -> None:
-    service = StakeholderSyncService(uuid4())
-    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    session = SimpleNamespace(add=MagicMock(), flush=AsyncMock())
-    participant = SimpleNamespace(
-        related_email="   ",
-        related_name="Whitespace Contact",
-        participant_id=uuid4(),
-    )
-    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
-
-    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
-        session=session,
-        deal=deal,
-        participant=participant,
-        existing=None,
-    )
-
-    assert was_created is False
-    session.add.assert_not_called()
-    session.flush.assert_not_awaited()
-    service._enrich_from_contact.assert_not_awaited()  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_ensure_stakeholder_recovers_from_duplicate_insert_race() -> None:
-    service = StakeholderSyncService(uuid4())
-    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    participant_id = uuid4()
-    participant = SimpleNamespace(
-        related_email="Info@Salesforce.com",
-        related_name="CRM Name",
-        participant_id=participant_id,
-    )
-    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
-    existing = SimpleNamespace(
-        approval_status=ApprovalStatus.APPROVED,
-        source=StakeholderSource.CRM,
-        source_reference_id=None,
-        is_deleted=False,
-        updated_at=None,
-        name=None,
-        stakeholder_data={},
-    )
-    service._load_stakeholder_by_email = AsyncMock(  # type: ignore[attr-defined,method-assign]
-        return_value=existing
-    )
-    integrity_error = IntegrityError(
-        "INSERT INTO deal_stakeholders ...",
-        {},
-        Exception('duplicate key violates unique constraint "uq_deal_stakeholder_email"'),
-    )
-    session = SimpleNamespace(
-        add=MagicMock(),
-        flush=AsyncMock(side_effect=integrity_error),
-        begin_nested=MagicMock(return_value=_FakeSavepoint()),
-    )
-
-    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
-        session=session,
-        deal=deal,
-        participant=participant,
-        existing=None,
-    )
-
-    assert was_created is False
-    assert existing.source_reference_id == participant_id
-    assert existing.name == "CRM Name"
-    service._load_stakeholder_by_email.assert_awaited_once_with(  # type: ignore[attr-defined]
-        session,
-        deal.deal_id,
-        "info@salesforce.com",
-    )
-
-
-@pytest.mark.asyncio
-async def test_enrich_from_contact_respects_manual_override_fields() -> None:
-    service = StakeholderSyncService(uuid4())
-    contact = SimpleNamespace(
-        contact_id=uuid4(), full_name="CRM Name", job_title="CRM Title", phone="+1 800-CRM"
-    )
-
-    scalars_result = MagicMock()
-    scalars_result.first.return_value = contact
-    execute_result = MagicMock()
-    execute_result.scalars.return_value = scalars_result
-    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
-
-    stakeholder = SimpleNamespace(
-        contact_id=None, name="Manual Name", job_title="Manual Title", phone_number="+1 800-MANUAL"
-    )
-
-    await service._enrich_from_contact(  # noqa: SLF001 - internal behavior test
-        session=session,
-        stakeholder=stakeholder,
-        email="person@example.com",
-        manual_overrides={"name", "job_title"},
-    )
-
-    assert stakeholder.contact_id == contact.contact_id
-    assert stakeholder.name == "Manual Name"
-    assert stakeholder.job_title == "Manual Title"
-
-
 @pytest.mark.asyncio
 async def test_sync_deal_collapses_duplicate_contact_participants_by_normalized_email() -> None:
     organisation_id = uuid4()
     deal_id = uuid4()
     service = StakeholderSyncService(organisation_id)
+    service._internal_domains = set()
     service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    service._load_stakeholders = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    service._reject_internal_stakeholders = AsyncMock(return_value=0)  # type: ignore[method-assign]
 
+    first_participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT.value,
+        related_email="Info@Salesforce.com",
+        related_name="Salesforce Info",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+    duplicate_participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_email=" info@salesforce.com ",
+        related_name="Salesforce Billing",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
     deal = SimpleNamespace(
         deal_id=deal_id,
         integration_id=uuid4(),
-        participants=[
-            SimpleNamespace(
-                participant_id=uuid4(),
-                participant_type=CRMParticipantType.CONTACT,
-                related_email="Info@Salesforce.com",
-                related_name="Salesforce Info",
-                relationship_role="decision_maker",
-            ),
-            SimpleNamespace(
-                participant_id=uuid4(),
-                participant_type=CRMParticipantType.CONTACT,
-                related_email=" info@salesforce.com ",
-                related_name="Salesforce Billing",
-                relationship_role="billing_contact",
-            ),
-        ],
+        participants=[first_participant, duplicate_participant],
     )
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
-    session = SimpleNamespace(add=MagicMock(), flush=AsyncMock())
+    session = SimpleNamespace(add=MagicMock())
 
     result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
 
     assert result.created == 1
-    assert result.updated == 0
+    assert result.updated == 1
     assert result.skipped == 1
-    session.add.assert_called_once()
-    session.flush.assert_awaited_once()
-    stakeholder = session.add.call_args.args[0]
-    assert stakeholder.email == "info@salesforce.com"
+    assert first_participant.related_email == "info@salesforce.com"
+    session.add.assert_called_once_with(first_participant)
+    assert service._pending_research == [(first_participant.participant_id, deal_id)]
+
+
+@pytest.mark.asyncio
+async def test_sync_deal_rejects_internal_domain_contact_participants() -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+    service._internal_domains = {"copilotgtm.com"}
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_email="seller@copilotgtm.com",
+        related_name="Internal Seller",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+    deal = SimpleNamespace(deal_id=deal_id, integration_id=uuid4(), participants=[participant])
+    service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
+    session = SimpleNamespace(add=MagicMock())
+
+    result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
+
+    assert result.rejected == 1
+    assert result.created == 0
+    assert participant.approval_status == ApprovalStatus.REJECTED.value
+    session.add.assert_called_once_with(participant)
+    assert service._pending_research == []
+
+
+@pytest.mark.asyncio
+async def test_enrich_from_contact_updates_participant_profile_snapshot() -> None:
+    organisation_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+    contact_id = uuid4()
+    contact = SimpleNamespace(
+        contact_id=contact_id,
+        full_name="CRM Name",
+        job_title="VP Sales",
+        phone="+1 800-555-0123",
+        mobile_phone=None,
+        properties={"department": "Revenue", "external_links": [{"type": "linkedin"}]},
+    )
+    scalars_result = MagicMock()
+    scalars_result.first.return_value = contact
+    execute_result = MagicMock()
+    execute_result.scalars.return_value = scalars_result
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+    participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        participant_type=CRMParticipantType.CONTACT,
+        related_email="person@example.com",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+
+    changed = await service._enrich_from_contact(  # noqa: SLF001
+        session=session,
+        stakeholder=participant,
+        email="person@example.com",
+    )
+
+    assert changed is True
+    assert participant.related_local_id == contact_id
+    assert participant.related_name == "CRM Name"
+    assert participant.job_title == "VP Sales"
+    assert participant.phone_number == "+1 800-555-0123"
+    assert participant.department == "Revenue"
+    assert participant.external_links == [{"type": "linkedin"}]
 
 
 @pytest.mark.asyncio
@@ -300,7 +145,7 @@ async def test_load_deal_locks_deal_row_to_serialize_concurrent_syncs() -> None:
     execute_result.scalars.return_value.first.return_value = None
     session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
 
-    await service._load_deal(session, uuid4())  # noqa: SLF001 - query contract test
+    await service._load_deal(session, uuid4())  # noqa: SLF001
 
     stmt = session.execute.await_args.args[0]
     compiled_query = str(
@@ -312,21 +157,16 @@ async def test_load_deal_locks_deal_row_to_serialize_concurrent_syncs() -> None:
     assert "FOR UPDATE" in compiled_query
 
 
-# ---------------------------------------------------------------------------
-# _reject_internal_stakeholders
-# ---------------------------------------------------------------------------
-
-
 class _FakeScalarResult:
-    def __init__(self, rows: list[SimpleNamespace]):
+    def __init__(self, rows: list[CRMDealParticipant]):
         self._rows = rows
 
-    def all(self) -> list[SimpleNamespace]:
+    def all(self) -> list[CRMDealParticipant]:
         return self._rows
 
 
 class _FakeExecuteResult:
-    def __init__(self, rows: list[SimpleNamespace]):
+    def __init__(self, rows: list[CRMDealParticipant]):
         self._rows = rows
 
     def scalars(self) -> _FakeScalarResult:
@@ -334,19 +174,64 @@ class _FakeExecuteResult:
 
 
 class _FakeSession:
-    def __init__(self, rows: list[SimpleNamespace]):
+    def __init__(self, rows: list[CRMDealParticipant]):
         self._rows = rows
+        self.add = MagicMock()
 
     async def execute(self, _stmt):  # noqa: ANN001
         return _FakeExecuteResult(self._rows)
 
 
-class _FakeSavepoint:
-    async def __aenter__(self):
-        return None
+class TestRejectInternalStakeholders:
+    @pytest.mark.asyncio
+    async def test_rejects_internal_emails(self) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        service = StakeholderSyncService(organisation_id)
+        service._internal_domains = {"copilotgtm.com"}
+        internal = CRMDealParticipant(
+            organisation_id=organisation_id,
+            integration_id=uuid4(),
+            deal_id=deal_id,
+            participant_type=CRMParticipantType.CONTACT,
+            related_email="saksham@copilotgtm.com",
+            approval_status=ApprovalStatus.APPROVED.value,
+        )
+        external = CRMDealParticipant(
+            organisation_id=organisation_id,
+            integration_id=uuid4(),
+            deal_id=deal_id,
+            participant_type=CRMParticipantType.CONTACT,
+            related_email="buyer@acme.com",
+            approval_status=ApprovalStatus.APPROVED.value,
+        )
+        session = _FakeSession([internal, external])
 
-    async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
-        return False
+        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert count == 1
+        assert internal.approval_status == ApprovalStatus.REJECTED.value
+        assert external.approval_status == ApprovalStatus.APPROVED.value
+        session.add.assert_called_once_with(internal)
+
+    @pytest.mark.asyncio
+    async def test_no_internal_domains_returns_zero(self) -> None:
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = set()
+        participant = CRMDealParticipant(
+            organisation_id=uuid4(),
+            integration_id=uuid4(),
+            deal_id=uuid4(),
+            participant_type=CRMParticipantType.CONTACT,
+            related_email="anyone@anywhere.com",
+            approval_status=ApprovalStatus.APPROVED.value,
+        )
+        session = _FakeSession([participant])
+
+        count = await service._reject_internal_stakeholders(session, uuid4())  # noqa: SLF001
+
+        assert count == 0
+        session.add.assert_not_called()
 
 
 class _FakeDealIdQueryResult:
@@ -381,99 +266,6 @@ def _session_generator_factory(
         return _generator()
 
     return _factory
-
-
-class TestRejectInternalStakeholders:
-    @pytest.mark.asyncio
-    async def test_rejects_internal_emails(self) -> None:
-        service = StakeholderSyncService(uuid4())
-        service._internal_domains = {"copilotgtm.com"}
-
-        s_internal = SimpleNamespace(
-            email="saksham@copilotgtm.com",
-            approval_status=ApprovalStatus.APPROVED,
-        )
-        s_external = SimpleNamespace(
-            email="buyer@acme.com",
-            approval_status=ApprovalStatus.APPROVED,
-        )
-        session = _FakeSession([s_internal, s_external])
-        deal_id = uuid4()
-
-        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
-
-        assert count == 1
-        assert s_internal.approval_status == ApprovalStatus.REJECTED
-        assert s_external.approval_status == ApprovalStatus.APPROVED
-
-    @pytest.mark.asyncio
-    async def test_preserves_external_emails(self) -> None:
-        service = StakeholderSyncService(uuid4())
-        service._internal_domains = {"copilotgtm.com"}
-
-        s1 = SimpleNamespace(email="buyer@acme.com", approval_status=ApprovalStatus.APPROVED)
-        s2 = SimpleNamespace(email="cto@bigco.com", approval_status=ApprovalStatus.PENDING)
-        session = _FakeSession([s1, s2])
-        deal_id = uuid4()
-
-        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
-
-        assert count == 0
-        assert s1.approval_status == ApprovalStatus.APPROVED
-        assert s2.approval_status == ApprovalStatus.PENDING
-
-    @pytest.mark.asyncio
-    async def test_skips_already_rejected(self) -> None:
-        """Already-REJECTED stakeholders are filtered by WHERE clause.
-
-        The fake session returns all rows, so we verify the method
-        is idempotent: an already-REJECTED stakeholder stays REJECTED.
-        """
-        service = StakeholderSyncService(uuid4())
-        service._internal_domains = {"copilotgtm.com"}
-
-        already_rejected = SimpleNamespace(
-            email="old@copilotgtm.com",
-            approval_status=ApprovalStatus.REJECTED,
-        )
-        session = _FakeSession([already_rejected])
-        deal_id = uuid4()
-
-        await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
-
-        assert already_rejected.approval_status == ApprovalStatus.REJECTED
-
-    @pytest.mark.asyncio
-    async def test_no_internal_domains_returns_zero(self) -> None:
-        service = StakeholderSyncService(uuid4())
-        service._internal_domains = set()
-
-        s1 = SimpleNamespace(email="anyone@anywhere.com", approval_status=ApprovalStatus.APPROVED)
-        session = _FakeSession([s1])
-        deal_id = uuid4()
-
-        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
-
-        assert count == 0
-        assert s1.approval_status == ApprovalStatus.APPROVED
-
-    @pytest.mark.asyncio
-    async def test_rejects_multiple_internal_domains(self) -> None:
-        service = StakeholderSyncService(uuid4())
-        service._internal_domains = {"copilotgtm.com", "copilot.io"}
-
-        s1 = SimpleNamespace(email="a@copilotgtm.com", approval_status=ApprovalStatus.APPROVED)
-        s2 = SimpleNamespace(email="b@copilot.io", approval_status=ApprovalStatus.APPROVED)
-        s3 = SimpleNamespace(email="buyer@acme.com", approval_status=ApprovalStatus.APPROVED)
-        session = _FakeSession([s1, s2, s3])
-        deal_id = uuid4()
-
-        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
-
-        assert count == 2
-        assert s1.approval_status == ApprovalStatus.REJECTED
-        assert s2.approval_status == ApprovalStatus.REJECTED
-        assert s3.approval_status == ApprovalStatus.APPROVED
 
 
 @pytest.mark.asyncio

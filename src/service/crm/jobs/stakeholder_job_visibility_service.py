@@ -155,6 +155,7 @@ class StakeholderJobVisibilityService:
                 "trigger": "stakeholder_created",
                 "operation_group_id": operation_group_id,
                 "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(stakeholder_id),
                 "deal_id": str(deal_id),
             },
         )

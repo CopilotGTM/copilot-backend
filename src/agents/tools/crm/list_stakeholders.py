@@ -20,12 +20,12 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    DealStakeholder,
-    DecisionPower,
-    StakeholderSource,
-    StakeholderStance,
-    StakeholderTemperature,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.service.crm.insights.participant_stakeholder_adapter import (
+    participant_to_stakeholder_detail_dict,
 )
 
 if TYPE_CHECKING:
@@ -72,19 +72,20 @@ async def list_deal_stakeholders(
 
     effective_limit = max(1, min(limit, 50))
 
-    # Use table columns for SQLAlchemy operations (type-safe pattern)
-    c = cast(Any, DealStakeholder).__table__.c
+    c = cast(Any, CRMDealParticipant).__table__.c
 
     # SECURITY: Both organisation_id and deal_id from context (immutable)
     stmt = (
-        select(DealStakeholder)
+        select(CRMDealParticipant)
         .where(
             c.organisation_id == organisation_id,
             c.deal_id == actual_deal_id,
+            c.participant_type == CRMParticipantType.CONTACT.value,
+            c.is_deleted.is_(False),
         )
         .order_by(
             c.decision_power.asc(),
-            c.engagement_score.desc(),
+            c.related_name.asc().nullslast(),
         )
         .limit(effective_limit)
     )
@@ -93,36 +94,30 @@ async def list_deal_stakeholders(
     async with context.acquire_session() as session:
         try:
             result = await session.execute(stmt)
-            stakeholders = result.scalars().all()
+            participants = result.scalars().all()
         except Exception as e:
             logger.exception(f"list_deal_stakeholders: database error: {e}")
             return []
 
         # Transform to output format (while session is active)
         output: list[dict[str, Any]] = []
-        for s in stakeholders:
+        for participant in participants:
+            payload = participant_to_stakeholder_detail_dict(participant)
             output.append(
                 {
-                    "stakeholder_id": str(s.stakeholder_id),
-                    "email": s.email,
-                    "name": s.name,
-                    "job_title": s.job_title,
-                    "phone_number": s.phone_number,
-                    "department": s.department,
-                    "stance": s.stance.value
-                    if isinstance(s.stance, StakeholderStance)
-                    else s.stance,
-                    "decision_power": s.decision_power.value
-                    if isinstance(s.decision_power, DecisionPower)
-                    else s.decision_power,
-                    "temperature": s.temperature.value
-                    if isinstance(s.temperature, StakeholderTemperature)
-                    else s.temperature,
-                    "engagement_score": s.engagement_score,
-                    "last_contact_at": s.last_contact_at.isoformat() if s.last_contact_at else None,
-                    "source": s.source.value
-                    if isinstance(s.source, StakeholderSource)
-                    else s.source,
+                    "stakeholder_id": str(payload["stakeholder_id"]),
+                    "email": payload["email"],
+                    "name": payload["name"],
+                    "job_title": payload["job_title"],
+                    "phone_number": payload["phone_number"],
+                    "department": payload["department"],
+                    "stance": payload["stance"],
+                    "decision_power": payload["decision_power"],
+                    "temperature": payload["temperature"],
+                    "last_contact_at": payload["last_contact_at"].isoformat()
+                    if payload["last_contact_at"]
+                    else None,
+                    "source": payload["source"],
                 }
             )
     # Session released

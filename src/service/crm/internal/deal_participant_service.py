@@ -86,8 +86,14 @@ class DealParticipantService:
             )
 
             role_key = relationship_role or ""
-            identity_key = str(related_local_id)
+            identity_key = self._participant_identity_key(
+                participant_type=participant_type,
+                related_local_id=related_local_id,
+                related_email=related_email,
+            )
             request_key = (participant_type.value, identity_key, role_key)
+            if participant_type == CRMParticipantType.CONTACT:
+                request_key = (participant_type.value, identity_key, "")
             if request_key in seen_keys:
                 skipped.append(
                     DealParticipantSkipped(
@@ -138,10 +144,7 @@ class DealParticipantService:
             participant.source_modified_at = now
             participant.synced_at = now
             participant.last_seen_at = now
-            participant.properties = {
-                **(participant.properties or {}),
-                "source": "internal_crm",
-            }
+            participant.participant_source = "MANUAL"
 
             self.session.add(participant)
             created.append(participant)
@@ -236,10 +239,7 @@ class DealParticipantService:
         participant.source_modified_at = now
         participant.synced_at = now
         participant.last_seen_at = now
-        participant.properties = {
-            **(participant.properties or {}),
-            "source": "internal_crm",
-        }
+        participant.participant_source = "MANUAL"
         self.session.add(participant)
         return participant
 
@@ -320,16 +320,34 @@ class DealParticipantService:
         if related_local_id is None:
             raise DealParticipantServiceError("Participant identity missing", status_code=400)
 
-        stmt = select(CRMDealParticipant).where(
+        filters = [
             c.organisation_id == self.organisation_id,
             c.integration_id == integration_id,
             c.deal_id == deal_id,
             c.participant_type == participant_type.value,
             c.related_local_id == related_local_id,
-            func.coalesce(c.relationship_role, "") == role_key,
-        )
+        ]
+        if participant_type != CRMParticipantType.CONTACT:
+            filters.append(func.coalesce(c.relationship_role, "") == role_key)
+
+        stmt = select(CRMDealParticipant).where(*filters)
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    def _participant_identity_key(
+        self,
+        *,
+        participant_type: CRMParticipantType,
+        related_local_id: UUID | None,
+        related_email: str | None,
+    ) -> str:
+        if related_local_id is not None:
+            return str(related_local_id)
+        if participant_type == CRMParticipantType.CONTACT:
+            email = self._normalize_email(related_email)
+            if email:
+                return email
+        raise DealParticipantServiceError("Participant identity missing", status_code=400)
 
     @staticmethod
     def _parse_participant_type(value: Any) -> CRMParticipantType:
@@ -416,6 +434,13 @@ class DealParticipantService:
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    @staticmethod
+    def _normalize_email(value: str | None) -> str | None:
+        cleaned = DealParticipantService._clean_string(value)
+        if not cleaned:
+            return None
+        return cleaned.lower()
 
     @staticmethod
     def _build_name(first_name: str | None, last_name: str | None) -> str | None:

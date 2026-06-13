@@ -83,6 +83,7 @@ async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(m
         assert job.job_metadata["trigger"] == "stakeholder_created"
         assert job.job_metadata["deal_id"] == str(deal_id)
         assert job.job_metadata["stakeholder_id"] == str(stakeholder_id)
+        assert job.job_metadata["participant_id"] == str(stakeholder_id)
 
     assert len(sent_chains) == 1
     assert sent_chains[0]["queue"] == "deal"

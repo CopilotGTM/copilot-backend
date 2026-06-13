@@ -305,10 +305,6 @@ class DealsStats(BaseModel):
 class StakeholderDetail(BaseModel):
     """Detailed view of a deal stakeholder.
 
-    Score Fields:
-    - champion_potential: 0-100 scale (percentage, e.g., 85 means 85%)
-    - engagement_score: 0-100 scale (percentage, e.g., 70 means 70%)
-
     Source Information:
     - source: Where the stakeholder was discovered (CRM, CALENDAR_DISCOVERY, EMAIL_DISCOVERY, MANUAL)
     - approval_status: Whether the stakeholder is approved for deal matching
@@ -318,6 +314,10 @@ class StakeholderDetail(BaseModel):
     """
 
     stakeholder_id: UUID
+    participant_id: UUID | None = Field(
+        None,
+        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
+    )
     deal_id: UUID
     contact_id: UUID | None = None
     email: str
@@ -327,16 +327,10 @@ class StakeholderDetail(BaseModel):
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
-    champion_potential: float = Field(
-        ..., description="Champion potential score (0-100 scale, e.g., 85 = 85%)"
-    )
     motivation: str | None = None
     pain_points: list[str] | None = None
     keywords: list[str] | None = None
     last_contact_at: datetime | None = None
-    engagement_score: float = Field(
-        ..., description="Engagement score (0-100 scale, e.g., 70 = 70%)"
-    )
     temperature: StakeholderTemperature
     source: StakeholderSource = Field(
         ...,
@@ -363,8 +357,6 @@ class StakeholderEngagementSnapshot(BaseModel):
     recorded_at: datetime = Field(..., description="When this snapshot was recorded")
     stance: str | None = Field(None, description="Stakeholder stance at this point")
     temperature: str | None = Field(None, description="Engagement temperature at this point")
-    engagement_score: float | None = Field(None, description="Engagement score (0-100)")
-    champion_potential: float | None = Field(None, description="Champion potential (0-100)")
     decision_power: str | None = Field(None, description="Decision power level at this point")
 
 
@@ -375,15 +367,15 @@ class StakeholderFullDetail(BaseModel):
     the engagement history showing how the stakeholder's metrics have
     changed over time (e.g., from COLD to WARM to HOT).
 
-    Score Fields:
-    - champion_potential: 0-100 scale (percentage, e.g., 85 means 85%)
-    - engagement_score: 0-100 scale (percentage, e.g., 70 means 70%)
-
     History:
     - engagement_history: Up to 15 most recent snapshots showing metric changes
     """
 
     stakeholder_id: UUID
+    participant_id: UUID | None = Field(
+        None,
+        description="Canonical CRMDealParticipant ID; equals stakeholder_id during transition",
+    )
     deal_id: UUID
     contact_id: UUID | None = None
     email: str
@@ -396,16 +388,10 @@ class StakeholderFullDetail(BaseModel):
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
-    champion_potential: float = Field(
-        ..., description="Champion potential score (0-100 scale, e.g., 85 = 85%)"
-    )
     motivation: str | None = None
     pain_points: list[str] | None = None
     keywords: list[str] | None = None
     last_contact_at: datetime | None = None
-    engagement_score: float = Field(
-        ..., description="Engagement score (0-100 scale, e.g., 70 = 70%)"
-    )
     temperature: StakeholderTemperature
     source: StakeholderSource = Field(
         ...,
@@ -463,14 +449,13 @@ class CreateStakeholderRequest(BaseModel):
     - These are the most commonly filled fields
 
     SECONDARY (collapsible/advanced section):
-    - department, champion_potential, motivation, pain_points, external_links
+    - department, motivation, pain_points, external_links
     - Power users may want to fill these upfront
 
     AUTO-SET (not in request):
     - source: Set to MANUAL
     - approval_status: Set to APPROVED
     - temperature: Set to UNKNOWN (calculated later)
-    - engagement_score: Set to 0 (calculated later)
     """
 
     # REQUIRED
@@ -563,24 +548,6 @@ class CreateStakeholderRequest(BaseModel):
         description="Department (e.g., 'Engineering', 'Finance', 'IT')",
         json_schema_extra={"ui_category": "secondary"},
     )
-    champion_potential: float | None = Field(
-        None,
-        ge=0,
-        le=100,
-        description="Your assessment of champion potential (0-100). Leave empty if unknown - defaults to 50 (neutral).",
-        json_schema_extra={
-            "ui_category": "secondary",
-            "ui_component": "slider",
-            "default_value": 50,
-            "presets": [
-                {"value": 0, "label": "Very Low"},
-                {"value": 25, "label": "Low"},
-                {"value": 50, "label": "Moderate (default)"},
-                {"value": 75, "label": "High"},
-                {"value": 100, "label": "Very High"},
-            ],
-        },
-    )
     motivation: str | None = Field(
         None,
         description="What drives this stakeholder? What do they care about?",
@@ -624,12 +591,6 @@ class UpdateStakeholderRequest(BaseModel):
     decision_power: DecisionPower | None = Field(
         None,
         description="Stakeholder's role in the buying decision",
-    )
-    champion_potential: float | None = Field(
-        None,
-        ge=0,
-        le=100,
-        description="Champion potential score (0-100)",
     )
     motivation: str | None = Field(
         None,

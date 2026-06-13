@@ -328,7 +328,7 @@ async def add_contact_to_deal(
         # Commit participant records so the async worker can see them
         await service.org_session.commit()
 
-        # Trigger stakeholder sync so DealStakeholder records are created
+        # Trigger stakeholder sync so mapping/research follows the participant update.
         if result.get("created"):
             try:
                 from src.workers.deal_worker.client import send_deal_task_async

@@ -34,7 +34,11 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -154,32 +158,30 @@ async def get_deal_details(
 
         # Fetch stakeholders if requested
         if include_stakeholders:
-            from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
-
-            stakeholder_c = cast(Any, DealStakeholder).__table__.c
+            participant_c = cast(Any, CRMDealParticipant).__table__.c
             stakeholder_stmt = (
-                select(DealStakeholder)
+                select(CRMDealParticipant)
                 .where(
-                    stakeholder_c.organisation_id == organisation_id,
-                    stakeholder_c.deal_id == parsed_deal_id,
+                    participant_c.organisation_id == organisation_id,
+                    participant_c.deal_id == parsed_deal_id,
+                    participant_c.participant_type == CRMParticipantType.CONTACT.value,
+                    participant_c.is_deleted.is_(False),
                 )
                 .limit(10)
             )
             try:
                 stakeholder_result = await session.execute(stakeholder_stmt)
-                stakeholders = stakeholder_result.scalars().all()
+                participants = stakeholder_result.scalars().all()
                 output["stakeholders"] = [
                     {
-                        "stakeholder_id": str(s.stakeholder_id),
-                        "name": s.name,
-                        "email": s.email,
-                        "job_title": s.job_title,
-                        "decision_power": s.decision_power.value
-                        if hasattr(s.decision_power, "value")
-                        else s.decision_power,
-                        "stance": s.stance.value if hasattr(s.stance, "value") else s.stance,
+                        "stakeholder_id": str(participant.participant_id),
+                        "name": participant.related_name,
+                        "email": participant.related_email,
+                        "job_title": participant.job_title,
+                        "decision_power": participant.decision_power,
+                        "stance": participant.stance,
                     }
-                    for s in stakeholders
+                    for participant in participants
                 ]
             except Exception as e:
                 logger.warning("get_deal_details: error fetching stakeholders: %s", e)

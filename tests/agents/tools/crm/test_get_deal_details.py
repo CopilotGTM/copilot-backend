@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -69,15 +70,15 @@ def _make_stakeholder(
     sid: str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     name: str = "Alice",
     email: str = "alice@acme.com",
-) -> MagicMock:
-    s = MagicMock()
-    s.stakeholder_id = UUID(sid)
-    s.name = name
-    s.email = email
-    s.job_title = "CTO"
-    s.decision_power = MagicMock(value="DECISION_MAKER")
-    s.stance = MagicMock(value="CHAMPION")
-    return s
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        participant_id=UUID(sid),
+        related_name=name,
+        related_email=email,
+        job_title="CTO",
+        decision_power="DECISION_MAKER",
+        stance="CHAMPION",
+    )
 
 
 def _make_risk(

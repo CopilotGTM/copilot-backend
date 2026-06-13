@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
 from src.domain.models.master_tables.user_models import SupabaseUserStatus, User, UserAppRole
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.service.calendar_invites.attendee_resolver import (
     AttendeeCandidate,
     CalendarInviteAttendeeResolver,
@@ -167,3 +172,36 @@ async def test_resolver_accepts_structured_deal_stakeholder_intent() -> None:
 
     assert result.requires_confirmation
     assert result.resolved[0].email == "buyer@example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolver_expands_deal_stakeholders_from_contact_participants() -> None:
+    """Deal stakeholder expansion uses participant IDs as source IDs."""
+    participant = CRMDealParticipant(
+        organisation_id=ORG_ID,
+        integration_id=uuid4(),
+        deal_id=DEAL_ID,
+        participant_type=CRMParticipantType.CONTACT,
+        related_name="Buyer One",
+        related_email="buyer@example.com",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+
+    class FakeSession:
+        async def execute(self, statement):  # noqa: ANN001
+            self.statement = statement
+            return MagicMock(scalars=lambda: MagicMock(all=lambda: [participant]))
+
+    session = FakeSession()
+    resolver = CalendarInviteAttendeeResolver(session, organisation_id=ORG_ID)
+
+    candidates, missing = await resolver._resolve_deal_stakeholders(DEAL_ID)  # noqa: SLF001
+
+    assert missing == []
+    assert candidates[0].email == "buyer@example.com"
+    assert candidates[0].name == "Buyer One"
+    assert candidates[0].source == "deal_stakeholder"
+    assert candidates[0].source_id == str(participant.participant_id)
+    compiled = str(session.statement)
+    assert "crm_deal_participants" in compiled
+    assert "deal_stakeholders" not in compiled

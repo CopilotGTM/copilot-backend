@@ -30,12 +30,13 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
+    CRMDealParticipant,
     CRMDealStage,
     CRMDealStageHistory,
+    CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
@@ -917,19 +918,20 @@ class DealTimelineSyncService:
         """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        stakeholder_table: Table = _table(DealStakeholder)
+        participant_table: Table = _table(CRMDealParticipant)
 
-        # Fetch all approved stakeholders for this deal
-        stmt = select(DealStakeholder).where(
-            stakeholder_table.c.organisation_id == self.organisation_id,
-            stakeholder_table.c.deal_id == deal_id,
-            stakeholder_table.c.approval_status == ApprovalStatus.APPROVED.value,
+        stmt = select(CRMDealParticipant).where(
+            participant_table.c.organisation_id == self.organisation_id,
+            participant_table.c.deal_id == deal_id,
+            participant_table.c.participant_type == CRMParticipantType.CONTACT.value,
+            participant_table.c.is_deleted.is_(False),
+            participant_table.c.approval_status == ApprovalStatus.APPROVED.value,
         )
         result = await session.execute(stmt)
 
         for stakeholder in result.scalars().all():
             stats["synced"] += 1
-            key = (TimelineEventType.STAKEHOLDER_ADDED.value, str(stakeholder.stakeholder_id))
+            key = (TimelineEventType.STAKEHOLDER_ADDED.value, str(stakeholder.participant_id))
 
             if key in existing_keys:
                 stats["skipped"] += 1
@@ -1396,7 +1398,7 @@ def build_risk_blocker_timeline_event(
 def build_stakeholder_timeline_event(
     organisation_id: UUID,
     deal_id: UUID,
-    stakeholder: DealStakeholder,
+    stakeholder: CRMDealParticipant,
     event_type: TimelineEventType = TimelineEventType.STAKEHOLDER_ADDED,
     event_source: TimelineEventSource = TimelineEventSource.SYSTEM,
 ) -> DealTimelineEvent:
@@ -1409,15 +1411,14 @@ def build_stakeholder_timeline_event(
     Args:
         organisation_id: Org UUID
         deal_id: Deal UUID
-        stakeholder: The DealStakeholder record
+        stakeholder: The CRMDealParticipant contact participant record
         event_type: One of STAKEHOLDER_ADDED, STAKEHOLDER_REMOVED
         event_source: Source system (defaults to SYSTEM)
 
     Returns:
         DealTimelineEvent (not yet added to session)
     """
-    # Build display name
-    display_name = stakeholder.name or stakeholder.email
+    display_name = stakeholder.related_name or stakeholder.related_email or "Unknown Stakeholder"
 
     # Determine title based on event type
     if event_type == TimelineEventType.STAKEHOLDER_ADDED:
@@ -1428,11 +1429,7 @@ def build_stakeholder_timeline_event(
         title = f"Stakeholder: {display_name}"
 
     # Build subtitle
-    source_str = (
-        stakeholder.source.value
-        if hasattr(stakeholder.source, "value")
-        else str(stakeholder.source)
-    )
+    source_str = _enum_value(stakeholder.participant_source) or str(stakeholder.participant_source)
     subtitle = stakeholder.job_title or f"{source_str} discovery"
 
     # Determine event timestamp
@@ -1443,9 +1440,10 @@ def build_stakeholder_timeline_event(
 
     # Build metadata
     metadata: dict[str, Any] = {
-        "stakeholder_id": str(stakeholder.stakeholder_id),
-        "email": stakeholder.email,
-        "name": stakeholder.name,
+        "stakeholder_id": str(stakeholder.participant_id),
+        "participant_id": str(stakeholder.participant_id),
+        "email": stakeholder.related_email,
+        "name": stakeholder.related_name,
         "job_title": stakeholder.job_title,
         "source": source_str,
         "stance": _enum_value(stakeholder.stance),
@@ -1458,12 +1456,12 @@ def build_stakeholder_timeline_event(
         event_type=event_type,
         event_source=event_source,
         event_timestamp=event_timestamp,
-        source_record_id=str(stakeholder.stakeholder_id),
+        source_record_id=str(stakeholder.participant_id),
         title=title[:500],
         subtitle=subtitle[:500] if subtitle else None,
         direction=None,
         status=_enum_value(stakeholder.approval_status),
-        participant_names=[stakeholder.name] if stakeholder.name else [],
+        participant_names=[stakeholder.related_name] if stakeholder.related_name else [],
         participant_count=1,
         event_metadata=metadata,
     )

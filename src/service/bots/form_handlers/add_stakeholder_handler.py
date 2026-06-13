@@ -96,7 +96,7 @@ class AddStakeholderFormHandler(BaseFormHandler):
                     pass
 
             # Build the stakeholder request
-            from src.api.schemas.crm_models import CreateStakeholderRequest
+            from src.contracts.crm.stakeholders import CreateStakeholderRequest
             from src.domain.models.organisation_tables.sync.crm.stakeholders import (
                 DecisionPower as DecisionPowerEnum,
             )
@@ -127,6 +127,7 @@ class AddStakeholderFormHandler(BaseFormHandler):
                     service = StakeholdersService(
                         org_session=org_session,
                         organisation_id=org_id,
+                        user_id=user.user_id,
                     )
 
                     stakeholder = await service.create_stakeholder(

@@ -15,16 +15,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 from src.agents.common.token_tracking import TokenUsageData
 from src.agents.tools.crm.enrich_stakeholder import _infer_department
 from src.agents.workflows.stakeholder_research.models import StakeholderResearchResult
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
@@ -53,7 +56,6 @@ class _StakeholderContext:
     deal_id: UUID
     contact_id: UUID | None = None
     external_links: list[dict[str, Any]] = field(default_factory=list)
-    stakeholder_data: dict[str, Any] = field(default_factory=dict)
 
 
 class StakeholderResearchService:
@@ -86,7 +88,7 @@ class StakeholderResearchService:
         ctx = await self._load_context(stakeholder_id, deal_id)
 
         if not force_refresh:
-            cached = await self._try_copy_cached_research(stakeholder_id, ctx.email)
+            cached = await self._try_copy_cached_research(stakeholder_id, ctx)
             if cached is not None:
                 return cached
 
@@ -103,7 +105,16 @@ class StakeholderResearchService:
     ) -> _StakeholderContext:
         """Load and validate the stakeholder, returning a session-free snapshot."""
         async for session in acquire_org_async_session(self.organisation_id):
-            stakeholder = await session.get(DealStakeholder, stakeholder_id)
+            stmt = select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_id) == stakeholder_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
+            )
+            if override_deal_id:
+                stmt = stmt.where(col(CRMDealParticipant.deal_id) == override_deal_id)
+            result = await session.execute(stmt)
+            stakeholder = result.scalar_one_or_none()
 
             if not stakeholder:
                 raise StakeholderResearchError(
@@ -117,19 +128,41 @@ class StakeholderResearchService:
                     retryable=False,
                 )
 
-            if stakeholder.approval_status != ApprovalStatus.APPROVED:
+            if _status_value(stakeholder.approval_status) != ApprovalStatus.APPROVED.value:
                 raise StakeholderResearchError(
                     f"Stakeholder not approved (status={stakeholder.approval_status})",
                     retryable=False,
                 )
 
+            contact = await self._load_contact(session, stakeholder.related_local_id)
+            email = _normalize_email(
+                contact.email if contact and contact.email else stakeholder.related_email
+            )
+            if not email:
+                raise StakeholderResearchError(
+                    f"Stakeholder {stakeholder_id} has no email",
+                    retryable=False,
+                )
+
+            contact_properties = contact.properties if contact else {}
+            contact_links = (
+                contact_properties.get("external_links")
+                if isinstance(contact_properties, dict)
+                else None
+            )
+            external_links = (
+                contact_links
+                if isinstance(contact_links, list)
+                else list(stakeholder.external_links or [])
+            )
+            contact_name = contact.full_name if contact else None
+
             return _StakeholderContext(
-                email=stakeholder.email,
-                name=stakeholder.name,
+                email=email,
+                name=contact_name or stakeholder.related_name,
                 deal_id=override_deal_id or stakeholder.deal_id,
-                contact_id=stakeholder.contact_id,
-                external_links=list(stakeholder.external_links or []),
-                stakeholder_data=dict(stakeholder.stakeholder_data or {}),
+                contact_id=contact.contact_id if contact else stakeholder.related_local_id,
+                external_links=list(external_links),
             )
 
         # acquire_org_async_session always yields exactly one session, so this
@@ -139,7 +172,7 @@ class StakeholderResearchService:
     async def _try_copy_cached_research(
         self,
         stakeholder_id: UUID,
-        email: str,
+        ctx: _StakeholderContext,
     ) -> str | None:
         """Copy research from another stakeholder with the same email if recent.
 
@@ -149,35 +182,49 @@ class StakeholderResearchService:
         cutoff = datetime.now(UTC) - timedelta(days=RESEARCH_COOLDOWN_DAYS)
 
         async for session in acquire_org_async_session(self.organisation_id):
-            recent = await self._find_recent_research(session, email, cutoff)
-            if not recent or not recent.stakeholder_research:
+            recent = await self._find_recent_research(session, ctx.email, cutoff)
+            if not recent or not recent.contact_research:
                 return None
 
             await session.execute(
-                update(DealStakeholder)
+                update(CRMDealParticipant)
                 .where(
-                    col(DealStakeholder.organisation_id) == self.organisation_id,
-                    col(DealStakeholder.stakeholder_id) == stakeholder_id,
+                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                    col(CRMDealParticipant.participant_id) == stakeholder_id,
                 )
                 .values(
-                    stakeholder_research=recent.stakeholder_research,
+                    stakeholder_research=recent.contact_research,
                     last_researched_at=recent.last_researched_at,
+                    updated_at=datetime.now(UTC),
                 )
             )
+            if ctx.contact_id and recent.contact_id != ctx.contact_id:
+                await session.execute(
+                    update(CRMContact)
+                    .where(
+                        col(CRMContact.organisation_id) == self.organisation_id,
+                        col(CRMContact.contact_id) == ctx.contact_id,
+                    )
+                    .values(
+                        contact_research=recent.contact_research,
+                        last_researched_at=recent.last_researched_at,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
             await session.commit()
 
             logger.info(
                 "Stakeholder %s: copied research from email=%s, skipping agent",
                 stakeholder_id,
-                email,
+                ctx.email,
                 extra={
                     "event": "stakeholder_research_cache_hit",
                     "organisation_id": str(self.organisation_id),
                     "stakeholder_id": str(stakeholder_id),
-                    "email": email,
+                    "email": ctx.email,
                 },
             )
-            return recent.stakeholder_research
+            return recent.contact_research
 
         return None
 
@@ -186,16 +233,18 @@ class StakeholderResearchService:
         session: AsyncSession,
         email: str,
         cutoff: datetime,
-    ) -> DealStakeholder | None:
+    ) -> CRMContact | None:
         """Find the most recently researched stakeholder with this email."""
         stmt = (
-            select(DealStakeholder)
+            select(CRMContact)
             .where(
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.email) == email,
-                col(DealStakeholder.last_researched_at) >= cutoff,
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(func.trim(col(CRMContact.email))) == _normalize_email(email),
+                col(CRMContact.contact_research).isnot(None),
+                col(CRMContact.last_researched_at) >= cutoff,
             )
-            .order_by(col(DealStakeholder.last_researched_at).desc())
+            .order_by(col(CRMContact.last_researched_at).desc())
             .limit(1)
         )
         result = await session.execute(stmt)
@@ -262,13 +311,22 @@ class StakeholderResearchService:
             )
 
         now = datetime.now(UTC)
-        values: dict[str, Any] = {"updated_at": now, "last_researched_at": now}
+        participant_values: dict[str, Any] = {"updated_at": now, "last_researched_at": now}
+        contact_values: dict[str, Any] = {"updated_at": now, "last_researched_at": now}
+        contact_properties: dict[str, Any] = {}
 
         if result.status == "not_found":
             # Person genuinely not found — record we tried so we don't retry forever,
             # but store NULL instead of junk text.
-            values["stakeholder_research"] = None
-            await self._write_values(stakeholder_id, values)
+            participant_values["stakeholder_research"] = None
+            contact_values["contact_research"] = None
+            await self._write_research_values(
+                stakeholder_id,
+                ctx.contact_id,
+                participant_values,
+                contact_values,
+                contact_properties,
+            )
             logger.info(
                 "Stakeholder %s: no public profile found",
                 stakeholder_id,
@@ -284,20 +342,29 @@ class StakeholderResearchService:
 
         # status == "found" — persist identity fields + the LLM-written markdown
         markdown = result.research_markdown or ""
-        values["stakeholder_research"] = markdown
+        participant_values["stakeholder_research"] = markdown
+        contact_values["contact_research"] = markdown
 
         if self._should_overwrite_name(ctx.name, result.name):
-            values["name"] = result.name
+            participant_values["related_name"] = result.name
+            contact_values["full_name"] = result.name
 
         if result.job_title:
-            values["job_title"] = result.job_title
+            participant_values["job_title"] = result.job_title
+            contact_values["job_title"] = result.job_title
+
+        if result.first_name:
+            contact_values["first_name"] = result.first_name
+        if result.last_name:
+            contact_values["last_name"] = result.last_name
 
         department = _infer_department(result.job_title)
         if department:
-            values["department"] = department
+            participant_values["department"] = department
+            contact_properties["department"] = department
 
         if result.linkedin_url and not self._has_linkedin(ctx.external_links):
-            values["external_links"] = ctx.external_links + [
+            participant_values["external_links"] = ctx.external_links + [
                 {
                     "platform": "linkedin",
                     "url": result.linkedin_url,
@@ -305,22 +372,15 @@ class StakeholderResearchService:
                     "added_at": now.isoformat(),
                 }
             ]
+            contact_properties["external_links"] = participant_values["external_links"]
 
-        # Stash first/last name in stakeholder_data JSONB for future contact updates —
-        # there are no dedicated columns for these.
-        extra_data = self._merge_name_parts(
-            ctx.stakeholder_data, result.first_name, result.last_name
+        await self._write_research_values(
+            stakeholder_id,
+            ctx.contact_id,
+            participant_values,
+            contact_values,
+            contact_properties,
         )
-        if extra_data is not None:
-            values["stakeholder_data"] = extra_data
-
-        await self._write_values(stakeholder_id, values)
-
-        # Mirror identity fields onto the linked CRM contact if present.
-        # CRM data is the source of truth — only fill empty fields, otherwise
-        # the next CRM sync would overwrite our changes.
-        if ctx.contact_id:
-            await self._fill_contact_identity(stakeholder_id, ctx.contact_id, result)
 
         logger.info(
             "Stakeholder %s research completed",
@@ -340,16 +400,54 @@ class StakeholderResearchService:
         stakeholder_id: UUID,
         values: dict[str, Any],
     ) -> None:
-        """Apply an update to a stakeholder row, scoped to this organisation."""
+        """Apply an update to a participant-backed stakeholder row."""
         async for session in acquire_org_async_session(self.organisation_id):
             await session.execute(
-                update(DealStakeholder)
+                update(CRMDealParticipant)
                 .where(
-                    col(DealStakeholder.organisation_id) == self.organisation_id,
-                    col(DealStakeholder.stakeholder_id) == stakeholder_id,
+                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                    col(CRMDealParticipant.participant_id) == stakeholder_id,
                 )
                 .values(**values)
             )
+            await session.commit()
+            return
+
+    async def _write_research_values(
+        self,
+        stakeholder_id: UUID,
+        contact_id: UUID | None,
+        participant_values: dict[str, Any],
+        contact_values: dict[str, Any],
+        contact_properties: dict[str, Any],
+    ) -> None:
+        async for session in acquire_org_async_session(self.organisation_id):
+            await session.execute(
+                update(CRMDealParticipant)
+                .where(
+                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                    col(CRMDealParticipant.participant_id) == stakeholder_id,
+                )
+                .values(**participant_values)
+            )
+
+            if contact_id:
+                contact = await session.get(CRMContact, contact_id)
+                if contact and contact.organisation_id == self.organisation_id:
+                    values = dict(contact_values)
+                    if contact_properties:
+                        properties = dict(contact.properties or {})
+                        properties.update(contact_properties)
+                        values["properties"] = properties
+                    await session.execute(
+                        update(CRMContact)
+                        .where(
+                            col(CRMContact.organisation_id) == self.organisation_id,
+                            col(CRMContact.contact_id) == contact_id,
+                        )
+                        .values(**values)
+                    )
+
             await session.commit()
             return
 
@@ -424,18 +522,25 @@ class StakeholderResearchService:
             for link in links
         )
 
-    @staticmethod
-    def _merge_name_parts(
-        existing: dict[str, Any],
-        first_name: str | None,
-        last_name: str | None,
-    ) -> dict[str, Any] | None:
-        """Return an updated stakeholder_data dict, or None if there's nothing to add."""
-        if not first_name and not last_name:
+    async def _load_contact(
+        self,
+        session: AsyncSession,
+        contact_id: UUID | None,
+    ) -> CRMContact | None:
+        if not contact_id:
             return None
-        merged = dict(existing)
-        if first_name:
-            merged["first_name"] = first_name
-        if last_name:
-            merged["last_name"] = last_name
-        return merged
+        contact = await session.get(CRMContact, contact_id)
+        if not contact or contact.organisation_id != self.organisation_id or contact.is_deleted:
+            return None
+        return contact
+
+
+def _normalize_email(email: str | None) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _status_value(status: object) -> str:
+    return str(getattr(status, "value", status))

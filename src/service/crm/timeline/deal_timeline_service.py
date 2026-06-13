@@ -16,7 +16,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
     CalendarEventUserState,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
@@ -669,10 +669,11 @@ class DealTimelineService:
         preview = self._build_preview_event_data(event)
         metadata = event.event_metadata or {}
 
-        # Try to fetch the source stakeholder record
+        # Try to fetch the source participant record. Public timeline metadata still
+        # calls this `stakeholder_id`, but the value is CRMDealParticipant.participant_id.
         stakeholder_id_str = metadata.get("stakeholder_id")
         if not stakeholder_id_str:
-            return preview
+            stakeholder_id_str = event.source_record_id
 
         try:
             stakeholder_id = UUID(stakeholder_id_str)
@@ -680,35 +681,33 @@ class DealTimelineService:
             logger.warning("Invalid stakeholder_id: %s", stakeholder_id_str)
             return preview
 
-        sh_table: Table = _table(DealStakeholder)
-        stmt = select(DealStakeholder).where(
-            sh_table.c.organisation_id == self.organisation_id,
-            sh_table.c.stakeholder_id == stakeholder_id,
+        participant_table: Table = _table(CRMDealParticipant)
+        stmt = select(CRMDealParticipant).where(
+            participant_table.c.organisation_id == self.organisation_id,
+            participant_table.c.participant_id == stakeholder_id,
         )
         result = await self.session.execute(stmt)
-        stakeholder = result.scalar_one_or_none()
+        participant = result.scalar_one_or_none()
 
-        if not stakeholder:
+        if not participant:
             return preview
 
         # Build smart response (aligned with StakeholderDetail)
         return {
             # ID for navigation to full detail view
-            "stakeholder_id": str(stakeholder.stakeholder_id),
+            "stakeholder_id": str(participant.participant_id),
             # Identity (core fields)
-            "email": stakeholder.email,
-            "name": stakeholder.name,
-            "job_title": stakeholder.job_title,
+            "email": participant.related_email,
+            "name": participant.related_name,
+            "job_title": participant.job_title,
             # Key insights (what matters for quick understanding)
-            "source": _enum_value(stakeholder.source),
-            "stance": _enum_value(stakeholder.stance),
-            "decision_power": _enum_value(stakeholder.decision_power),
-            "champion_potential": stakeholder.champion_potential,
+            "source": participant.participant_source,
+            "stance": participant.stance,
+            "decision_power": participant.decision_power,
             # Engagement indicators
-            "temperature": _enum_value(stakeholder.temperature),
-            "engagement_score": stakeholder.engagement_score,
+            "temperature": participant.temperature,
             "last_contact_at": (
-                stakeholder.last_contact_at.isoformat() if stakeholder.last_contact_at else None
+                participant.last_contact_at.isoformat() if participant.last_contact_at else None
             ),
         }
 

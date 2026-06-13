@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.domain.models.organisation_tables.sync.email_models import DealEmailDirection
 from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher import (
     DealEmailMatcher,
@@ -58,19 +59,25 @@ async def test_email_matcher_owner_id_collects_integration_email_for_matching() 
         deal_id=deal_id,
         owner_id=owner_id,
         owner_email="crm-owner@acme.com",
-        participants=[],
+        participants=[
+            SimpleNamespace(
+                participant_type=CRMParticipantType.CONTACT,
+                related_email="customer@acme.com",
+                is_deleted=False,
+                approval_status=ApprovalStatus.APPROVED.value,
+            )
+        ],
     )
 
     info = DealStakeholderInfo(deal_id=deal_id)
     session = _FakeSession(
         [
             [(owner_id, "owner@Gmail.com"), (owner_id, " "), (owner_id, "null")],
-            ["customer@acme.com"],
         ]
     )
 
     await matcher._collect_team_emails(session, deal, info)  # noqa: SLF001
-    await matcher._collect_stakeholder_emails(session, deal_id, info)  # noqa: SLF001
+    await matcher._collect_stakeholder_emails(session, deal, info)  # noqa: SLF001
 
     assert info.team_emails == {"crm-owner@acme.com", "owner@gmail.com"}
     assert info.contact_emails == {"customer@acme.com"}
@@ -107,23 +114,28 @@ async def test_email_matcher_user_participant_local_id_collects_integration_emai
         related_local_id=participant_id,
         related_email="participant@acme.com",
     )
+    contact = SimpleNamespace(
+        participant_type=CRMParticipantType.CONTACT,
+        related_email="customer@acme.com",
+        is_deleted=False,
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
     deal = SimpleNamespace(
         deal_id=deal_id,
         owner_id=None,
         owner_email=None,
-        participants=[participant],
+        participants=[participant, contact],
     )
 
     info = DealStakeholderInfo(deal_id=deal_id)
     session = _FakeSession(
         [
             [(participant_id, "calendar@gmail.com")],
-            ["customer@acme.com"],
         ]
     )
 
     await matcher._collect_team_emails(session, deal, info)  # noqa: SLF001
-    await matcher._collect_stakeholder_emails(session, deal_id, info)  # noqa: SLF001
+    await matcher._collect_stakeholder_emails(session, deal, info)  # noqa: SLF001
 
     assert info.team_emails == {"calendar@gmail.com", "participant@acme.com"}
 

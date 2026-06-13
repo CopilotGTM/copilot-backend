@@ -35,7 +35,6 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
     StakeholderSource,
     StakeholderStance,
     StakeholderTemperature,
@@ -130,7 +129,7 @@ class DealEmailMatcher:
         self._team_email_to_deals: dict[str, set[UUID]] = {}
         self._contact_email_to_deals: dict[str, set[UUID]] = {}
         self._deal_info: dict[UUID, DealStakeholderInfo] = {}
-        self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
+        self._pending_research: list[tuple[UUID, UUID]] = []  # (participant_id, deal_id)
 
     def _normalize_email(self, email: str | None) -> str | None:
         """Normalize email string by stripping whitespace and converting to lowercase."""
@@ -146,6 +145,10 @@ class DealEmailMatcher:
         if not email or "@" not in email:
             return None
         return email.split("@")[1].lower()
+
+    def _get_participants(self, deal: CRMDeal) -> list[CRMDealParticipant]:
+        participants = cast(list[CRMDealParticipant] | None, getattr(deal, "participants", None))
+        return participants or []
 
     def _normalize_company_domain(self, domain: str | None) -> str | None:
         """Normalize a company domain from user-facing fields."""
@@ -193,6 +196,10 @@ class DealEmailMatcher:
         if participants:
             for participant in participants:
                 if participant.participant_type != CRMParticipantType.CONTACT:
+                    continue
+                if participant.is_deleted:
+                    continue
+                if participant.approval_status != ApprovalStatus.APPROVED.value:
                     continue
                 if participant.related_email:
                     domain = self._extract_domain(participant.related_email)
@@ -334,24 +341,20 @@ class DealEmailMatcher:
                 )
                 continue
 
-            # Skip email addresses already present on this deal to avoid duplicate
-            # candidates in a single processing pass.
-            stmt = select(DealStakeholder).where(
-                col(DealStakeholder.deal_id) == deal_id,
-                col(DealStakeholder.email) == participant_email,
+            existing = await self._find_contact_participant_by_email(
+                session,
+                deal_id=deal_id,
+                email=participant_email,
             )
-            result = await session.execute(stmt)
-            existing = result.scalars().first()
             if existing:
                 continue
 
             # Count existing discovered stakeholders for 5-limit
-            count_stmt = select(func.count()).where(
-                col(DealStakeholder.deal_id) == deal_id,
-                col(DealStakeholder.source) == StakeholderSource.EMAIL_DISCOVERY,
+            current_count = await self._count_discovered_participants(
+                session,
+                deal_id=deal_id,
+                source=StakeholderSource.EMAIL_DISCOVERY,
             )
-            count_result = await session.execute(count_stmt)
-            current_count = count_result.scalar() or 0
 
             approval_status = (
                 ApprovalStatus.APPROVED
@@ -367,25 +370,34 @@ class DealEmailMatcher:
             contact_result = await session.execute(contact_stmt)
             found_contact_id = contact_result.scalar_one_or_none()
 
-            # Build this stakeholder from the current participant edge; keep
-            # defaults aligned with the discovery approval threshold.
-            stakeholder = DealStakeholder(
+            if info.integration_id is None:
+                logger.warning(
+                    "Skipping email-discovered participant without deal integration",
+                    extra={
+                        "event": "deal_email_discovery_missing_integration",
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "stakeholder_email": participant_email,
+                    },
+                )
+                continue
+
+            participant = CRMDealParticipant(
                 organisation_id=self.organisation_id,
                 integration_id=info.integration_id,
                 deal_id=deal_id,
-                email=participant_email,
-                name=None,
-                contact_id=found_contact_id,
-                source=StakeholderSource.EMAIL_DISCOVERY,
-                approval_status=approval_status,
-                stance=StakeholderStance.UNKNOWN,
-                temperature=StakeholderTemperature.UNKNOWN,
-                engagement_score=0.0,
+                participant_type=CRMParticipantType.CONTACT,
+                related_local_id=found_contact_id,
+                related_email=participant_email,
+                participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
+                approval_status=approval_status.value,
+                stance=StakeholderStance.UNKNOWN.value,
+                temperature=StakeholderTemperature.UNKNOWN.value,
                 last_contact_at=contact_time,
             )
-            session.add(stakeholder)
+            session.add(participant)
             await session.flush()
-            self._pending_research.append((stakeholder.stakeholder_id, deal_id))
+            self._pending_research.append((participant.participant_id, deal_id))
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -418,6 +430,39 @@ class DealEmailMatcher:
             )
 
         return discovered
+
+    async def _find_contact_participant_by_email(
+        self,
+        session: AsyncSession,
+        *,
+        deal_id: UUID,
+        email: str,
+    ) -> CRMDealParticipant | None:
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            func.lower(func.trim(col(CRMDealParticipant.related_email))) == email,
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def _count_discovered_participants(
+        self,
+        session: AsyncSession,
+        *,
+        deal_id: UUID,
+        source: StakeholderSource,
+    ) -> int:
+        stmt = select(func.count()).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.participant_source) == source.value,
+        )
+        result = await session.execute(stmt)
+        return result.scalar() or 0
 
     async def _dispatch_pending_research(self) -> None:
         """Dispatch research for stakeholders queued during sync."""
@@ -533,8 +578,7 @@ class DealEmailMatcher:
                 integration_emails_by_user=integration_emails_by_user,
             )
 
-            # Collect contact emails from DealStakeholder table
-            await self._collect_stakeholder_emails(session, deal.deal_id, info)
+            await self._collect_stakeholder_emails(session, deal, info)
 
             # Collect company domains for stakeholder discovery
             info.company_domains = self._collect_company_domains(deal)
@@ -649,34 +693,24 @@ class DealEmailMatcher:
         )
 
     async def _collect_stakeholder_emails(
-        self, session: AsyncSession, deal_id: UUID, info: DealStakeholderInfo
+        self, session: AsyncSession, deal: CRMDeal, info: DealStakeholderInfo
     ) -> None:
-        """
-        Collect contact emails from DealStakeholder table.
+        """Collect matchable stakeholder emails from active contact participants.
 
         Args:
             session: Database session to use for queries.
-            deal_id: UUID of the deal to collect stakeholders for.
+            deal: Deal with loaded participants.
             info: DealStakeholderInfo object to populate.
-
-        Uses DealStakeholder table which contains:
-        - CRM-synced contacts (source=CRM)
-        - Discovered contacts from calendar (source=CALENDAR_DISCOVERY)
-        - Discovered contacts from email (source=EMAIL_DISCOVERY)
-
-        Only returns APPROVED stakeholders (not PENDING or REJECTED).
         """
-        stmt = select(col(DealStakeholder.email)).where(
-            col(DealStakeholder.organisation_id) == self.organisation_id,
-            col(DealStakeholder.deal_id) == deal_id,
-            col(DealStakeholder.is_deleted).is_(False),
-            col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
-        )
-        result = await session.execute(stmt)
-        stakeholder_emails = result.scalars().all()
-
-        for email in stakeholder_emails:
-            normalized = self._normalize_email(email)
+        _ = session
+        for participant in self._get_participants(deal):
+            if participant.participant_type != CRMParticipantType.CONTACT:
+                continue
+            if participant.is_deleted:
+                continue
+            if participant.approval_status != ApprovalStatus.APPROVED.value:
+                continue
+            normalized = self._normalize_email(participant.related_email)
             if normalized and normalized not in info.team_emails:
                 info.contact_emails.add(normalized)
 
@@ -906,21 +940,23 @@ class DealEmailMatcher:
         if not normalized_emails:
             return 0
 
-        stmt = select(DealStakeholder).where(
-            col(DealStakeholder.organisation_id) == self.organisation_id,
-            col(DealStakeholder.deal_id) == deal_id,
-            col(DealStakeholder.is_deleted).is_(False),
-            func.lower(DealStakeholder.email).in_(normalized_emails),
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
+            func.lower(CRMDealParticipant.related_email).in_(normalized_emails),
         )
         result = await session.execute(stmt)
-        stakeholders = list(result.scalars().all())
+        participants = list(result.scalars().all())
 
         updated_count = 0
         updated_at = datetime.now(UTC)
-        for stakeholder in stakeholders:
-            if stakeholder.last_contact_at is None or contact_time > stakeholder.last_contact_at:
-                stakeholder.last_contact_at = contact_time
-                stakeholder.updated_at = updated_at
+        for participant in participants:
+            if participant.last_contact_at is None or contact_time > participant.last_contact_at:
+                participant.last_contact_at = contact_time
+                participant.updated_at = updated_at
                 updated_count += 1
 
         return updated_count
@@ -1231,7 +1267,7 @@ class DealEmailMatcher:
             integration_id=deal.integration_id,
         )
         await self._collect_team_emails(session, deal, info)
-        await self._collect_stakeholder_emails(session, deal.deal_id, info)
+        await self._collect_stakeholder_emails(session, deal, info)
         info.company_domains = self._collect_company_domains(deal)
 
         if not info.team_emails or not info.contact_emails:

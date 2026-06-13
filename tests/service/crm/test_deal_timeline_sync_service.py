@@ -14,6 +14,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    StakeholderSource,
+    StakeholderStance,
+)
 from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventSource,
     TimelineEventType,
@@ -23,6 +32,7 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
     build_email_timeline_event,
     build_meeting_timeline_event,
     build_stage_change_timeline_event,
+    build_stakeholder_timeline_event,
 )
 
 # =============================================================================
@@ -468,6 +478,48 @@ class TestBuildMeetingTimelineEvent:
         )
 
         assert event.direction is None
+
+
+# =============================================================================
+# build_stakeholder_timeline_event Tests
+# =============================================================================
+
+
+class TestBuildStakeholderTimelineEvent:
+    """Tests for participant-backed stakeholder timeline events."""
+
+    def test_stakeholder_event_uses_participant_id_as_public_stakeholder_id(self) -> None:
+        org_id = uuid4()
+        integration_id = uuid4()
+        deal_id = uuid4()
+        participant = CRMDealParticipant(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            deal_id=deal_id,
+            participant_type=CRMParticipantType.CONTACT,
+            related_name="Alex Buyer",
+            related_email="alex@example.com",
+            job_title="CFO",
+            participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
+            approval_status=ApprovalStatus.APPROVED.value,
+            stance=StakeholderStance.CHAMPION.value,
+            decision_power="DECISION_MAKER",
+        )
+
+        event = build_stakeholder_timeline_event(
+            organisation_id=org_id,
+            deal_id=deal_id,
+            stakeholder=participant,
+        )
+
+        assert event.source_record_id == str(participant.participant_id)
+        assert event.status == ApprovalStatus.APPROVED.value
+        assert event.event_metadata["stakeholder_id"] == str(participant.participant_id)
+        assert event.event_metadata["participant_id"] == str(participant.participant_id)
+        assert event.event_metadata["email"] == "alex@example.com"
+        assert event.event_metadata["name"] == "Alex Buyer"
+        assert event.event_metadata["source"] == StakeholderSource.EMAIL_DISCOVERY.value
+        assert event.participant_names == ["Alex Buyer"]
 
 
 # =============================================================================

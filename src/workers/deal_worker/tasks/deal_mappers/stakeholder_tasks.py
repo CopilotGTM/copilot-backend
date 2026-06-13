@@ -42,6 +42,7 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
 from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service import (
     DealMappingBackfillClaimService,
 )
@@ -66,7 +67,14 @@ from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
 
 logger = get_logger(__name__)
 INITIAL_BACKFILL_CLAIM_LIMIT = 100
-ALWAYS_REMATCH_CHANGE_TYPES = {"INITIAL_BACKFILL", "COMMUNICATION_SYNC_REMAP"}
+ALWAYS_REMATCH_CHANGE_TYPES = {
+    "INITIAL_BACKFILL",
+    "COMMUNICATION_SYNC_REMAP",
+    StakeholderChangeType.PARTICIPANT_ADDED.value,
+    StakeholderChangeType.PARTICIPANT_REMOVED.value,
+    StakeholderChangeType.PARTICIPANT_UPDATED.value,
+    StakeholderChangeType.MANUAL_REFRESH.value,
+}
 
 
 @app.task(
@@ -121,7 +129,7 @@ def sync_deal_stakeholders_task(
         tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.STAKEHOLDER_SYNC)
         eligibility = await DealMappingEligibilityService(org_uuid).get_deal_eligibility(deal_uuid)
         if not eligibility.is_eligible:
-            response = {
+            response: dict[str, Any] = {
                 "status": "skipped",
                 "reason": eligibility.reason,
                 "deal_id": deal_id,

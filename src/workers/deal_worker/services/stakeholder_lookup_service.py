@@ -35,10 +35,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    DealStakeholder,
-)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -322,41 +319,23 @@ class StakeholderLookupService:
                 info.team_emails.add(email)
 
     async def _collect_contact_emails(self, deal: CRMDeal, info: DealLookupInfo) -> None:
-        """Collect contact emails from deal participants and stakeholders.
+        """Collect contact emails from active approved contact participants.
 
         Contact emails come from:
-        1. CRMDeal.primary_contact_email
-        2. CRMDealParticipant where participant_type = CONTACT
-        3. DealStakeholder table (discovered stakeholders)
+        1. CRMDealParticipant where participant_type = CONTACT
+        2. Only active, approved participant-backed stakeholders
         """
-        # Primary contact email
-        primary_email = self._normalize_email(deal.primary_contact_email)
-        if primary_email:
-            info.contact_emails.add(primary_email)
-
-        # CONTACT participants
         participants = self._get_participants(deal)
         for participant in participants:
             if participant.participant_type != CRMParticipantType.CONTACT:
                 continue
+            if participant.is_deleted:
+                continue
+            if participant.approval_status != ApprovalStatus.APPROVED.value:
+                continue
             email = self._normalize_email(participant.related_email)
             if email and email not in info.team_emails:
                 info.contact_emails.add(email)
-
-        # Stakeholders from DealStakeholder table (only APPROVED for matching)
-        stmt = select(col(DealStakeholder.email)).where(
-            col(DealStakeholder.organisation_id) == self.organisation_id,
-            col(DealStakeholder.deal_id) == deal.deal_id,
-            col(DealStakeholder.is_deleted).is_(False),
-            col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
-        )
-        result = await self.session.execute(stmt)
-        stakeholder_emails = result.scalars().all()
-
-        for email in stakeholder_emails:
-            normalized = self._normalize_email(email)
-            if normalized and normalized not in info.team_emails:
-                info.contact_emails.add(normalized)
 
     def _collect_company_domains(self, deal: CRMDeal, info: DealLookupInfo) -> None:
         """Collect company domains from deal.

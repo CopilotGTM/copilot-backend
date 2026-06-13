@@ -139,6 +139,122 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
 
 
 @pytest.mark.asyncio
+async def test_participant_writer_reuses_contact_participant_with_duplicate_identity() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotDealParticipantWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        participants=[
+            NormalizedDealParticipant(
+                deal_external_id="deal-1",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="contact-1",
+                relationship_role="decision_maker",
+                is_primary=False,
+                data_payload={"id": "role-1"},
+            ),
+            NormalizedDealParticipant(
+                deal_external_id="deal-1",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="contact-1",
+                relationship_role="primary_contact",
+                is_primary=True,
+                data_payload={"id": "role-2"},
+            ),
+        ],
+        deal_pk_map={"deal-1": deal_id},
+        contact_map={
+            "contact-1": DimensionHit(
+                internal_id=contact_id,
+                name="Ada Lovelace",
+                email="Ada@Example.com",
+            )
+        },
+        company_map={},
+        user_map={},
+    )
+
+    assert result.participants_created == 1
+    assert result.participants_updated == 1
+    assert session.add.call_count == 1
+    mapped_ids = [
+        call.kwargs["local_object_id"]
+        for call in mapping_helper.upsert_integration_mapping.await_args_list
+    ]
+    assert mapped_ids[0] == mapped_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_participant_writer_preserves_snapshot_when_provider_relation_is_unresolved() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    external_id = "deal-1:contact:contact-1:decision_maker"
+    existing = CRMDealParticipant(
+        participant_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id=external_id,
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        relationship_role="decision_maker",
+        related_local_id=contact_id,
+        related_name="Ada Lovelace",
+        related_email="ada@example.com",
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotDealParticipantWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value=({external_id: existing}, {}))  # type: ignore[method-assign]
+
+    await writer.apply(
+        participants=[
+            NormalizedDealParticipant(
+                deal_external_id="deal-1",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="contact-1",
+                relationship_role="decision_maker",
+                is_primary=False,
+                data_payload={"id": "role-1"},
+            )
+        ],
+        deal_pk_map={"deal-1": deal_id},
+        contact_map={},
+        company_map={},
+        user_map={},
+    )
+
+    assert existing.related_local_id == contact_id
+    assert existing.related_name == "Ada Lovelace"
+    assert existing.related_email == "ada@example.com"
+
+
+@pytest.mark.asyncio
 async def test_association_writer_upserts_source_mapping_for_existing_association() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()

@@ -186,7 +186,6 @@ For every stakeholder found, identified by their email address, produce:
 - stance
 - decision_power
 - temperature
-- champion_potential
 - motivation
 - pain_points
 - keywords

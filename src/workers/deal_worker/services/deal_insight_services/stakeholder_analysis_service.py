@@ -22,16 +22,21 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlmodel import col
+from src.agents.common.token_tracking import TokenUsageData
 from src.agents.workflows.stakeholder_analysis import (
     DealStakeholdersAnalysisData,
     StakeholderAnalysisAgent,
     StakeholderAnalysisData,
 )
 from src.domain.models.organisation_tables.base_mixins import utcnow
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStatus,
+    CRMParticipantType,
+)
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
     DecisionPower,
 )
 from src.domain.models.organisation_tables.sync.stakeholder_insight_models import (
@@ -91,7 +96,7 @@ class StakeholderAnalysisService:
             organisation_id: UUID of the organisation (IMMUTABLE - security boundary)
         """
         self.organisation_id = organisation_id
-        self.last_token_usage = None
+        self.last_token_usage: TokenUsageData | None = None
 
     @staticmethod
     def _normalize_stage_tokens(*values: str | None) -> set[str]:
@@ -127,19 +132,22 @@ class StakeholderAnalysisService:
         return bool(deal.probability and deal.probability >= 50.0)
 
     @staticmethod
-    def _has_active_decision_maker(stakeholders: list[DealStakeholder]) -> bool:
+    def _has_active_decision_maker(stakeholders: list[CRMDealParticipant]) -> bool:
         """Return True when a non-rejected stakeholder is tagged as the decision maker."""
         for stakeholder in stakeholders:
-            if stakeholder.approval_status in {ApprovalStatus.REJECTED, ApprovalStatus.REMOVED}:
+            if _enum_value(stakeholder.approval_status) in {
+                ApprovalStatus.REJECTED.value,
+                ApprovalStatus.REMOVED.value,
+            }:
                 continue
-            if stakeholder.decision_power == DecisionPower.DECISION_MAKER:
+            if _enum_value(stakeholder.decision_power) == DecisionPower.DECISION_MAKER.value:
                 return True
         return False
 
     def _build_stage_gated_insights(
         self,
         deal: CRMDeal,
-        stakeholders: list[DealStakeholder],
+        stakeholders: list[CRMDealParticipant],
     ) -> list[DealStakeholderInsight]:
         """Build the minimal deterministic stakeholder alerts we still want.
 
@@ -182,19 +190,21 @@ class StakeholderAnalysisService:
             )
         ]
 
-    async def get_stakeholders_for_deal(self, deal_id: UUID) -> list[DealStakeholder]:
+    async def get_stakeholders_for_deal(self, deal_id: UUID) -> list[CRMDealParticipant]:
         """Get all stakeholders for a deal.
 
         Args:
             deal_id: UUID of the deal
 
         Returns:
-            List of DealStakeholder objects
+            List of CRMDealParticipant contact rows
         """
         async for session in acquire_org_async_session(self.organisation_id):
-            stmt = select(DealStakeholder).where(
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.deal_id) == deal_id,
+            stmt = select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id) == deal_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
@@ -209,8 +219,12 @@ class StakeholderAnalysisService:
         async for session in acquire_org_async_session(self.organisation_id):
             # Get deal IDs that have stakeholders using a subquery
             stakeholder_subq = (
-                select(DealStakeholder)
-                .where(col(DealStakeholder.organisation_id) == self.organisation_id)
+                select(CRMDealParticipant)
+                .where(
+                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                    col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                    col(CRMDealParticipant.is_deleted).is_(False),
+                )
                 .subquery()
             )
 
@@ -224,7 +238,7 @@ class StakeholderAnalysisService:
         return []
 
     def update_stakeholder_with_analysis(
-        self, stakeholder: DealStakeholder, analysis: StakeholderAnalysisData
+        self, stakeholder: CRMDealParticipant, analysis: StakeholderAnalysisData
     ) -> None:
         """Update stakeholder record with analysis results.
 
@@ -232,24 +246,24 @@ class StakeholderAnalysisService:
             stakeholder: The stakeholder to update
             analysis: The analysis results
         """
-        stakeholder.stance = analysis.stance
-        stakeholder.decision_power = analysis.decision_power
-        stakeholder.temperature = analysis.temperature
-        stakeholder.champion_potential = analysis.champion_potential
+        stakeholder.stance = _enum_value(analysis.stance)
+        stakeholder.decision_power = _enum_value(analysis.decision_power)
+        stakeholder.temperature = _enum_value(analysis.temperature)
         stakeholder.motivation = analysis.motivation if analysis.motivation else None
         stakeholder.pain_points = analysis.pain_points if analysis.pain_points else None
         stakeholder.keywords = analysis.keywords if analysis.keywords else None
 
         logger.info(
             "Updated stakeholder %s with analysis: stance=%s, decision_power=%s, temperature=%s",
-            stakeholder.stakeholder_id,
+            stakeholder.participant_id,
             analysis.stance,
             analysis.decision_power,
             analysis.temperature,
             extra={
                 "event": "stakeholder_analysis_result_saved",
                 "organisation_id": str(self.organisation_id),
-                "stakeholder_id": str(stakeholder.stakeholder_id),
+                "stakeholder_id": str(stakeholder.participant_id),
+                "participant_id": str(stakeholder.participant_id),
                 "deal_id": str(stakeholder.deal_id),
                 "stance": str(analysis.stance),
                 "decision_power": str(analysis.decision_power),
@@ -341,35 +355,36 @@ class StakeholderAnalysisService:
 
         async for session in acquire_org_async_session(self.organisation_id):
             # Reload stakeholders in fresh session
-            stmt = select(DealStakeholder).where(
-                col(DealStakeholder.organisation_id) == self.organisation_id,
-                col(DealStakeholder.deal_id) == deal_id,
+            stmt = select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id) == deal_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
             )
             result = await session.execute(stmt)
             fresh_stakeholders = list(result.scalars().all())
 
             for stakeholder in fresh_stakeholders:
-                analysis = email_to_analysis.get(stakeholder.email.lower())
+                stakeholder_email = (stakeholder.related_email or "").lower()
+                analysis = email_to_analysis.get(stakeholder_email)
                 if analysis:
-                    # Save current state to history if changed
-                    self._save_analysis_snapshot(stakeholder)
-                    # Update stakeholder with new analysis
                     self.update_stakeholder_with_analysis(stakeholder, analysis)
-                    results[stakeholder.stakeholder_id] = analysis
+                    results[stakeholder.participant_id] = analysis
                 else:
                     logger.warning(
                         "No analysis result for stakeholder %s (%s)",
-                        stakeholder.stakeholder_id,
-                        stakeholder.email,
+                        stakeholder.participant_id,
+                        stakeholder.related_email,
                         extra={
                             "event": "stakeholder_analysis_missing_result",
                             "organisation_id": str(self.organisation_id),
                             "deal_id": str(deal_id),
-                            "stakeholder_id": str(stakeholder.stakeholder_id),
-                            "stakeholder_email": stakeholder.email,
+                            "stakeholder_id": str(stakeholder.participant_id),
+                            "participant_id": str(stakeholder.participant_id),
+                            "stakeholder_email": stakeholder.related_email,
                         },
                     )
-                    results[stakeholder.stakeholder_id] = None
+                    results[stakeholder.participant_id] = None
 
             if generate_insights and deal is not None:
                 await self._expire_old_insights(session, deal_id)
@@ -472,7 +487,7 @@ class StakeholderAnalysisService:
     # Insight Generation Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_previous_analysis(self, stakeholder: DealStakeholder) -> dict[str, Any] | None:
+    def _get_previous_analysis(self, _stakeholder: CRMDealParticipant) -> dict[str, Any] | None:
         """Get most recent historical analysis for comparison.
 
         Args:
@@ -481,14 +496,9 @@ class StakeholderAnalysisService:
         Returns:
             Most recent history entry or None if no history
         """
-        history = stakeholder.stakeholder_engagement_history
-        if not history:
-            return None
+        return None
 
-        # History is ordered newest first
-        return history[0] if history else None
-
-    def _save_analysis_snapshot(self, stakeholder: DealStakeholder) -> bool:
+    def _save_analysis_snapshot(self, _stakeholder: CRMDealParticipant) -> bool:
         """Save current analysis values to history only if there's a change.
 
         Only saves a new snapshot if key values have changed from the previous
@@ -500,83 +510,7 @@ class StakeholderAnalysisService:
         Returns:
             True if snapshot was saved (change detected), False otherwise
         """
-        # Create snapshot of current values (handle both enum and string values)
-        stance = stakeholder.stance
-        stance_val = (stance.value if hasattr(stance, "value") else stance) or "UNKNOWN"
-        temp = stakeholder.temperature
-        temp_val = (temp.value if hasattr(temp, "value") else temp) or "COLD"
-        power = stakeholder.decision_power
-        power_val = (power.value if hasattr(power, "value") else power) or "UNKNOWN"
-
-        current_values = {
-            "stance": stance_val,
-            "temperature": temp_val,
-            "engagement_score": stakeholder.engagement_score,
-            "champion_potential": stakeholder.champion_potential,
-            "decision_power": power_val,
-        }
-
-        # Get previous snapshot for comparison
-        previous = self._get_previous_analysis(stakeholder)
-
-        # Check if anything changed
-        if previous:
-            has_change = (
-                previous.get("stance") != current_values["stance"]
-                or previous.get("temperature") != current_values["temperature"]
-                or previous.get("decision_power") != current_values["decision_power"]
-                or abs(
-                    (previous.get("engagement_score") or 0)
-                    - (current_values["engagement_score"] or 0)
-                )
-                > 0.01
-                or abs(
-                    (previous.get("champion_potential") or 0)
-                    - (current_values["champion_potential"] or 0)
-                )
-                > 0.01
-            )
-
-            if not has_change:
-                logger.debug(
-                    "No change detected for stakeholder %s, skipping snapshot",
-                    stakeholder.stakeholder_id,
-                )
-                return False
-
-        # Add timestamp for the new snapshot
-        snapshot = {
-            "recorded_at": utcnow().isoformat(),
-            **current_values,
-        }
-
-        # Initialize engagement history if needed
-        if stakeholder.stakeholder_engagement_history is None:
-            stakeholder.stakeholder_engagement_history = []
-
-        # Prepend new snapshot (newest first)
-        stakeholder.stakeholder_engagement_history.insert(0, snapshot)
-
-        # Keep only last N entries
-        stakeholder.stakeholder_engagement_history = stakeholder.stakeholder_engagement_history[
-            :MAX_ENGAGEMENT_HISTORY_ENTRIES
-        ]
-
-        logger.info(
-            "Change detected for stakeholder %s: stance=%s, engagement=%s - saved snapshot",
-            stakeholder.stakeholder_id,
-            snapshot["stance"],
-            snapshot["engagement_score"],
-            extra={
-                "event": "stakeholder_analysis_snapshot_saved",
-                "organisation_id": str(self.organisation_id),
-                "stakeholder_id": str(stakeholder.stakeholder_id),
-                "deal_id": str(stakeholder.deal_id),
-                "stance": snapshot["stance"],
-                "engagement_score": snapshot["engagement_score"],
-            },
-        )
-        return True
+        return False
 
     async def _expire_old_insights(self, session: Any, deal_id: UUID) -> int:
         """Expire old active insights for a deal before generating new ones.
@@ -598,7 +532,7 @@ class StakeholderAnalysisService:
             .values(status=StakeholderInsightStatus.EXPIRED, updated_at=utcnow())
         )
         result = await session.execute(stmt)
-        count = result.rowcount
+        count = int(result.rowcount or 0)
         if count > 0:
             logger.info(
                 "Expired %d old insights for deal %s",
@@ -612,3 +546,7 @@ class StakeholderAnalysisService:
                 },
             )
         return count
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
