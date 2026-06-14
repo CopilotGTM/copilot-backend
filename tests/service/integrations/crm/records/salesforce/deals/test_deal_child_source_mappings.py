@@ -145,6 +145,8 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
     assert mapped_rows[0].external_object_type == CRMSourceObjectType.DEAL_PARTICIPANT
     assert mapped_rows[0].local_object_type == CRMSourceObjectType.DEAL_PARTICIPANT
     assert mapped_rows[0].local_object_id == existing.participant_id
+    assert existing.is_primary_contact is False
+    assert existing.participant_source == "CRM"
 
 
 @pytest.mark.asyncio
@@ -205,6 +207,7 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
     created = session.add.call_args.args[0]
     assert created.relationship_role is None
     assert created.is_primary_contact is True
+    assert created.participant_source == "CRM"
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
     assert {row.local_object_id for row in mapped_rows} == {created.participant_id}
     assert {"is_primary_contact": False} in [row.mapping_metadata for row in mapped_rows]
@@ -265,6 +268,70 @@ async def test_participant_writer_preserves_snapshot_when_provider_relation_is_u
     assert existing.related_local_id == contact_id
     assert existing.related_name == "Ada Lovelace"
     assert existing.related_email == "ada@example.com"
+
+
+@pytest.mark.asyncio
+async def test_participant_writer_clears_stale_primary_contact_flag() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    existing = CRMDealParticipant(
+        participant_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="legacy",
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        relationship_role=None,
+        is_primary_contact=True,
+        related_local_id=contact_id,
+        related_name="Ada Lovelace",
+        related_email="ada@example.com",
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = SalesforceDealParticipantWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(
+        return_value=({}, {(deal_id, "contact", f"local:{contact_id}"): existing})
+    )  # type: ignore[method-assign]
+
+    await writer.apply(
+        participants=[
+            NormalizedSalesforceDealParticipant(
+                deal_external_id="006A",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="003A",
+                relationship_role="Decision Maker",
+                is_primary=False,
+                data_payload={"Id": "role-1"},
+            )
+        ],
+        deal_pk_map={"006A": deal_id},
+        contact_map={
+            "003A": DimensionHit(
+                internal_id=contact_id,
+                name="Ada Lovelace",
+                email="ada@example.com",
+            )
+        },
+        company_map={},
+        user_map={},
+    )
+
+    assert existing.is_primary_contact is False
+    assert existing.relationship_role is None
+    assert existing.participant_source == "CRM"
 
 
 @pytest.mark.asyncio
