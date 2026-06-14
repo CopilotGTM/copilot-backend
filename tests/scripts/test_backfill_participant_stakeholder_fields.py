@@ -22,8 +22,57 @@ class _FakeSession:
     def __init__(self) -> None:
         self.rolled_back = False
 
+    async def execute(self, statement, params=None):  # noqa: ANN001
+        return _FakeResult([0])
+
     async def rollback(self) -> None:
         self.rolled_back = True
+
+
+class _FakeScalars:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _FakeResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _FakeScalars:
+        return _FakeScalars(self._rows)
+
+    def scalar_one(self) -> object:
+        return self._rows[0]
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _FakeMappingSession:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+        self.added: list[object] = []
+
+    async def execute(self, statement):  # noqa: ANN001
+        return _FakeResult(self.rows)
+
+    def add(self, row: object) -> None:
+        self.added.append(row)
+
+
+class _FakeSQLSession:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+        self.statements: list[str] = []
+        self.params: list[dict[str, object] | None] = []
+
+    async def execute(self, statement, params=None):  # noqa: ANN001
+        self.statements.append(str(statement))
+        self.params.append(params)
+        return _FakeResult(self.rows)
 
 
 def test_backfill_prefers_source_reference_id_then_deal_email() -> None:
@@ -229,6 +278,136 @@ def test_backfill_copies_only_behavior_fields_to_participant() -> None:
     assert "stakeholder_engagement_history" not in participant
     assert "legacy_stakeholder_id" not in participant
     assert "canonical_stakeholder_participant_id" not in participant
+
+
+def test_duplicate_selection_uses_contact_id_not_email_only() -> None:
+    deal_id = uuid4()
+    canonical = SimpleNamespace(
+        participant_id=uuid4(),
+        deal_id=deal_id,
+        related_local_id=None,
+        related_email="info@example.com",
+    )
+    duplicate_by_email_only = SimpleNamespace(
+        participant_id=uuid4(),
+        deal_id=deal_id,
+        related_local_id=None,
+        related_email="INFO@example.com",
+    )
+
+    duplicates = backfill._duplicate_participants_for_canonical(
+        canonical,
+        [canonical, duplicate_by_email_only],
+    )
+
+    assert duplicates == []
+
+
+def test_source_reference_duplicate_promotes_to_contact_canonical() -> None:
+    deal_id = uuid4()
+    contact_id = uuid4()
+    now = datetime.now(UTC)
+    canonical = SimpleNamespace(
+        participant_id=uuid4(),
+        deal_id=deal_id,
+        related_local_id=contact_id,
+        relationship_role="primary_contact",
+        created_at=now,
+        is_deleted=False,
+    )
+    duplicate = SimpleNamespace(
+        participant_id=uuid4(),
+        deal_id=deal_id,
+        related_local_id=contact_id,
+        relationship_role="decision_maker",
+        created_at=now + timedelta(seconds=1),
+        is_deleted=False,
+    )
+
+    selected = backfill._canonical_for_participant_identity(
+        duplicate,
+        [duplicate, canonical],
+    )
+
+    assert selected is canonical
+
+
+@pytest.mark.asyncio
+async def test_backfill_repoints_source_mappings_before_soft_deleting_duplicate() -> None:
+    organisation_id = uuid4()
+    canonical_id = uuid4()
+    duplicate_id = uuid4()
+    canonical = SimpleNamespace(participant_id=canonical_id)
+    duplicate = SimpleNamespace(participant_id=duplicate_id, is_deleted=False)
+    mapping = SimpleNamespace(local_object_id=duplicate_id)
+    session = _FakeMappingSession([mapping])
+
+    changed = await backfill._repoint_duplicate_participant_references(
+        session,
+        organisation_id,
+        canonical=canonical,
+        duplicates=[duplicate],
+        apply=True,
+    )
+
+    assert changed == 1
+    assert mapping.local_object_id == canonical_id
+    assert duplicate.is_deleted is True
+    assert session.added == [mapping, duplicate]
+
+
+@pytest.mark.asyncio
+async def test_sync_primary_contact_flags_uses_deal_primary_contact() -> None:
+    organisation_id = uuid4()
+    participant_id = uuid4()
+    dry_run_session = _FakeSQLSession([1])
+    apply_session = _FakeSQLSession([(participant_id,)])
+
+    dry_run_count = await backfill.sync_primary_contact_flags_from_deals(
+        dry_run_session,
+        organisation_id,
+        apply=False,
+    )
+    apply_count = await backfill.sync_primary_contact_flags_from_deals(
+        apply_session,
+        organisation_id,
+        apply=True,
+    )
+
+    assert dry_run_count == 1
+    assert apply_count == 1
+    assert "deals.primary_contact_id" in dry_run_session.statements[0]
+    assert "UPDATE crm_deal_participants" in apply_session.statements[0]
+    assert "SET is_primary_contact = true" in apply_session.statements[0]
+    assert dry_run_session.params[0] == {"organisation_id": organisation_id}
+    assert apply_session.params[0] == {"organisation_id": organisation_id}
+
+
+@pytest.mark.asyncio
+async def test_infer_primary_contact_flags_from_single_crm_contact() -> None:
+    organisation_id = uuid4()
+    participant_id = uuid4()
+    dry_run_session = _FakeSQLSession([21])
+    apply_session = _FakeSQLSession([(participant_id,)])
+
+    dry_run_count = await backfill.infer_primary_contact_flags_from_single_crm_contact(
+        dry_run_session,
+        organisation_id,
+        apply=False,
+    )
+    apply_count = await backfill.infer_primary_contact_flags_from_single_crm_contact(
+        apply_session,
+        organisation_id,
+        apply=True,
+    )
+
+    assert dry_run_count == 21
+    assert apply_count == 1
+    assert "HAVING count(*) = 1" in dry_run_session.statements[0]
+    assert "participants.participant_source = 'CRM'" in apply_session.statements[0]
+    assert "SET is_primary_contact = true" in apply_session.statements[0]
+    assert dry_run_session.params[0] == {"organisation_id": organisation_id}
+    assert apply_session.params[0] == {"organisation_id": organisation_id}
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,7 @@ class DealParticipantService:
         skipped: list[DealParticipantSkipped] = []
         contact_participant_changed = False
         seen_keys: set[tuple[str, str, str]] = set()
+        seen_contact_participants: dict[str, CRMDealParticipant] = {}
 
         for payload in payloads:
             participant_type = self._parse_participant_type(payload.get("participant_type"))
@@ -95,6 +96,12 @@ class DealParticipantService:
             if participant_type == CRMParticipantType.CONTACT:
                 request_key = (participant_type.value, identity_key, "")
             if request_key in seen_keys:
+                if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
+                    relationship_role
+                ):
+                    seen_participant = seen_contact_participants.get(identity_key)
+                    if seen_participant is not None:
+                        seen_participant.is_primary_contact = True
                 skipped.append(
                     DealParticipantSkipped(
                         participant_type=participant_type.value,
@@ -141,6 +148,10 @@ class DealParticipantService:
             participant.related_local_id = related_local_id
             participant.related_name = related_name
             participant.related_email = related_email
+            if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
+                relationship_role
+            ):
+                participant.is_primary_contact = True
             participant.source_modified_at = now
             participant.synced_at = now
             participant.last_seen_at = now
@@ -151,6 +162,7 @@ class DealParticipantService:
 
             if participant_type == CRMParticipantType.CONTACT:
                 contact_participant_changed = True
+                seen_contact_participants[identity_key] = participant
 
             if participant_type == CRMParticipantType.COMPANY:
                 await self._maybe_apply_company_to_deal(deal, integration_id, related_local_id, now)
@@ -234,6 +246,10 @@ class DealParticipantService:
             )
 
         participant.participant_type = participant_type
+        if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
+            new_role
+        ):
+            participant.is_primary_contact = True
         participant.relationship_role = new_role
         now = datetime.now(UTC)
         participant.source_modified_at = now
@@ -441,6 +457,13 @@ class DealParticipantService:
         if not cleaned:
             return None
         return cleaned.lower()
+
+    @staticmethod
+    def _is_primary_contact_role(value: str | None) -> bool:
+        cleaned = DealParticipantService._clean_string(value)
+        if not cleaned:
+            return False
+        return cleaned.lower().replace(" ", "_") == "primary_contact"
 
     @staticmethod
     def _build_name(first_name: str | None, last_name: str | None) -> str | None:

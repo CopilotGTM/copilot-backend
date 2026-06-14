@@ -18,7 +18,7 @@
 2. Public stakeholder/contact-involvement payloads expose `participant_id`, not a duplicate `stakeholder_id` alias.
 3. Do not add `legacy_stakeholder_id`, `old_stakeholder_id`, `canonical_stakeholder_participant_id`, or any other persisted alias for `DealStakeholder.stakeholder_id`.
 4. Do not add `is_stakeholder`. Every active `CONTACT` participant on a deal is the stakeholder row.
-5. Enforce one active contact participant per deal/contact and one active contact participant per deal/normalized email. The same email/contact must not appear twice as a participant on one deal after migration hardening.
+5. Runtime writers should reuse one active contact participant per deal/contact. Do not enforce one participant per deal/normalized email because different contacts can share generic email addresses.
 6. `DealStakeholder.stakeholder_id` is a migration input only. When creating an app-owned participant from an old stakeholder row, seed `CRMDealParticipant.participant_id` with that UUID.
 
 ### Contact vs Participant Ownership
@@ -188,7 +188,7 @@ This migration is too broad for one production PR. Implement it in these release
 4. **Write cutover:** move manual/API/agent add/update/remove/approve/reject flows, including `add_contacts_as_stakeholders()`.
 5. **Worker cutover:** move stakeholder sync, calendar/email/meeting discovery, research dispatch, analysis, mapper utilities, attendee resolution, timeline sync, job visibility, and stakeholder lookup.
 6. **Jobs, insights, tools, and privacy:** persist new job/insight rows with participant IDs, move agent tools, and scrub both participant-backed and old `deal_stakeholders` PII while the old table exists.
-7. **Uniqueness validation:** run duplicate audits before applying the schema migration in any environment with existing participant data, and clean blocking duplicates before the partial unique indexes in `060` are applied.
+7. **Duplicate validation:** run duplicate audits before and after the participant data migration. Clean true duplicates by deal/contact in the data migration flow, not inside Alembic `060`.
 8. **Old-table retirement:** remove runtime reads and drop `deal_stakeholders` in a later release.
 
 Each release must pass its focused tests before the next release starts. Do not bundle table retirement with runtime cutover.
@@ -366,13 +366,16 @@ GROUP BY organisation_id, deal_id, related_local_id
 HAVING count(*) > 1;
 ```
 
-- [x] Keep partial unique indexes for active contact participants by deal/email and deal/contact in the existing `060` migration, not a separate `061`/`062` migration.
-- [x] Do not include `relationship_role` or `is_stakeholder` in these uniqueness indexes.
+- [x] Do not keep the active contact email uniqueness index in `060`; valid email collisions can exist.
+- [x] Do not add a separate `061`/`062` repair migration for this fix. Correct `060`, downgrade affected schemas, rerun `060`, then run the data migration.
+- [x] Do not include `relationship_role` or `is_stakeholder` in participant identity.
+- [x] Data migration soft-deletes duplicate active contact participants only when they share `organisation_id + deal_id + related_local_id`; email-only collisions are reported but not deleted.
+- [x] Data migration repoints `crm_source_object_mappings` from duplicate participant IDs to the selected canonical participant before soft-deleting duplicates.
 
 Implementation note:
-- Duplicate audit coverage and partial unique indexes live with migration `060`. HubSpot and
-  Salesforce writer tests must be run as separate pytest commands because both files share the
-  same basename under different package paths.
+- Duplicate audit coverage remains as a validation tool. Migration `060` stays focused on schema
+  changes and the required stakeholder job/insight ID cutover; it does not merge participant rows
+  or enforce email/local-id uniqueness. Duplicate cleanup belongs to the data migration script.
 
 ---
 
@@ -603,23 +606,21 @@ Implementation note:
 
 ## Verification Commands
 
-Run data preflight before applying the org schema migration in any environment
-that already has participant rows. The `060` migration creates partial unique
-indexes over active contact participants, so duplicate audit failures must be
-cleaned before Alembic upgrade reaches `060`.
+Run data preflight before and after the org schema/data migration sequence in any environment
+that already has participant rows. The corrected `060` migration does not create participant
+uniqueness indexes; duplicate cleanup happens in the data migration flow.
 
 ```bash
-uv run python -m scripts.audit_duplicate_deal_contact_participants --organisation-id <org_id> --fail-on-duplicates
+uv run python -m scripts.audit_duplicate_deal_contact_participants --all --fail-on-duplicates
 uv run alembic -c migrations/org_migrations/alembic.ini heads
 uv run python -m scripts.run_org_migrations <org_id> --target-version head --fail-fast
-uv run python -m scripts.backfill_participant_stakeholder_fields --organisation-id <org_id> --dry-run
-uv run python -m scripts.backfill_participant_stakeholder_fields --organisation-id <org_id> --apply
+uv run python -m scripts.backfill_participant_stakeholder_fields --all --dry-run
+uv run python -m scripts.backfill_participant_stakeholder_fields --all --apply
 uv run python -m scripts.validate_deal_stakeholder_participant_cutover --organisation-id <org_id> --only-mismatches --fail-on-mismatch
 ```
 
-For all-org rollout, run the same audit/backfill/validation sequence per
-organisation before promoting the release broadly. Do not apply `060` to an org
-that reports duplicate active contact participants.
+Valid email collisions may remain and do not make the audit fail. True duplicate active contact
+participants by deal/contact are cleaned by the data migration and still fail the audit.
 
 Run focused suites after each phase:
 
@@ -688,7 +689,7 @@ uv run mypy src/
 
 1. Stakeholder list/detail APIs work when only `crm_deal_participants` rows exist.
 2. Manual, CRM, calendar-discovered, and email-discovered stakeholders all persist to participants.
-3. A deal cannot have two active contact participants for the same contact or normalized email.
+3. Runtime writes do not create two active contact participants for the same resolved contact on the same deal.
 4. Calendar, email, and meeting deal matching read participant-backed stakeholder emails.
 5. Stakeholder research writes reusable research to contacts and deal-scoped display research to participants.
 6. Stakeholder analysis writes only accepted participant behavior fields.

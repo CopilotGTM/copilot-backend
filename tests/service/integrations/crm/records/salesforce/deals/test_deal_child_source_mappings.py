@@ -202,8 +202,13 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
     assert result.participants_created == 1
     assert result.participants_updated == 1
     assert session.add.call_count == 1
+    created = session.add.call_args.args[0]
+    assert created.relationship_role is None
+    assert created.is_primary_contact is True
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
-    assert mapped_rows[0].local_object_id == mapped_rows[1].local_object_id
+    assert {row.local_object_id for row in mapped_rows} == {created.participant_id}
+    assert {"is_primary_contact": False} in [row.mapping_metadata for row in mapped_rows]
+    assert {"is_primary_contact": True} in [row.mapping_metadata for row in mapped_rows]
 
 
 @pytest.mark.asyncio

@@ -113,7 +113,7 @@ async def test_audit_org_uses_admin_org_session(monkeypatch: pytest.MonkeyPatch)
 
 def test_exit_code_only_fails_when_requested() -> None:
     clean_report = audit.DuplicateAuditReport(email_duplicates=[], contact_id_duplicates=[])
-    dirty_report = audit.DuplicateAuditReport(
+    email_only_report = audit.DuplicateAuditReport(
         email_duplicates=[
             audit.EmailDuplicateGroup(
                 organisation_id=uuid4(),
@@ -124,10 +124,22 @@ def test_exit_code_only_fails_when_requested() -> None:
         ],
         contact_id_duplicates=[],
     )
+    contact_id_report = audit.DuplicateAuditReport(
+        email_duplicates=[],
+        contact_id_duplicates=[
+            audit.ContactIdDuplicateGroup(
+                organisation_id=uuid4(),
+                deal_id=uuid4(),
+                related_local_id=uuid4(),
+                count=2,
+            )
+        ],
+    )
 
     assert audit.exit_code_for_report(clean_report, fail_on_duplicates=True) == 0
-    assert audit.exit_code_for_report(dirty_report, fail_on_duplicates=False) == 0
-    assert audit.exit_code_for_report(dirty_report, fail_on_duplicates=True) == 1
+    assert audit.exit_code_for_report(email_only_report, fail_on_duplicates=True) == 0
+    assert audit.exit_code_for_report(contact_id_report, fail_on_duplicates=False) == 0
+    assert audit.exit_code_for_report(contact_id_report, fail_on_duplicates=True) == 1
 
 
 def test_uniqueness_migration_uses_partial_indexes_without_role_marker() -> None:
@@ -141,10 +153,9 @@ def test_uniqueness_migration_uses_partial_indexes_without_role_marker() -> None
 
     migration_text = migration_path.read_text(encoding="utf-8")
 
-    assert "ux_crm_deal_participant_active_contact_email" in migration_text
-    assert "ux_crm_deal_participant_active_contact_local_id" in migration_text
-    assert "lower(btrim(related_email))" in migration_text
+    assert "ux_crm_deal_participant_active_contact_local_id" not in migration_text
+    assert "ux_crm_deal_participant_active_contact_email" not in migration_text
+    assert "lower(btrim(related_email))" not in migration_text
     assert "participant_type = 'contact'" in migration_text
     assert "is_deleted = false" in migration_text
-    assert "relationship_role" not in migration_text
     assert "is_stakeholder" not in migration_text
