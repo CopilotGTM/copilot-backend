@@ -316,6 +316,51 @@ async def test_participant_writer_clears_stale_primary_contact_flag() -> None:
 
 
 @pytest.mark.asyncio
+async def test_participant_writer_marks_company_participant_as_crm_sourced_without_primary_contact() -> (
+    None
+):
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    company_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotDealParticipantWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
+
+    await writer.apply(
+        participants=[
+            NormalizedDealParticipant(
+                deal_external_id="deal-1",
+                participant_type=CRMParticipantType.COMPANY.value,
+                related_external_id="company-1",
+                relationship_role="deal_to_company_primary",
+                is_primary=True,
+                data_payload={"id": "company-1"},
+            )
+        ],
+        deal_pk_map={"deal-1": deal_id},
+        contact_map={},
+        company_map={"company-1": DimensionHit(internal_id=company_id)},
+        user_map={},
+    )
+
+    created = session.add.call_args.args[0]
+    assert created.participant_type == CRMParticipantType.COMPANY
+    assert created.participant_source == "CRM"
+    assert created.is_primary_contact is False
+
+
+@pytest.mark.asyncio
 async def test_association_writer_upserts_source_mapping_for_existing_association() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()

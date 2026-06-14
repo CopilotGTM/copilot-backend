@@ -283,9 +283,9 @@ class HubSpotDealParticipantWriter:
         now: datetime,
     ) -> None:
         row.relationship_role = participant.relationship_role
+        row.participant_source = "CRM"
         if participant.participant_type == CRMParticipantType.CONTACT.value:
             row.is_primary_contact = _is_primary_contact(participant)
-            row.participant_source = "CRM"
         if related_local_id is not None:
             row.related_local_id = related_local_id
         if related_name is not None:
@@ -312,7 +312,11 @@ def _is_primary_contact(participant: NormalizedDealParticipant) -> bool:
 
 
 def _participant_source(participant: NormalizedDealParticipant) -> str | None:
-    if participant.participant_type == CRMParticipantType.CONTACT.value:
+    if participant.participant_type in {
+        CRMParticipantType.CONTACT.value,
+        CRMParticipantType.COMPANY.value,
+        CRMParticipantType.USER.value,
+    }:
         return "CRM"
     return None
 

@@ -294,10 +294,10 @@ class SalesforceDealParticipantWriter:
         related_email: str | None,
         now: datetime,
     ) -> None:
+        row.participant_source = "CRM"
         if _participant_type_value(row.participant_type) == CRMParticipantType.CONTACT.value:
             row.is_primary_contact = _is_primary_contact(participant)
             row.relationship_role = None
-            row.participant_source = "CRM"
         if related_local_id is not None:
             row.related_local_id = related_local_id
         if related_name is not None:
@@ -325,12 +325,18 @@ def _source_external_ids(participant: NormalizedSalesforceDealParticipant) -> se
 
 
 def _is_primary_contact(participant: NormalizedSalesforceDealParticipant) -> bool:
+    if participant.participant_type != CRMParticipantType.CONTACT.value:
+        return False
     role = (participant.relationship_role or "").strip().lower().replace(" ", "_")
     return participant.is_primary or role == "primary_contact"
 
 
 def _participant_source(participant: NormalizedSalesforceDealParticipant) -> str | None:
-    if participant.participant_type == CRMParticipantType.CONTACT.value:
+    if participant.participant_type in {
+        CRMParticipantType.CONTACT.value,
+        CRMParticipantType.COMPANY.value,
+        CRMParticipantType.USER.value,
+    }:
         return "CRM"
     return None
 
