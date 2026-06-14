@@ -4,17 +4,7 @@ from typing import Any, Optional
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
-from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    Column,
-    DateTime,
-    Index,
-    Numeric,
-    String,
-    UniqueConstraint,
-    text,
-)
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -506,13 +496,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_deal_participants"
     __table_args__ = (
-        UniqueConstraint(
-            "deal_id",
-            "participant_type",
-            "related_local_id",
-            "relationship_role",
-            name="uq_crm_deal_participant_unique",
-        ),
         Index("ix_crm_deal_participant_type", "participant_type"),
         Index("ix_crm_deal_participant_related", "related_local_id"),
         Index("ix_crm_deal_participant_org", "organisation_id", "participant_type"),
@@ -553,6 +536,11 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(128), nullable=True, index=True),
         description="Role within the deal (e.g., primary_contact, decision_maker)",
+    )
+    is_primary_contact: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+        description="Whether the CRM source marks this contact as primary for the deal.",
     )
 
     # Related entity identifiers

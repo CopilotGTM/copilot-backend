@@ -263,9 +263,11 @@ class HubSpotDealParticipantWriter:
             deal_id=deal_id,
             participant_type=CRMParticipantType(participant.participant_type),
             relationship_role=participant.relationship_role,
+            is_primary_contact=_is_primary_contact(participant),
             related_local_id=related_local_id,
             related_name=related_name,
             related_email=related_email,
+            participant_source=_participant_source(participant),
             synced_at=now,
             last_seen_at=now,
         )
@@ -281,6 +283,9 @@ class HubSpotDealParticipantWriter:
         now: datetime,
     ) -> None:
         row.relationship_role = participant.relationship_role
+        row.participant_source = "CRM"
+        if participant.participant_type == CRMParticipantType.CONTACT.value:
+            row.is_primary_contact = _is_primary_contact(participant)
         if related_local_id is not None:
             row.related_local_id = related_local_id
         if related_name is not None:
@@ -298,6 +303,22 @@ def _synthetic_external_id(participant: NormalizedDealParticipant) -> str:
         f"{participant.deal_external_id}:{participant.participant_type}:"
         f"{participant.related_external_id}:{role}"
     )
+
+
+def _is_primary_contact(participant: NormalizedDealParticipant) -> bool:
+    if participant.participant_type != CRMParticipantType.CONTACT.value:
+        return False
+    return participant.is_primary
+
+
+def _participant_source(participant: NormalizedDealParticipant) -> str | None:
+    if participant.participant_type in {
+        CRMParticipantType.CONTACT.value,
+        CRMParticipantType.COMPANY.value,
+        CRMParticipantType.USER.value,
+    }:
+        return "CRM"
+    return None
 
 
 def _role_rank(role: str | None) -> int:

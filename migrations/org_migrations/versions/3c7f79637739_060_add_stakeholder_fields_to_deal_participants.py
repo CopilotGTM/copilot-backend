@@ -98,6 +98,15 @@ def upgrade() -> None:
     op.add_column(
         "crm_deal_participants",
         sa.Column(
+            "is_primary_contact",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
+        ),
+    )
+    op.add_column(
+        "crm_deal_participants",
+        sa.Column(
             "approval_status",
             sa.String(length=64),
             nullable=False,
@@ -232,45 +241,10 @@ def upgrade() -> None:
             "is_deleted",
         ],
     )
-    op.create_index(
-        "ux_crm_deal_participant_active_contact_email",
-        "crm_deal_participants",
-        [
-            "organisation_id",
-            "deal_id",
-            sa.text("lower(btrim(related_email))"),
-        ],
-        unique=True,
-        postgresql_where=sa.text(
-            "participant_type = 'contact' "
-            "AND related_email IS NOT NULL "
-            "AND btrim(related_email) <> '' "
-            "AND is_deleted = false"
-        ),
-    )
-    op.create_index(
-        "ux_crm_deal_participant_active_contact_local_id",
-        "crm_deal_participants",
-        ["organisation_id", "deal_id", "related_local_id"],
-        unique=True,
-        postgresql_where=sa.text(
-            "participant_type = 'contact' "
-            "AND related_local_id IS NOT NULL "
-            "AND is_deleted = false"
-        ),
-    )
 
 
 def downgrade() -> None:
     """Remove participant behavior and profile snapshot fields."""
-    op.drop_index(
-        "ux_crm_deal_participant_active_contact_local_id",
-        table_name="crm_deal_participants",
-    )
-    op.drop_index(
-        "ux_crm_deal_participant_active_contact_email",
-        table_name="crm_deal_participants",
-    )
     op.drop_index(
         "ix_crm_deal_participant_contact_lookup",
         table_name="crm_deal_participants",
@@ -282,6 +256,7 @@ def downgrade() -> None:
         "last_researched_at",
         "stakeholder_research",
         "approval_status",
+        "is_primary_contact",
         "source_reference_id",
         "participant_source",
         "temperature",

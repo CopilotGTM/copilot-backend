@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from dotenv import load_dotenv
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlmodel import col
+from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.infra.database.sessions import acquire_master_session
 
 from scripts.org_admin_session import acquire_org_admin_async_session
 
@@ -64,18 +68,45 @@ class DuplicateAuditReport:
     def has_duplicates(self) -> bool:
         return bool(self.email_duplicates or self.contact_id_duplicates)
 
+    @property
+    def has_contact_id_duplicates(self) -> bool:
+        return bool(self.contact_id_duplicates)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Audit duplicate active CRM contact participants for one organisation.",
     )
-    parser.add_argument("--organisation-id", required=True, type=UUID)
+    parser.add_argument("--organisation-id", type=UUID)
+    parser.add_argument("--all", action="store_true", help="Audit all approved organisations.")
     parser.add_argument(
         "--fail-on-duplicates",
         action="store_true",
         help="Exit with status 1 when duplicates are found.",
     )
     return parser
+
+
+def load_organisation_ids(organisation_id: UUID | None, run_all: bool) -> list[UUID]:
+    session_gen = acquire_master_session()
+    session = next(session_gen)
+    try:
+        if run_all:
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) != OrganisationStatus.FAILED
+            )
+        elif organisation_id:
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.organisation_id) == organisation_id
+            )
+        else:
+            return []
+        return [row[0] for row in session.execute(stmt).all()]
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
 
 
 def _as_uuid(value: Any) -> UUID:
@@ -147,15 +178,23 @@ def exit_code_for_report(
     *,
     fail_on_duplicates: bool,
 ) -> int:
-    if fail_on_duplicates and report.has_duplicates:
+    if fail_on_duplicates and report.has_contact_id_duplicates:
         return 1
     return 0
 
 
 async def run(args: argparse.Namespace) -> int:
-    report = await audit_org(args.organisation_id)
-    print_report(report)
-    return exit_code_for_report(report, fail_on_duplicates=args.fail_on_duplicates)
+    if args.all == bool(args.organisation_id):
+        raise SystemExit("Pass exactly one of --organisation-id or --all.")
+
+    exit_code = 0
+    for organisation_id in load_organisation_ids(args.organisation_id, args.all):
+        print(f"organisation_id={organisation_id}")
+        report = await audit_org(organisation_id)
+        print_report(report)
+        if exit_code_for_report(report, fail_on_duplicates=args.fail_on_duplicates):
+            exit_code = 1
+    return exit_code
 
 
 def main() -> None:

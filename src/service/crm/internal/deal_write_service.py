@@ -1441,7 +1441,7 @@ class DealWriteService:
             col(CRMDealParticipant.integration_id) == deal.integration_id,
             col(CRMDealParticipant.deal_id) == deal.deal_id,
             col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
-            col(CRMDealParticipant.relationship_role) == "primary_contact",
+            col(CRMDealParticipant.is_primary_contact).is_(True),
             col(CRMDealParticipant.is_deleted).is_(False),
         )
         result = await self.session.execute(stmt)

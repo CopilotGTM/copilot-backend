@@ -126,4 +126,5 @@ async def test_add_participants_reuses_contact_when_same_contact_has_multiple_ro
     assert skipped[0].reason == "Duplicate participant in request"
     assert changed is True
     assert isinstance(created[0], CRMDealParticipant)
+    assert created[0].is_primary_contact is True
     assert getattr(created[0], "properties", None) is None

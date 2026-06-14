@@ -67,7 +67,11 @@ class SalesforceDealParticipantWriter:
 
         now = datetime.now(UTC)
         existing_by_external, existing_by_identity = await self._load_existing_rows(
-            external_ids={_synthetic_external_id(participant) for participant in participants},
+            external_ids={
+                external_id
+                for participant in participants
+                for external_id in _source_external_ids(participant)
+            },
             deal_ids=set(deal_pk_map.values()),
         )
         mapping_rows: list[IntegrationMappingUpsert] = []
@@ -78,6 +82,7 @@ class SalesforceDealParticipantWriter:
                 continue
 
             external_id = _synthetic_external_id(participant)
+            legacy_external_id = _legacy_synthetic_external_id(participant)
             related_hit = self._related_hit(
                 participant=participant,
                 contact_map=contact_map,
@@ -94,7 +99,9 @@ class SalesforceDealParticipantWriter:
                 related_name = related_hit.name
                 related_email = _normalize_email(related_hit.email)
 
-            existing = existing_by_external.get(external_id)
+            existing = existing_by_external.get(external_id) or existing_by_external.get(
+                legacy_external_id
+            )
             if existing is None:
                 existing = _find_by_identity(
                     existing_by_identity=existing_by_identity,
@@ -114,10 +121,10 @@ class SalesforceDealParticipantWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
+                existing_by_external[legacy_external_id] = row
                 _remember_identity(existing_by_identity, row)
-                mapping_rows.append(
-                    self._source_mapping_row(
-                        external_id=external_id,
+                mapping_rows.extend(
+                    self._source_mapping_rows(
                         participant=participant,
                         local_participant_id=row.participant_id,
                         now=now,
@@ -127,6 +134,7 @@ class SalesforceDealParticipantWriter:
             else:
                 self._apply_updates(
                     existing,
+                    participant=participant,
                     related_local_id=related_local_id,
                     related_name=related_name,
                     related_email=related_email,
@@ -134,10 +142,10 @@ class SalesforceDealParticipantWriter:
                 )
                 existing.is_deleted = False
                 existing_by_external[external_id] = existing
+                existing_by_external[legacy_external_id] = existing
                 _remember_identity(existing_by_identity, existing)
-                mapping_rows.append(
-                    self._source_mapping_row(
-                        external_id=external_id,
+                mapping_rows.extend(
+                    self._source_mapping_rows(
                         participant=participant,
                         local_participant_id=existing.participant_id,
                         now=now,
@@ -227,24 +235,29 @@ class SalesforceDealParticipantWriter:
             _remember_identity(by_identity, row)
         return by_external, by_identity
 
-    def _source_mapping_row(
+    def _source_mapping_rows(
         self,
         *,
-        external_id: str,
         participant: NormalizedSalesforceDealParticipant,
         local_participant_id: UUID,
         now: datetime,
-    ) -> IntegrationMappingUpsert:
-        return IntegrationMappingUpsert(
-            external_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
-            external_id=external_id,
-            local_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
-            local_object_id=local_participant_id,
-            data_payload=participant.data_payload,
-            source_created_at=None,
-            source_modified_at=None,
-            synced_at=now,
-        )
+    ) -> list[IntegrationMappingUpsert]:
+        rows: list[IntegrationMappingUpsert] = []
+        for external_id in _source_external_ids(participant):
+            rows.append(
+                IntegrationMappingUpsert(
+                    external_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
+                    external_id=external_id,
+                    local_object_type=CRMSourceObjectType.DEAL_PARTICIPANT,
+                    local_object_id=local_participant_id,
+                    data_payload=participant.data_payload,
+                    source_created_at=None,
+                    source_modified_at=None,
+                    synced_at=now,
+                    mapping_metadata={"is_primary_contact": _is_primary_contact(participant)},
+                )
+            )
+        return rows
 
     def _new_row(
         self,
@@ -261,10 +274,12 @@ class SalesforceDealParticipantWriter:
             integration_id=self.integration_id,
             deal_id=deal_id,
             participant_type=CRMParticipantType(participant.participant_type),
-            relationship_role=participant.relationship_role,
+            relationship_role=None,
+            is_primary_contact=_is_primary_contact(participant),
             related_local_id=related_local_id,
             related_name=related_name,
             related_email=related_email,
+            participant_source=_participant_source(participant),
             synced_at=now,
             last_seen_at=now,
         )
@@ -273,11 +288,16 @@ class SalesforceDealParticipantWriter:
         self,
         row: CRMDealParticipant,
         *,
+        participant: NormalizedSalesforceDealParticipant,
         related_local_id: UUID | None,
         related_name: str | None,
         related_email: str | None,
         now: datetime,
     ) -> None:
+        row.participant_source = "CRM"
+        if _participant_type_value(row.participant_type) == CRMParticipantType.CONTACT.value:
+            row.is_primary_contact = _is_primary_contact(participant)
+            row.relationship_role = None
         if related_local_id is not None:
             row.related_local_id = related_local_id
         if related_name is not None:
@@ -289,11 +309,36 @@ class SalesforceDealParticipantWriter:
 
 
 def _synthetic_external_id(participant: NormalizedSalesforceDealParticipant) -> str:
+    return f"{participant.deal_external_id}:{participant.participant_type}:{participant.related_external_id}"
+
+
+def _legacy_synthetic_external_id(participant: NormalizedSalesforceDealParticipant) -> str:
     role = participant.relationship_role or ""
     return (
         f"{participant.deal_external_id}:{participant.participant_type}:"
         f"{participant.related_external_id}:{role}"
     )
+
+
+def _source_external_ids(participant: NormalizedSalesforceDealParticipant) -> set[str]:
+    return {_synthetic_external_id(participant), _legacy_synthetic_external_id(participant)}
+
+
+def _is_primary_contact(participant: NormalizedSalesforceDealParticipant) -> bool:
+    if participant.participant_type != CRMParticipantType.CONTACT.value:
+        return False
+    role = (participant.relationship_role or "").strip().lower().replace(" ", "_")
+    return participant.is_primary or role == "primary_contact"
+
+
+def _participant_source(participant: NormalizedSalesforceDealParticipant) -> str | None:
+    if participant.participant_type in {
+        CRMParticipantType.CONTACT.value,
+        CRMParticipantType.COMPANY.value,
+        CRMParticipantType.USER.value,
+    }:
+        return "CRM"
+    return None
 
 
 def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:

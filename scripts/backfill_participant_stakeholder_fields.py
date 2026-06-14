@@ -10,24 +10,31 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlmodel import col
+from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.source_mappings import (
+    CRMSourceObjectMapping,
+    CRMSourceObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
 )
+from src.infra.database.sessions import acquire_master_session
 
 from scripts.org_admin_session import acquire_org_admin_async_session
 
@@ -43,6 +50,8 @@ class BackfillStats:
     contact_profile_fields_filled: int = 0
     contact_research_fields_updated: int = 0
     participant_profile_snapshots_updated: int = 0
+    primary_contact_flags_updated: int = 0
+    single_crm_contact_primary_flags_updated: int = 0
     participants_created: int = 0
     participants_updated: int = 0
     canonical_rows_selected: int = 0
@@ -63,6 +72,10 @@ class BackfillStats:
             "contact_profile_fields_filled": self.contact_profile_fields_filled,
             "contact_research_fields_updated": self.contact_research_fields_updated,
             "participant_profile_snapshots_updated": self.participant_profile_snapshots_updated,
+            "primary_contact_flags_updated": self.primary_contact_flags_updated,
+            "single_crm_contact_primary_flags_updated": (
+                self.single_crm_contact_primary_flags_updated
+            ),
             "participants_created": self.participants_created,
             "participants_updated": self.participants_updated,
             "canonical_rows_selected": self.canonical_rows_selected,
@@ -82,11 +95,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Backfill CRMDealParticipant stakeholder fields from deal_stakeholders.",
     )
-    parser.add_argument("--organisation-id", required=True, type=UUID)
+    parser.add_argument("--organisation-id", type=UUID)
+    parser.add_argument("--all", action="store_true", help="Process all approved organisations.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     return parser
+
+
+def load_organisation_ids(organisation_id: UUID | None, run_all: bool) -> list[UUID]:
+    session_gen = acquire_master_session()
+    session = next(session_gen)
+    try:
+        if run_all:
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) != OrganisationStatus.FAILED
+            )
+        elif organisation_id:
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.organisation_id) == organisation_id
+            )
+        else:
+            return []
+        return [row[0] for row in session.execute(stmt).all()]
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
 
 
 def _value(row: Any, key: str) -> Any:
@@ -312,24 +348,59 @@ def _duplicate_participants_for_canonical(
     canonical: CRMDealParticipant,
     participants: list[CRMDealParticipant],
 ) -> list[CRMDealParticipant]:
-    canonical_email = normalize_email(canonical.related_email)
+    if canonical.related_local_id is None:
+        return []
     return [
         participant
         for participant in participants
         if participant.participant_id != canonical.participant_id
         and participant.deal_id == canonical.deal_id
-        and (
-            (
-                canonical.related_local_id is not None
-                and participant.related_local_id == canonical.related_local_id
-            )
-            or (
-                canonical.related_local_id is None
-                and canonical_email is not None
-                and normalize_email(participant.related_email) == canonical_email
-            )
-        )
+        and participant.related_local_id == canonical.related_local_id
     ]
+
+
+def _canonical_for_participant_identity(
+    participant: CRMDealParticipant,
+    participants: list[CRMDealParticipant],
+) -> CRMDealParticipant:
+    if participant.related_local_id is None:
+        return participant
+    matches = [
+        candidate
+        for candidate in participants
+        if candidate.deal_id == participant.deal_id
+        and candidate.related_local_id == participant.related_local_id
+        and not candidate.is_deleted
+    ]
+    return choose_canonical_participant(matches) or participant
+
+
+async def _repoint_duplicate_participant_references(
+    session: Any,
+    organisation_id: UUID,
+    *,
+    canonical: CRMDealParticipant,
+    duplicates: list[CRMDealParticipant],
+    apply: bool,
+) -> int:
+    duplicate_ids = [participant.participant_id for participant in duplicates]
+    if not duplicate_ids:
+        return 0
+
+    stmt = select(CRMSourceObjectMapping).where(
+        col(CRMSourceObjectMapping.organisation_id) == organisation_id,
+        col(CRMSourceObjectMapping.local_object_type) == CRMSourceObjectType.DEAL_PARTICIPANT,
+        col(CRMSourceObjectMapping.local_object_id).in_(duplicate_ids),
+    )
+    mappings = list((await session.execute(stmt)).scalars().all())
+    if apply:
+        for mapping in mappings:
+            mapping.local_object_id = canonical.participant_id
+            session.add(mapping)
+        for duplicate in duplicates:
+            duplicate.is_deleted = True
+            session.add(duplicate)
+    return len(duplicates)
 
 
 async def _load_stakeholders(
@@ -366,6 +437,146 @@ async def _load_contacts(session: Any, organisation_id: UUID) -> list[CRMContact
         col(CRMContact.is_deleted).is_(False),
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+PRIMARY_CONTACT_PARTICIPANT_COUNT_SQL = """
+SELECT count(*)
+FROM crm_deal_participants AS participants
+JOIN crm_deals AS deals
+  ON deals.organisation_id = participants.organisation_id
+ AND deals.deal_id = participants.deal_id
+WHERE participants.organisation_id = :organisation_id
+  AND participants.participant_type = 'contact'
+  AND participants.is_deleted = false
+  AND participants.related_local_id = deals.primary_contact_id
+  AND deals.primary_contact_id IS NOT NULL
+  AND deals.is_deleted = false
+  AND participants.is_primary_contact = false
+"""
+
+
+PRIMARY_CONTACT_PARTICIPANT_UPDATE_SQL = """
+UPDATE crm_deal_participants AS participants
+SET is_primary_contact = true
+FROM crm_deals AS deals
+WHERE participants.organisation_id = :organisation_id
+  AND deals.organisation_id = participants.organisation_id
+  AND deals.deal_id = participants.deal_id
+  AND participants.participant_type = 'contact'
+  AND participants.is_deleted = false
+  AND participants.related_local_id = deals.primary_contact_id
+  AND deals.primary_contact_id IS NOT NULL
+  AND deals.is_deleted = false
+  AND participants.is_primary_contact = false
+RETURNING participants.participant_id
+"""
+
+
+SINGLE_CRM_CONTACT_PRIMARY_COUNT_SQL = """
+WITH single_crm_contact_deals AS (
+    SELECT participants.organisation_id, participants.deal_id
+    FROM crm_deal_participants AS participants
+    JOIN crm_deals AS deals
+      ON deals.organisation_id = participants.organisation_id
+     AND deals.deal_id = participants.deal_id
+    WHERE participants.organisation_id = :organisation_id
+      AND participants.participant_type = 'contact'
+      AND participants.participant_source = 'CRM'
+      AND participants.is_deleted = false
+      AND deals.is_deleted = false
+    GROUP BY participants.organisation_id, participants.deal_id
+    HAVING count(*) = 1
+       AND bool_or(participants.is_primary_contact) = false
+)
+SELECT count(*)
+FROM crm_deal_participants AS participants
+JOIN single_crm_contact_deals AS single_deals
+  ON single_deals.organisation_id = participants.organisation_id
+ AND single_deals.deal_id = participants.deal_id
+WHERE participants.organisation_id = :organisation_id
+  AND participants.participant_type = 'contact'
+  AND participants.participant_source = 'CRM'
+  AND participants.is_deleted = false
+  AND participants.is_primary_contact = false
+"""
+
+
+SINGLE_CRM_CONTACT_PRIMARY_UPDATE_SQL = """
+WITH single_crm_contact_deals AS (
+    SELECT participants.organisation_id, participants.deal_id
+    FROM crm_deal_participants AS participants
+    JOIN crm_deals AS deals
+      ON deals.organisation_id = participants.organisation_id
+     AND deals.deal_id = participants.deal_id
+    WHERE participants.organisation_id = :organisation_id
+      AND participants.participant_type = 'contact'
+      AND participants.participant_source = 'CRM'
+      AND participants.is_deleted = false
+      AND deals.is_deleted = false
+    GROUP BY participants.organisation_id, participants.deal_id
+    HAVING count(*) = 1
+       AND bool_or(participants.is_primary_contact) = false
+)
+UPDATE crm_deal_participants AS participants
+SET is_primary_contact = true
+FROM single_crm_contact_deals AS single_deals
+WHERE participants.organisation_id = :organisation_id
+  AND single_deals.organisation_id = participants.organisation_id
+  AND single_deals.deal_id = participants.deal_id
+  AND participants.participant_type = 'contact'
+  AND participants.participant_source = 'CRM'
+  AND participants.is_deleted = false
+  AND participants.is_primary_contact = false
+RETURNING participants.participant_id
+"""
+
+
+async def sync_primary_contact_flags_from_deals(
+    session: Any,
+    organisation_id: UUID,
+    *,
+    apply: bool,
+) -> int:
+    if not apply:
+        count = (
+            await session.execute(
+                text(PRIMARY_CONTACT_PARTICIPANT_COUNT_SQL),
+                {"organisation_id": organisation_id},
+            )
+        ).scalar_one()
+        return int(count)
+
+    rows = (
+        await session.execute(
+            text(PRIMARY_CONTACT_PARTICIPANT_UPDATE_SQL),
+            {"organisation_id": organisation_id},
+        )
+    ).all()
+    return len(rows)
+
+
+async def infer_primary_contact_flags_from_single_crm_contact(
+    session: Any,
+    organisation_id: UUID,
+    *,
+    apply: bool,
+) -> int:
+    if not apply:
+        count = (
+            await session.execute(
+                text(SINGLE_CRM_CONTACT_PRIMARY_COUNT_SQL),
+                {"organisation_id": organisation_id},
+            )
+        ).scalar_one()
+        return int(count)
+
+    rows = (
+        await session.execute(
+            text(SINGLE_CRM_CONTACT_PRIMARY_UPDATE_SQL),
+            {"organisation_id": organisation_id},
+        )
+    ).all()
+    return len(rows)
 
 
 def choose_contact_for_stakeholder(stakeholder: Any, contacts: list[Any]) -> Any | None:
@@ -465,6 +676,19 @@ async def backfill_org(
         stakeholders = await _load_stakeholders(session, organisation_id, limit=limit)
         participants = await _load_participants(session, organisation_id)
         contacts = await _load_contacts(session, organisation_id)
+        duplicate_ids_processed: set[UUID] = set()
+        stats.primary_contact_flags_updated = await sync_primary_contact_flags_from_deals(
+            session,
+            organisation_id,
+            apply=apply,
+        )
+        stats.single_crm_contact_primary_flags_updated = (
+            await infer_primary_contact_flags_from_single_crm_contact(
+                session,
+                organisation_id,
+                apply=apply,
+            )
+        )
 
         for stakeholder in stakeholders:
             stats.stakeholders_scanned += 1
@@ -476,6 +700,7 @@ async def backfill_org(
             participant = match.participant
             contact = None
             if participant is not None:
+                participant = _canonical_for_participant_identity(participant, participants)
                 if match.match_type == "source_reference":
                     stats.participants_matched_by_source_reference += 1
                 elif match.match_type == "contact_id":
@@ -562,8 +787,22 @@ async def backfill_org(
             else:
                 stats.participants_updated += 1
 
-            duplicates = _duplicate_participants_for_canonical(participant, participants)
-            stats.duplicate_rows_pointed_to_canonical += len(duplicates)
+            duplicates = [
+                duplicate
+                for duplicate in _duplicate_participants_for_canonical(participant, participants)
+                if duplicate.participant_id not in duplicate_ids_processed
+            ]
+            if duplicates:
+                stats.duplicate_rows_pointed_to_canonical += (
+                    await _repoint_duplicate_participant_references(
+                        session,
+                        organisation_id,
+                        canonical=participant,
+                        duplicates=duplicates,
+                        apply=apply,
+                    )
+                )
+                duplicate_ids_processed.update(duplicate.participant_id for duplicate in duplicates)
 
         if apply:
             await session.commit()
@@ -578,16 +817,32 @@ def print_stats(stats: BackfillStats) -> None:
         print(f"{key}={value}")
 
 
+def _merge_stats(total: BackfillStats, item: BackfillStats) -> BackfillStats:
+    for key, value in item.as_dict().items():
+        setattr(total, key, getattr(total, key) + value)
+    return total
+
+
 async def run(args: argparse.Namespace) -> BackfillStats:
     if args.apply == args.dry_run:
         raise SystemExit("Pass exactly one of --dry-run or --apply.")
-    return await backfill_org(args.organisation_id, apply=args.apply, limit=args.limit)
+    if args.all == bool(args.organisation_id):
+        raise SystemExit("Pass exactly one of --organisation-id or --all.")
+
+    total = BackfillStats()
+    for organisation_id in load_organisation_ids(args.organisation_id, args.all):
+        print(f"organisation_id={organisation_id}")
+        stats = await backfill_org(organisation_id, apply=args.apply, limit=args.limit)
+        print_stats(stats)
+        _merge_stats(total, stats)
+    return total
 
 
 def main() -> None:
     load_dotenv()
     args = build_parser().parse_args()
     stats = asyncio.run(run(args))
+    print("total")
     print_stats(stats)
 
 
