@@ -262,6 +262,10 @@ async def add_contacts_as_stakeholders(
     request: AddContactsAsStakeholdersRequest,
     response: FastAPIResponse,
     service: StakeholdersService = Depends(get_stakeholders_service),
+    job_visibility_service: StakeholderJobVisibilityService = Depends(
+        get_stakeholder_job_visibility_service
+    ),
+    user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[AddContactsAsStakeholdersResponse]:
     """
     Add selected contacts as stakeholders to a deal.
@@ -276,8 +280,17 @@ async def add_contacts_as_stakeholders(
     try:
         result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
         response_data = _to_api_model(AddContactsAsStakeholdersResponse, result)
-        if response_data.total_added > 0:
-            await service.trigger_deal_mapping_if_ready(deal_id)
+        for stakeholder in response_data.added:
+            await job_visibility_service.create_stakeholder_processing_jobs(
+                deal_id,
+                stakeholder.participant_id,
+            )
+            await _dispatch_auto_stakeholder_research(
+                organisation_id=service.organisation_id,
+                participant_id=stakeholder.participant_id,
+                deal_id=deal_id,
+                user_id=user_ids.user_id,
+            )
         return Response.success_response(
             message="Stakeholders added from contacts",
             data=response_data,

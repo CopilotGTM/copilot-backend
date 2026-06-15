@@ -269,7 +269,7 @@ def _created_stakeholder_result(
     processing_job_summaries = [_job_summary(job) for job in processing_jobs]
     result: dict[str, Any] = {
         "status": "created",
-        "stakeholder_id": str(stakeholder.stakeholder_id),
+        "participant_id": str(stakeholder.participant_id),
         "deal_id": str(deal_id),
         "deal_name": deal_name,
         "email": stakeholder.email,
@@ -392,7 +392,7 @@ async def add_stakeholder_direct(
                 )
                 processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
                     deal_uuid,
-                    stakeholder.stakeholder_id,
+                    stakeholder.participant_id,
                 )
             except Exception as exc:
                 processing_error = str(exc)
@@ -403,7 +403,7 @@ async def add_stakeholder_direct(
             try:
                 research_job_id = await dispatch_stakeholder_research_async(
                     organisation_id=organisation_id,
-                    stakeholder_id=stakeholder.stakeholder_id,
+                    stakeholder_id=stakeholder.participant_id,
                     deal_id=deal_uuid,
                     user_id=user_id,
                 )

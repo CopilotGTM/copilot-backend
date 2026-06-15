@@ -135,8 +135,19 @@ class AddStakeholderFormHandler(BaseFormHandler):
                         request=request,
                     )
 
-                    # Trigger deal mapping + research (same as REST handler)
-                    await service.trigger_deal_mapping_if_ready(deal_id)
+                    from src.service.crm.jobs.stakeholder_job_visibility_service import (
+                        StakeholderJobVisibilityService,
+                    )
+
+                    job_visibility_service = StakeholderJobVisibilityService(
+                        org_session,
+                        org_id,
+                        user.user_id,
+                    )
+                    await job_visibility_service.create_stakeholder_processing_jobs(
+                        deal_id,
+                        stakeholder.participant_id,
+                    )
 
                     try:
                         from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
@@ -145,13 +156,14 @@ class AddStakeholderFormHandler(BaseFormHandler):
 
                         await dispatch_stakeholder_research_async(
                             organisation_id=org_id,
-                            stakeholder_id=stakeholder.stakeholder_id,
+                            stakeholder_id=stakeholder.participant_id,
                             deal_id=deal_id,
+                            user_id=user.user_id,
                         )
                     except Exception:
                         logger.warning(
                             "Failed to dispatch stakeholder research for %s",
-                            stakeholder.stakeholder_id,
+                            stakeholder.participant_id,
                             exc_info=True,
                         )
 
