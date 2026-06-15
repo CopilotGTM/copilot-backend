@@ -10,7 +10,7 @@ Tests cover:
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from src.api.routers.crm.stakeholders_handler import _to_deal_job_response
@@ -823,10 +823,11 @@ class TestAddContactsAsStakeholders:
         client: TestClient,
         stakeholders_dependency_overrides,
         fake_stakeholders_service,
+        fake_stakeholder_job_visibility_service,
         test_deal_id,
         test_user_ids,
     ):
-        """Verify single contact can be added as stakeholder."""
+        """Adding from contacts queues the same post-create work as manual create."""
         contact = create_contact(
             organisation_id=test_user_ids["organisation_id"],
             email="new.stakeholder@example.com",
@@ -835,10 +836,17 @@ class TestAddContactsAsStakeholders:
         )
         fake_stakeholders_service.add_contact(contact)
 
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(contact.contact_id)]},
-        )
+        research_job_id = uuid4()
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+            return_value=str(research_job_id),
+        ) as dispatch_research:
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
+                json={"contact_ids": [str(contact.contact_id)]},
+            )
 
         assert resp.status_code == 200
         body = resp.json()
@@ -851,6 +859,19 @@ class TestAddContactsAsStakeholders:
         assert added["name"] == "New Stakeholder"
         assert "participant_id" in added
         assert "stakeholder_id" not in added
+        assert [
+            job.job_type.value for job in fake_stakeholder_job_visibility_service.created_jobs
+        ] == [
+            "deal_email_rematch",
+            "deal_calendar_rematch",
+            "stakeholder_sync",
+        ]
+        dispatch_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            stakeholder_id=UUID(added["participant_id"]),
+            deal_id=test_deal_id,
+            user_id=test_user_ids["user_id"],
+        )
 
     def test_successfully_adds_multiple_contacts_as_stakeholders(
         self,

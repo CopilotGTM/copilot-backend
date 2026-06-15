@@ -36,8 +36,9 @@ def _context(*, channel: str = "teams") -> AgentContext:
 
 
 def _stakeholder(*, stakeholder_id: UUID | None = None, deal_id: UUID | None = None):
+    participant_id = stakeholder_id or uuid4()
     return SimpleNamespace(
-        stakeholder_id=stakeholder_id or uuid4(),
+        participant_id=participant_id,
         deal_id=deal_id or uuid4(),
         email="buyer@acme.com",
         name="Buyer Person",
@@ -178,7 +179,8 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
         user_id=context.user_id,
     )
     assert result["status"] == "created"
-    assert result["stakeholder_id"] == str(stakeholder_id)
+    assert result["participant_id"] == str(stakeholder_id)
+    assert "stakeholder_id" not in result
     assert result["deal_id"] == str(deal_id)
     assert result["deal_name"] == "Acme Expansion"
     assert "champion_potential" not in result
