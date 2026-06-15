@@ -410,6 +410,76 @@ async def test_infer_primary_contact_flags_from_single_crm_contact() -> None:
     assert apply_session.params[0] == {"organisation_id": organisation_id}
 
 
+def test_contact_lookup_values_for_stakeholders_normalizes_identifiers() -> None:
+    contact_id = uuid4()
+    stakeholders = [
+        SimpleNamespace(contact_id=contact_id, email=" Buyer@Example.com "),
+        SimpleNamespace(contact_id=None, email="buyer@example.com"),
+        SimpleNamespace(contact_id=None, email=""),
+    ]
+
+    contact_ids, emails = backfill._contact_lookup_values_for_stakeholders(stakeholders)
+
+    assert contact_ids == {contact_id}
+    assert emails == {"buyer@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_load_contacts_skips_query_without_stakeholder_identifiers() -> None:
+    session = _FakeSQLSession([])
+
+    contacts = await backfill._load_contacts(
+        session,
+        uuid4(),
+        [SimpleNamespace(contact_id=None, email=None)],
+    )
+
+    assert contacts == []
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
+async def test_backfill_org_does_not_create_unmatched_crm_source_participant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    stakeholder = SimpleNamespace(
+        deal_id=uuid4(),
+        contact_id=None,
+        email="crm@example.com",
+        source="CRM",
+        source_reference_id=None,
+    )
+
+    async def fake_load_stakeholders(*args, **kwargs):  # noqa: ANN002, ANN003
+        return [stakeholder]
+
+    async def empty_loader(*args, **kwargs):  # noqa: ANN002, ANN003
+        return []
+
+    async def zero_count(*args, **kwargs):  # noqa: ANN002, ANN003
+        return 0
+
+    async def fail_resolve(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("CRM-sourced stakeholders should not create fallback participants")
+
+    monkeypatch.setattr(
+        backfill, "acquire_org_admin_async_session", lambda org_id: _FakeContext(_FakeSession())
+    )
+    monkeypatch.setattr(backfill, "_load_stakeholders", fake_load_stakeholders)
+    monkeypatch.setattr(backfill, "_load_participants", empty_loader)
+    monkeypatch.setattr(backfill, "_load_contacts", empty_loader)
+    monkeypatch.setattr(backfill, "sync_primary_contact_flags_from_deals", zero_count)
+    monkeypatch.setattr(backfill, "infer_primary_contact_flags_from_single_crm_contact", zero_count)
+    monkeypatch.setattr(backfill, "_resolve_integration_id", fail_resolve)
+
+    stats = await backfill.backfill_org(organisation_id, apply=False, limit=None)
+
+    assert stats.conflicts == 1
+    assert stats.participants_created == 0
+    assert stats.contacts_created == 0
+
+
 @pytest.mark.asyncio
 async def test_backfill_org_uses_admin_org_session(monkeypatch: pytest.MonkeyPatch) -> None:
     organisation_id = uuid4()
