@@ -30,7 +30,8 @@ class AdminAsyncSessionAdapter:
         self._session = session
 
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
-        return self._session.execute(*args, **kwargs)
+        with self._session.no_autoflush:
+            return self._session.execute(*args, **kwargs)
 
     def add(self, instance: object) -> None:
         self._session.add(instance)
@@ -50,7 +51,7 @@ async def acquire_org_admin_async_session(
     organisation_id: UUID,
 ) -> AsyncIterator[AdminAsyncSessionAdapter]:
     engine = create_engine(get_master_db_url(), future=True)
-    session = Session(engine)
+    session = Session(engine, expire_on_commit=False)
     schema = get_schema_name(organisation_id)
     session.info[TENANT_SCHEMA_SESSION_KEY] = schema
     session.info[TENANT_SEARCH_PATH_SESSION_KEY] = (

@@ -16,7 +16,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -37,6 +38,8 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 from src.infra.database.sessions import acquire_master_session
 
 from scripts.org_admin_session import acquire_org_admin_async_session
+
+APPLY_COMMIT_BATCH_SIZE = 500
 
 
 @dataclass
@@ -91,6 +94,20 @@ class ParticipantMatch:
     match_type: str | None
 
 
+@dataclass
+class ParticipantLookup:
+    by_source_reference: dict[tuple[str, str], list[Any]]
+    by_contact_id: dict[tuple[str, str], list[Any]]
+    by_email: dict[tuple[str, str], list[Any]]
+    by_identity: dict[tuple[str, str], list[Any]]
+
+
+@dataclass
+class ContactLookup:
+    by_contact_id: dict[str, Any]
+    by_email: dict[str, Any]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Backfill CRMDealParticipant stakeholder fields from deal_stakeholders.",
@@ -138,8 +155,19 @@ def _set_value(row: Any, key: str, value: Any) -> None:
         setattr(row, key, value)
 
 
+def _mark_modified(row: Any, key: str) -> None:
+    if isinstance(row, dict):
+        return
+    with contextlib.suppress(Exception):
+        flag_modified(row, key)
+
+
 def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
+
+
+def _is_crm_source(stakeholder: Any) -> bool:
+    return _enum_value(_value(stakeholder, "source")) == "CRM"
 
 
 def normalize_email(email: Any) -> str | None:
@@ -161,6 +189,12 @@ def _same_id(left: Any, right: Any) -> bool:
     if left is None or right is None:
         return False
     return str(left) == str(right)
+
+
+def _id_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _same_deal(stakeholder: Any, participant: Any) -> bool:
@@ -185,40 +219,65 @@ def choose_canonical_participant(participants: list[Any]) -> Any | None:
     return sorted(participants, key=_canonical_rank)[0]
 
 
+def build_participant_lookup(participants: list[Any]) -> ParticipantLookup:
+    lookup = ParticipantLookup(
+        by_source_reference={},
+        by_contact_id={},
+        by_email={},
+        by_identity={},
+    )
+    for participant in participants:
+        add_participant_to_lookup(lookup, participant)
+    return lookup
+
+
+def add_participant_to_lookup(lookup: ParticipantLookup, participant: Any) -> None:
+    deal_id = _id_key(_value(participant, "deal_id"))
+    if not deal_id:
+        return
+
+    participant_id = _id_key(_value(participant, "participant_id"))
+    if participant_id:
+        lookup.by_source_reference.setdefault((deal_id, participant_id), []).append(participant)
+
+    related_local_id = _id_key(_value(participant, "related_local_id"))
+    if related_local_id:
+        lookup.by_contact_id.setdefault((deal_id, related_local_id), []).append(participant)
+        lookup.by_identity.setdefault((deal_id, related_local_id), []).append(participant)
+
+    email = normalize_email(_value(participant, "related_email"))
+    if email:
+        lookup.by_email.setdefault((deal_id, email), []).append(participant)
+
+
 def choose_participant_match_for_stakeholder(
     stakeholder: Any,
     participants: list[Any],
+    lookup: ParticipantLookup | None = None,
 ) -> ParticipantMatch:
-    same_deal = [
-        participant for participant in participants if _same_deal(stakeholder, participant)
-    ]
+    participant_lookup = lookup or build_participant_lookup(participants)
+    deal_id = _id_key(_value(stakeholder, "deal_id"))
+    if not deal_id:
+        return ParticipantMatch(None, None)
+
     source_reference_id = _value(stakeholder, "source_reference_id")
     if source_reference_id:
-        matches = [
-            participant
-            for participant in same_deal
-            if _same_id(source_reference_id, _value(participant, "participant_id"))
-        ]
+        matches = participant_lookup.by_source_reference.get(
+            (deal_id, str(source_reference_id)),
+            [],
+        )
         if matches:
             return ParticipantMatch(choose_canonical_participant(matches), "source_reference")
 
     contact_id = _value(stakeholder, "contact_id")
     if contact_id:
-        matches = [
-            participant
-            for participant in same_deal
-            if _same_id(contact_id, _value(participant, "related_local_id"))
-        ]
+        matches = participant_lookup.by_contact_id.get((deal_id, str(contact_id)), [])
         if matches:
             return ParticipantMatch(choose_canonical_participant(matches), "contact_id")
 
     stakeholder_email = normalize_email(_value(stakeholder, "email"))
     if stakeholder_email:
-        matches = [
-            participant
-            for participant in same_deal
-            if normalize_email(_value(participant, "related_email")) == stakeholder_email
-        ]
+        matches = participant_lookup.by_email.get((deal_id, stakeholder_email), [])
         if matches:
             return ParticipantMatch(choose_canonical_participant(matches), "email")
 
@@ -263,10 +322,12 @@ def fill_contact_profile_from_stakeholder(contact: Any, stakeholder: Any) -> boo
     department = _value(stakeholder, "department")
     if department and not properties.get("department"):
         properties["department"] = department
+        _mark_modified(contact, "properties")
         changed = True
     external_links = _value(stakeholder, "external_links")
     if external_links and not properties.get("external_links"):
         properties["external_links"] = external_links
+        _mark_modified(contact, "properties")
         changed = True
     return changed
 
@@ -344,33 +405,50 @@ def copy_stakeholder_behavior_to_participant(
     return changed
 
 
+def _participants_for_identity(
+    participant: CRMDealParticipant,
+    participants: list[CRMDealParticipant],
+    lookup: ParticipantLookup | None,
+) -> list[CRMDealParticipant]:
+    related_local_id = _id_key(_value(participant, "related_local_id"))
+    deal_id = _id_key(_value(participant, "deal_id"))
+    if not related_local_id or not deal_id:
+        return []
+    if lookup:
+        return list(lookup.by_identity.get((deal_id, related_local_id), []))
+    return [
+        candidate
+        for candidate in participants
+        if _same_id(_value(candidate, "deal_id"), deal_id)
+        and _same_id(_value(candidate, "related_local_id"), related_local_id)
+    ]
+
+
 def _duplicate_participants_for_canonical(
     canonical: CRMDealParticipant,
     participants: list[CRMDealParticipant],
+    lookup: ParticipantLookup | None = None,
 ) -> list[CRMDealParticipant]:
     if canonical.related_local_id is None:
         return []
     return [
         participant
-        for participant in participants
+        for participant in _participants_for_identity(canonical, participants, lookup)
         if participant.participant_id != canonical.participant_id
-        and participant.deal_id == canonical.deal_id
-        and participant.related_local_id == canonical.related_local_id
     ]
 
 
 def _canonical_for_participant_identity(
     participant: CRMDealParticipant,
     participants: list[CRMDealParticipant],
+    lookup: ParticipantLookup | None = None,
 ) -> CRMDealParticipant:
     if participant.related_local_id is None:
         return participant
     matches = [
         candidate
-        for candidate in participants
-        if candidate.deal_id == participant.deal_id
-        and candidate.related_local_id == participant.related_local_id
-        and not candidate.is_deleted
+        for candidate in _participants_for_identity(participant, participants, lookup)
+        if not candidate.is_deleted
     ]
     return choose_canonical_participant(matches) or participant
 
@@ -431,10 +509,43 @@ async def _load_participants(session: Any, organisation_id: UUID) -> list[CRMDea
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def _load_contacts(session: Any, organisation_id: UUID) -> list[CRMContact]:
+def _contact_lookup_values_for_stakeholders(
+    stakeholders: list[DealStakeholder],
+) -> tuple[set[UUID], set[str]]:
+    contact_ids: set[UUID] = set()
+    emails: set[str] = set()
+    for stakeholder in stakeholders:
+        contact_id = _value(stakeholder, "contact_id")
+        if contact_id:
+            parsed_contact_id = _uuid_or_none(contact_id)
+            if parsed_contact_id:
+                contact_ids.add(parsed_contact_id)
+
+        email = normalize_email(_value(stakeholder, "email"))
+        if email:
+            emails.add(email)
+    return contact_ids, emails
+
+
+async def _load_contacts(
+    session: Any,
+    organisation_id: UUID,
+    stakeholders: list[DealStakeholder],
+) -> list[CRMContact]:
+    contact_ids, emails = _contact_lookup_values_for_stakeholders(stakeholders)
+    lookup_conditions = []
+    if contact_ids:
+        lookup_conditions.append(col(CRMContact.contact_id).in_(contact_ids))
+    if emails:
+        lookup_conditions.append(func.lower(func.trim(col(CRMContact.email))).in_(emails))
+
+    if not lookup_conditions:
+        return []
+
     stmt = select(CRMContact).where(
         col(CRMContact.organisation_id) == organisation_id,
         col(CRMContact.is_deleted).is_(False),
+        or_(*lookup_conditions),
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -579,20 +690,39 @@ async def infer_primary_contact_flags_from_single_crm_contact(
     return len(rows)
 
 
-def choose_contact_for_stakeholder(stakeholder: Any, contacts: list[Any]) -> Any | None:
+def build_contact_lookup(contacts: list[Any]) -> ContactLookup:
+    lookup = ContactLookup(by_contact_id={}, by_email={})
+    for contact in contacts:
+        add_contact_to_lookup(lookup, contact)
+    return lookup
+
+
+def add_contact_to_lookup(lookup: ContactLookup, contact: Any) -> None:
+    contact_id = _id_key(_value(contact, "contact_id"))
+    if contact_id:
+        lookup.by_contact_id.setdefault(contact_id, contact)
+
+    email = normalize_email(_value(contact, "email"))
+    if email:
+        lookup.by_email.setdefault(email, contact)
+
+
+def choose_contact_for_stakeholder(
+    stakeholder: Any,
+    contacts: list[Any],
+    lookup: ContactLookup | None = None,
+) -> Any | None:
+    contact_lookup = lookup or build_contact_lookup(contacts)
     contact_id = _value(stakeholder, "contact_id")
     if contact_id:
-        for contact in contacts:
-            if _same_id(contact_id, _value(contact, "contact_id")):
-                return contact
+        contact = contact_lookup.by_contact_id.get(str(contact_id))
+        if contact:
+            return contact
 
     stakeholder_email = normalize_email(_value(stakeholder, "email"))
     if not stakeholder_email:
         return None
-    for contact in contacts:
-        if normalize_email(_value(contact, "email")) == stakeholder_email:
-            return contact
-    return None
+    return contact_lookup.by_email.get(stakeholder_email)
 
 
 async def _resolve_integration_id(
@@ -675,7 +805,9 @@ async def backfill_org(
     async with acquire_org_admin_async_session(organisation_id) as session:
         stakeholders = await _load_stakeholders(session, organisation_id, limit=limit)
         participants = await _load_participants(session, organisation_id)
-        contacts = await _load_contacts(session, organisation_id)
+        contacts = await _load_contacts(session, organisation_id, stakeholders)
+        participant_lookup = build_participant_lookup(participants)
+        contact_lookup = build_contact_lookup(contacts)
         duplicate_ids_processed: set[UUID] = set()
         stats.primary_contact_flags_updated = await sync_primary_contact_flags_from_deals(
             session,
@@ -689,6 +821,8 @@ async def backfill_org(
                 apply=apply,
             )
         )
+        if apply:
+            await session.commit()
 
         for stakeholder in stakeholders:
             stats.stakeholders_scanned += 1
@@ -696,18 +830,26 @@ async def backfill_org(
             if not email_normalized:
                 stats.stakeholders_without_email += 1
 
-            match = choose_participant_match_for_stakeholder(stakeholder, participants)
+            match = choose_participant_match_for_stakeholder(
+                stakeholder,
+                participants,
+                participant_lookup,
+            )
             participant = match.participant
             contact = None
             if participant is not None:
-                participant = _canonical_for_participant_identity(participant, participants)
+                participant = _canonical_for_participant_identity(
+                    participant,
+                    participants,
+                    participant_lookup,
+                )
                 if match.match_type == "source_reference":
                     stats.participants_matched_by_source_reference += 1
                 elif match.match_type == "contact_id":
                     stats.participants_matched_by_contact_id += 1
                 elif match.match_type == "email":
                     stats.participants_matched_by_email += 1
-                contact = choose_contact_for_stakeholder(stakeholder, contacts)
+                contact = choose_contact_for_stakeholder(stakeholder, contacts, contact_lookup)
                 if contact:
                     stats.contacts_matched += 1
                 elif email_normalized:
@@ -731,7 +873,12 @@ async def backfill_org(
                         session.add(contact)
                         await session.flush()
                     contacts.append(contact)
+                    add_contact_to_lookup(contact_lookup, contact)
             elif email_normalized:
+                if _is_crm_source(stakeholder):
+                    stats.conflicts += 1
+                    continue
+
                 integration_id = await _resolve_integration_id(
                     session,
                     organisation_id,
@@ -740,7 +887,7 @@ async def backfill_org(
                 if not integration_id:
                     stats.conflicts += 1
                     continue
-                contact = choose_contact_for_stakeholder(stakeholder, contacts)
+                contact = choose_contact_for_stakeholder(stakeholder, contacts, contact_lookup)
                 if contact:
                     stats.contacts_matched += 1
                 elif email_normalized:
@@ -755,6 +902,7 @@ async def backfill_org(
                         session.add(contact)
                         await session.flush()
                     contacts.append(contact)
+                    add_contact_to_lookup(contact_lookup, contact)
 
                 participant = _new_app_owned_participant(
                     organisation_id=organisation_id,
@@ -768,28 +916,44 @@ async def backfill_org(
                     session.add(participant)
                     await session.flush()
                 participants.append(participant)
+                add_participant_to_lookup(participant_lookup, participant)
             else:
                 stats.conflicts += 1
                 continue
 
             stats.canonical_rows_selected += 1
             if contact:
-                if fill_contact_profile_from_stakeholder(contact, stakeholder):
+                contact_changed = fill_contact_profile_from_stakeholder(contact, stakeholder)
+                if contact_changed:
                     stats.contact_profile_fields_filled += 1
-                if copy_stakeholder_research_to_contact(contact, stakeholder):
+                research_changed = copy_stakeholder_research_to_contact(contact, stakeholder)
+                if research_changed:
                     stats.contact_research_fields_updated += 1
-                if refresh_participant_profile_snapshot_from_contact(participant, contact):
-                    stats.participant_profile_snapshots_updated += 1
+                if apply and (contact_changed or research_changed):
+                    session.add(contact)
 
-            if apply:
-                if copy_stakeholder_behavior_to_participant(participant, stakeholder):
-                    stats.participants_updated += 1
-            else:
+                snapshot_changed = refresh_participant_profile_snapshot_from_contact(
+                    participant,
+                    contact,
+                )
+                if snapshot_changed:
+                    stats.participant_profile_snapshots_updated += 1
+                if apply and snapshot_changed:
+                    session.add(participant)
+
+            behavior_changed = copy_stakeholder_behavior_to_participant(participant, stakeholder)
+            if behavior_changed:
                 stats.participants_updated += 1
+                if apply:
+                    session.add(participant)
 
             duplicates = [
                 duplicate
-                for duplicate in _duplicate_participants_for_canonical(participant, participants)
+                for duplicate in _duplicate_participants_for_canonical(
+                    participant,
+                    participants,
+                    participant_lookup,
+                )
                 if duplicate.participant_id not in duplicate_ids_processed
             ]
             if duplicates:
@@ -803,6 +967,9 @@ async def backfill_org(
                     )
                 )
                 duplicate_ids_processed.update(duplicate.participant_id for duplicate in duplicates)
+
+            if apply and stats.stakeholders_scanned % APPLY_COMMIT_BATCH_SIZE == 0:
+                await session.commit()
 
         if apply:
             await session.commit()
