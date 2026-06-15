@@ -140,13 +140,13 @@ async def create_stakeholder_if_missing(
 
                 await dispatch_stakeholder_research_async(
                     organisation_id=organisation_id,
-                    stakeholder_id=new_stakeholder.stakeholder_id,
+                    stakeholder_id=new_stakeholder.participant_id,
                     deal_id=actual_deal_id,
                 )
             except Exception:
                 logger.warning(
                     "Failed to dispatch research for %s",
-                    new_stakeholder.stakeholder_id,
+                    new_stakeholder.participant_id,
                     exc_info=True,
                 )
 
