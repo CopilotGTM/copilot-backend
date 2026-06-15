@@ -27,6 +27,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     monkeypatch,
 ) -> None:
     contact_id = uuid4()
+    participant_id = uuid4()
     deal = SimpleNamespace(
         deal_id=uuid4(),
         name="Acme Deal",
@@ -52,9 +53,18 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         create_deal=AsyncMock(return_value=deal),
     )
     stakeholder_service = SimpleNamespace(
-        add_contacts_as_stakeholders=AsyncMock(return_value=SimpleNamespace(total_added=1)),
+        add_contacts_as_stakeholders=AsyncMock(
+            return_value=SimpleNamespace(
+                total_added=1,
+                added=[SimpleNamespace(participant_id=participant_id)],
+            )
+        ),
         trigger_deal_mapping_if_ready=AsyncMock(),
     )
+    job_visibility_service = SimpleNamespace(
+        create_stakeholder_processing_jobs=AsyncMock(return_value=[]),
+    )
+    dispatch_research = AsyncMock(return_value=None)
 
     class FakeStakeholdersService:
         def __init__(self, session_arg, organisation_id, actor_user_id):
@@ -68,10 +78,34 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         async def trigger_deal_mapping_if_ready(self, deal_id):
             return await stakeholder_service.trigger_deal_mapping_if_ready(deal_id)
 
+    class FakeStakeholderJobVisibilityService:
+        def __init__(self, session_arg, organisation_id, actor_user_id):
+            assert session_arg is session
+            assert organisation_id == write_service.organisation_id
+            assert actor_user_id == write_service.actor_user_id
+
+        async def create_stakeholder_processing_jobs(self, deal_id, stakeholder_id):
+            return await job_visibility_service.create_stakeholder_processing_jobs(
+                deal_id,
+                stakeholder_id,
+            )
+
     monkeypatch.setattr(
         deals_handler_module,
         "StakeholdersService",
         FakeStakeholdersService,
+    )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "StakeholderJobVisibilityService",
+        FakeStakeholderJobVisibilityService,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "_dispatch_auto_stakeholder_research",
+        dispatch_research,
+        raising=False,
     )
 
     response = await deals_handler_module.create_deal(
@@ -90,7 +124,17 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         deal.deal_id,
         [contact_id],
     )
-    stakeholder_service.trigger_deal_mapping_if_ready.assert_awaited_once_with(deal.deal_id)
+    stakeholder_service.trigger_deal_mapping_if_ready.assert_not_awaited()
+    job_visibility_service.create_stakeholder_processing_jobs.assert_awaited_once_with(
+        deal.deal_id,
+        participant_id,
+    )
+    dispatch_research.assert_awaited_once_with(
+        organisation_id=write_service.organisation_id,
+        participant_id=participant_id,
+        deal_id=deal.deal_id,
+        user_id=write_service.actor_user_id,
+    )
     session.commit.assert_awaited_once()
     session.refresh.assert_awaited_once_with(deal)
     assert response.status == "SUCCESS"

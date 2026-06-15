@@ -130,9 +130,11 @@ def _format_upsert_output(
     updated_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     updates = updated_fields or []
-    participant_id = getattr(stakeholder, "participant_id", None) or stakeholder.stakeholder_id
+    participant_id = getattr(stakeholder, "participant_id", None)
+    if participant_id is None:
+        participant_id = getattr(stakeholder, "stakeholder_id", None)
     return {
-        "participant_id": str(participant_id),
+        "participant_id": str(participant_id) if participant_id else None,
         "email": getattr(stakeholder, "email", None) or getattr(stakeholder, "related_email", None),
         "name": getattr(stakeholder, "name", None) or getattr(stakeholder, "related_name", None),
         "job_title": stakeholder.job_title,
@@ -358,13 +360,13 @@ async def upsert_stakeholder(
 
                 await dispatch_stakeholder_research_async(
                     organisation_id=organisation_id,
-                    stakeholder_id=new_stakeholder.stakeholder_id,
+                    stakeholder_id=new_stakeholder.participant_id,
                     deal_id=actual_deal_id,
                 )
             except Exception:
                 logger.warning(
                     "Failed to dispatch research for %s",
-                    new_stakeholder.stakeholder_id,
+                    new_stakeholder.participant_id,
                     exc_info=True,
                 )
 
