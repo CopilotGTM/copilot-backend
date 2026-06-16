@@ -30,7 +30,6 @@ from src.domain.models.organisation_tables import (
     CRMSourceObjectMapping,
     CRMUser,
     DealJobs,
-    DealStakeholder,
     IntegrationSyncHistory,
     KnowledgeIntegration,
     KnowledgeProcessingJob,
@@ -126,7 +125,6 @@ all_org_models: list[type[Any]] = [
     CRMUser,
     CRMCompany,
     CRMCustomFieldDefinition,
-    DealStakeholder,
     DealJobs,
     # Email tables
     EmailFolder,

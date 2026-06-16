@@ -50,7 +50,6 @@ from .leads import (
 from .source_mappings import CRMSourceKind, CRMSourceObjectMapping, CRMSourceObjectType
 from .stakeholders import (
     ApprovalStatus,
-    DealStakeholder,
     DecisionPower,
     StakeholderSource,
     StakeholderStance,
@@ -116,7 +115,6 @@ __all__ = [
     "CRMUser",
     # Stakeholders
     "ApprovalStatus",
-    "DealStakeholder",
     "StakeholderStance",
     "DecisionPower",
     "StakeholderTemperature",
