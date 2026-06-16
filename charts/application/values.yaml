@@ -67,6 +67,25 @@ api:
           - "devapi.copilotgtm.com"
         secretName: "devapi-tls"
 
+  gateway:
+    enabled: false
+    mode: disabled
+    disableLegacyIngress: false
+    gatewayName: copilot-backend
+    gatewayClassName: envoy-gateway-dev
+    host: "devapi.copilotgtm.com"
+    tlsSecretName: "devapi-tls"
+    routeName: copilot-backend
+    timeouts:
+      request: "3600s"
+      backendRequest: ""
+    validation:
+      enabled: false
+      gatewayName: copilot-backend-envoy-validation
+      host: "devapi-envoy.copilotgtm.com"
+      tlsSecretName: "devapi-envoy-tls"
+      routeName: copilot-backend-envoy-validation
+
   # HPA for the API (CPU/Memory based)
   # Enabled for high availability - ensures at least 2 pods are always running
   autoscaling:

@@ -350,20 +350,18 @@ kubectl logs job/copilot-backend-startup -n copilotgtm
 
 Ingress annotations already include timeouts & websocket support; see `application/values.yaml` under `api.ingress.annotations`.
 
-## Cert-Manager (Production TLS)
+## Cert-Manager / TLS
 
-Install cert-manager and apply the `cert-manager-prod.yaml` in the `webservice` subchart (update email first):
+Cert-manager and TLS issuers are managed by Terraform under
+`infra/terraform/azure/<env>/addons.tf`. Do not apply legacy standalone
+ClusterIssuer manifests from the Helm chart.
 
-```powershell
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-kubectl apply -f application/charts/webservice/cert-manager-prod.yaml
-```
-
-Check status:
+For dev Envoy validation, Terraform creates a DNS-01 issuer and the
+`devapi-envoy-tls` certificate. Check status with:
 
 ```powershell
-kubectl describe clusterissuer letsencrypt-prod
-kubectl get certificate -A | findstr copilot
+kubectl describe clusterissuer letsencrypt-dns01
+kubectl get certificate -n copilotgtm
 ```
 
 ## Debugging Pods

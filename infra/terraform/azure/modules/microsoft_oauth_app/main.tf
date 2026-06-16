@@ -24,13 +24,14 @@ data "azuread_client_config" "current" {}
 locals {
   ms_graph_app_id  = "00000003-0000-0000-c000-000000000000"
   app_display_name = coalesce(var.display_name_override, "${var.display_name} MS-Integration - ${title(var.env)}")
+  owner_object_id  = coalesce(var.owner_object_id, data.azuread_client_config.current.object_id)
 }
 
 resource "azuread_application" "copilotgtm" {
   display_name     = local.app_display_name
   sign_in_audience = "AzureADMultipleOrgs"
 
-  owners = [data.azuread_client_config.current.object_id]
+  owners = [local.owner_object_id]
 
   web {
     redirect_uris = var.redirect_uris
@@ -109,7 +110,7 @@ resource "azuread_application" "copilotgtm" {
 resource "azuread_service_principal" "copilotgtm" {
   client_id                    = azuread_application.copilotgtm.client_id
   app_role_assignment_required = false
-  owners                       = [data.azuread_client_config.current.object_id]
+  owners                       = [local.owner_object_id]
 }
 
 # -----------------------------------------------------------------------------

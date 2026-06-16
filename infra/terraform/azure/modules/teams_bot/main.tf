@@ -4,6 +4,11 @@
 data "azurerm_client_config" "current" {}
 data "azuread_client_config" "current" {}
 
+locals {
+  owner_object_id = coalesce(var.owner_object_id, data.azuread_client_config.current.object_id)
+  tenant_id       = coalesce(var.tenant_id, data.azuread_client_config.current.tenant_id)
+}
+
 # -----------------------------------------------------------------------------
 # Microsoft Entra ID App Registration
 # This creates the identity for the Teams bot
@@ -12,7 +17,7 @@ resource "azuread_application" "teams_bot" {
   display_name     = "${var.bot_display_name}-Bot-${title(var.env)}"
   sign_in_audience = "AzureADMultipleOrgs" # Multi-tenant to allow users from other orgs
 
-  owners = [data.azuread_client_config.current.object_id]
+  owners = [local.owner_object_id]
 
   # Required redirect URI for Bot Framework authentication
   web {
@@ -46,7 +51,7 @@ resource "azuread_application" "teams_bot" {
 resource "azuread_service_principal" "teams_bot" {
   client_id                    = azuread_application.teams_bot.client_id
   app_role_assignment_required = false
-  owners                       = [data.azuread_client_config.current.object_id]
+  owners                       = [local.owner_object_id]
 }
 
 # -----------------------------------------------------------------------------
@@ -82,7 +87,7 @@ resource "azurerm_bot_service_azure_bot" "teams_bot" {
 
   microsoft_app_id        = azuread_application.teams_bot.client_id
   microsoft_app_type      = "SingleTenant"
-  microsoft_app_tenant_id = data.azuread_client_config.current.tenant_id
+  microsoft_app_tenant_id = local.tenant_id
 
   sku      = var.sku
   endpoint = var.messaging_endpoint
@@ -122,7 +127,7 @@ resource "azurerm_key_vault_secret" "bot_app_secret" {
 
 resource "azurerm_key_vault_secret" "bot_tenant_id" {
   name         = "teams-bot-tenant-id"
-  value        = data.azuread_client_config.current.tenant_id
+  value        = local.tenant_id
   key_vault_id = var.key_vault_id
 
   tags = var.tags

@@ -101,18 +101,20 @@ storage_account_name = "masterstorage" # Override: existing storage account name
 # org_storage_account_name = "organisationstorage"  # Default
 
 # -----------------------------------------------------------------
-# WAF / Application Gateway
-# -----------------------------------------------------------------
-# waf_name = "copilot-gtm-waf"  # Default
-appgw_sku = "Standard_v2" # Cost optimization: Standard_v2 (~$180/mo). Set to "WAF_v2" (~$400/mo) to enable OWASP WAF rules.
-
-# -----------------------------------------------------------------
 # DNS (Required)
 # -----------------------------------------------------------------
 dns_zone_name           = "copilotgtm.com"
 dns_zone_resource_group = "master-resources"
 # frontend_dns_a_record_name       = "app"    # Default for prod
 # frontend_admin_dns_a_record_name = "admin"  # Default for prod
+
+# -----------------------------------------------------------------
+# Envoy Gateway
+# -----------------------------------------------------------------
+enable_envoy_gateway         = true
+envoy_gateway_class_name     = "envoy-gateway-prod"
+envoy_gateway_public_ip_name = "copilot-gtm-envoy-gateway-prod-pip"
+envoy_validation_subdomain   = "api-envoy"
 
 # -----------------------------------------------------------------
 # Azure DevOps (Required - org specific)
@@ -124,7 +126,8 @@ devops_environment_name = "production"
 # Service Principal & Agent
 # sp_name                     = "copilot-gtm-devops-sp"  # Default
 # azuredevops_sp_display_name = "TerraformSP"            # Default
-agent_pool = "StaticAgentPool-prod" # Override: unique pool name to avoid collision with dev in shared Azure DevOps org
+azure_resource_owner_object_id = "4c81e541-7b3f-4d76-bcca-a04da9a15962"
+agent_pool                     = "StaticAgentPool-prod" # Override: unique pool name to avoid collision with dev in shared Azure DevOps org
 # Target Managed DevOps Pool name after validation:
 managed_devops_prod_deploy_pool_name = "copilot-devops-prod-deploy"
 # agent_name                  = "gtm-devops-agent-01"    # Default
@@ -181,6 +184,7 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 # Messaging endpoint is managed via Azure DevOps Variable Group (copilot-infra-secrets-prod)
 # Change TF_VAR_teams_bot_messaging_endpoint in the Variable Group to switch URLs
 # (e.g., ngrok for local dev, or deployed API endpoint)
+teams_bot_messaging_endpoint = "https://api.copilotgtm.com/users/bots/teams/messages"
 
 # -----------------------------------------------------------------
 # OAuth App Registration — redirect URIs for prod environment

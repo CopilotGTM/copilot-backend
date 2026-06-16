@@ -1,0 +1,29 @@
+{{- $mode := .Values.gateway.mode | default "disabled" -}}
+{{- $validationEnabled := and .Values.gateway.enabled .Values.gateway.validation.enabled (or (eq $mode "validation") (eq $mode "cutover-prepare")) -}}
+{{- if $validationEnabled -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Values.gateway.validation.routeName }}
+  labels:
+    {{- include "webservice.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+  - name: {{ .Values.gateway.validation.gatewayName }}
+    sectionName: https-validation
+  hostnames:
+  - {{ .Values.gateway.validation.host | quote }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    timeouts:
+      request: {{ .Values.gateway.timeouts.request | quote }}
+      {{- if .Values.gateway.timeouts.backendRequest }}
+      backendRequest: {{ .Values.gateway.timeouts.backendRequest | quote }}
+      {{- end }}
+    backendRefs:
+    - name: {{ include "webservice.fullname" . }}
+      port: {{ .Values.service.port }}
+{{- end }}

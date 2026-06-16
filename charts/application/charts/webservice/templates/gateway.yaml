@@ -1,0 +1,27 @@
+{{- $mode := .Values.gateway.mode | default "disabled" -}}
+{{- $mainEnabled := and .Values.gateway.enabled (or (eq $mode "cutover-prepare") (eq $mode "cutover-complete")) -}}
+{{- if $mainEnabled -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.gateway.gatewayName }}
+  labels:
+    {{- include "webservice.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.gatewayClassName }}
+  listeners:
+  {{- if $mainEnabled }}
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: {{ .Values.gateway.host | quote }}
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: {{ .Values.gateway.tlsSecretName }}
+    allowedRoutes:
+      namespaces:
+        from: Same
+{{- end }}
+{{- end }}

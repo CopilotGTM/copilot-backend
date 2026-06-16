@@ -45,4 +45,14 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
+  {{- if .Values.networkPolicy.envoyGateway.enabled }}
+  # Allow Envoy Gateway data-plane traffic to reach the API service.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          {{- toYaml .Values.networkPolicy.envoyGateway.namespaceSelector.matchLabels | nindent 10 }}
+    ports:
+    - protocol: TCP
+      port: 8080
+  {{- end }}
 {{- end }}

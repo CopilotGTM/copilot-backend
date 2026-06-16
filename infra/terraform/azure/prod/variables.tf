@@ -368,6 +368,12 @@ variable "azuredevops_sp_display_name" {
   default     = "TerraformSP"
 }
 
+variable "azure_resource_owner_object_id" {
+  description = "Existing Entra object ID that should remain owner/admin for prod Azure resources managed by Terraform. Pin this to avoid unrelated owner churn when local operators differ from the pipeline identity."
+  type        = string
+  default     = null
+}
+
 # -----------------------------------------------------------------
 # Backend Pipeline
 # -----------------------------------------------------------------
@@ -750,6 +756,42 @@ variable "app_namespace" {
   default = "default"
 }
 
+variable "enable_envoy_gateway" {
+  description = "Enable Envoy Gateway for the prod API cutover path."
+  type        = bool
+  default     = true
+}
+
+variable "envoy_gateway_namespace" {
+  description = "Namespace where the Envoy Gateway controller runs."
+  type        = string
+  default     = "envoy-gateway-system"
+}
+
+variable "envoy_gateway_chart_version" {
+  description = "Pinned Envoy Gateway Helm chart version."
+  type        = string
+  default     = "v1.8.1"
+}
+
+variable "envoy_gateway_public_ip_name" {
+  description = "Name for the static public IP used by prod Envoy Gateway."
+  type        = string
+  default     = "copilot-gtm-envoy-gateway-prod-pip"
+}
+
+variable "envoy_gateway_class_name" {
+  description = "GatewayClass name used by prod application Gateway API resources."
+  type        = string
+  default     = "envoy-gateway-prod"
+}
+
+variable "envoy_validation_subdomain" {
+  description = "Temporary prod API subdomain retained until post-cutover cleanup."
+  type        = string
+  default     = "api-envoy"
+}
+
 # KEDA Configuration
 variable "keda_namespace" {
   type        = string
@@ -757,30 +799,10 @@ variable "keda_namespace" {
   default     = "keda-system"
 }
 
-# -----------------------------------------------------------------
-# WAF Variables
-# -----------------------------------------------------------------
-
 variable "vnet_waf_subnet" {
-  description = "CIDR for the Application Gateway subnet."
+  description = "Legacy Application Gateway subnet CIDR. Kept to avoid VNet address-space churn while deleting the gateway."
   type        = string
   default     = "10.0.5.0/24"
-}
-
-variable "waf_name" {
-  description = "Name of the Application Gateway"
-  type        = string
-  default     = "copilot-gtm-waf"
-}
-
-variable "appgw_sku" {
-  description = "Application Gateway SKU. Use 'Standard_v2' for cost savings (~$180/mo) or 'WAF_v2' for OWASP rules (~$400/mo)."
-  type        = string
-  default     = "WAF_v2"
-  validation {
-    condition     = contains(["Standard_v2", "WAF_v2"], var.appgw_sku)
-    error_message = "appgw_sku must be 'Standard_v2' or 'WAF_v2'."
-  }
 }
 
 # -----------------------------------------------------------------

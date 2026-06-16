@@ -5,7 +5,7 @@ resource "azuredevops_build_definition" "pipeline" {
   repository {
     repo_type   = "TfsGit"
     repo_id     = var.repo_id
-    branch_name = var.branch_name
+    branch_name = startswith(var.branch_name, "refs/heads/") ? var.branch_name : "refs/heads/${var.branch_name}"
     yml_path    = var.yml_path
   }
 

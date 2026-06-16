@@ -25,6 +25,12 @@ variable "key_vault_id" {
   type        = string
 }
 
+variable "owner_object_id" {
+  description = "Object ID that should own the Entra app and service principal. Defaults to the Terraform caller."
+  type        = string
+  default     = null
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

@@ -78,6 +78,12 @@ resource "azurerm_kubernetes_cluster_node_pool" "gpu" {
   node_labels = var.gpu_node_labels
   node_taints = var.gpu_node_taints
 
+  upgrade_settings {
+    drain_timeout_in_minutes      = 0
+    max_surge                     = "10%"
+    node_soak_duration_in_minutes = 0
+  }
+
   tags = {
     env       = var.env
     dedicated = "knowledge-gpu"
