@@ -30,30 +30,6 @@ module "vnet" {
 }
 
 # -----------------------------------------------------------------
-# Application Gateway (WAF)
-# -----------------------------------------------------------------
-module "waf" {
-  source              = "../modules/waf"
-  waf_name            = "${var.waf_name}-${var.env}"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  subnet_id           = module.vnet.waf_subnet_id
-  appgw_sku           = var.appgw_sku
-  min_capacity        = 0
-  max_capacity        = 2
-  enable_diagnostics  = true
-  log_retention_days  = 30
-
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-  depends_on = [
-    module.vnet
-  ]
-}
-
-# -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
 # -----------------------------------------------------------------
 module "redis" {
@@ -133,7 +109,7 @@ module "database_key_vault" {
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
-  admin_object_id               = data.azurerm_client_config.current.object_id
+  admin_object_id               = coalesce(var.azure_resource_owner_object_id, data.azurerm_client_config.current.object_id)
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -156,7 +132,7 @@ module "master_key_vault" {
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
-  admin_object_id               = data.azurerm_client_config.current.object_id
+  admin_object_id               = coalesce(var.azure_resource_owner_object_id, data.azurerm_client_config.current.object_id)
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -267,13 +243,12 @@ module "aks" {
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
 
-  # Enable AGIC
-  app_gateway_id = module.waf.waf_id
+  # App Gateway/AGIC is removed; Envoy Gateway owns public API ingress.
+  app_gateway_id = null
 
   depends_on = [
     module.vnet,
-    module.acr,
-    module.waf
+    module.acr
   ]
 }
 
@@ -303,43 +278,6 @@ resource "azurerm_role_assignment" "devops_sp_acr_push" {
   depends_on = [
     module.acr,
     module.service_principal
-  ]
-}
-
-# -----------------------------------------------------------------
-# AGIC Role Assignments (required for brownfield Application Gateway)
-# When using a pre-existing Application Gateway, AGIC needs explicit permissions
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "agic_appgw_contributor" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Contributor"
-  scope                            = module.waf.waf_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.waf
-  ]
-}
-
-resource "azurerm_role_assignment" "agic_rg_reader" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Reader"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-resource "azurerm_role_assignment" "agic_vnet_network_contributor" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Network Contributor"
-  scope                            = module.vnet.vnet_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.vnet
   ]
 }
 
@@ -1135,6 +1073,7 @@ module "teams_bot" {
   # For dev: use ngrok URL during local development
   # For prod: use actual API endpoint
   messaging_endpoint = var.teams_bot_messaging_endpoint
+  owner_object_id    = var.azure_resource_owner_object_id
 
   # F0 = Free tier (10K messages/month), S1 = Standard ($0.50/1K messages)
   sku = var.env == "prod" ? "S1" : "F0"
@@ -1144,10 +1083,6 @@ module "teams_bot" {
     project     = var.project_name
   }
 
-  depends_on = [
-    module.resource_group,
-    module.master_key_vault
-  ]
 }
 
 # -----------------------------------------------------------------
@@ -1163,16 +1098,13 @@ module "microsoft_app_registration" {
   display_name_override = "CopilotGTM"
   redirect_uris         = var.oauth_redirect_uris
   key_vault_id          = module.master_key_vault.key_vault_id
+  owner_object_id       = var.azure_resource_owner_object_id
 
   tags = {
     environment = var.env
     project     = var.project_name
   }
 
-  depends_on = [
-    module.resource_group,
-    module.master_key_vault
-  ]
 }
 
 # -----------------------------------------------------------------

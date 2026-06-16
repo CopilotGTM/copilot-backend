@@ -9,6 +9,27 @@
 
 api:
   replicaCount: 2
+  gateway:
+    enabled: true
+    mode: cutover-complete
+    disableLegacyIngress: true
+    gatewayName: copilot-backend
+    gatewayClassName: envoy-gateway-prod
+    host: api.copilotgtm.com
+    tlsSecretName: api-tls
+    routeName: copilot-backend
+    timeouts:
+      request: "3600s"
+      backendRequest: ""
+    validation:
+      enabled: false
+      gatewayName: copilot-backend-envoy-validation
+      host: api-envoy.copilotgtm.com
+      tlsSecretName: api-envoy-tls
+      routeName: copilot-backend-envoy-validation
+  networkPolicy:
+    envoyGateway:
+      enabled: true
   secrets:
     APP_URL: "https://app.copilotgtm.com"
     ADMIN_APP_URL: "https://admin.copilotgtm.com"
