@@ -80,7 +80,6 @@ from .sync import (
     CRMSourceObjectType,
     CRMStageState,
     CRMUser,
-    DealStakeholder,
     IntegrationActivityRequest,
     IntegrationActivityRequestStatus,
     IntegrationScope,
@@ -167,7 +166,6 @@ __all__ = [
     "CRMParticipantType",
     "CRMDealStatus",
     "CRMStageState",
-    "DealStakeholder",
     # Deal Asset Models
     "DealAsset",
     "DealAssetStatus",
