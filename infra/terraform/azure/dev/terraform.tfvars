@@ -54,6 +54,7 @@ enable_storage_private_endpoints   = false
 # aks_dns_prefix     = "aks"                 # Default
 # aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
 aks_vm_size             = "Standard_D2as_v6"
+aks_max_pods            = 50
 aks_enable_auto_scaling = true
 aks_min_node_count      = 1
 aks_max_node_count      = 3

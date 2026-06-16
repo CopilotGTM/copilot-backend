@@ -63,6 +63,15 @@ api:
   autoscaling:
     minReplicas: 2
     maxReplicas: 5
+  jobs:
+    startup:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
   resources:
     limits:
       cpu: 1500m

@@ -8,6 +8,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     name                        = "agentpool"
     node_count                  = var.enable_auto_scaling ? null : var.agent_count
     vm_size                     = var.vm_size
+    max_pods                    = var.max_pods
     vnet_subnet_id              = var.vnet_subnet_ids[0]
     os_disk_size_gb             = var.os_disk_size_gb
     temporary_name_for_rotation = "tempnp"
