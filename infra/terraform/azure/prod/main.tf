@@ -228,6 +228,7 @@ module "aks" {
   vnet_subnet_ids        = module.vnet.private_subnet_ids
   agent_count            = var.aks_node_count
   vm_size                = var.aks_vm_size
+  max_pods               = var.aks_max_pods
   enable_auto_scaling    = var.aks_enable_auto_scaling
   min_count              = var.aks_min_node_count
   max_count              = var.aks_max_node_count

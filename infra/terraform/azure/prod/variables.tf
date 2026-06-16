@@ -130,6 +130,12 @@ variable "aks_vm_size" {
   default     = "Standard_DS2_v2"
 }
 
+variable "aks_max_pods" {
+  description = "Maximum number of pods that can run on each AKS default node pool node."
+  type        = number
+  default     = null
+}
+
 variable "aks_os_disk_size_gb" {
   description = "The size of the OS disk in GB for each node in the agent pool."
   type        = number

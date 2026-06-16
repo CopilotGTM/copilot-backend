@@ -58,6 +58,7 @@ enable_storage_private_endpoints   = false
 # aks_dns_prefix     = "aks"                 # Default
 # aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
 aks_vm_size             = "Standard_D2as_v6" # Cost optimization: 2 vCores, 8GB RAM (down from D4s_v3 4 vCores)
+aks_max_pods            = 35
 aks_enable_auto_scaling = true
 aks_min_node_count      = 3
 aks_max_node_count      = 6

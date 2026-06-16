@@ -48,6 +48,15 @@ api:
     DATABASE_PORT: "5432"
   autoscaling:
     minReplicas: 1
+  jobs:
+    startup:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
   # Actual usage: 4-8m CPU, ~500Mi memory; keep request above baseline so HPA does not scale dev API on idle memory.
   resources:
     limits:
@@ -62,6 +71,7 @@ knowledge-upload-worker:
   config:
     concurrency: 1
   autoscaling:
+    minReplicas: 0
     maxReplicas: 1
   resources:
     requests:

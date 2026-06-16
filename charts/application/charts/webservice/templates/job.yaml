@@ -18,7 +18,10 @@ spec:
     metadata:
       name: {{ include "webservice.fullname" $ }}-{{ $jobName }}
       labels:
-        {{- include "webservice.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/name: {{ printf "%s-%s" (include "webservice.name" $) $jobName | trunc 63 | trimSuffix "-" }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: helm-hook
+        app.kubernetes.io/part-of: {{ include "webservice.name" $ }}
         {{- if $.Values.workloadIdentity.clientId }}
         azure.workload.identity/use: "true"
         {{- end }}
@@ -47,5 +50,9 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" $ }}-secret
+          {{- with $jobConfig.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}
 {{- end }}

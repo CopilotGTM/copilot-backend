@@ -53,6 +53,12 @@ variable "vm_size" {
   default     = "Standard_DS2_v2"
 }
 
+variable "max_pods" {
+  description = "Maximum number of pods that can run on each default node pool node. Null keeps the Azure default."
+  type        = number
+  default     = null
+}
+
 variable "os_disk_size_gb" {
   description = "The size of the OS disk in GB for each node in the agent pool."
   type        = number
