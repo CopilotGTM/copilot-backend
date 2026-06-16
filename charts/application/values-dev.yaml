@@ -186,3 +186,6 @@ organization-worker:
     concurrency: 1
   autoscaling:
     maxReplicas: 1
+
+flower:
+  enabled: false
