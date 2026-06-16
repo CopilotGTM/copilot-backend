@@ -11,9 +11,10 @@ api:
   replicaCount: 1
   gateway:
     enabled: true
-    mode: validation
+    mode: cutover-complete
+    disableLegacyIngress: true
     validation:
-      enabled: true
+      enabled: false
   networkPolicy:
     envoyGateway:
       enabled: true

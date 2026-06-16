@@ -385,16 +385,21 @@ resource "kubectl_manifest" "envoy_gateway_class" {
 
 
 # -----------------------------------------------------------------
-# 6) DNS A Record for API - points to WAF public IP
+# 6) DNS A Record for API
 # -----------------------------------------------------------------
 resource "azurerm_dns_a_record" "api" {
   name                = var.api_subdomain
   zone_name           = var.dns_zone_name
   resource_group_name = var.dns_zone_resource_group
   ttl                 = 300
-  records             = [module.waf.public_ip_address]
+  records = [
+    var.enable_envoy_gateway ? azurerm_public_ip.envoy_gateway[0].ip_address : module.waf.public_ip_address
+  ]
 
-  depends_on = [module.waf]
+  depends_on = [
+    module.waf,
+    azurerm_public_ip.envoy_gateway
+  ]
 }
 
 resource "azurerm_dns_a_record" "api_envoy_validation" {
@@ -424,7 +429,7 @@ resource "kubectl_manifest" "api_certificate" {
     spec = {
       secretName = "${var.api_subdomain}-tls"
       issuerRef = {
-        name = "letsencrypt"
+        name = var.enable_envoy_gateway ? "letsencrypt-dns01" : "letsencrypt"
         kind = "ClusterIssuer"
       }
       commonName = "${var.api_subdomain}.${var.dns_zone_name}"
@@ -434,6 +439,7 @@ resource "kubectl_manifest" "api_certificate" {
 
   depends_on = [
     kubectl_manifest.letsencrypt_issuer,
+    kubectl_manifest.letsencrypt_dns01_issuer,
     kubernetes_namespace_v1.app_namespace
   ]
 }

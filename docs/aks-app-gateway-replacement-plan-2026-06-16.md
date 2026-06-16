@@ -9,10 +9,10 @@ later.
 Current scope: complete Flow 1 only. Do not implement Cloudflare DNS/proxy or
 Cloudflare Tunnel in this phase.
 
-Implementation stance: make the first dev migration validation-safe. The first
-infra and backend deploys must create a working Envoy validation path without
-removing the current App Gateway path. The main `devapi` cutover is a separate
-release-window action after the validation hostname is healthy.
+Implementation stance: dev is now moving from validation to direct Envoy
+cutover. App Gateway infrastructure remains available for rollback, but the
+backend chart should stop rendering the legacy App Gateway `Ingress` and
+`devapi.copilotgtm.com` DNS should point to the Envoy Gateway static IP.
 
 ## Executive Summary
 
@@ -704,9 +704,10 @@ The migration is successful when all of these are true:
 
 ## Changes Made So Far
 
-Implementation has started for Flow 1 dev validation. The current code changes
-prepare Envoy beside the existing Application Gateway path; they do not delete
-or disable App Gateway.
+Implementation has moved from Flow 1 validation to the dev cutover path. The
+current code changes route `devapi.copilotgtm.com` through Envoy Gateway and
+stop rendering the legacy App Gateway `Ingress`; they still do not delete the
+Application Gateway infrastructure.
 
 Terraform changes:
 
@@ -725,13 +726,21 @@ Terraform changes:
   - `GatewayClass` named `envoy-gateway-dev`
   - temporary DNS A record for `devapi-envoy.copilotgtm.com`
   - temporary validation certificate `devapi-envoy-tls`
+- Updated the main `devapi.copilotgtm.com` DNS record to point to the Envoy
+  Gateway public IP when Envoy Gateway is enabled.
+- Updated the main `devapi-tls` certificate to use the DNS-01 issuer when
+  Envoy Gateway is enabled, so certificate renewal no longer depends on the
+  App Gateway HTTP-01 path.
 
 Helm changes:
 
 - Added Gateway API values to the webservice subchart and parent chart.
-- Set dev Gateway API mode to `validation`.
+- Set dev Gateway API mode to `cutover-complete`.
+- Set `api.gateway.disableLegacyIngress=true` in dev so the legacy App Gateway
+  `Ingress` is no longer rendered.
 - Added `Gateway`, main `HTTPRoute`, and validation `HTTPRoute` templates.
-- Kept the existing App Gateway `Ingress` enabled by default.
+- Kept the existing App Gateway `Ingress` enabled by default outside explicit
+  cutover mode.
 - Added `api.gateway.disableLegacyIngress` so the old ingress can be disabled
   only after DNS/live validation.
 - Added Envoy Gateway NetworkPolicy allowance using namespace label
@@ -745,8 +754,17 @@ Verification already run locally:
   NetworkPolicy.
 - Focused `cutover-prepare` render confirming the main `devapi` route and old
   App Gateway ingress can coexist.
+- Focused `cutover-complete` render confirming the main `devapi` Gateway and
+  HTTPRoute render without the old App Gateway `Ingress`.
 - `terraform fmt -recursive infra\terraform\azure\dev infra\terraform\azure\modules\aks`
 - `terraform validate` from `infra\terraform\azure\dev`
+- `terraform plan -refresh=false` from `infra\terraform\azure\dev` after the
+  cutover change showed `0 to add, 2 to change, 0 to destroy`: update
+  `devapi` DNS from App Gateway IP `20.118.21.159` to Envoy IP
+  `20.12.200.117`, and update `devapi-tls` issuer from `letsencrypt` to
+  `letsencrypt-dns01`.
 
-No live `terraform apply`, `helm upgrade`, Kubernetes mutation, DNS mutation, or
-Azure deletion has been run yet.
+No live `terraform apply`, Kubernetes mutation, DNS mutation, or Azure deletion
+has been run locally from this workspace. The dev pipeline did run the first
+backend Helm upgrade attempt and failed on the startup hook because the branch
+was missing org migration revisions already stamped in the dev database.
