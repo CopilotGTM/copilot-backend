@@ -52,10 +52,9 @@ Current main-step rollout for dev:
    issuer, and `devapi.copilotgtm.com` A record pointing at Envoy.
 3. Backend pipeline deploys in `cutover-complete` mode and renders only the
    Gateway API route for `devapi.copilotgtm.com`.
-4. Backend pipeline uses the normal `helm upgrade --install` path. After deploy,
-   verify the live Gateway/HTTPRoute objects because the previous dev release
-   manifest was correct while the live Gateway object stayed on the old
-   validation listener.
+4. Backend pipeline uses the normal `helm upgrade --install` path. Validation
+   and final cutover use separate Gateway objects so Helm does not have to
+   mutate a validation listener into the production listener.
 5. After the main deploy is verified, run a separate cleanup apply for the old
    `devapi-envoy` validation DNS/certificate resources if they are no longer
    needed.
@@ -103,10 +102,10 @@ Latest live validation observations:
 - In-cluster Envoy validation path works when resolving the hostname to
   `20.12.200.117`: `https://devapi-envoy.copilotgtm.com/health` returned HTTP
   200.
-- The Helm release manifest already contains the desired main Gateway listener
+- The Helm release manifest already contained the desired main Gateway listener
   for `devapi.copilotgtm.com`, but the live Gateway object remained stale on the
-  old `devapi-envoy` validation listener. Keep the pipeline on normal Helm
-  upgrade semantics and verify the live object after deploy.
+  old `devapi-envoy` validation listener. The chart now avoids this pattern by
+  using a separate validation Gateway object.
 - External TCP checks to `20.12.200.117:443` failed from the local machine before
   the next backend redeploy. Retest after the backend pipeline reconciles the
   Gateway object.
@@ -309,15 +308,29 @@ Gateway chart templates under
 - `httproute-validation.yaml`
   - Same backend service.
   - Hostname `devapi-envoy.copilotgtm.com`.
+- Parent ref points to a separate validation Gateway named
+  `copilot-backend-envoy-validation`.
   - Already used during validation. Keep it disabled in dev values now, and
     delete its DNS/certificate resources in a later Terraform cleanup apply.
+
+`charts/application/charts/webservice/templates/gateway-validation.yaml`
+
+- Renders a separate validation-only `Gateway`.
+- Name comes from `api.gateway.validation.gatewayName`.
+- Listener name is `https-validation`.
+- Hostname is `devapi-envoy.copilotgtm.com`.
+- This prevents the production Gateway object from being reused for temporary
+  validation traffic.
 
 Important sequencing constraint:
 
 - The older safety sequence was: validate temporary host, enable main Envoy
   route, move DNS, then disable the App Gateway ingress. Dev has already moved
   past that sequence.
-- Current sequence is infra removal first, then backend forced Helm deploy, then
+- For future prod migration, do not reuse the final Gateway object for
+  validation. Render `copilot-backend-envoy-validation` for the temporary host
+  and `copilot-backend` for the real host.
+- Current sequence is infra removal first, then normal backend Helm deploy, then
   live verification.
 - If backend verification fails after App Gateway deletion, rollback is no
   longer instant DNS flipback. Recreate/re-enable the App Gateway path or fix the
@@ -661,7 +674,7 @@ an instant DNS rollback.
 | Webhook provider failures | Slack/HubSpot/Google/Microsoft callbacks use `devapi` | Validate temporary route reachability, then run real provider callback checks immediately after DNS cutover |
 | Terraform destroys App Gateway | Rollback becomes slow | Accept for dev cost reduction; validate Envoy immediately after backend deploy and treat App Gateway recreation as slower rollback |
 | Envoy pod memory pressure | Cost work also targets smaller AKS nodes | Give Envoy conservative dev requests and check node memory before one-node downsizing |
-| Stale Gateway object after Helm deploy | Helm release manifest can be correct while live Gateway remains on the old validation listener | Keep normal Helm deploy semantics, verify the live Gateway listener after deploy, and fix the specific stale Gateway/HTTPRoute object if it does not reconcile |
+| Stale Gateway object after Helm deploy | Reusing one Gateway object for validation and final cutover can leave live listener state stale | Use separate validation and final Gateway objects, keep normal Helm deploy semantics, and verify the live Gateway listener after deploy |
 | App Gateway ingress removed before Envoy is proven | DNS points to Envoy but live Gateway may still be stale | Verify live Gateway/HTTPRoute immediately after backend deploy; if external traffic still fails, inspect Azure LB health, `externalTrafficPolicy`, and Gateway status |
 | Wrong public IP used | Existing AKS LB IP may be outbound/load-balancer state, not the intended gateway frontend | Allocate and bind a dedicated static Envoy Gateway IP |
 | Temporary hostname TLS mismatch | `devapi-tls` is not valid for `devapi-envoy` | Create a temporary certificate/SAN before testing HTTPS |
@@ -741,6 +754,8 @@ Helm changes:
 - Kept the dev backend Helm upgrade/install command on normal deploy semantics;
   stale Gateway API state is handled through explicit post-deploy verification.
 - Added `Gateway`, main `HTTPRoute`, and validation `HTTPRoute` templates.
+- Added a separate validation `Gateway` template so temporary validation traffic
+  does not mutate the final Gateway object.
 - Kept the existing App Gateway `Ingress` enabled by default outside explicit
   cutover mode.
 - Added `api.gateway.disableLegacyIngress` so the old ingress can be disabled

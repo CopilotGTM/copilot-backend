@@ -81,6 +81,7 @@ api:
       backendRequest: ""
     validation:
       enabled: false
+      gatewayName: copilot-backend-envoy-validation
       host: "devapi-envoy.copilotgtm.com"
       tlsSecretName: "devapi-envoy-tls"
       routeName: copilot-backend-envoy-validation

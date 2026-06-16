@@ -9,7 +9,7 @@ metadata:
     {{- include "webservice.labels" . | nindent 4 }}
 spec:
   parentRefs:
-  - name: {{ .Values.gateway.gatewayName }}
+  - name: {{ .Values.gateway.validation.gatewayName }}
     sectionName: https-validation
   hostnames:
   - {{ .Values.gateway.validation.host | quote }}
