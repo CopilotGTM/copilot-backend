@@ -465,34 +465,8 @@ async def test_send_payload_dispatches_google_chat_reply(
     }
 
 
-def test_channel_payload_override_from_completed_tool_usage() -> None:
-    service = BotMessageProcessingService(uuid4())
-
-    payload = service._channel_payload_override_from_frames(
-        [
-            ToolUsage(tool_name="CreateDeal", status="starting"),
-            ToolUsage(
-                tool_name="CreateDeal",
-                status="completed",
-                channel_payload={
-                    "type": "message",
-                    "content": {
-                        "text": " ",
-                        "attachments": [{"content": {"type": "AdaptiveCard"}}],
-                    },
-                    "text_fallback": "Created deal Acme.",
-                },
-            ),
-        ]
-    )
-
-    assert isinstance(payload, ChannelPayload)
-    assert payload.content["attachments"][0]["content"]["type"] == "AdaptiveCard"
-    assert payload.text_fallback == "Created deal Acme."
-
-
 @pytest.mark.asyncio
-async def test_send_payload_prefers_tool_card_override_and_falls_back_to_text(
+async def test_send_payload_sends_rendered_text_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BotMessageProcessingService(uuid4())
@@ -500,7 +474,7 @@ async def test_send_payload_prefers_tool_card_override_and_falls_back_to_text(
 
     async def fake_send_payload(_provider: str, _reply_context: dict, payload: ChannelPayload):
         sent.append(payload)
-        return len(sent) > 1
+        return True
 
     monkeypatch.setattr(service, "_send_payload", fake_send_payload)
 
@@ -509,18 +483,91 @@ async def test_send_payload_prefers_tool_card_override_and_falls_back_to_text(
         content={"text": "Created deal Acme."},
         text_fallback="Created deal Acme.",
     )
-    override = ChannelPayload(
-        type="message",
-        content={"text": " ", "attachments": [{"content": {"type": "AdaptiveCard"}}]},
-        text_fallback="Created deal Acme.",
-    )
 
-    success = await service._send_payload_with_optional_override(
-        "teams",
-        {"service_url": "https://svc", "conversation_id": "conv"},
-        rendered_text,
-        override,
+    success = await service._send_payload(
+        "teams", {"service_url": "https://svc", "conversation_id": "conv"}, rendered_text
     )
 
     assert success is True
-    assert sent == [override, rendered_text]
+    assert sent == [rendered_text]
+
+
+def test_channel_payload_override_uses_last_completed_tool_payload() -> None:
+    payload = {
+        "type": "message",
+        "content": {"text": "rich card", "blocks": [{"type": "section"}]},
+        "text_fallback": "rich card",
+    }
+
+    override = BotMessageProcessingService._channel_payload_override_from_frames(
+        [
+            ToolUsage(tool_name="create_task", status="starting"),
+            ToolUsage(
+                tool_name="create_task",
+                status="completed",
+                channel_payload=payload,
+            ),
+        ]
+    )
+
+    assert override == ChannelPayload(
+        type="message",
+        content={"text": "rich card", "blocks": [{"type": "section"}]},
+        text_fallback="rich card",
+        attachments=None,
+        source_text=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_payload_with_optional_override_preserves_rich_non_whatsapp_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    sent: list[ChannelPayload] = []
+
+    async def fake_send_payload(_provider: str, _reply_context: dict, payload: ChannelPayload):
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(service, "_send_payload", fake_send_payload)
+
+    rendered_text = ChannelPayload(type="message", content={"text": "plain"})
+    rich_payload = ChannelPayload(type="message", content={"text": "card"})
+
+    success = await service._send_payload_with_optional_override(
+        "teams",
+        {},
+        rendered_text,
+        rich_payload,
+    )
+
+    assert success is True
+    assert sent == [rich_payload]
+
+
+@pytest.mark.asyncio
+async def test_send_payload_with_optional_override_ignores_whatsapp_tool_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BotMessageProcessingService(uuid4())
+    sent: list[ChannelPayload] = []
+
+    async def fake_send_payload(_provider: str, _reply_context: dict, payload: ChannelPayload):
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(service, "_send_payload", fake_send_payload)
+
+    rendered_text = ChannelPayload(type="message", content={"text": "llm final"})
+    tool_payload = ChannelPayload(type="message", content={"text": "last tool result"})
+
+    success = await service._send_payload_with_optional_override(
+        "whatsapp",
+        {},
+        rendered_text,
+        tool_payload,
+    )
+
+    assert success is True
+    assert sent == [rendered_text]

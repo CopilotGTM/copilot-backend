@@ -42,6 +42,23 @@ _AGNO_DONE = object()
 _TOOLS_DONE = object()
 
 
+class _AnswerEmissionState:
+    """Track emitted answer text so final full-answer replays are not emitted twice."""
+
+    def __init__(self) -> None:
+        self.emitted_text = ""
+
+    def next_delta(self, content: str) -> str:
+        if not content:
+            return ""
+
+        if self.emitted_text and content.strip() == self.emitted_text.strip():
+            return ""
+
+        self.emitted_text += content
+        return content
+
+
 class GeneralAgent(BaseAgent):
     """General agent for handling user queries with enhanced transparency."""
 
@@ -220,6 +237,7 @@ class GeneralAgent(BaseAgent):
         output_queue: asyncio.Queue[Frame | object],
     ) -> None:
         """Consume Agno events and normalize them into chat frames."""
+        answer_state = _AnswerEmissionState()
         try:
             async for kind, content, json_started in buffer.stream(chat_response):
                 await self._handle_stream_chunk(
@@ -227,6 +245,7 @@ class GeneralAgent(BaseAgent):
                     content=content,
                     json_started=json_started,
                     tasks_extractor=tasks_extractor,
+                    answer_state=answer_state,
                     output_queue=output_queue,
                 )
         except Exception as exc:
@@ -241,6 +260,7 @@ class GeneralAgent(BaseAgent):
         content: Any,
         json_started: bool,
         tasks_extractor: AgentTasksExtractor,
+        answer_state: _AnswerEmissionState,
         output_queue: asyncio.Queue[Frame | object],
     ) -> None:
         """Translate one buffered Agno event into one or more frames."""
@@ -283,17 +303,21 @@ class GeneralAgent(BaseAgent):
             await self._enqueue_answer_content(
                 content=content,
                 tasks_extractor=tasks_extractor,
+                answer_state=answer_state,
                 output_queue=output_queue,
             )
             return
 
         if kind == "final":
             await self._enqueue_flush_frames(
-                tasks_extractor=tasks_extractor, output_queue=output_queue
+                tasks_extractor=tasks_extractor,
+                answer_state=answer_state,
+                output_queue=output_queue,
             )
             await self._enqueue_final_metadata(
                 content=content,
                 json_started=json_started,
+                answer_state=answer_state,
                 output_queue=output_queue,
             )
 
@@ -312,38 +336,45 @@ class GeneralAgent(BaseAgent):
         *,
         content: str,
         tasks_extractor: AgentTasksExtractor,
+        answer_state: _AnswerEmissionState,
         output_queue: asyncio.Queue[Frame | object],
     ) -> None:
         result = tasks_extractor.process(content)
         for task_frame in result.frames:
             await output_queue.put(task_frame)
-        if result.clean_content:
-            await output_queue.put(AnswerDelta(content=result.clean_content))
+        clean_content = answer_state.next_delta(result.clean_content)
+        if clean_content:
+            await output_queue.put(AnswerDelta(content=clean_content))
 
     async def _enqueue_flush_frames(
         self,
         *,
         tasks_extractor: AgentTasksExtractor,
+        answer_state: _AnswerEmissionState,
         output_queue: asyncio.Queue[Frame | object],
     ) -> None:
         flush_result = tasks_extractor.flush()
         for task_frame in flush_result.frames:
             await output_queue.put(task_frame)
-        if flush_result.clean_content:
-            await output_queue.put(AnswerDelta(content=flush_result.clean_content))
+        clean_content = answer_state.next_delta(flush_result.clean_content)
+        if clean_content:
+            await output_queue.put(AnswerDelta(content=clean_content))
 
     async def _enqueue_final_metadata(
         self,
         *,
         content: str,
         json_started: bool,
+        answer_state: _AnswerEmissionState,
         output_queue: asyncio.Queue[Frame | object],
     ) -> None:
         if not content:
             return
 
         if not json_started:
-            await output_queue.put(AnswerDelta(content=content))
+            clean_content = answer_state.next_delta(content)
+            if clean_content:
+                await output_queue.put(AnswerDelta(content=clean_content))
             return
 
         for frame in self.metadata_parser.parse(content):

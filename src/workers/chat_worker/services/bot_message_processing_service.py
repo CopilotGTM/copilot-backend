@@ -113,7 +113,7 @@ class BotMessageProcessingService:
 
         if job_id and not self._mark_job_in_progress(job_id):
             logger.info(
-                "Skipping already-completed bot job org=%s user=%s provider=%s job=%s",
+                "Skipping non-pending bot job org=%s user=%s provider=%s job=%s",
                 self.organisation_id,
                 user_id,
                 provider,
@@ -399,23 +399,38 @@ class BotMessageProcessingService:
     # ------------------------------------------------------------------
 
     def _mark_job_in_progress(self, job_id: UUID) -> bool:
-        """Mark a pre-created job as IN_PROGRESS unless it already completed."""
+        """Atomically claim a pending bot job for processing."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import update
+
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import org_session_scope
 
         with org_session_scope(self.organisation_id) as session:
+            claim_stmt = (
+                update(ChatMessageJob)
+                .where(
+                    ChatMessageJob.job_id == job_id,
+                    ChatMessageJob.status == JobStatus.PENDING.value,
+                )
+                .values(
+                    status=JobStatus.IN_PROGRESS.value,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            result = session.execute(claim_stmt)
+            session.commit()
+            if getattr(result, "rowcount", 0) == 1:
+                return True
+
             job = session.get(ChatMessageJob, job_id)
             if not job:
                 return True
 
             status = getattr(job.status, "value", job.status)
-            if status == JobStatus.COMPLETED.value:
-                return False
-
-            job.status = JobStatus.IN_PROGRESS
-            session.add(job)
-            session.commit()
-            return True
+            logger.info("Skipping bot job %s with non-pending status=%s", job_id, status)
+            return False
 
     def _get_session_from_job(self, job_id: UUID) -> UUID | None:
         """Extract session_id from job metadata."""
@@ -1246,8 +1261,8 @@ class BotMessageProcessingService:
         rendered_payload: ChannelPayload,
         override_payload: ChannelPayload | None,
     ) -> bool:
-        """Send a tool-provided rich payload first, falling back to rendered text."""
-        if override_payload:
+        """Prefer rich tool payloads where supported, while WhatsApp keeps LLM text."""
+        if override_payload and provider != "whatsapp":
             if await self._send_payload(provider, reply_context, override_payload):
                 return True
             logger.warning("Tool channel payload failed, falling back to rendered response")
