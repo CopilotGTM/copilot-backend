@@ -783,7 +783,7 @@ variable "envoy_gateway_class_name" {
 }
 
 variable "envoy_validation_subdomain" {
-  description = "Temporary API subdomain used to validate Envoy before devapi cutover."
+  description = "Temporary API subdomain retained until the post-AGIC cleanup apply."
   type        = string
   default     = "devapi-envoy"
 }
@@ -795,30 +795,10 @@ variable "keda_namespace" {
   default     = "keda-system"
 }
 
-# -----------------------------------------------------------------
-# WAF Variables
-# -----------------------------------------------------------------
-
 variable "vnet_waf_subnet" {
-  description = "CIDR for the Application Gateway subnet."
+  description = "Legacy Application Gateway subnet CIDR. Kept to avoid VNet churn while deleting the dev gateway."
   type        = string
   default     = "10.0.5.0/24"
-}
-
-variable "waf_name" {
-  description = "Name of the Application Gateway"
-  type        = string
-  default     = "copilot-gtm-waf"
-}
-
-variable "appgw_sku" {
-  description = "Application Gateway SKU. 'Standard_v2' for dev (~$180/mo, no WAF rules) or 'WAF_v2' for prod (~$400/mo, OWASP rules)."
-  type        = string
-  default     = "WAF_v2"
-  validation {
-    condition     = contains(["Standard_v2", "WAF_v2"], var.appgw_sku)
-    error_message = "appgw_sku must be 'Standard_v2' or 'WAF_v2'."
-  }
 }
 
 # -----------------------------------------------------------------

@@ -30,30 +30,6 @@ module "vnet" {
 }
 
 # -----------------------------------------------------------------
-# Application Gateway (WAF)
-# -----------------------------------------------------------------
-module "waf" {
-  source              = "../modules/waf"
-  waf_name            = "${var.waf_name}-${var.env}"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  subnet_id           = module.vnet.waf_subnet_id
-  appgw_sku           = var.appgw_sku
-  min_capacity        = 0
-  max_capacity        = 2
-  enable_diagnostics  = true
-  log_retention_days  = 30
-
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-  depends_on = [
-    module.vnet
-  ]
-}
-
-# -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
 # -----------------------------------------------------------------
 module "redis" {
@@ -269,13 +245,13 @@ module "aks" {
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
 
-  # Enable AGIC
-  app_gateway_id = module.waf.waf_id
+  # Envoy Gateway owns dev ingress now. Keep AKS AGIC disabled so the
+  # Application Gateway can be destroyed by this plan.
+  app_gateway_id = null
 
   depends_on = [
     module.vnet,
-    module.acr,
-    module.waf
+    module.acr
   ]
 }
 
@@ -303,43 +279,6 @@ resource "azurerm_role_assignment" "devops_sp_acr_push" {
   depends_on = [
     module.acr,
     module.service_principal
-  ]
-}
-
-# -----------------------------------------------------------------
-# AGIC Role Assignments (required for brownfield Application Gateway)
-# When using a pre-existing Application Gateway, AGIC needs explicit permissions
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "agic_appgw_contributor" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Contributor"
-  scope                            = module.waf.waf_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.waf
-  ]
-}
-
-resource "azurerm_role_assignment" "agic_rg_reader" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Reader"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-resource "azurerm_role_assignment" "agic_vnet_network_contributor" {
-  principal_id                     = module.aks.agic_identity_object_id
-  role_definition_name             = "Network Contributor"
-  scope                            = module.vnet.vnet_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.vnet
   ]
 }
 

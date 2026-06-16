@@ -9,10 +9,10 @@ later.
 Current scope: complete Flow 1 only. Do not implement Cloudflare DNS/proxy or
 Cloudflare Tunnel in this phase.
 
-Implementation stance: dev is now moving from validation to direct Envoy
-cutover. App Gateway infrastructure remains available for rollback, but the
-backend chart should stop rendering the legacy App Gateway `Ingress` and
-`devapi.copilotgtm.com` DNS should point to the Envoy Gateway static IP.
+Implementation stance: dev validation is complete enough to remove the
+Application Gateway cost driver. The next main deploy should keep Envoy as the
+only dev public ingress path, disable AKS AGIC, destroy the dev Application
+Gateway resources, and keep the source/backend Python code unchanged.
 
 ## Executive Summary
 
@@ -44,43 +44,43 @@ Azure DNS
 Do not add `cloudflared`, Cloudflare DNS records, Cloudflare WAF rules, or
 Cloudflare Tunnel resources while completing Flow 1.
 
-Recommended rollout:
+Current main-step rollout for dev:
 
-1. Infra pipeline deploys Envoy Gateway beside the existing Application Gateway
-   path.
-2. Infra pipeline allocates a dedicated static public IP for Envoy in the AKS
-   node resource group and binds Envoy's `LoadBalancer` service to it.
-3. Backend pipeline adds a parallel `Gateway`/`HTTPRoute` for temporary
-   validation hostname `devapi-envoy.copilotgtm.com`. Do not switch the current
-   App Gateway ingress yet.
-4. Validate health, auth-capable routes, signed webhook route reachability,
-   SSE/WebSocket behavior, long requests, and TLS issuance through Envoy.
-5. Prepare cutover by enabling the Envoy `devapi.copilotgtm.com` route while
-   keeping the App Gateway ingress rendered.
-6. Move `devapi.copilotgtm.com` DNS to the Envoy static IP.
-7. Only after DNS and live checks pass, disable the old App Gateway ingress.
-8. Keep App Gateway for 24-48 hours as rollback.
-9. Remove AGIC/App Gateway Terraform wiring and delete App Gateway only after
-   the Envoy path is stable.
+1. Infra pipeline disables AKS AGIC and destroys the dev Application Gateway,
+   its public IP, and the AGIC role assignments.
+2. Infra keeps the existing Envoy Gateway public IP, GatewayClass, DNS-01
+   issuer, and `devapi.copilotgtm.com` A record pointing at Envoy.
+3. Backend pipeline deploys in `cutover-complete` mode and renders only the
+   Gateway API route for `devapi.copilotgtm.com`.
+4. Backend pipeline uses the normal `helm upgrade --install` path. After deploy,
+   verify the live Gateway/HTTPRoute objects because the previous dev release
+   manifest was correct while the live Gateway object stayed on the old
+   validation listener.
+5. After the main deploy is verified, run a separate cleanup apply for the old
+   `devapi-envoy` validation DNS/certificate resources if they are no longer
+   needed.
 
 ## Current Verified State
 
 Live context:
 
 - Kubernetes context: `copilot-gtm-aks-dev`
-- Helm release: `copilot-backend`, namespace `copilotgtm`, revision `517`
-- Current ingress:
-  - Namespace: `copilotgtm`
-  - Name: `copilot-backend`
-  - Class: `azure-application-gateway`
-  - Host: `devapi.copilotgtm.com`
-  - Address: `20.118.21.159`
-  - Ports: `80, 443`
+- Helm release: `copilot-backend`, namespace `copilotgtm`, revision `522`
+- Current dev API DNS:
+  - `devapi.copilotgtm.com` resolves to Envoy public IP `20.12.200.117`.
+  - `devapi-envoy.copilotgtm.com` also resolves to `20.12.200.117`.
+- Current Kubernetes ingress:
+  - No `copilot-backend` Kubernetes `Ingress` remains in namespace
+    `copilotgtm`.
+  - Gateway API is the intended runtime surface for the dev API.
 - Current Application Gateway:
   - Name: `copilot-gtm-waf-dev`
   - SKU: `Standard_v2`
   - State: `Running`
   - Public IP resource: `copilot-gtm-waf-dev-pip`
+  - Public IP: `20.118.21.159`
+  - Status for this plan: remove from dev Terraform to stop the fixed/capacity
+    charge.
 - Current AKS networking:
   - AKS network profile uses Standard Load Balancer.
   - AKS already has a Standard Load Balancer named `kubernetes` in the node
@@ -90,8 +90,43 @@ Live context:
     dedicated static Envoy Gateway IP and bind Envoy to that IP.
 - Current cert-manager state:
   - `devapi-tls` certificate is ready for `devapi.copilotgtm.com`.
+  - `devapi-envoy-tls` certificate is ready for the temporary validation host.
   - Current `ClusterIssuer` includes an HTTP-01 solver tied to
     `azure-application-gateway` plus Azure DNS-01 support.
+  - Envoy-facing certificates use DNS-01 and should not depend on the App
+    Gateway HTTP-01 solver.
+
+Latest live validation observations:
+
+- In-cluster service health works:
+  `http://copilot-backend:8080/health` returned HTTP 200.
+- In-cluster Envoy validation path works when resolving the hostname to
+  `20.12.200.117`: `https://devapi-envoy.copilotgtm.com/health` returned HTTP
+  200.
+- The Helm release manifest already contains the desired main Gateway listener
+  for `devapi.copilotgtm.com`, but the live Gateway object remained stale on the
+  old `devapi-envoy` validation listener. Keep the pipeline on normal Helm
+  upgrade semantics and verify the live object after deploy.
+- External TCP checks to `20.12.200.117:443` failed from the local machine before
+  the next backend redeploy. Retest after the backend pipeline reconciles the
+  Gateway object.
+
+Latest Terraform dry-run for the App Gateway removal:
+
+- `terraform plan -refresh=false` in `infra/terraform/azure/dev` succeeded.
+- Plan summary: `0 to add, 1 to change, 5 to destroy`.
+- The in-place change removes the AKS `ingress_application_gateway` block.
+- The destroys are:
+  - `module.waf.azurerm_application_gateway.waf`
+  - `module.waf.azurerm_public_ip.waf`
+  - `azurerm_role_assignment.agic_appgw_contributor`
+  - `azurerm_role_assignment.agic_rg_reader`
+  - `azurerm_role_assignment.agic_vnet_network_contributor`
+- The legacy WAF subnet CIDR remains in the VNet module input to avoid VNet
+  address-space churn while deleting the gateway.
+- The temporary `devapi-envoy` DNS/certificate resources intentionally remain in
+  this apply. Removing them in the same plan as AGIC/App Gateway removal caused
+  a Terraform provider dependency cycle through the Kubernetes provider.
 
 Resolved implementation constraints:
 
@@ -159,18 +194,15 @@ Expected implementation changes:
 3. Add `GatewayClass` with an `EnvoyProxy` parameters reference so we can set
    the Envoy service type and Azure Load Balancer annotations.
 4. Render the application `Gateway` and `HTTPRoute` in namespace `copilotgtm`.
-5. Add a temporary Gateway API route for `devapi-envoy.copilotgtm.com` without
-   removing the existing App Gateway ingress for `devapi.copilotgtm.com`.
-6. Use DNS-01 for the Envoy validation certificate so TLS can be tested before
-   public traffic is moved from App Gateway.
-7. Change Azure DNS `devapi` A record from `module.waf.public_ip_address` to the
-   dedicated Envoy public IP only after the temporary host passes.
-8. Enable the main Envoy Gateway API route for `devapi.copilotgtm.com` before
-   DNS cutover, while keeping the old App Gateway `Ingress` rendered.
-9. Disable the old App Gateway `Ingress` only after DNS resolves externally to
-   the Envoy IP and live checks pass.
-10. After validation, remove the AKS AGIC add-on connection and App Gateway
-   Terraform module usage from dev.
+5. Keep the main Gateway API route for `devapi.copilotgtm.com`.
+6. Keep Azure DNS `devapi` pointed at the dedicated Envoy public IP.
+7. Disable the old App Gateway `Ingress` path for dev in Helm values.
+8. Remove the AKS AGIC add-on connection and App Gateway Terraform module usage
+   from dev.
+9. Delete the dev Application Gateway and its public IP through the infra
+   pipeline.
+10. Remove the temporary `devapi-envoy` validation host only in a later cleanup
+    apply.
 
 No backend Python code should change.
 
@@ -223,9 +255,9 @@ routing, keeping Envoy behind Cloudflare remains cleaner.
 
 `charts/application/values.yaml`
 
-- Keep the current App Gateway ingress values for rollback during the first
-  deploy.
-- Add a new Gateway API values block. Suggested shape:
+- Keep the existing App Gateway ingress template for other environments and for
+  source-level rollback, but dev values should not render it after this cutover.
+- Keep the Gateway API values block:
   - `api.gateway.enabled`
   - `api.gateway.mode`: `disabled`, `validation`, `cutover-prepare`,
     `cutover-complete`, or `rollback`
@@ -240,20 +272,23 @@ routing, keeping Envoy behind Cloudflare remains cleaner.
   - `api.gateway.validation.host`
   - `api.gateway.validation.tlsSecretName`
   - `api.gateway.disableLegacyIngress`
-- During validation, keep:
-  - App Gateway `Ingress` for `devapi.copilotgtm.com`
-  - Gateway API `Gateway`/`HTTPRoute` for `devapi-envoy.copilotgtm.com`
-- During cutover phase 1, enable Gateway API for `devapi.copilotgtm.com` but
-  keep the old App Gateway ingress enabled.
-- During cutover phase 2, after DNS and live checks pass, set
-  `api.gateway.disableLegacyIngress=true` for dev.
+- Dev should run with:
+  - `api.gateway.enabled=true`
+  - `api.gateway.mode=cutover-complete`
+  - `api.gateway.validation.enabled=false`
+  - `api.gateway.disableLegacyIngress=true`
+- The backend deploy command should not use `--force` as the default path. If a
+  stale Gateway object remains after normal Helm reconciliation, inspect and fix
+  the specific Gateway/HTTPRoute state instead of making forced replacement the
+  standard deploy behavior.
 
 `charts/application/charts/webservice/templates/ingress.yaml`
 
-- Keep this template for rollback and prod until each environment is migrated.
-- Do not delete it in phase 1.
+- Keep this template for prod and possible rollback source code.
+- Dev values should not render this template once App Gateway is deleted.
 
-New chart templates to add under `charts/application/charts/webservice/templates/`:
+Gateway chart templates under
+`charts/application/charts/webservice/templates/`:
 
 - `gateway.yaml`
   - Renders `gateway.networking.k8s.io/v1` `Gateway`.
@@ -271,25 +306,24 @@ New chart templates to add under `charts/application/charts/webservice/templates
   - Hostname from values.
   - Path prefix `/`.
   - Backend ref points to `copilot-backend` service port `8080`.
-- `httproute-validation.yaml` or a values-driven second route
+- `httproute-validation.yaml`
   - Same backend service.
   - Hostname `devapi-envoy.copilotgtm.com`.
-  - Used only during validation.
+  - Already used during validation. Keep it disabled in dev values now, and
+    delete its DNS/certificate resources in a later Terraform cleanup apply.
 
 Important sequencing constraint:
 
-- Do not disable the existing `copilot-backend` App Gateway ingress until the
-  Envoy route has served `devapi` successfully after DNS cutover. If the backend
-  pipeline removes the App Gateway ingress while DNS still points to App
-  Gateway, App Gateway will stop receiving config for `devapi` and traffic can
-  break.
-- For validation, create a separate temporary Gateway/HTTPRoute for
-  `devapi-envoy.copilotgtm.com`.
-- For cutover, create the main Envoy `devapi` route first, keep App Gateway
-  ingress rendered, move DNS, verify, and only then disable the App Gateway
-  ingress in a follow-up backend deploy.
-- After the cutover observation window, remove the temporary validation host to
-  keep the public surface small.
+- The older safety sequence was: validate temporary host, enable main Envoy
+  route, move DNS, then disable the App Gateway ingress. Dev has already moved
+  past that sequence.
+- Current sequence is infra removal first, then backend forced Helm deploy, then
+  live verification.
+- If backend verification fails after App Gateway deletion, rollback is no
+  longer instant DNS flipback. Recreate/re-enable the App Gateway path or fix the
+  Gateway object directly.
+- After the cutover is stable, remove the temporary validation host in a
+  separate cleanup apply to keep the public surface small.
 
 `charts/application/charts/webservice/templates/networkpolicy.yaml`
 
@@ -301,7 +335,8 @@ Important sequencing constraint:
   - add `api.networkPolicy.envoyGateway.namespaceSelector.matchLabels.name`
     defaulting to `envoy-gateway-system`
   - allow TCP `8080`
-- Keep existing App Gateway/VNet allowance until App Gateway is deleted.
+- Existing App Gateway/VNet allowance can remain harmlessly until a later chart
+  cleanup, but dev traffic should no longer depend on it.
 
 Do not rely only on the broad `10.0.0.0/16` `ipBlock` rule. Envoy pod source IP
 behavior can vary by CNI/load-balancing path, and a namespace/pod allow rule is
@@ -381,15 +416,15 @@ Static IP binding verification:
 
 `infra/terraform/azure/dev/main.tf`
 
-- Do not remove App Gateway in the first apply.
-- After Envoy path is validated:
-  - Remove `module "waf"` for dev or guard it with a variable.
-  - Stop passing `app_gateway_id = module.waf.waf_id` into `module "aks"`.
-  - Remove AGIC role assignments:
-    - `azurerm_role_assignment.agic_appgw_contributor`
-    - `azurerm_role_assignment.agic_rg_reader`
-    - `azurerm_role_assignment.agic_vnet_network_contributor`
-  - Remove `module.waf` from AKS `depends_on`.
+- Remove `module "waf"` for dev.
+- Stop passing `app_gateway_id = module.waf.waf_id` into `module "aks"`; pass
+  `app_gateway_id = null` so the AKS AGIC add-on is disabled.
+- Remove AGIC role assignments:
+  - `azurerm_role_assignment.agic_appgw_contributor`
+  - `azurerm_role_assignment.agic_rg_reader`
+  - `azurerm_role_assignment.agic_vnet_network_contributor`
+- Remove `module.waf` from AKS `depends_on`.
+- Keep the legacy `vnet_waf_subnet` input for now to avoid unrelated VNet churn.
 
 Before the removal apply, search and account for every dev reference to:
 
@@ -411,23 +446,23 @@ Do not run a removal apply while any Terraform expression still depends on
 
 `infra/terraform/azure/dev/addons.tf`
 
-- Current DNS A record points `devapi` at `module.waf.public_ip_address`.
-- Change it to the Envoy Gateway public IP only after the temporary validation
-  hostname has passed tests.
+- Current DNS A record points `devapi` at the Envoy Gateway public IP.
 - The DNS record must reference the dedicated static Envoy public IP, not a
   discovered existing AKS load balancer IP.
-- Add a temporary `azurerm_dns_a_record` for `devapi-envoy` during validation.
-- Remove the temporary `devapi-envoy` DNS record after cutover unless a short
-  observation window is explicitly desired.
+- Keep the temporary `azurerm_dns_a_record` for `devapi-envoy` during the App
+  Gateway removal apply to avoid the Terraform provider cycle.
+- Remove the temporary `devapi-envoy` DNS record and certificate in a later
+  cleanup apply.
 
 `infra/terraform/azure/dev/variables.tf`
 
-- Add variables only if needed:
-  - `enable_app_gateway`
+- Keep only the variables still needed by dev Terraform:
   - `enable_envoy_gateway`
   - `envoy_gateway_public_ip_name`
   - `envoy_gateway_class_name`
-  - `envoy_validation_subdomain`
+  - `envoy_validation_subdomain` until cleanup
+  - `vnet_waf_subnet` until VNet cleanup
+- Remove App Gateway-specific variables such as `waf_name` and `appgw_sku`.
 
 Keep the variable surface minimal. If this is dev-only, a direct dev Terraform
 change is better than a broad abstraction.
@@ -462,8 +497,9 @@ Validation:
 
 ### Azure DevOps / deploy pipeline
 
-No Azure DevOps pipeline structure change should be required if the infra and
-backend changes are split correctly.
+No Azure DevOps pipeline structure change should be required. Keep the dev
+backend Helm step on normal upgrade/install semantics and make Gateway object
+verification an explicit post-deploy check.
 
 Deploy modes:
 
@@ -478,150 +514,100 @@ Deploy modes:
 
 Deploy order for the first working version:
 
-1. Infra pipeline apply 1:
-   - create Envoy static public IP
-   - install Gateway API CRDs
-   - install Envoy Gateway
-   - create `EnvoyProxy`
-   - create `GatewayClass`
-   - create temporary `devapi-envoy` DNS
-   - create/verify temporary TLS certificate path
-   - keep App Gateway and `devapi` DNS unchanged
-2. Backend pipeline deploy 1:
-   - keep current App Gateway ingress for `devapi`
-   - set Gateway API mode to `validation`
-   - add temporary Gateway/HTTPRoute validation path for `devapi-envoy`
-   - include NetworkPolicy allowance for Envoy-to-backend traffic
-3. Manual/live validation:
-   - test temporary Envoy hostname
-   - test TLS issuance/renewal path
-   - test NetworkPolicy/backend reachability
-   - test long request timeout behavior
-4. Backend pipeline deploy 2:
-   - set Gateway API mode to `cutover-prepare`
-   - enable the main `devapi` Envoy route
-   - keep the old App Gateway ingress rendered
-   - verify both the App Gateway path and Envoy path still have valid routes
-5. Infra pipeline apply 2 during the cutover window:
-   - change `devapi` DNS to Envoy static IP
-   - keep App Gateway resource and AGIC wiring in place
-6. Live cutover validation:
-   - verify public DNS resolves to the Envoy IP after TTL
+1. Infra pipeline apply:
+   - disable AKS `ingressApplicationGateway` by passing `app_gateway_id = null`
+   - destroy the dev Application Gateway
+   - destroy the dev Application Gateway public IP
+   - destroy AGIC role assignments
+   - keep Envoy Gateway, Envoy public IP, GatewayClass, DNS-01 issuer, and
+     `devapi` DNS pointed at Envoy
+   - keep temporary `devapi-envoy` resources for now
+2. Backend pipeline deploy:
+   - use normal `helm upgrade --install`
+   - run dev values in `cutover-complete`
+   - render the `Gateway` listener for `devapi.copilotgtm.com`
+   - render the main `HTTPRoute`
+   - keep validation route disabled
+   - keep legacy App Gateway ingress disabled
+3. Live validation:
+   - verify public DNS resolves to `20.12.200.117`
+   - verify the live Gateway object has listener `https` for
+     `devapi.copilotgtm.com`
+   - verify the main HTTPRoute is `Accepted=True`
    - verify `https://devapi.copilotgtm.com/health`
    - verify auth, OAuth callback, webhook, and normal API flows
    - verify no 4xx/5xx spike
-7. Backend pipeline deploy 3:
-   - set Gateway API mode to `cutover-complete`
-   - disable old dev App Gateway ingress only after live validation passes
-8. Infra pipeline apply 3 after 24-48 hours:
-   - remove AGIC/App Gateway dependencies
-   - delete App Gateway
+4. Cleanup apply after stability:
+   - remove temporary `devapi-envoy` DNS/certificate/validation route resources
+   - remove any remaining App Gateway-only chart values or allow rules that are
+     no longer useful
 
 ## Rollout Plan
 
-### Step 1: Prepare Envoy Gateway without touching production traffic
+### Step 1: Remove App Gateway from dev infra
 
 Changes:
 
-- Add the Envoy Gateway Helm release.
-- Create a dedicated static public IP for Envoy Gateway.
-- Bind Envoy managed service to that static IP.
-- Add temporary DNS and certificate resources for
-  `devapi-envoy.copilotgtm.com`.
-- Keep App Gateway and current `devapi` DNS unchanged.
+- Disable AKS AGIC by setting `app_gateway_id = null`.
+- Remove dev `module "waf"`.
+- Remove AGIC role assignments.
+- Keep Envoy Gateway and its public IP.
+- Keep `devapi.copilotgtm.com` pointed at Envoy.
+- Keep temporary `devapi-envoy` resources for a later cleanup apply.
 
 Verify:
 
-- `kubectl get pods -n envoy-gateway-system`
-- `kubectl get gatewayclass`
-- `kubectl get envoyproxy -A`
-- `kubectl get crd gateways.gateway.networking.k8s.io`
-- `kubectl get crd httproutes.gateway.networking.k8s.io`
-- `kubectl get svc -A` and confirm Envoy service has the expected dedicated
-  external IP.
-- `kubectl get certificate -A` shows the temporary certificate as `Ready=True`.
-- Current `devapi.copilotgtm.com` traffic still works through App Gateway.
+- Terraform plan summary should be `0 to add, 1 to change, 5 to destroy`.
+- The only AKS change should be removal of the AGIC add-on block.
+- Destroy list should be App Gateway, its public IP, and the three AGIC role
+  assignments.
 
-### Step 2: Add a temporary validation hostname
+### Step 2: Force the backend Gateway API object into the desired state
 
 Changes:
 
-- Add a temporary DNS record such as `devapi-envoy.copilotgtm.com`.
-- Route it to the Envoy public IP.
-- Add a separate temporary `Gateway`/`HTTPRoute` path. Keep the existing App
-  Gateway ingress for `devapi.copilotgtm.com` untouched during validation.
+- Run the dev backend pipeline.
+- Helm command uses normal upgrade/install semantics.
+- Dev chart values keep Gateway API enabled and legacy ingress disabled.
 
 Verify:
 
-- `curl https://devapi-envoy.copilotgtm.com/health`
-- Login/auth-capable routes.
-- API routes that do not depend on third-party callback allowlists.
-- Webhook route reachability with signed/local test requests where possible.
-- SSE/WebSocket behavior if the frontend uses it.
-- Long-running request behavior because current App Gateway timeout is `3600`.
-- Certificate issuance and renewal path through DNS-01.
-- Backend reachability through NetworkPolicy.
-- Gateway/HTTPRoute/policy status conditions are accepted/programmed.
-
-Limit of this step: OAuth and third-party webhooks are still configured to use
-`devapi.copilotgtm.com`, so the temporary hostname proves Envoy routing/TLS but
-does not fully prove provider callbacks unless provider allowlists are updated.
+- `kubectl get gateway -n copilotgtm copilot-backend -o yaml`
+  - listener name `https`
+  - hostname `devapi.copilotgtm.com`
+  - TLS secret `devapi-tls`
+- `kubectl get httproute -n copilotgtm copilot-backend -o yaml`
+  - parent ref section name `https`
+  - `Accepted=True`
+- `kubectl get ingress -n copilotgtm` should not show the old
+  `copilot-backend` App Gateway ingress.
 
 Provider callback validation requirement:
 
-- During temporary-host validation, test signed/local webhook requests where the
-  provider cannot call the temporary hostname.
-- During real `devapi` cutover, check the actual callback paths for the
-  providers configured in this environment, including OAuth/Nango callbacks and
-  HubSpot/Google/Microsoft webhook-style callbacks where applicable.
-- Keep App Gateway rollback available until these real callback checks pass.
+- Check the actual callback paths for the providers configured in this
+  environment, including OAuth/Nango callbacks and HubSpot/Google/Microsoft
+  webhook-style callbacks where applicable.
 
-### Step 3: Switch `devapi` DNS
-
-Changes:
-
-- Enable Gateway API route for the main hostname first.
-- Keep the old dev App Gateway ingress rendered.
-- Point `devapi.copilotgtm.com` to the Envoy Gateway public IP.
-- Remove the temporary validation route or leave it only for a short
-  post-cutover observation window.
-- Keep App Gateway running for rollback.
+### Step 3: Live public validation
 
 Verify:
 
-- DNS resolves to Envoy public IP.
+- DNS resolves to Envoy public IP `20.12.200.117`.
 - `curl https://devapi.copilotgtm.com/health`
 - Backend pod logs receive requests.
 - Gateway and HTTPRoute status conditions are accepted/programmed.
 - Timeout policy status is accepted and a long request succeeds.
 - No spike in 4xx/5xx.
 - OAuth and webhook callbacks still hit the backend.
-- DNS TTL has elapsed and external resolution returns the dedicated Envoy IP.
-- App Gateway ingress still exists until these checks pass.
 
-### Step 3.5: Disable legacy App Gateway ingress
+### Step 4: Cleanup temporary validation surface
 
-Changes:
+Cleanup changes after stability:
 
-- Disable the old dev App Gateway ingress in the backend chart only after Step 3
-  passes.
-- Keep App Gateway infrastructure running for 24-48 hours as a fallback while
-  Envoy serves live `devapi` traffic.
-
-Verify:
-
-- No live request path depends on the App Gateway ingress.
-- Envoy still serves `devapi.copilotgtm.com`.
-- Rollback mode can still re-render the App Gateway ingress if DNS must move
-  back to `20.118.21.159`.
-
-### Step 4: Remove App Gateway dependency
-
-Changes:
-
-- Remove AGIC/App Gateway Terraform wiring from dev.
-- Remove App Gateway-specific Helm annotations from the dev path.
-- Delete App Gateway only after the Envoy path has been stable for 24-48 hours.
+- Remove temporary `devapi-envoy` DNS/certificate resources.
+- Remove validation route values if not needed.
+- Remove stale App Gateway-only comments/values from dev if they are no longer
+  useful for rollback documentation.
 
 Verify:
 
@@ -632,7 +618,7 @@ Verify:
 
 ## Rollback Plan
 
-Rollback before App Gateway deletion:
+Rollback before the infra pipeline deletes App Gateway:
 
 1. Reapply backend Helm in `rollback` mode before moving DNS if the App Gateway
    ingress was already disabled:
@@ -647,14 +633,18 @@ Rollback before App Gateway deletion:
 4. Confirm `/health` and auth endpoints through App Gateway after DNS resolves
    externally.
 
-Rollback is only fast if App Gateway still exists and the backend chart can
-restore the App Gateway ingress. It is faster if the App Gateway ingress was
-never disabled during `cutover-prepare`. Do not delete App Gateway in the same
-pipeline run as the DNS/backend cutover.
+Rollback after this App Gateway deletion is slower:
 
-Rollback after App Gateway deletion is slower because the App Gateway resource
-must be recreated. That is why deletion should happen only after the 24-48 hour
-stability window.
+1. Re-enable or recreate the dev Application Gateway Terraform module.
+2. Pass the App Gateway ID back into the AKS module to re-enable AGIC.
+3. Recreate AGIC role assignments.
+4. Re-render the App Gateway ingress from the backend chart.
+5. Point `devapi.copilotgtm.com` DNS back to the recreated App Gateway public
+   IP.
+
+Because the current cost-saving step deletes App Gateway, the primary recovery
+path after deployment should be to fix Envoy/Gateway API quickly, not to rely on
+an instant DNS rollback.
 
 ## Risks And Mitigations
 
@@ -669,12 +659,14 @@ stability window.
 | Envoy blocked by NetworkPolicy | Existing policy was written around App Gateway/VNet traffic | Add explicit `name=envoy-gateway-system` namespace allow rule on TCP 8080 |
 | Missing Gateway API CRDs | Backend deploy fails before app resources are applied | Install/own Gateway API CRDs in infra before backend pipeline and verify required CRDs exist |
 | Webhook provider failures | Slack/HubSpot/Google/Microsoft callbacks use `devapi` | Validate temporary route reachability, then run real provider callback checks immediately after DNS cutover |
-| Terraform destroys App Gateway too early | Rollback becomes slow | Split rollout into two applies: add Envoy first, remove App Gateway later |
+| Terraform destroys App Gateway | Rollback becomes slow | Accept for dev cost reduction; validate Envoy immediately after backend deploy and treat App Gateway recreation as slower rollback |
 | Envoy pod memory pressure | Cost work also targets smaller AKS nodes | Give Envoy conservative dev requests and check node memory before one-node downsizing |
-| App Gateway ingress removed before DNS is proven | DNS may still point to App Gateway while its route config has been removed | Use `cutover-prepare`: enable Envoy main route, keep App Gateway ingress, move DNS, verify, then disable legacy ingress |
+| Stale Gateway object after Helm deploy | Helm release manifest can be correct while live Gateway remains on the old validation listener | Keep normal Helm deploy semantics, verify the live Gateway listener after deploy, and fix the specific stale Gateway/HTTPRoute object if it does not reconcile |
+| App Gateway ingress removed before Envoy is proven | DNS points to Envoy but live Gateway may still be stale | Verify live Gateway/HTTPRoute immediately after backend deploy; if external traffic still fails, inspect Azure LB health, `externalTrafficPolicy`, and Gateway status |
 | Wrong public IP used | Existing AKS LB IP may be outbound/load-balancer state, not the intended gateway frontend | Allocate and bind a dedicated static Envoy Gateway IP |
 | Temporary hostname TLS mismatch | `devapi-tls` is not valid for `devapi-envoy` | Create a temporary certificate/SAN before testing HTTPS |
 | Static public IP binding failure | Azure Load Balancer can reject the requested public IP if placement or identity permissions are wrong | Keep Envoy IP in the AKS node resource group and verify service external IP/events before backend validation |
+| Terraform provider dependency cycle during cleanup | Removing kubectl-managed validation cert/DNS resources in the same apply as AGIC removal can cycle through the Kubernetes provider and AKS outputs | Keep temporary validation resources in the App Gateway removal apply; delete them in a later cleanup apply |
 | Cost attribution overclaim | CSV rows are subscription-level | Split App Gateway cost by resource before quoting final savings |
 
 ## Success Criteria
@@ -715,6 +707,12 @@ Terraform changes:
 - Added dev output for the dedicated Envoy Gateway public IP.
 - Added dev variables for Envoy Gateway enablement, namespace, pinned chart
   version, static IP name, GatewayClass name, and validation subdomain.
+- Removed dev Application Gateway Terraform module usage.
+- Disabled AKS AGIC for dev by passing `app_gateway_id = null`.
+- Removed dev AGIC role assignments.
+- Removed App Gateway-only dev variables `waf_name` and `appgw_sku`.
+- Kept the legacy WAF subnet CIDR input temporarily to avoid unrelated VNet
+  address-space churn.
 - Added Terraform resources for:
   - `envoy-gateway-system` namespace with label
     `name=envoy-gateway-system`
@@ -727,10 +725,12 @@ Terraform changes:
   - temporary DNS A record for `devapi-envoy.copilotgtm.com`
   - temporary validation certificate `devapi-envoy-tls`
 - Updated the main `devapi.copilotgtm.com` DNS record to point to the Envoy
-  Gateway public IP when Envoy Gateway is enabled.
-- Updated the main `devapi-tls` certificate to use the DNS-01 issuer when
-  Envoy Gateway is enabled, so certificate renewal no longer depends on the
-  App Gateway HTTP-01 path.
+  Gateway public IP.
+- Updated the main `devapi-tls` certificate to use the DNS-01 issuer, so
+  certificate renewal no longer depends on the App Gateway HTTP-01 path.
+- Kept temporary `devapi-envoy` DNS/certificate resources for a later cleanup
+  apply because removing them in the same apply caused a Terraform provider
+  dependency cycle.
 
 Helm changes:
 
@@ -738,6 +738,8 @@ Helm changes:
 - Set dev Gateway API mode to `cutover-complete`.
 - Set `api.gateway.disableLegacyIngress=true` in dev so the legacy App Gateway
   `Ingress` is no longer rendered.
+- Kept the dev backend Helm upgrade/install command on normal deploy semantics;
+  stale Gateway API state is handled through explicit post-deploy verification.
 - Added `Gateway`, main `HTTPRoute`, and validation `HTTPRoute` templates.
 - Kept the existing App Gateway `Ingress` enabled by default outside explicit
   cutover mode.
@@ -759,12 +761,13 @@ Verification already run locally:
 - `terraform fmt -recursive infra\terraform\azure\dev infra\terraform\azure\modules\aks`
 - `terraform validate` from `infra\terraform\azure\dev`
 - `terraform plan -refresh=false` from `infra\terraform\azure\dev` after the
-  cutover change showed `0 to add, 2 to change, 0 to destroy`: update
-  `devapi` DNS from App Gateway IP `20.118.21.159` to Envoy IP
-  `20.12.200.117`, and update `devapi-tls` issuer from `letsencrypt` to
-  `letsencrypt-dns01`.
+  App Gateway removal showed `0 to add, 1 to change, 5 to destroy`: remove the
+  AKS AGIC block, destroy the dev Application Gateway, destroy the App Gateway
+  public IP, and destroy the three AGIC role assignments.
+- `helm lint charts\application -f charts\application\values.yaml -f charts\application\values-dev.yaml`
 
 No live `terraform apply`, Kubernetes mutation, DNS mutation, or Azure deletion
-has been run locally from this workspace. The dev pipeline did run the first
-backend Helm upgrade attempt and failed on the startup hook because the branch
-was missing org migration revisions already stamped in the dev database.
+has been run locally from this workspace for the App Gateway deletion. The dev
+pipeline previously deployed the backend release manifest, but the live Gateway
+object remained stale; the next backend deploy must verify the live Gateway and
+HTTPRoute state explicitly.
