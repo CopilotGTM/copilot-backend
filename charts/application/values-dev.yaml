@@ -9,6 +9,14 @@
 
 api:
   replicaCount: 1
+  gateway:
+    enabled: true
+    mode: validation
+    validation:
+      enabled: true
+  networkPolicy:
+    envoyGateway:
+      enabled: true
   secrets:
     APP_URL: "https://devapp.copilotgtm.com"
     ADMIN_APP_URL: "https://devadmin.copilotgtm.com"
@@ -111,6 +119,23 @@ integrations-worker:
       cpu: "50m"
       memory: "1536Mi"
 
+integrationsCronJobs:
+  jobs:
+    - name: refresh-tokens
+      schedule: "0 */4 * * *"
+    - name: renew-microsoft-graph-subscriptions
+      schedule: "0 */12 * * *"
+    - name: renew-google-subscriptions
+      schedule: "0 2 * * *"
+
+knowledgeCronJobs:
+  jobs:
+    - name: cleanup-stale-knowledge-jobs
+      schedule: "0,30 * * * *"
+    - name: cleanup-stale-db-connections-every-10-min
+      resourceName: cleanup-stale-db-connections
+      schedule: "*/10 * * * *"
+
 deal-worker:
   # Actual usage: 3m CPU, 744Mi memory
   config:
@@ -122,6 +147,13 @@ deal-worker:
     requests:
       cpu: "50m"
       memory: "1Gi"
+
+dealCronJobs:
+  jobs:
+    - name: stale-deal-job-cleanup
+      schedule: "45 * * * *"
+    - name: meeting-bot-fallback
+      schedule: "0 20 * * *"
 
 deal-beat:
   enabled: false

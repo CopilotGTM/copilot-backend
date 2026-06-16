@@ -752,6 +752,42 @@ variable "app_namespace" {
   default = "default"
 }
 
+variable "enable_envoy_gateway" {
+  description = "Enable Envoy Gateway for the dev API validation path."
+  type        = bool
+  default     = true
+}
+
+variable "envoy_gateway_namespace" {
+  description = "Namespace where the Envoy Gateway controller runs."
+  type        = string
+  default     = "envoy-gateway-system"
+}
+
+variable "envoy_gateway_chart_version" {
+  description = "Pinned Envoy Gateway Helm chart version."
+  type        = string
+  default     = "v1.8.1"
+}
+
+variable "envoy_gateway_public_ip_name" {
+  description = "Name for the static public IP used by Envoy Gateway."
+  type        = string
+  default     = "copilot-gtm-envoy-gateway-dev-pip"
+}
+
+variable "envoy_gateway_class_name" {
+  description = "GatewayClass name used by application Gateway API resources."
+  type        = string
+  default     = "envoy-gateway-dev"
+}
+
+variable "envoy_validation_subdomain" {
+  description = "Temporary API subdomain used to validate Envoy before devapi cutover."
+  type        = string
+  default     = "devapi-envoy"
+}
+
 # KEDA Configuration
 variable "keda_namespace" {
   type        = string
@@ -799,7 +835,7 @@ variable "teams_bot_messaging_endpoint" {
     This can be updated later via Azure Portal or by re-running Terraform.
   DESC
   type        = string
-  default     = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
+  default     = "https://devapi.copilotgtm.com/users/bots/teams/messages"
 }
 
 # -----------------------------------------------------------------

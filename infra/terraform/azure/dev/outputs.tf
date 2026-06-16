@@ -129,6 +129,16 @@ output "aks_principal_id" {
   value       = module.aks.aks_principal_id
 }
 
+output "aks_node_resource_group" {
+  description = "The AKS managed node resource group."
+  value       = module.aks.node_resource_group
+}
+
+output "envoy_gateway_public_ip" {
+  description = "Static public IP address dedicated to Envoy Gateway."
+  value       = try(azurerm_public_ip.envoy_gateway[0].ip_address, null)
+}
+
 # -----------------------------------------------------------------
 # Redis Outputs
 # -----------------------------------------------------------------

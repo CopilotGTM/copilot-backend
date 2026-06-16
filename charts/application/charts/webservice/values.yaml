@@ -53,6 +53,11 @@ internalService:
 networkPolicy:
   enabled: true
   monitoringNamespace: "monitoring"  # Namespace where monitoring tools run
+  envoyGateway:
+    enabled: false
+    namespaceSelector:
+      matchLabels:
+        name: envoy-gateway-system
 
 ingress:
   enabled: true
@@ -78,6 +83,24 @@ ingress:
     - hosts:
         - "devapi.copilotgtm.com"
       secretName: "devapi-tls"
+
+gateway:
+  enabled: false
+  mode: disabled
+  disableLegacyIngress: false
+  gatewayName: copilot-backend
+  gatewayClassName: envoy-gateway-dev
+  host: "devapi.copilotgtm.com"
+  tlsSecretName: "devapi-tls"
+  routeName: copilot-backend
+  timeouts:
+    request: "3600s"
+    backendRequest: ""
+  validation:
+    enabled: false
+    host: "devapi-envoy.copilotgtm.com"
+    tlsSecretName: "devapi-envoy-tls"
+    routeName: copilot-backend-envoy-validation
 
 # Internal ingress - disabled by default with WAF
 # Use Kubernetes Services for internal communication instead

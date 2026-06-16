@@ -24,6 +24,18 @@ variable "key_vault_id" {
   type        = string
 }
 
+variable "owner_object_id" {
+  description = "Object ID that should own the Entra app and service principal. Defaults to the Terraform caller."
+  type        = string
+  default     = null
+}
+
+variable "tenant_id" {
+  description = "Tenant ID for the Azure Bot Service Microsoft app tenant. Defaults to the Terraform caller tenant."
+  type        = string
+  default     = null
+}
+
 variable "sku" {
   description = "The SKU for the Azure Bot (F0 = Free, S1 = Standard)"
   type        = string

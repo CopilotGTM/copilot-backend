@@ -133,7 +133,7 @@ module "database_key_vault" {
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
-  admin_object_id               = data.azurerm_client_config.current.object_id
+  admin_object_id               = module.service_principal.object_id
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -156,7 +156,7 @@ module "master_key_vault" {
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
-  admin_object_id               = data.azurerm_client_config.current.object_id
+  admin_object_id               = module.service_principal.object_id
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -1177,6 +1177,8 @@ module "teams_bot" {
   bot_display_name    = "CopilotGTM"
   resource_group_name = module.resource_group.resource_group_name
   key_vault_id        = module.master_key_vault.key_vault_id
+  owner_object_id     = module.service_principal.object_id
+  tenant_id           = data.azurerm_client_config.current.tenant_id
 
   # Messaging endpoint - update this after deploying backend
   # For dev: use ngrok URL during local development
@@ -1208,10 +1210,11 @@ module "teams_bot" {
 module "microsoft_app_registration" {
   source = "../modules/microsoft_oauth_app"
 
-  env           = var.env
-  display_name  = "CopilotGTM"
-  redirect_uris = var.oauth_redirect_uris
-  key_vault_id  = module.master_key_vault.key_vault_id
+  env             = var.env
+  display_name    = "CopilotGTM"
+  redirect_uris   = var.oauth_redirect_uris
+  key_vault_id    = module.master_key_vault.key_vault_id
+  owner_object_id = module.service_principal.object_id
 
   tags = {
     environment = var.env

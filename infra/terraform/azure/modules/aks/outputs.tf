@@ -42,6 +42,11 @@ output "aks_principal_id" {
   value       = azurerm_kubernetes_cluster.this.identity[0].principal_id
 }
 
+output "node_resource_group" {
+  description = "The AKS managed node resource group."
+  value       = azurerm_kubernetes_cluster.this.node_resource_group
+}
+
 output "kubelet_identity_object_id" {
   description = "The object ID of the kubelet identity."
   value       = azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id
