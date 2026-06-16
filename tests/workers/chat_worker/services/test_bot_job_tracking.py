@@ -394,14 +394,15 @@ class TestFinalizeJob:
 class TestMarkJobInProgress:
     def test_transitions_to_in_progress(self, service):
         job_id = uuid4()
-        mock_job = SimpleNamespace(job_id=job_id, status=None)
         mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_job)
+        mock_session.execute = MagicMock(return_value=SimpleNamespace(rowcount=1))
 
         with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
-            service._mark_job_in_progress(job_id)
+            should_process = service._mark_job_in_progress(job_id)
 
-        assert mock_job.status.value == "in_progress"
+        assert should_process is True
+        mock_session.commit.assert_called_once()
+        mock_session.get.assert_not_called()
 
     def test_completed_job_is_not_reopened(self, service):
         from src.domain.models.organisation_tables.job_models import JobStatus
@@ -409,6 +410,7 @@ class TestMarkJobInProgress:
         job_id = uuid4()
         mock_job = SimpleNamespace(job_id=job_id, status=JobStatus.COMPLETED)
         mock_session = MagicMock()
+        mock_session.execute = MagicMock(return_value=SimpleNamespace(rowcount=0))
         mock_session.get = MagicMock(return_value=mock_job)
 
         with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
@@ -416,6 +418,21 @@ class TestMarkJobInProgress:
 
         assert should_process is False
         assert mock_job.status == JobStatus.COMPLETED
+
+    def test_in_progress_job_is_not_reopened(self, service):
+        from src.domain.models.organisation_tables.job_models import JobStatus
+
+        job_id = uuid4()
+        mock_job = SimpleNamespace(job_id=job_id, status=JobStatus.IN_PROGRESS)
+        mock_session = MagicMock()
+        mock_session.execute = MagicMock(return_value=SimpleNamespace(rowcount=0))
+        mock_session.get = MagicMock(return_value=mock_job)
+
+        with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
+            should_process = service._mark_job_in_progress(job_id)
+
+        assert should_process is False
+        assert mock_job.status == JobStatus.IN_PROGRESS
 
     def test_process_skips_completed_job_without_agent_or_send(self, monkeypatch):
         service = BotMessageProcessingService(uuid4())

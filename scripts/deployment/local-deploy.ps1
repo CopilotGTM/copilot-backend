@@ -460,10 +460,12 @@ function Deploy-WithHelm {
     # Check if Helm is locked and fix it
     Write-Host "Checking Helm release status..."
     $helmStatus = helm status copilot-backend -n $NAMESPACE 2>&1
+    $releaseExists = $LASTEXITCODE -eq 0
     if ($helmStatus -match "pending-upgrade|pending-install|pending-rollback") {
         Write-Warning "Helm release is in pending state. Rolling back to unlock..."
         helm rollback copilot-backend -n $NAMESPACE --no-hooks
         Start-Sleep -Seconds 10
+        $releaseExists = $true
     }
 
     # Clean up previous startup job and pods
@@ -515,17 +517,88 @@ function Deploy-WithHelm {
         return
     }
 
+    Write-Host "Full deployment mode: reusing existing Helm values and updating API + worker images..."
+
     $helmArgs = @(
         "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
-        "-f", "$CHART_PATH/values-dev.yaml",
-        "--namespace", $NAMESPACE,
-        "--create-namespace",
-        "--set", "api.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)",
-        "--set", "api.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_API_TENANT_ID)",
-        "--set", "global.redis.host=$($env:REDIS_HOST)",
-        "--set", "global.redis.port=$($env:REDIS_PORT)",
-        "--set", "global.redis.enableTLS=true",
-        "--set", "global.redis.usePassword=true",
+        "--namespace", $NAMESPACE
+    )
+
+    if ($releaseExists) {
+        Write-Host "Existing Helm release found: reusing cluster values for full image deploy..."
+        $helmArgs += @(
+            "--reuse-values"
+        )
+    } else {
+        Write-Host "Fresh install mode: using values-dev.yaml and environment bootstrap values..."
+        $helmArgs += @(
+            "-f", "$CHART_PATH/values-dev.yaml",
+            "--create-namespace",
+            "--set", "api.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)",
+            "--set", "api.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_API_TENANT_ID)",
+            "--set", "global.redis.host=$($env:REDIS_HOST)",
+            "--set", "global.redis.port=$($env:REDIS_PORT)",
+            "--set", "global.redis.enableTLS=true",
+            "--set", "global.redis.usePassword=true",
+            "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
+            "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
+            "--set", "api.secrets.DATABASE_PORT=$($env:DATABASE_PORT)",
+            "--set", "api.secrets.DATABASE_NAME=$($env:DATABASE_NAME)",
+            "--set", "api.secrets.DATABASE_PASSWORD=$($env:DATABASE_PASSWORD)",
+            "--set", "api.secrets.DATABASE_SSL_MODE=$($env:DATABASE_SSL_MODE)",
+            "--set", "api.secrets.REDIS_HOST=$($env:REDIS_HOST)",
+            "--set", "api.secrets.REDIS_PORT=$($env:REDIS_PORT)",
+            "--set", "api.secrets.REDIS_PASSWORD=$($env:REDIS_PASSWORD)",
+            "--set", "api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED",
+            "--set", "api.secrets.AZURE_OPENAI_API_KEY=$($env:AZURE_OPENAI_API_KEY)",
+            "--set", "api.secrets.AZURE_OPENAI_ENDPOINT=$($env:AZURE_OPENAI_ENDPOINT)",
+            "--set", "api.secrets.CLOUD_PROVIDER=$($env:CLOUD_PROVIDER)",
+            "--set", "api.secrets.APPLICATION_STORAGE_NAME=$($env:APPLICATION_STORAGE_NAME)",
+            "--set", "api.secrets.ORGANISATION_STORAGE_NAME=$($env:ORGANISATION_STORAGE_NAME)",
+            "--set", "api.secrets.APPLICATION_REGION=$($env:APPLICATION_REGION)",
+            "--set", "api.secrets.ENV=$($env:ENV)",
+            "--set", "api.secrets.AZURE_KEY_VAULT_URL=$($env:AZURE_KEY_VAULT_URL)",
+            "--set", "api.secrets.AZURE_MASTER_KEY_VAULT_URL=$($env:AZURE_MASTER_KEY_VAULT_URL)",
+            "--set", "api.secrets.AZURE_RESOURCE_GROUP=$RESOURCE_GROUP",
+            "--set", "api.secrets.AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID",
+            "--set", "api.secrets.SUPABASE_URL=$($env:SUPABASE_URL)",
+            "--set", "api.secrets.SUPABASE_ANON_KEY=$($env:SUPABASE_ANON_KEY)",
+            "--set", "api.secrets.SUPABASE_SERVICE_ROLE_KEY=$($env:SUPABASE_SERVICE_ROLE_KEY)",
+            "--set", "api.secrets.SUPABASE_JWT_SECRET=$($env:SUPABASE_JWT_SECRET)",
+            "--set", "api.secrets.RESEND_API_KEY=$($env:RESEND_API_KEY)",
+            "--set", "api.secrets.FROM_EMAIL=$($env:FROM_EMAIL)",
+            "--set", "api.secrets.APP_NAME=$($env:APP_NAME)",
+            "--set", "api.secrets.APP_URL=$($env:APP_URL)",
+            "--set", "api.secrets.ADMIN_APP_URL=$($env:ADMIN_APP_URL)",
+            "--set", "api.secrets.SENTRY_DSN=$($env:SENTRY_DSN)",
+            "--set", "api.secrets.SENTRY_TRACES_SAMPLE_RATE=$($env:SENTRY_TRACES_SAMPLE_RATE)",
+            "--set", "api.secrets.OTEL_EXPORTER_OTLP_ENDPOINT=$($env:OTEL_EXPORTER_OTLP_ENDPOINT)",
+            "--set", "api.secrets.OTEL_EXPORTER_OTLP_HEADERS=$($env:OTEL_EXPORTER_OTLP_HEADERS)",
+            "--set", "api.secrets.LOG_FORMAT=json",
+            "--set", "api.secrets.SUPER_ADMIN_EMAIL=$($env:SUPER_ADMIN_EMAIL)",
+            "--set", "api.secrets.WEB_APP_NAME=$($env:WEB_APP_NAME)",
+            "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$($env:AZURE_EMBEDDER_OPENAI_API_KEY)",
+            "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$($env:AZURE_EMBEDDER_OPENAI_ENDPOINT)",
+            "--set", "api.secrets.AZURE_EMBEDDER_DEPLOYMENT=$($env:AZURE_EMBEDDER_DEPLOYMENT)",
+            "--set", "api.secrets.AZURE_SUBSCRIPTION=$($env:AZURE_SUBSCRIPTION)",
+            "--set", "knowledge-extract-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        )
+    }
+
+    $helmArgs += @(
         "--set", "api.image.repository=$apiRepo",
         "--set", "api.image.tag=$IMAGE_TAG",
         "--set", "knowledge-extract-worker.autoscaling.enabled=true",
@@ -534,62 +607,7 @@ function Deploy-WithHelm {
         "--set", "organization-worker.autoscaling.enabled=true",
         "--set", "integrations-worker.autoscaling.enabled=true",
         "--set", "deal-worker.autoscaling.enabled=true",
-        "--set", "chat-worker.autoscaling.enabled=true",
-        "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
-        "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
-        "--set", "api.secrets.DATABASE_PORT=$($env:DATABASE_PORT)",
-        "--set", "api.secrets.DATABASE_NAME=$($env:DATABASE_NAME)",
-        "--set", "api.secrets.DATABASE_PASSWORD=$($env:DATABASE_PASSWORD)",
-        "--set", "api.secrets.DATABASE_SSL_MODE=$($env:DATABASE_SSL_MODE)",
-        "--set", "api.secrets.REDIS_HOST=$($env:REDIS_HOST)",
-        "--set", "api.secrets.REDIS_PORT=$($env:REDIS_PORT)",
-        "--set", "api.secrets.REDIS_PASSWORD=$($env:REDIS_PASSWORD)",
-        "--set", "api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED",
-        "--set", "api.secrets.AZURE_OPENAI_API_KEY=$($env:AZURE_OPENAI_API_KEY)",
-        "--set", "api.secrets.AZURE_OPENAI_ENDPOINT=$($env:AZURE_OPENAI_ENDPOINT)",
-        "--set", "api.secrets.CLOUD_PROVIDER=$($env:CLOUD_PROVIDER)",
-        "--set", "api.secrets.APPLICATION_STORAGE_NAME=$($env:APPLICATION_STORAGE_NAME)",
-        "--set", "api.secrets.ORGANISATION_STORAGE_NAME=$($env:ORGANISATION_STORAGE_NAME)",
-        "--set", "api.secrets.APPLICATION_REGION=$($env:APPLICATION_REGION)",
-        "--set", "api.secrets.ENV=$($env:ENV)",
-        "--set", "api.secrets.AZURE_KEY_VAULT_URL=$($env:AZURE_KEY_VAULT_URL)",
-        "--set", "api.secrets.AZURE_MASTER_KEY_VAULT_URL=$($env:AZURE_MASTER_KEY_VAULT_URL)",
-        "--set", "api.secrets.AZURE_RESOURCE_GROUP=$RESOURCE_GROUP",
-        "--set", "api.secrets.AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID",
-        "--set", "api.secrets.SUPABASE_URL=$($env:SUPABASE_URL)",
-        "--set", "api.secrets.SUPABASE_ANON_KEY=$($env:SUPABASE_ANON_KEY)",
-        "--set", "api.secrets.SUPABASE_SERVICE_ROLE_KEY=$($env:SUPABASE_SERVICE_ROLE_KEY)",
-        "--set", "api.secrets.SUPABASE_JWT_SECRET=$($env:SUPABASE_JWT_SECRET)",
-        "--set", "api.secrets.RESEND_API_KEY=$($env:RESEND_API_KEY)",
-        "--set", "api.secrets.FROM_EMAIL=$($env:FROM_EMAIL)",
-        "--set", "api.secrets.APP_NAME=$($env:APP_NAME)",
-        "--set", "api.secrets.APP_URL=$($env:APP_URL)",
-        "--set", "api.secrets.ADMIN_APP_URL=$($env:ADMIN_APP_URL)",
-        "--set", "api.secrets.SENTRY_DSN=$($env:SENTRY_DSN)",
-        "--set", "api.secrets.SENTRY_TRACES_SAMPLE_RATE=$($env:SENTRY_TRACES_SAMPLE_RATE)",
-        "--set", "api.secrets.OTEL_EXPORTER_OTLP_ENDPOINT=$($env:OTEL_EXPORTER_OTLP_ENDPOINT)",
-        "--set", "api.secrets.OTEL_EXPORTER_OTLP_HEADERS=$($env:OTEL_EXPORTER_OTLP_HEADERS)",
-        "--set", "api.secrets.LOG_FORMAT=json",
-        "--set", "api.secrets.SUPER_ADMIN_EMAIL=$($env:SUPER_ADMIN_EMAIL)",
-        "--set", "api.secrets.WEB_APP_NAME=$($env:WEB_APP_NAME)",
-        "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$($env:AZURE_EMBEDDER_OPENAI_API_KEY)",
-        "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$($env:AZURE_EMBEDDER_OPENAI_ENDPOINT)",
-        "--set", "api.secrets.AZURE_EMBEDDER_DEPLOYMENT=$($env:AZURE_EMBEDDER_DEPLOYMENT)",
-        "--set", "api.secrets.AZURE_SUBSCRIPTION=$($env:AZURE_SUBSCRIPTION)",
-        "--set", "knowledge-extract-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
-        "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        "--set", "chat-worker.autoscaling.enabled=true"
     )
 
     $helmArgs += @(

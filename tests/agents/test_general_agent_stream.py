@@ -35,6 +35,35 @@ async def test_process_streaming_response_finishes_without_tool_frames() -> None
     assert [frame.content for frame in frames if isinstance(frame, AnswerDelta)] == ["Hi"]
 
 
+class _FakeBufferWithDuplicateFinalAnswer:
+    async def stream(self, _chat_response):
+        yield ("answer", "Hi - how can I help?", False)
+        yield ("final", "\n\nHi - how can I help?", False)
+
+
+@pytest.mark.asyncio
+async def test_process_streaming_response_skips_replayed_final_answer() -> None:
+    agent = object.__new__(GeneralAgent)
+    agent.capabilities = SimpleNamespace(message_id="msg-1")
+    agent._frame_message_id = "msg-1"
+
+    async def _collect_frames():
+        frames = []
+        async for frame in agent._process_streaming_response(
+            chat_response=None,
+            buffer=_FakeBufferWithDuplicateFinalAnswer(),
+            frame_queue=asyncio.Queue(),
+        ):
+            frames.append(frame)
+        return frames
+
+    frames = await asyncio.wait_for(_collect_frames(), timeout=1)
+
+    assert [frame.content for frame in frames if isinstance(frame, AnswerDelta)] == [
+        "Hi - how can I help?"
+    ]
+
+
 class _FakeBufferWithRunCompleted:
     async def stream(self, _chat_response):
         model_metric = SimpleNamespace(
