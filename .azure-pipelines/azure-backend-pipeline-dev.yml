@@ -476,20 +476,23 @@ stages:
           - script: |
               set -euo pipefail
               PYTHON_BIN="$(command -v python3 || command -v python)"
+              ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
 
-              "$PYTHON_BIN" .azure-pipelines/scripts/acr_cleanup.py \
-                --registry "$ACR_NAME" \
-                --repository "$API_IMAGE_REPOSITORY" \
-                --repository "$KNOWLEDGE_IMAGE_REPOSITORY" \
-                --repository "$LIGHT_IMAGE_REPOSITORY" \
-                --repository "$INTEGRATIONS_IMAGE_REPOSITORY" \
-                --keep-tags 20 \
-                --untagged-days 7 \
-                --protect-tag latest \
-                --protect-tag "$BUILD_BUILDID"
+              if ! "$PYTHON_BIN" .azure-pipelines/scripts/acr_cleanup.py \
+                  --registry "$ACR_NAME" \
+                  --repository "$API_IMAGE_REPOSITORY" \
+                  --repository "$KNOWLEDGE_IMAGE_REPOSITORY" \
+                  --repository "$LIGHT_IMAGE_REPOSITORY" \
+                  --repository "$INTEGRATIONS_IMAGE_REPOSITORY" \
+                  --keep-tags 20 \
+                  --untagged-days 7 \
+                  --protect-tag latest \
+                  --protect-tag "$BUILD_BUILDID"; then
+                echo "##vso[task.logissue type=warning]ACR cleanup failed; continuing deployment."
+              fi
             displayName: 'Cleanup ACR Images (Dev Retention)'
             env:
-              ACR_NAME: $(ACR_NAME)
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
