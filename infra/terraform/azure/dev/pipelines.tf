@@ -241,19 +241,20 @@ module "frontend_pipeline" {
 # -----------------------------------------------------------------
 
 module "frontend_admin_app_service" {
-  source                = "../modules/app_service"
-  app_service_plan_name = "${var.frontend_admin_app_service_plan_name}-${var.env}"
-  app_service_name      = "${var.frontend_admin_app_service_name}-${var.env}"
-  resource_group_name   = module.resource_group.resource_group_name
-  location              = var.location
-  docker_image_name     = var.frontend_admin_docker_image_name
-  docker_image_tag      = var.frontend_admin_docker_image_tag
-  docker_registry_url   = module.acr.acr_login_server
-  acr_id                = module.acr.acr_id
-  app_settings          = {}
-  sku_name              = var.frontend_admin_sku_name
-  os_type               = var.frontend_admin_os_type
-  https_only            = var.frontend_admin_https_only
+  source                   = "../modules/app_service"
+  app_service_plan_name    = "${var.frontend_admin_app_service_plan_name}-${var.env}"
+  existing_service_plan_id = module.frontend_app_service.app_service_plan_id
+  app_service_name         = "${var.frontend_admin_app_service_name}-${var.env}"
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = var.location
+  docker_image_name        = var.frontend_admin_docker_image_name
+  docker_image_tag         = var.frontend_admin_docker_image_tag
+  docker_registry_url      = module.acr.acr_login_server
+  acr_id                   = module.acr.acr_id
+  app_settings             = {}
+  sku_name                 = var.frontend_admin_sku_name
+  os_type                  = var.frontend_admin_os_type
+  https_only               = var.frontend_admin_https_only
 
   # Custom domain configuration
   custom_domain_name      = "${var.frontend_admin_dns_a_record_name}.${var.dns_zone_name}"
@@ -294,19 +295,20 @@ module "frontend_admin_pipeline" {
 # =================================================================
 
 module "demo_frontend_app_service" {
-  source                = "../modules/app_service"
-  app_service_plan_name = "${var.demo_frontend_app_service_plan_name}-${var.env}"
-  app_service_name      = "${var.demo_frontend_app_service_name}-${var.env}"
-  resource_group_name   = module.resource_group.resource_group_name
-  location              = var.location
-  docker_image_name     = var.demo_frontend_docker_image_name
-  docker_image_tag      = var.demo_frontend_docker_image_tag
-  docker_registry_url   = module.acr.acr_login_server
-  acr_id                = module.acr.acr_id
-  app_settings          = {}
-  sku_name              = var.demo_frontend_sku_name
-  os_type               = var.demo_frontend_os_type
-  https_only            = var.demo_frontend_https_only
+  source                   = "../modules/app_service"
+  app_service_plan_name    = "${var.demo_frontend_app_service_plan_name}-${var.env}"
+  existing_service_plan_id = module.frontend_app_service.app_service_plan_id
+  app_service_name         = "${var.demo_frontend_app_service_name}-${var.env}"
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = var.location
+  docker_image_name        = var.demo_frontend_docker_image_name
+  docker_image_tag         = var.demo_frontend_docker_image_tag
+  docker_registry_url      = module.acr.acr_login_server
+  acr_id                   = module.acr.acr_id
+  app_settings             = {}
+  sku_name                 = var.demo_frontend_sku_name
+  os_type                  = var.demo_frontend_os_type
+  https_only               = var.demo_frontend_https_only
 
   custom_domain_name      = "${var.demo_frontend_dns_a_record_name}.${var.demo_frontend_dns_zone_name}"
   dns_zone_name           = var.demo_frontend_dns_zone_name

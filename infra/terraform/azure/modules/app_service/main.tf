@@ -11,6 +11,8 @@ terraform {
 }
 
 resource "azurerm_service_plan" "this" {
+  count = var.existing_service_plan_id == null ? 1 : 0
+
   name                = var.app_service_plan_name
   location            = var.location
   resource_group_name = var.resource_group_name
@@ -23,7 +25,7 @@ resource "azurerm_linux_web_app" "this" {
   name                = var.app_service_name
   location            = var.location
   resource_group_name = var.resource_group_name
-  service_plan_id     = azurerm_service_plan.this.id
+  service_plan_id     = var.existing_service_plan_id != null ? var.existing_service_plan_id : azurerm_service_plan.this[0].id
 
   identity {
     type = "SystemAssigned"
