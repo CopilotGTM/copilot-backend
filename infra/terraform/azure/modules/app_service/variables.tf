@@ -1,6 +1,12 @@
 variable "app_service_plan_name" {
-  description = "Name of the App Service Plan"
+  description = "Name of the App Service Plan to create when existing_service_plan_id is not set."
   type        = string
+}
+
+variable "existing_service_plan_id" {
+  description = "Existing App Service Plan ID to use instead of creating a dedicated plan."
+  type        = string
+  default     = null
 }
 
 variable "app_service_name" {
