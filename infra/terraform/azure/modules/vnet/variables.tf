@@ -53,3 +53,9 @@ variable "managed_devops_pools_subnets" {
   }))
   default = []
 }
+
+variable "enable_nat_gateway" {
+  description = "Whether to create and attach a NAT Gateway for deterministic outbound internet egress."
+  type        = bool
+  default     = true
+}

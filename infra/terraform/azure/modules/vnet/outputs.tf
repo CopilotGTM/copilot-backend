@@ -45,7 +45,7 @@ output "private_subnet_address_prefixes" {
 
 output "nat_gateway_public_ip" {
   description = "The public IP address of the NAT Gateway."
-  value       = azurerm_public_ip.nat_gw.ip_address
+  value       = try(azurerm_public_ip.nat_gw[0].ip_address, null)
 }
 
 output "private_endpoints_subnet_id" {
