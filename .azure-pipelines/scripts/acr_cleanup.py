@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,19 @@ def azure_cli() -> str:
     if not executable:
         raise RuntimeError("Azure CLI executable 'az' was not found in PATH.")
     return executable
+
+
+def normalize_registry_name(value: str) -> str:
+    registry = value.strip()
+    if registry.endswith(".azurecr.io"):
+        registry = registry.split(".", 1)[0]
+
+    if not re.fullmatch(r"[A-Za-z0-9]{5,50}", registry):
+        raise ValueError(
+            "--registry must be an ACR name or login server, not an unresolved pipeline macro. "
+            f"Received: {value!r}"
+        )
+    return registry
 
 
 def run_json(command: list[str]) -> object:
@@ -219,12 +233,18 @@ def main() -> int:
         print("--untagged-days must be at least 1", file=sys.stderr)
         return 2
 
+    try:
+        registry = normalize_registry_name(args.registry)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     protected_tags = {tag for tag in args.protect_tag if tag}
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.untagged_days)
 
     print(
         "ACR cleanup policy: "
-        f"registry={args.registry}, keep_tags={args.keep_tags}, "
+        f"registry={registry}, keep_tags={args.keep_tags}, "
         f"untagged_days={args.untagged_days}, dry_run={args.dry_run}"
     )
     if protected_tags:
@@ -238,14 +258,14 @@ def main() -> int:
         print(f"Processing repository: {repository}")
         try:
             deleted_tags += cleanup_tags(
-                args.registry,
+                registry,
                 repository,
                 args.keep_tags,
                 protected_tags,
                 args.dry_run,
             )
             deleted_manifests += cleanup_untagged_manifests(
-                args.registry,
+                registry,
                 repository,
                 cutoff,
                 args.dry_run,

@@ -218,6 +218,16 @@ module "acr" {
   ]
 }
 
+# Grant existing AKS control-plane identity network rights before changing AKS
+# networking. This is intentionally variable-driven so existing clusters can
+# receive the permission before Terraform starts the AKS update.
+resource "azurerm_role_assignment" "aks_existing_identity_network_contributor" {
+  count                = var.aks_existing_principal_id != null ? 1 : 0
+  principal_id         = var.aks_existing_principal_id
+  role_definition_name = "Network Contributor"
+  scope                = module.resource_group.resource_group_id
+}
+
 # -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
@@ -253,7 +263,8 @@ module "aks" {
 
   depends_on = [
     module.vnet,
-    module.acr
+    module.acr,
+    azurerm_role_assignment.aks_existing_identity_network_contributor
   ]
 }
 
