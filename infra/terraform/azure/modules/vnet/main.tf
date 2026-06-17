@@ -57,8 +57,9 @@ resource "azurerm_subnet" "managed_devops_pools" {
   }
 }
 
-# Add NAT Gateway and Public IP for Internet egress from private subnet
+# Add NAT Gateway and Public IP when deterministic outbound egress is required.
 resource "azurerm_public_ip" "nat_gw" {
+  count               = var.enable_nat_gateway ? 1 : 0
   name                = "${var.vnet_name}-nat-gw-pip"
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -67,6 +68,7 @@ resource "azurerm_public_ip" "nat_gw" {
 }
 
 resource "azurerm_nat_gateway" "this" {
+  count               = var.enable_nat_gateway ? 1 : 0
   name                = "${var.vnet_name}-nat-gw"
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -74,21 +76,22 @@ resource "azurerm_nat_gateway" "this" {
 }
 
 resource "azurerm_nat_gateway_public_ip_association" "this" {
-  nat_gateway_id       = azurerm_nat_gateway.this.id
-  public_ip_address_id = azurerm_public_ip.nat_gw.id
+  count                = var.enable_nat_gateway ? 1 : 0
+  nat_gateway_id       = azurerm_nat_gateway.this[0].id
+  public_ip_address_id = azurerm_public_ip.nat_gw[0].id
 }
 
 # Associate NAT Gateway with all private subnets for internet egress
 resource "azurerm_subnet_nat_gateway_association" "private" {
-  for_each       = azurerm_subnet.private
+  for_each       = var.enable_nat_gateway ? azurerm_subnet.private : {}
   subnet_id      = each.value.id
-  nat_gateway_id = azurerm_nat_gateway.this.id
+  nat_gateway_id = azurerm_nat_gateway.this[0].id
 }
 
 resource "azurerm_subnet_nat_gateway_association" "managed_devops_pools" {
-  for_each       = azurerm_subnet.managed_devops_pools
+  for_each       = var.enable_nat_gateway ? azurerm_subnet.managed_devops_pools : {}
   subnet_id      = each.value.id
-  nat_gateway_id = azurerm_nat_gateway.this.id
+  nat_gateway_id = azurerm_nat_gateway.this[0].id
 }
 
 # Network Security Group for AKS private subnets

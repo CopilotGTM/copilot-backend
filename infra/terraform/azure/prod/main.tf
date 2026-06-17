@@ -22,6 +22,7 @@ module "vnet" {
   private_subnets                 = var.vnet_private_subnets
   private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
   managed_devops_pools_subnets    = var.managed_devops_pools_subnets
+  enable_nat_gateway              = false
   waf_subnet_prefix               = var.vnet_waf_subnet
   env                             = var.env
   depends_on = [
@@ -1063,7 +1064,6 @@ module "managed_devops_prod_deploy_pool" {
   }
 
   depends_on = [
-    module.vnet,
     azapi_resource.managed_devops_project,
     azurerm_role_assignment.managed_devops_vnet_reader,
     azurerm_role_assignment.managed_devops_vnet_network_contributor,
