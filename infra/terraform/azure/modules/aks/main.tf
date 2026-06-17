@@ -72,9 +72,10 @@ resource "azurerm_kubernetes_cluster_node_pool" "gpu" {
   min_count            = var.gpu_min_count # 0 for scale-to-zero
   max_count            = var.gpu_max_count # 1 for single GPU worker
 
-  os_disk_size_gb      = var.os_disk_size_gb
-  vnet_subnet_id       = var.vnet_subnet_ids[0]
-  orchestrator_version = azurerm_kubernetes_cluster.this.kubernetes_version
+  os_disk_size_gb             = var.os_disk_size_gb
+  vnet_subnet_id              = var.vnet_subnet_ids[0]
+  orchestrator_version        = azurerm_kubernetes_cluster.this.kubernetes_version
+  temporary_name_for_rotation = "tempgpu"
 
   node_labels = var.gpu_node_labels
   node_taints = var.gpu_node_taints
