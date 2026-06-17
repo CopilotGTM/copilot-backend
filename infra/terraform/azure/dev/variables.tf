@@ -85,9 +85,15 @@ variable "enable_storage_private_endpoints" {
 }
 
 variable "enable_postgresql_private_endpoint" {
-  description = "Enable Private Link for PostgreSQL and disable its public network access."
+  description = "Enable Private Link for PostgreSQL."
   type        = bool
   default     = false
+}
+
+variable "postgresql_public_network_access_enabled" {
+  description = "Enable public network access for PostgreSQL. Set false only after Private Link connectivity is verified."
+  type        = bool
+  default     = true
 }
 
 # -----------------------------------------------------------------
