@@ -46,6 +46,7 @@ managed_devops_pools_subnets = [
 # Private Link (disabled for dev - enable for SOC2 compliance in prod)
 enable_key_vault_private_endpoints = false
 enable_storage_private_endpoints   = false
+enable_postgresql_private_endpoint = false
 
 # -----------------------------------------------------------------
 # AKS
