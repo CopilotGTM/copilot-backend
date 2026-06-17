@@ -84,6 +84,12 @@ variable "enable_storage_private_endpoints" {
   default     = true
 }
 
+variable "enable_postgresql_private_endpoint" {
+  description = "Enable Private Link for PostgreSQL and disable its public network access."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------
 # Azure Kubernetes Service (AKS)
 # -----------------------------------------------------------------

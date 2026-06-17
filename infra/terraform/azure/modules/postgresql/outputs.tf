@@ -33,6 +33,16 @@ output "db_password_secret_id" {
   value       = azurerm_key_vault_secret.db_password.id
 }
 
+output "private_endpoint_id" {
+  description = "The PostgreSQL Private Endpoint ID when Private Link is enabled."
+  value       = try(azurerm_private_endpoint.db[0].id, null)
+}
+
+output "private_endpoint_private_ip" {
+  description = "The PostgreSQL Private Endpoint private IP when Private Link is enabled."
+  value       = try(azurerm_private_endpoint.db[0].private_service_connection[0].private_ip_address, null)
+}
+
 output "pgbouncer_enabled" {
   description = "Whether PgBouncer is enabled on the server."
   value       = var.pgbouncer_enabled

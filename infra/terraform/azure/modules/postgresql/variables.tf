@@ -47,6 +47,23 @@ variable "key_vault_id" {
   type        = string
 }
 
+variable "private_endpoint_enabled" {
+  description = "Enable Private Link for PostgreSQL and disable public network access."
+  type        = bool
+  default     = false
+}
+
+variable "private_endpoint_subnet_id" {
+  description = "Subnet ID where the PostgreSQL Private Endpoint should be created. Required when private_endpoint_enabled=true."
+  type        = string
+  default     = null
+}
+
+variable "private_dns_zone_ids" {
+  description = "Private DNS zone IDs for PostgreSQL Private Link. Required when private_endpoint_enabled=true."
+  type        = list(string)
+  default     = null
+}
 
 variable "ci_cd_agent_ip_start" {
   description = "The starting IP address for the CI/CD agent firewall rule."

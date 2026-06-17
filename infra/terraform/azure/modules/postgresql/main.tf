@@ -4,6 +4,20 @@ resource "azurerm_key_vault_secret" "db_password" {
   key_vault_id = var.key_vault_id
 }
 
+check "private_endpoint_subnet_required" {
+  assert {
+    condition     = !var.private_endpoint_enabled || var.private_endpoint_subnet_id != null
+    error_message = "private_endpoint_subnet_id is required when private_endpoint_enabled=true."
+  }
+}
+
+check "private_dns_zone_required" {
+  assert {
+    condition     = !var.private_endpoint_enabled || var.private_dns_zone_ids != null
+    error_message = "private_dns_zone_ids is required when private_endpoint_enabled=true."
+  }
+}
+
 resource "azurerm_postgresql_flexible_server" "db" {
   name                          = var.db_name != "" ? "${var.db_name}-${var.env}" : "copilotgtm-postgresdb-${var.env}"
   resource_group_name           = var.resource_group_name
@@ -12,7 +26,7 @@ resource "azurerm_postgresql_flexible_server" "db" {
   sku_name                      = var.db_sku_name
   storage_mb                    = 65536
   backup_retention_days         = 7
-  public_network_access_enabled = true
+  public_network_access_enabled = !var.private_endpoint_enabled
 
   administrator_login    = var.db_admin_user
   administrator_password = azurerm_key_vault_secret.db_password.value
@@ -70,6 +84,7 @@ resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_pool_mode
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
+  count            = var.private_endpoint_enabled ? 0 : 1
   name             = "allow-all-ips"
   server_id        = azurerm_postgresql_flexible_server.db.id
   start_ip_address = "0.0.0.0"
@@ -85,18 +100,26 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
 #   end_ip_address      = var.ci_cd_agent_ip_end
 # }
 
-# resource "azurerm_private_endpoint" "db_pe" {
-#   count = var.private_endpoint_subnet_id != "" ? 1 : 0
+resource "azurerm_private_endpoint" "db" {
+  count               = var.private_endpoint_enabled ? 1 : 0
+  name                = "pe-postgres-${var.env}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  subnet_id           = var.private_endpoint_subnet_id
 
-#   name                = "pe-db-${var.env}"
-#   location            = var.location
-#   resource_group_name = var.resource_group_name
-#   subnet_id           = var.private_endpoint_subnet_id
+  private_service_connection {
+    name                           = "psc-postgres-${var.env}"
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_postgresql_flexible_server.db.id
+    subresource_names              = ["postgresqlServer"]
+  }
 
-#   private_service_connection {
-#     name                           = "psc-db-${var.env}"
-#     is_manual_connection           = false
-#     private_connection_resource_id = azurerm_postgresql_flexible_server.db.id
-#     subresource_names              = ["postgresqlServer"]
-#   }
-# }
+  dynamic "private_dns_zone_group" {
+    for_each = var.private_dns_zone_ids != null ? [1] : []
+
+    content {
+      name                 = "postgresql-private-dns"
+      private_dns_zone_ids = var.private_dns_zone_ids
+    }
+  }
+}
