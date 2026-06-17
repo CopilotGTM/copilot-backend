@@ -471,67 +471,30 @@ stages:
             condition: succeededOrFailed()
 
           # ===================================================================
-          # ACR Cleanup - Keep only last 10 images per repository
+          # ACR Cleanup - Retain rollback tags and remove old untagged manifests
           # ===================================================================
           - script: |
-              echo "##[section]🧹 Cleaning up old images from ACR (keeping last 10)..."
+              set -euo pipefail
+              PYTHON_BIN="$(command -v python3 || command -v python)"
 
-              # Function to cleanup a repository
-              cleanup_repo() {
-                REPO=$1
-                echo ""
-                echo "Processing repository: $REPO"
-
-                # Get all tags sorted by creation time (newest first), excluding 'latest'
-                TAGS=$(az acr repository show-tags \
-                  --name $ACR_NAME \
-                  --repository $REPO \
-                  --orderby time_desc \
-                  --output tsv 2>/dev/null | grep -v "^latest$" || echo "")
-
-                if [ -z "$TAGS" ]; then
-                  echo "  No tags found for $REPO"
-                  return
-                fi
-
-                # Count total tags
-                TOTAL_TAGS=$(echo "$TAGS" | wc -l)
-                echo "  Total tags (excluding 'latest'): $TOTAL_TAGS"
-
-                # Keep first 10, delete the rest
-                if [ "$TOTAL_TAGS" -gt 10 ]; then
-                  TAGS_TO_DELETE=$(echo "$TAGS" | tail -n +11)
-                  DELETE_COUNT=$(echo "$TAGS_TO_DELETE" | wc -l)
-                  echo "  Deleting $DELETE_COUNT old tags..."
-
-                  for TAG in $TAGS_TO_DELETE; do
-                    echo "    Deleting $REPO:$TAG"
-                    az acr repository delete \
-                      --name $ACR_NAME \
-                      --image "$REPO:$TAG" \
-                      --yes 2>/dev/null || echo "    Failed to delete $REPO:$TAG"
-                  done
-                  echo "  ✅ Cleanup complete for $REPO"
-                else
-                  echo "  ✅ No cleanup needed (only $TOTAL_TAGS tags)"
-                fi
-              }
-
-              # Cleanup each repository (separated images only - no full copilot-backend)
-              cleanup_repo "$API_IMAGE_REPOSITORY"
-              cleanup_repo "$KNOWLEDGE_IMAGE_REPOSITORY"
-              cleanup_repo "$LIGHT_IMAGE_REPOSITORY"
-              cleanup_repo "$INTEGRATIONS_IMAGE_REPOSITORY"
-
-              echo ""
-              echo "##[section]✅ ACR cleanup complete!"
-            displayName: 'Cleanup Old ACR Images (Keep Last 10)'
+              "$PYTHON_BIN" .azure-pipelines/scripts/acr_cleanup.py \
+                --registry "$ACR_NAME" \
+                --repository "$API_IMAGE_REPOSITORY" \
+                --repository "$KNOWLEDGE_IMAGE_REPOSITORY" \
+                --repository "$LIGHT_IMAGE_REPOSITORY" \
+                --repository "$INTEGRATIONS_IMAGE_REPOSITORY" \
+                --keep-tags 20 \
+                --untagged-days 7 \
+                --protect-tag latest \
+                --protect-tag "$BUILD_BUILDID"
+            displayName: 'Cleanup ACR Images (Dev Retention)'
             env:
               ACR_NAME: $(ACR_NAME)
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
               INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+              BUILD_BUILDID: $(Build.BuildId)
             continueOnError: true
 
   # ==========================================================================
