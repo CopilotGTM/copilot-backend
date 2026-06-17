@@ -516,18 +516,19 @@ resource "random_password" "db_admin" {
 # PostgreSQL Flexible Server
 # -----------------------------------------------------------------
 module "application_database" {
-  source                     = "../modules/postgresql"
-  env                        = var.env
-  resource_group_name        = module.resource_group.resource_group_name
-  location                   = var.db_location
-  db_name                    = var.db_name
-  db_sku_name                = var.db_sku_name
-  db_admin_user              = "CopilotGTMAdmin"
-  db_admin_password          = random_password.db_admin.result
-  key_vault_id               = module.database_key_vault.key_vault_id
-  private_endpoint_enabled   = var.enable_postgresql_private_endpoint
-  private_endpoint_subnet_id = module.vnet.private_endpoints_subnet_id
-  private_dns_zone_ids       = var.enable_postgresql_private_endpoint ? [azurerm_private_dns_zone.postgresql[0].id] : null
+  source                        = "../modules/postgresql"
+  env                           = var.env
+  resource_group_name           = module.resource_group.resource_group_name
+  location                      = var.db_location
+  db_name                       = var.db_name
+  db_sku_name                   = var.db_sku_name
+  db_admin_user                 = "CopilotGTMAdmin"
+  db_admin_password             = random_password.db_admin.result
+  key_vault_id                  = module.database_key_vault.key_vault_id
+  private_endpoint_enabled      = var.enable_postgresql_private_endpoint
+  public_network_access_enabled = var.postgresql_public_network_access_enabled
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_ids          = var.enable_postgresql_private_endpoint ? [azurerm_private_dns_zone.postgresql[0].id] : null
 
   # PgBouncer connection pooling (requires GP tier - disabled for Burstable)
   pgbouncer_enabled           = var.pgbouncer_enabled

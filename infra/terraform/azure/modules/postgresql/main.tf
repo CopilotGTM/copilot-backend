@@ -26,7 +26,7 @@ resource "azurerm_postgresql_flexible_server" "db" {
   sku_name                      = var.db_sku_name
   storage_mb                    = 65536
   backup_retention_days         = 7
-  public_network_access_enabled = !var.private_endpoint_enabled
+  public_network_access_enabled = var.public_network_access_enabled
 
   administrator_login    = var.db_admin_user
   administrator_password = azurerm_key_vault_secret.db_password.value
@@ -84,7 +84,7 @@ resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_pool_mode
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
-  count            = var.private_endpoint_enabled ? 0 : 1
+  count            = var.public_network_access_enabled ? 1 : 0
   name             = "allow-all-ips"
   server_id        = azurerm_postgresql_flexible_server.db.id
   start_ip_address = "0.0.0.0"

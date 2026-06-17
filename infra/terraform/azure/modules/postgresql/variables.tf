@@ -48,9 +48,15 @@ variable "key_vault_id" {
 }
 
 variable "private_endpoint_enabled" {
-  description = "Enable Private Link for PostgreSQL and disable public network access."
+  description = "Enable Private Link for PostgreSQL."
   type        = bool
   default     = false
+}
+
+variable "public_network_access_enabled" {
+  description = "Enable public network access for PostgreSQL. Keep true during Private Link rollout, then set false after private connectivity is verified."
+  type        = bool
+  default     = true
 }
 
 variable "private_endpoint_subnet_id" {
