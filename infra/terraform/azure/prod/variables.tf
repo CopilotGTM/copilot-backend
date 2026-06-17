@@ -154,6 +154,12 @@ variable "aks_dns_service_ip" {
   default     = "10.1.0.10"
 }
 
+variable "aks_outbound_type" {
+  description = "AKS outbound egress type."
+  type        = string
+  default     = "loadBalancer"
+}
+
 variable "aks_main_app_namespace" {
   description = "The main Kubernetes namespace for deploying applications in AKS."
   type        = string

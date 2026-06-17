@@ -82,6 +82,22 @@ variable "dns_service_ip" {
   default     = "10.1.0.10"
 }
 
+variable "outbound_type" {
+  description = "AKS outbound egress type. Use userAssignedNATGateway when AKS subnets already have a NAT Gateway."
+  type        = string
+  default     = "loadBalancer"
+
+  validation {
+    condition = contains([
+      "loadBalancer",
+      "userAssignedNATGateway",
+      "userDefinedRouting",
+      "none",
+    ], var.outbound_type)
+    error_message = "outbound_type must be loadBalancer, userAssignedNATGateway, userDefinedRouting, or none."
+  }
+}
+
 variable "workload_identity_enabled" {
   description = "Enable workload identity"
   type        = bool

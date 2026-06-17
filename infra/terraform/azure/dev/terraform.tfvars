@@ -59,6 +59,7 @@ aks_enable_auto_scaling = true
 aks_min_node_count      = 1
 aks_max_node_count      = 3
 aks_os_disk_size_gb     = 64
+aks_outbound_type       = "userAssignedNATGateway"
 # aks_service_cidr   = "10.1.0.0/16"         # Default
 # aks_dns_service_ip = "10.1.0.10"           # Default
 aks_main_app_namespace       = "copilotgtm"      # Override: custom namespace

@@ -28,7 +28,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     service_cidr      = var.service_cidr
     dns_service_ip    = var.dns_service_ip
     load_balancer_sku = "standard"
-    outbound_type     = "loadBalancer"
+    outbound_type     = var.outbound_type
   }
 
   identity {
