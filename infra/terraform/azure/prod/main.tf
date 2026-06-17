@@ -235,6 +235,7 @@ module "aks" {
   os_disk_size_gb        = var.aks_os_disk_size_gb
   service_cidr           = var.aks_service_cidr
   dns_service_ip         = var.aks_dns_service_ip
+  outbound_type          = var.aks_outbound_type
   env                    = var.env
   enable_gpu_worker_pool = var.enable_gpu_worker_pool
   gpu_node_pool_name     = var.gpu_node_pool_name
