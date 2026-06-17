@@ -160,6 +160,12 @@ variable "aks_outbound_type" {
   default     = "loadBalancer"
 }
 
+variable "aks_existing_principal_id" {
+  description = "Existing AKS control-plane managed identity principal ID used to grant network permissions before AKS updates."
+  type        = string
+  default     = null
+}
+
 variable "aks_main_app_namespace" {
   description = "The main Kubernetes namespace for deploying applications in AKS."
   type        = string
