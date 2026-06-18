@@ -48,6 +48,9 @@ api:
     DATABASE_PORT: "5432"
   autoscaling:
     minReplicas: 1
+    maxReplicas: 2
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: null
   jobs:
     startup:
       resources:
@@ -57,14 +60,15 @@ api:
         limits:
           cpu: "500m"
           memory: "1Gi"
-  # Actual usage: 4-8m CPU, ~500Mi memory; keep request above baseline so HPA does not scale dev API on idle memory.
+  # Dev API is CPU-scaled only. Python baseline memory stays high even when idle,
+  # so memory-based HPA keeps unnecessary replicas alive and blocks 1-node scale-down.
   resources:
     limits:
       cpu: 500m
       memory: 1536Mi
     requests:
-      cpu: 50m
-      memory: 1Gi
+      cpu: 25m
+      memory: 768Mi
 
 knowledge-upload-worker:
   # Actual usage: 3m CPU, 985Mi memory
@@ -75,7 +79,7 @@ knowledge-upload-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "50m"
+      cpu: "25m"
       memory: "1Gi"
 
 knowledge-extract-worker:
@@ -96,7 +100,7 @@ knowledge-beat:
       memory: "512Mi"
 
 chat-worker:
-  # Actual usage: 3m CPU, 763Mi memory
+  # Actual usage: 2-3m CPU, ~475Mi memory
   config:
     concurrency: 1
     maxTasksPerChild: 25
@@ -105,8 +109,8 @@ chat-worker:
     maxReplicas: 2
   resources:
     requests:
-      cpu: "50m"
-      memory: "1Gi"
+      cpu: "25m"
+      memory: "768Mi"
 
 chat-beat:
   # Actual usage: 253Mi memory (loads full chat worker with agent tools + dateparser)
@@ -127,7 +131,7 @@ integrations-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "50m"
+      cpu: "25m"
       memory: "1536Mi"
 
 integrationsCronJobs:
@@ -156,7 +160,7 @@ deal-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "50m"
+      cpu: "25m"
       memory: "1Gi"
 
 dealCronJobs:

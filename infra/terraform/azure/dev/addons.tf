@@ -99,7 +99,7 @@ resource "helm_release" "keda" {
   set = [
     {
       name  = "resources.operator.requests.cpu"
-      value = "100m"
+      value = "50m"
     },
     {
       name  = "resources.operator.requests.memory"
@@ -115,7 +115,7 @@ resource "helm_release" "keda" {
     },
     {
       name  = "resources.metricServer.requests.cpu"
-      value = "100m"
+      value = "50m"
     },
     {
       name  = "resources.metricServer.requests.memory"
@@ -254,7 +254,7 @@ resource "helm_release" "envoy_gateway" {
   set = [
     {
       name  = "deployment.envoyGateway.resources.requests.cpu"
-      value = "100m"
+      value = "50m"
     },
     {
       name  = "deployment.envoyGateway.resources.requests.memory"
@@ -338,7 +338,7 @@ resource "kubectl_manifest" "envoy_proxy" {
             container = {
               resources = {
                 requests = {
-                  cpu    = "100m"
+                  cpu    = "50m"
                   memory = "128Mi"
                 }
                 limits = {
