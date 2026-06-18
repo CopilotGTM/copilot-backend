@@ -57,6 +57,18 @@ resource "azurerm_role_assignment" "sp_user_access_admin" {
   principal_id         = azuread_service_principal.sp.object_id
 }
 
+resource "azurerm_role_assignment" "sp_storage_blob_data_contributor" {
+  scope                = "/subscriptions/${var.subscription_id}"
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azuread_service_principal.sp.object_id
+}
+
+resource "azurerm_role_assignment" "sp_storage_queue_data_contributor" {
+  scope                = "/subscriptions/${var.subscription_id}"
+  role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = azuread_service_principal.sp.object_id
+}
+
 # -----------------------------------------------------------------------------
 # NOTE: Federated Identity Credential is created in main.tf AFTER the service
 # connection, using the issuer/subject values from the service connection output.
