@@ -124,6 +124,25 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgresql" {
 }
 
 # -----------------------------------------------------------------
+# Log Analytics: Storage Account Diagnostics
+# -----------------------------------------------------------------
+resource "azurerm_log_analytics_workspace" "storage_diagnostics" {
+  count                        = var.enable_storage_diagnostics ? 1 : 0
+  name                         = "copilot-storage-logs-${var.env}"
+  location                     = module.resource_group.resource_group_location
+  resource_group_name          = module.resource_group.resource_group_name
+  sku                          = "PerGB2018"
+  retention_in_days            = var.storage_diagnostics_retention_days
+  daily_quota_gb               = var.storage_diagnostics_daily_quota_gb
+  local_authentication_enabled = false
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "storage-diagnostics"
+  }
+}
+
+# -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
 module "database_key_vault" {
@@ -180,10 +199,18 @@ module "master_storage_account" {
   account_tier                       = "Standard"
   account_replication_type           = "LRS"
   public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  allow_nested_items_to_be_public    = false
+  shared_access_key_enabled          = false
   private_endpoint_enabled           = var.enable_storage_private_endpoints
   private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
   private_endpoint_subresource_names = ["blob"]
   private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
+  blob_delete_retention_days         = 7
+  container_delete_retention_days    = 7
+  blob_versioning_enabled            = true
+  blob_version_retention_days        = 30
+  blob_diagnostics_enabled           = var.enable_storage_diagnostics
+  log_analytics_workspace_id         = var.enable_storage_diagnostics ? azurerm_log_analytics_workspace.storage_diagnostics[0].id : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -206,10 +233,18 @@ module "org_storage_account" {
   account_tier                       = "Standard"
   account_replication_type           = "LRS"
   public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  allow_nested_items_to_be_public    = false
+  shared_access_key_enabled          = false
   private_endpoint_enabled           = var.enable_storage_private_endpoints
   private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
   private_endpoint_subresource_names = ["blob"]
   private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
+  blob_delete_retention_days         = 7
+  container_delete_retention_days    = 7
+  blob_versioning_enabled            = true
+  blob_version_retention_days        = 30
+  blob_diagnostics_enabled           = var.enable_storage_diagnostics
+  log_analytics_workspace_id         = var.enable_storage_diagnostics ? azurerm_log_analytics_workspace.storage_diagnostics[0].id : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
