@@ -50,7 +50,8 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = false
     }
   }
-  subscription_id = var.subscription_id
+  subscription_id     = var.subscription_id
+  storage_use_azuread = true
   # OIDC auth is configured via ARM_* environment variables:
   # ARM_USE_OIDC, ARM_OIDC_TOKEN, ARM_CLIENT_ID, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
 }
