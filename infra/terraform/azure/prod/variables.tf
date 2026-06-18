@@ -84,6 +84,24 @@ variable "enable_storage_private_endpoints" {
   default     = true
 }
 
+variable "enable_storage_diagnostics" {
+  description = "Enable Blob service diagnostic logs for storage accounts."
+  type        = bool
+  default     = true
+}
+
+variable "storage_diagnostics_retention_days" {
+  description = "Log Analytics retention in days for storage diagnostics."
+  type        = number
+  default     = 30
+}
+
+variable "storage_diagnostics_daily_quota_gb" {
+  description = "Daily ingestion cap in GB for storage diagnostics Log Analytics workspace."
+  type        = number
+  default     = 1
+}
+
 variable "enable_postgresql_private_endpoint" {
   description = "Enable Private Link for PostgreSQL."
   type        = bool

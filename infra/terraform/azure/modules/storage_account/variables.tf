@@ -37,6 +37,54 @@ variable "public_network_access_enabled" {
   default     = true
 }
 
+variable "allow_nested_items_to_be_public" {
+  description = "Whether containers/blobs can be made public. Keep false for private customer data storage."
+  type        = bool
+  default     = false
+}
+
+variable "shared_access_key_enabled" {
+  description = "Whether Shared Key authorization is enabled. Keep false when workloads use Entra ID and user delegation SAS."
+  type        = bool
+  default     = false
+}
+
+variable "blob_delete_retention_days" {
+  description = "Soft-delete retention in days for blobs. Set null to disable."
+  type        = number
+  default     = 7
+}
+
+variable "container_delete_retention_days" {
+  description = "Soft-delete retention in days for containers. Set null to disable."
+  type        = number
+  default     = 7
+}
+
+variable "blob_versioning_enabled" {
+  description = "Whether blob versioning is enabled for recovery from overwrites/deletes."
+  type        = bool
+  default     = true
+}
+
+variable "blob_version_retention_days" {
+  description = "Number of days to retain old blob versions via lifecycle policy. Set null to disable version cleanup."
+  type        = number
+  default     = 30
+}
+
+variable "blob_diagnostics_enabled" {
+  description = "Whether to send Blob service read/write/delete logs and transaction metrics to Log Analytics."
+  type        = bool
+  default     = false
+}
+
+variable "log_analytics_workspace_id" {
+  description = "Log Analytics Workspace ID for Blob service diagnostic logs."
+  type        = string
+  default     = null
+}
+
 variable "private_endpoint_enabled" {
   description = "Whether to create a Private Endpoint for the Storage Account."
   type        = bool
