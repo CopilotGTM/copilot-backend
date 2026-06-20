@@ -20,9 +20,8 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
-)
+from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
     StakeholderSyncService,
 )
@@ -194,14 +193,19 @@ class TestPhoneNumberInUpdateEndpoint:
         assert updated.phone_number is None
 
 
-def _service() -> StakeholdersService:
+def _write_service() -> StakeholderWriteService:
     session = AsyncMock()
-    return StakeholdersService(session, uuid4())
+    return StakeholderWriteService(session, uuid4())
+
+
+def _read_service() -> StakeholderReadService:
+    session = AsyncMock()
+    return StakeholderReadService(session, uuid4())
 
 
 @pytest.mark.asyncio
 async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> None:
-    service = _service()
+    service = _write_service()
     participant = CRMDealParticipant(
         participant_id=uuid4(),
         deal_id=uuid4(),
@@ -223,12 +227,12 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
 
     assert result.phone_number == "+1 555-9999"
     assert participant.phone_number == "+1 555-9999"
-    service.session.commit.assert_awaited_once()
+    service.session.flush.assert_awaited()
 
 
 @pytest.mark.asyncio
 async def test_get_stakeholder_detail_includes_phone_number() -> None:
-    service = _service()
+    service = _read_service()
     participant = SimpleNamespace(
         participant_id=uuid4(),
         deal_id=uuid4(),

@@ -9,7 +9,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.service.crm.insights.stakeholders_service import StakeholdersService
+from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 
 
 class _FakeResult:
@@ -66,7 +66,7 @@ async def test_list_stakeholders_reads_active_contact_participants() -> None:
         participant_source="CRM",
     )
     session = _SequencedSession([_FakeResult(scalar=deal), _FakeResult(scalars=[participant])])
-    service = StakeholdersService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+    service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
 
     response = await service.list_stakeholders_by_deal(deal_id)
 
@@ -76,6 +76,24 @@ async def test_list_stakeholders_reads_active_contact_participants() -> None:
     assert response.stakeholders[0].email == "buyer@example.com"
     assert response.stakeholders[0].name == "Buyer Snapshot"
     assert response.stakeholders[0].job_title == "VP Finance"
+
+
+@pytest.mark.asyncio
+async def test_list_stakeholders_accepts_limit_for_agent_callers() -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        name="Expansion",
+    )
+    session = _SequencedSession([_FakeResult(scalar=deal), _FakeResult(scalars=[])])
+    service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+
+    await service.list_stakeholders_by_deal(deal_id, limit=7)
+
+    assert "LIMIT" in session.statements[-1]
 
 
 @pytest.mark.asyncio
@@ -109,7 +127,7 @@ async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profil
         contact_research="Fresh contact research",
     )
     session = _SequencedSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
-    service = StakeholdersService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+    service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
 
     detail = await service.get_stakeholder_detail(deal_id, participant_id)
 
@@ -137,7 +155,7 @@ async def test_list_available_contacts_excludes_existing_participants() -> None:
         full_name="Available Contact",
     )
     session = _SequencedSession([_FakeResult(scalars=[contact])])
-    service = StakeholdersService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+    service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
 
     contacts = await service.list_available_contacts(deal_id)
 

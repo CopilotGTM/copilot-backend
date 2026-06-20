@@ -15,9 +15,9 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderSource,
 )
 from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
     StakeholdersServiceError,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 
 class _FakeScalarResult:
@@ -40,6 +40,7 @@ class _FakeSession:
         self.executed_statements = []
         self.added = []
         self.committed = False
+        self.flushed = False
         self.rolled_back = False
         self.refreshed = []
 
@@ -52,6 +53,9 @@ class _FakeSession:
 
     async def commit(self):
         self.committed = True
+
+    async def flush(self):
+        self.flushed = True
 
     async def rollback(self):
         self.rolled_back = True
@@ -88,7 +92,7 @@ def _participant(
 @pytest.mark.asyncio
 async def test_is_internal_email_matches_org_domain() -> None:
     session = _FakeSession(org_domains=["acme.com", "acme.io"])
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._get_internal_domains = AsyncMock(return_value={"acme.com", "acme.io"})  # type: ignore[method-assign]
 
     assert await service._is_internal_email("seller@acme.com") is True
@@ -98,7 +102,7 @@ async def test_is_internal_email_matches_org_domain() -> None:
 @pytest.mark.asyncio
 async def test_is_internal_email_allows_external() -> None:
     session = _FakeSession(org_domains=["acme.com"])
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._get_internal_domains = AsyncMock(return_value={"acme.com"})  # type: ignore[method-assign]
 
     assert await service._is_internal_email("buyer@customer.com") is False
@@ -108,7 +112,7 @@ async def test_is_internal_email_allows_external() -> None:
 @pytest.mark.asyncio
 async def test_is_internal_email_no_org_domains() -> None:
     session = _FakeSession(org_domains=None)
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._get_internal_domains = AsyncMock(return_value=set())  # type: ignore[method-assign]
 
     assert await service._is_internal_email("anyone@acme.com") is False
@@ -117,7 +121,7 @@ async def test_is_internal_email_no_org_domains() -> None:
 @pytest.mark.asyncio
 async def test_is_internal_email_empty_or_no_at() -> None:
     session = _FakeSession(org_domains=["acme.com"])
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
 
     assert await service._is_internal_email("") is False
     assert await service._is_internal_email("no-at-sign") is False
@@ -132,7 +136,7 @@ async def test_create_stakeholder_rejects_internal_email() -> None:
     )
 
     session = _FakeSession(org_domains=["mycompany.com"])
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     request = CreateStakeholderRequest(
@@ -158,7 +162,7 @@ async def test_create_stakeholder_allows_external_email() -> None:
     )
 
     session = _FakeSession(org_domains=["mycompany.com"])
-    service = StakeholdersService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
     service._ensure_contact_for_stakeholder = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=None)  # type: ignore[method-assign]
@@ -198,7 +202,7 @@ async def test_create_stakeholder_reactivates_removed_existing_participant() -> 
         is_deleted=True,
     )
     session = _FakeSession(org_domains=["mycompany.com"])
-    service = StakeholdersService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
     service._ensure_contact_for_stakeholder = AsyncMock(return_value=contact_id)  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=removed)  # type: ignore[method-assign]
@@ -221,7 +225,8 @@ async def test_create_stakeholder_reactivates_removed_existing_participant() -> 
     assert removed.related_name == "Restored Buyer"
     assert removed.job_title == "New Title"
     assert removed.related_local_id == contact_id
-    assert session.committed is True
+    assert session.committed is False
+    assert session.flushed is True
 
 
 @pytest.mark.asyncio
@@ -236,7 +241,7 @@ async def test_create_stakeholder_duplicate_active_error_includes_conflict_data(
     deal_id = uuid4()
     active = _participant(org_id=org_id, deal_id=deal_id)
     session = _FakeSession(org_domains=["mycompany.com"])
-    service = StakeholdersService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+    service = StakeholderWriteService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
     service._ensure_contact_for_stakeholder = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=active)  # type: ignore[method-assign]

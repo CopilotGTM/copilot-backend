@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
-from src.service.crm.insights.stakeholders_service import StakeholdersService
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 
 class _FakeResult:
@@ -103,7 +103,7 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
         email="buyer@example.com",
     )
     session = _WriteSession([_FakeResult()])
-    service = StakeholdersService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
 
     async def fake_is_internal_email(_email: str) -> bool:
         return False
@@ -133,7 +133,7 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
     assert result.name == "Buyer"
     assert result.job_title == "Old Title"
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
-    assert session.committed
+    assert not session.committed
 
 
 @pytest.mark.asyncio
@@ -157,7 +157,7 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
         phone="111",
     )
     session = _WriteSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
-    service = StakeholdersService(session, org_id)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, org_id)  # type: ignore[arg-type]
 
     result = await service.update_stakeholder(
         deal_id,
@@ -180,7 +180,7 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
     assert participant.phone_number == "222"
     assert participant.stance == "CHAMPION"
     assert participant.motivation == "Owns budget"
-    assert session.committed
+    assert not session.committed
 
 
 @pytest.mark.asyncio
@@ -194,7 +194,7 @@ async def test_approve_reject_and_remove_write_participant_status() -> None:
         status=ApprovalStatus.PENDING.value,
     )
     session = _WriteSession([_FakeResult(scalar=participant)])
-    service = StakeholdersService(session, org_id)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, org_id)  # type: ignore[arg-type]
 
     approved = await service.approve_stakeholder(deal_id, participant.participant_id)
 
@@ -238,7 +238,7 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
         email="contact@example.com",
     )
     session = _WriteSession([_FakeResult(scalars=[contact]), _FakeResult(scalars=[])])
-    service = StakeholdersService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
 
     async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
         session.add(participant)
@@ -252,4 +252,4 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
     assert result.total_skipped == 0
     assert result.added[0].participant_id == participant.participant_id
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
-    assert session.committed
+    assert not session.committed

@@ -10,25 +10,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import select
-
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.deals import (
-    CRMDealParticipant,
-    CRMParticipantType,
-)
-from src.service.crm.insights.participant_stakeholder_adapter import (
-    participant_to_stakeholder_detail_dict,
-)
+from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
 
 
 async def get_stakeholder_details(
@@ -58,6 +54,11 @@ async def get_stakeholder_details(
         logger.warning("get_stakeholder_details: missing organisation_id in context")
         return None
 
+    actual_deal_id = getattr(context, "deal_id", None)
+    if not actual_deal_id:
+        logger.warning("get_stakeholder_details: no deal_id in context")
+        return None
+
     # Parse stakeholder_id
     try:
         parsed_stakeholder_id = UUID(stakeholder_id)
@@ -65,30 +66,23 @@ async def get_stakeholder_details(
         logger.warning(f"get_stakeholder_details: invalid stakeholder_id format: {stakeholder_id}")
         return None
 
-    c = cast(Any, CRMDealParticipant).__table__.c
-
-    stmt = select(CRMDealParticipant).where(
-        c.organisation_id == organisation_id,
-        c.participant_id == parsed_stakeholder_id,
-        c.participant_type == CRMParticipantType.CONTACT.value,
-        c.is_deleted.is_(False),
-    )
-
     # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            participant = result.scalar_one_or_none()
+            service = StakeholderReadService(
+                session,
+                organisation_id,
+                getattr(context, "user_id", None),
+            )
+            payload = await service.get_stakeholder_detail(actual_deal_id, parsed_stakeholder_id)
         except Exception as e:
             logger.exception(f"get_stakeholder_details: database error: {e}")
             return None
 
-        if not participant:
+        if not payload:
             logger.info(f"get_stakeholder_details: stakeholder not found: {stakeholder_id}")
             return None
 
-        # Transform to output format with full details (while session is active)
-        payload = participant_to_stakeholder_detail_dict(participant)
         output: dict[str, Any] = {
             "participant_id": str(payload["participant_id"]),
             "deal_id": str(payload["deal_id"]),
@@ -97,18 +91,18 @@ async def get_stakeholder_details(
             "job_title": payload["job_title"],
             "phone_number": payload["phone_number"],
             "department": payload["department"],
-            "stance": payload["stance"],
-            "decision_power": payload["decision_power"],
+            "stance": _enum_value(payload["stance"]),
+            "decision_power": _enum_value(payload["decision_power"]),
             "motivation": payload["motivation"],
             "pain_points": payload["pain_points"] or [],
             "keywords": payload["keywords"] or [],
-            "temperature": payload["temperature"],
+            "temperature": _enum_value(payload["temperature"]),
             "last_contact_at": payload["last_contact_at"].isoformat()
             if payload["last_contact_at"]
             else None,
             "external_links": payload["external_links"] or [],
             "contact_id": str(payload["contact_id"]) if payload["contact_id"] else None,
-            "source": payload["source"],
+            "source": _enum_value(payload["source"]),
             "stakeholder_research": payload["stakeholder_research"],
             "last_researched_at": payload["last_researched_at"].isoformat()
             if payload["last_researched_at"]

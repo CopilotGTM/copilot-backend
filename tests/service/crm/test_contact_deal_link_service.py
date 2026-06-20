@@ -12,6 +12,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.service.crm.contacts.contracts import ContactDealLinkServiceError
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
+from src.service.crm.participants.contracts import ParticipantWriteResult
 
 
 class _FakeResult:
@@ -87,11 +88,16 @@ async def test_add_contact_to_deal_delegates_to_deal_participant_service() -> No
     session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
 
     with patch(
-        "src.service.crm.contacts.deal_link_service.DealParticipantService"
+        "src.service.crm.contacts.deal_link_service.ParticipantWriteService"
     ) as participant_cls:
         participant_service = MagicMock()
         participant_service.add_participants = AsyncMock(
-            return_value=([participant], [skipped], True, uuid4())
+            return_value=ParticipantWriteResult(
+                created=[participant],
+                skipped=[skipped],
+                contact_participant_changed=True,
+                integration_id=uuid4(),
+            )
         )
         participant_cls.return_value = participant_service
 

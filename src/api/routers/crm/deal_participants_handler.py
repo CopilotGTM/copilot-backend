@@ -25,9 +25,9 @@ from src.api.schemas.crm_participant_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.crm.internal.deal_participant_service import (
-    DealParticipantService,
-    DealParticipantServiceError,
+from src.service.crm.participants.contracts import ParticipantServiceError
+from src.service.crm.participants.participant_write_service import (
+    ParticipantWriteService,
 )
 
 logger = get_logger(__name__)
@@ -42,7 +42,13 @@ async def get_participant_service(
     session: AsyncSession = Depends(get_org_async_session),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
-    service = DealParticipantService(
+    """Yield a participant writer bound to the current org and actor.
+
+    The router owns commit/rollback and post-commit dispatch. The service only
+    mutates participant rows so failed API responses cannot leave queued work
+    pointing at uncommitted data.
+    """
+    service = ParticipantWriteService(
         session, user_ids.organisation_id, user_ids.user_id, master_session
     )
     try:
@@ -51,7 +57,7 @@ async def get_participant_service(
         try:
             await service.close()
         except Exception:
-            logger.debug("DealParticipantService close failed", exc_info=True)
+            logger.debug("ParticipantWriteService close failed", exc_info=True)
 
 
 def _map_participant_item(participant) -> DealParticipantItem:
@@ -78,7 +84,7 @@ async def add_deal_participants(
     deal_id: UUID,
     request: DealParticipantsCreateRequest,
     response: FastAPIResponse,
-    service: DealParticipantService = Depends(get_participant_service),
+    service: ParticipantWriteService = Depends(get_participant_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantsWriteResponse]:
@@ -92,12 +98,12 @@ async def add_deal_participants(
 
     try:
         payloads = [item.model_dump() for item in request.participants]
-        created, skipped, contact_changed, _ = await service.add_participants(deal_id, payloads)
+        result = await service.add_participants(deal_id, payloads)
         await service.session.commit()
-        for participant in created:
+        for participant in result.created:
             await service.session.refresh(participant)
 
-        if contact_changed:
+        if result.contact_participant_changed:
             try:
                 from src.workers.deal_worker.client import send_deal_task_async
                 from src.workers.deal_worker.services.deal_change_detector import (
@@ -122,7 +128,7 @@ async def add_deal_participants(
                 )
 
         payload = DealParticipantsWriteResponse(
-            created=[_map_participant_item(p) for p in created],
+            created=[_map_participant_item(p) for p in result.created],
             skipped=[
                 DealParticipantSkippedItem(
                     participant_type=skip.participant_type,
@@ -130,17 +136,17 @@ async def add_deal_participants(
                     relationship_role=skip.relationship_role,
                     reason=skip.reason,
                 )
-                for skip in skipped
+                for skip in result.skipped
             ],
             total_requested=len(request.participants),
-            total_created=len(created),
-            total_skipped=len(skipped),
+            total_created=len(result.created),
+            total_skipped=len(result.skipped),
         )
 
         return Response.created_response(
             message="Participants added successfully", data=payload, response=response
         )
-    except DealParticipantServiceError as exc:
+    except ParticipantServiceError as exc:
         await service.session.rollback()
         logger.warning("Participant add error: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -164,7 +170,7 @@ async def remove_deal_participant(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
-    service: DealParticipantService = Depends(get_participant_service),
+    service: ParticipantWriteService = Depends(get_participant_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantItem]:
@@ -200,7 +206,7 @@ async def remove_deal_participant(
 
         payload = _map_participant_item(participant)
         return Response.success_response(message="Participant removed successfully", data=payload)
-    except DealParticipantServiceError as exc:
+    except ParticipantServiceError as exc:
         await service.session.rollback()
         logger.warning("Participant remove error: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -225,7 +231,7 @@ async def update_deal_participant(
     participant_id: UUID,
     request: DealParticipantUpdateRequest,
     response: FastAPIResponse,
-    service: DealParticipantService = Depends(get_participant_service),
+    service: ParticipantWriteService = Depends(get_participant_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealParticipantItem]:
@@ -238,7 +244,7 @@ async def update_deal_participant(
         await service.session.refresh(participant)
         payload = _map_participant_item(participant)
         return Response.success_response(message="Participant updated successfully", data=payload)
-    except DealParticipantServiceError as exc:
+    except ParticipantServiceError as exc:
         await service.session.rollback()
         logger.warning("Participant update error: %s", exc.message, exc_info=True)
         return Response.error_response(

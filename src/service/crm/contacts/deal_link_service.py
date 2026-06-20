@@ -12,7 +12,7 @@ from src.service.crm.contacts.contracts import (
     ContactDealLinkResult,
     ContactDealLinkServiceError,
 )
-from src.service.crm.internal.deal_participant_service import DealParticipantService
+from src.service.crm.participants.participant_write_service import ParticipantWriteService
 
 
 class ContactDealLinkService:
@@ -51,18 +51,13 @@ class ContactDealLinkService:
                 status_code=400,
             )
 
-        participant_service = DealParticipantService(
+        participant_service = ParticipantWriteService(
             session=self.org_session,
             organisation_id=self.organisation_id,
             actor_user_id=actor_user_id or uuid4(),
         )
 
-        (
-            created,
-            skipped,
-            contact_changed,
-            _integration_id,
-        ) = await participant_service.add_participants(
+        result = await participant_service.add_participants(
             deal_id,
             [
                 {
@@ -81,16 +76,16 @@ class ContactDealLinkService:
                     "related_id": participant.related_local_id,
                     "relationship_role": participant.relationship_role,
                 }
-                for participant in created
+                for participant in result.created
             ],
             skipped=[
                 {
-                    "participant_type": s.participant_type,
-                    "related_id": s.related_id,
-                    "relationship_role": s.relationship_role,
-                    "reason": s.reason,
+                    "participant_type": skipped.participant_type,
+                    "related_id": skipped.related_id,
+                    "relationship_role": skipped.relationship_role,
+                    "reason": skipped.reason,
                 }
-                for s in skipped
+                for skipped in result.skipped
             ],
-            contact_participant_changed=contact_changed,
+            contact_participant_changed=result.contact_participant_changed,
         )

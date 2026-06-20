@@ -116,15 +116,16 @@ class AddStakeholderFormHandler(BaseFormHandler):
                 ),
             )
 
-            # Create the stakeholder
-            from src.service.crm.insights.stakeholders_service import (
-                StakeholdersService,
-                StakeholdersServiceError,
+            from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
+            from src.service.crm.participants.stakeholder_write_service import (
+                StakeholderWriteService,
             )
 
             async for org_session in acquire_org_async_session(org_id):
                 try:
-                    service = StakeholdersService(
+                    # The form handler owns commit and follow-up job dispatch so
+                    # Teams/Slack confirmations never race an uncommitted row.
+                    service = StakeholderWriteService(
                         org_session=org_session,
                         organisation_id=org_id,
                         user_id=user.user_id,
@@ -134,6 +135,7 @@ class AddStakeholderFormHandler(BaseFormHandler):
                         deal_id=deal_id,
                         request=request,
                     )
+                    await org_session.commit()
 
                     from src.service.crm.jobs.stakeholder_job_visibility_service import (
                         StakeholderJobVisibilityService,

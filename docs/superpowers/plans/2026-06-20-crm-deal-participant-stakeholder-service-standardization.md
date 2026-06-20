@@ -59,12 +59,15 @@ Use one vertical deal-people module:
 src/service/crm/participants/
   __init__.py
   contracts.py
-  participant_read_service.py
   participant_write_service.py
   stakeholder_read_service.py
   stakeholder_write_service.py
   stakeholder_adapter.py
 ```
+
+Do not create empty service files to satisfy the folder shape. If raw participant
+roster reads are not implemented in this slice, defer `participant_read_service.py`
+instead of adding a placeholder.
 
 Keep product/API language as stakeholder:
 
@@ -182,7 +185,7 @@ src/service/crm/
     deal_link_service.py
   participants/
     contracts.py
-    participant_read_service.py
+    participant_read_service.py        # create only when real raw roster reads move here
     participant_write_service.py
     stakeholder_read_service.py
     stakeholder_write_service.py
@@ -204,7 +207,7 @@ Do not migrate deals into `src/service/crm/deals/` in this plan.
 
 ### Participant Read Service
 
-`ParticipantReadService` should own raw roster reads:
+`ParticipantReadService` should own raw roster reads when those reads are migrated:
 
 ```text
 list deal participants
@@ -213,6 +216,11 @@ check whether deal has active participants
 ```
 
 It should not return stakeholder DTOs.
+
+If this slice does not migrate a real raw participant read caller, do not create
+`ParticipantReadService` yet. A file that only contains imports, `pass`, or a
+constructor is worse than no file because it makes the architecture look done
+while access still lives elsewhere.
 
 ### Participant Write Service
 
@@ -304,6 +312,10 @@ StakeholdersService    -> delegates to StakeholderReadService + StakeholderWrite
 participant_stakeholder_adapter.py -> re-exports from participants/stakeholder_adapter.py
 ```
 
+Do not reverse this dependency. The new participant services must not subclass
+or delegate back to `StakeholdersService` as their implementation. That creates
+hollow services while the real DB access still sits in `src/service/crm/insights/`.
+
 Delete or move them only after:
 
 ```bash
@@ -316,6 +328,7 @@ proves there are no production imports that still need the compatibility path.
 
 - Do not recreate `deal_stakeholders`.
 - Do not add a new stakeholder table.
+- Do not create or modify migrations in this first implementation slice.
 - Do not expose `stakeholder_id` in new API/tool payloads.
 - Keep `participant_id` as the canonical ID for stakeholder routes.
 - Keep stakeholder as product/API language.
@@ -326,6 +339,7 @@ proves there are no production imports that still need the compatibility path.
 - Contact participants should not duplicate by role; the same contact can be primary and decision-maker through flags/fields, not duplicate rows.
 - Company/user participants may keep role-specific uniqueness if the existing behavior requires it.
 - Services should not commit after the migration; routers/tools/workflows own commit/rollback.
+- Routers/tools/workflows must commit successfully before visible jobs or Celery research dispatch are enqueued.
 - Job creation and Celery dispatch should not be hidden inside low-level participant writes.
 - Stakeholder sync/research job parameters may still call the field `stakeholder_id` in old job tables, but the value must be `CRMDealParticipant.participant_id`.
 
@@ -345,6 +359,18 @@ Required behavior:
 ```text
 same deal + same contact_id/email -> one active contact participant
 stakeholder create restores or updates the existing participant instead of inserting another row
+first slice uses service-level dedupe only
+database-backed race-proof uniqueness is explicitly deferred because migrations are out of scope
+```
+
+Deferred migration note:
+
+```text
+Current schema still has historical role-oriented participant uniqueness.
+Do not change that in this plan.
+After this service standardization lands, design a separate migration/backfill plan for
+partial unique indexes or an equivalent race-safe guard for active contact participants.
+That later plan must first count existing duplicates in real org schemas.
 ```
 
 ### Loophole 2: Role-Based Duplicates For Contacts
@@ -425,6 +451,16 @@ router/tool commits
 post-commit jobs dispatch only after the row is durable
 ```
 
+Caller rule:
+
+```text
+Every caller migrated from StakeholdersService or DealParticipantService must be audited.
+If the new write service no longer commits, that caller must explicitly call commit before
+creating DealJobs, visible processing jobs, or dispatching Celery research.
+On dispatch failure after commit, do not roll back the committed participant/stakeholder row.
+Return/log the dispatch failure according to the caller's existing API/tool contract.
+```
+
 ### Loophole 7: Provider Sync Is Accidentally Changed
 
 Risk:
@@ -439,6 +475,117 @@ Required behavior:
 first slice does not change src/service/integrations/crm/records/*/deals/participant_writer.py
 provider writers can be reviewed later after the internal write boundary is stable
 ```
+
+### Loophole 8: Historical Migrations Make Boundary Tests Lie
+
+Risk:
+
+```text
+A test scans all migrations for deal_stakeholders and fails on old migration files that
+are intentionally part of history.
+```
+
+Required behavior:
+
+```text
+Boundary tests must check current runtime models and new code paths, not all historical
+migrations.
+The first slice should not edit migrations.
+Use existing migration-head tests to prove the current chain still includes the table
+retirement migration.
+```
+
+### Loophole 9: Compatibility Facades Hide Transaction Changes
+
+Risk:
+
+```text
+StakeholdersService becomes a facade over no-commit write services.
+Old production callers still use the facade and assume it commits.
+```
+
+Required behavior:
+
+```text
+Either migrate the production caller to the new services in the same task, or keep the
+facade method behavior compatible until that caller is migrated.
+Do not silently change a facade method from committing to not committing while production
+callers still depend on it.
+```
+
+### Loophole 10: Contact Deal Link Still Uses Old Participant Service
+
+Risk:
+
+```text
+src/service/crm/contacts/deal_link_service.py keeps importing DealParticipantService,
+so contact-to-deal linking remains on the old service path.
+```
+
+Required behavior:
+
+```text
+Route ContactDealLinkService through ParticipantWriteService in this slice, or document
+it as the only intentional compatibility caller with a follow-up task.
+The preferred behavior is to migrate it because it is an internal CRM participant writer.
+```
+
+### Loophole 11: Migration And Mutation-Event Scope Creep
+
+Risk:
+
+```text
+The checkout may contain separate CRM mutation-event work, and duplicate prevention may
+look like it wants a new migration.
+```
+
+Required behavior:
+
+```text
+Do not modify migration files for this service-standardization slice.
+Do not wire CRM mutation events in this slice.
+If race-safe uniqueness needs schema work, capture it as a later migration plan after
+service boundaries are stable and duplicate counts are known.
+```
+
+### Loophole 12: Hollow Participant Services Hide The Old Monolith
+
+Risk:
+
+```text
+StakeholderReadService and StakeholderWriteService exist in src/service/crm/participants/,
+but they subclass or delegate back to src/service/crm/insights/stakeholders_service.py.
+Routers/tools import the new names, yet the old insights service still owns the SQL,
+private helpers, transaction behavior, and stakeholder semantics.
+```
+
+Required behavior:
+
+```text
+Move the actual read methods, write methods, and required private helpers into
+the participant module.
+After extraction, src/service/crm/insights/stakeholders_service.py must be a
+compatibility facade only.
+The facade may delegate to the new services, but the new services must not
+delegate to the facade.
+```
+
+Boundary check:
+
+```bash
+rg -n "class StakeholderReadService\\(StakeholdersService\\)|class StakeholderWriteService\\(StakeholdersService\\)|StakeholdersService\\(" src/service/crm/participants
+```
+
+Expected: no output.
+
+Ownership check:
+
+```bash
+rg -n "async def (list_stakeholders_by_deal|get_stakeholder_detail|list_available_contacts|create_stakeholder|update_stakeholder|approve_stakeholder|reject_stakeholder|remove_stakeholder|add_contacts_as_stakeholders)" src/service/crm/insights/stakeholders_service.py
+```
+
+Expected: no output after Task 5, except facade methods that only call
+`self._reader` or `self._writer`.
 
 ## Flow Examples
 
@@ -536,14 +683,13 @@ Create `tests/service/crm/test_participant_stakeholder_service_boundaries.py`:
 ```python
 from __future__ import annotations
 
-import subprocess
+import re
 from pathlib import Path
 
 
 def test_participant_vertical_module_exists() -> None:
     assert Path("src/service/crm/participants/__init__.py").exists()
     assert Path("src/service/crm/participants/contracts.py").exists()
-    assert Path("src/service/crm/participants/participant_read_service.py").exists()
     assert Path("src/service/crm/participants/participant_write_service.py").exists()
     assert Path("src/service/crm/participants/stakeholder_read_service.py").exists()
     assert Path("src/service/crm/participants/stakeholder_write_service.py").exists()
@@ -551,24 +697,43 @@ def test_participant_vertical_module_exists() -> None:
 
 
 def test_stakeholder_table_is_not_reintroduced() -> None:
-    result = subprocess.run(
-        ["rg", "-n", "class .*Stakeholder.*table=True|__tablename__ = \"deal_stakeholders\"",
-         "src/domain/models", "migrations"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    stakeholder_table_pattern = re.compile(r"__tablename__ = \"deal_stakeholders\"")
+    matches = [
+        path
+        for path in Path("src/domain/models").rglob("*.py")
+        if stakeholder_table_pattern.search(path.read_text(encoding="utf-8"))
+    ]
 
-    assert "deal_stakeholders" not in result.stdout
+    assert matches == []
+
+
+def test_participant_plan_does_not_require_new_migrations() -> None:
+    plan = Path(
+        "docs/superpowers/plans/"
+        "2026-06-20-crm-deal-participant-stakeholder-service-standardization.md"
+    ).read_text()
+    assert "Do not create or modify migrations in this first implementation slice." in plan
 
 
 def test_new_participant_services_do_not_commit() -> None:
     for path in [
         "src/service/crm/participants/participant_write_service.py",
+        "src/service/crm/participants/stakeholder_read_service.py",
         "src/service/crm/participants/stakeholder_write_service.py",
     ]:
         source = Path(path).read_text()
         assert ".commit(" not in source
+
+
+def test_stakeholder_services_do_not_delegate_back_to_old_monolith() -> None:
+    for path in [
+        "src/service/crm/participants/stakeholder_read_service.py",
+        "src/service/crm/participants/stakeholder_write_service.py",
+    ]:
+        source = Path(path).read_text()
+        assert "class StakeholderReadService(StakeholdersService)" not in source
+        assert "class StakeholderWriteService(StakeholdersService)" not in source
+        assert "StakeholdersService(" not in source
 
 
 def test_new_stakeholder_contracts_do_not_expose_stakeholder_id() -> None:
@@ -796,7 +961,7 @@ Expected: PASS.
 **Files:**
 
 - Create: `src/service/crm/participants/stakeholder_read_service.py`
-- Modify later: `src/service/crm/insights/stakeholders_service.py`
+- Modify: `src/service/crm/insights/stakeholders_service.py`
 - Test: `tests/service/crm/insights/test_stakeholders_service_participant_reads.py`
 
 - [ ] **Step 1: Create StakeholderReadService**
@@ -812,6 +977,10 @@ _get_participant_contact
 _participant_detail
 _participant_timeline_stakeholder only if still needed by read DTOs
 ```
+
+Move the implementation, not just the public method names. The new read service
+must contain the SQL and private read helpers it needs. It must not subclass
+`StakeholdersService` and must not instantiate `StakeholdersService`.
 
 The constructor should be:
 
@@ -838,7 +1007,17 @@ from src.service.crm.participants.stakeholder_adapter import (
 )
 ```
 
-- [ ] **Step 3: Verify stakeholder reads**
+- [ ] **Step 3: Remove read implementation from the old monolith**
+
+In `src/service/crm/insights/stakeholders_service.py`, remove the read SQL and
+private read helpers that moved to `StakeholderReadService`. Do not leave a
+second copy of the access logic in `insights`.
+
+During Task 3 it is acceptable for `StakeholdersService` to keep thin read
+methods only if they delegate to `StakeholderReadService`, because some tests
+or old callers may still import the compatibility class.
+
+- [ ] **Step 4: Verify stakeholder reads**
 
 Run:
 
@@ -846,14 +1025,24 @@ Run:
 uv run pytest tests/service/crm/insights/test_stakeholders_service_participant_reads.py -q
 ```
 
-Expected: PASS through compatibility facade initially.
+Expected: PASS with read access owned by `StakeholderReadService`.
+
+- [ ] **Step 5: Verify no reverse dependency**
+
+Run:
+
+```bash
+rg -n "class StakeholderReadService\\(StakeholdersService\\)|StakeholdersService\\(" src/service/crm/participants/stakeholder_read_service.py
+```
+
+Expected: no output.
 
 ## Task 4: Extract StakeholderWriteService
 
 **Files:**
 
 - Create: `src/service/crm/participants/stakeholder_write_service.py`
-- Modify later: `src/service/crm/insights/stakeholders_service.py`
+- Modify: `src/service/crm/insights/stakeholders_service.py`
 - Test: `tests/service/crm/insights/test_stakeholders_service_participant_writes.py`
 
 - [ ] **Step 1: Create StakeholderWriteService**
@@ -880,7 +1069,11 @@ _is_internal_email
 
 Keep timeline event creation in this service because stakeholder semantic writes own stakeholder audit/timeline meaning.
 
-- [ ] **Step 2: Remove service-owned commits**
+Move the implementation, not just the public method names. The new write service
+must contain the SQL and private write helpers it needs. It must not subclass
+`StakeholdersService` and must not instantiate `StakeholdersService`.
+
+- [ ] **Step 2: Remove service-owned commits without changing facade callers silently**
 
 Replace service commits with flush/refresh only:
 
@@ -888,13 +1081,15 @@ Replace service commits with flush/refresh only:
 await self.session.flush()
 ```
 
-The router, agent tool, or future workflow dispatcher must call:
+For callers routed directly to `StakeholderWriteService`, the router, agent tool, or future workflow dispatcher must call:
 
 ```python
 await service.session.commit()
 ```
 
-after a successful write.
+after a successful write and before any job dispatch.
+
+If a production caller remains on `StakeholdersService` during this slice, preserve that facade method's current commit behavior until the caller is migrated. Do not silently convert an old facade method to no-commit while old callers still depend on it.
 
 - [ ] **Step 3: Return stable stakeholder DTOs**
 
@@ -919,6 +1114,22 @@ uv run pytest tests/service/crm/insights/test_stakeholders_service_participant_w
 ```
 
 Expected: PASS after facade and tests are adjusted for router-owned commits.
+
+- [ ] **Step 5: Remove write implementation from the old monolith**
+
+In `src/service/crm/insights/stakeholders_service.py`, remove the write SQL and
+private write helpers that moved to `StakeholderWriteService`. The compatibility
+class may keep public write methods only as delegators.
+
+- [ ] **Step 6: Verify no reverse dependency**
+
+Run:
+
+```bash
+rg -n "class StakeholderWriteService\\(StakeholdersService\\)|StakeholdersService\\(" src/service/crm/participants/stakeholder_write_service.py
+```
+
+Expected: no output.
 
 ## Task 5: Convert StakeholdersService To Compatibility Facade
 
@@ -946,6 +1157,19 @@ self._writer = StakeholderWriteService(org_session, organisation_id, user_id)
 
 Delegate read methods to `_reader` and write methods to `_writer`.
 
+The facade file must not retain the old SQL implementation. After this task,
+`src/service/crm/insights/stakeholders_service.py` should contain:
+
+```text
+StakeholdersServiceError
+StakeholdersService.__init__
+thin public delegator methods
+close()
+```
+
+It should not own participant/stakeholder queries, contact creation, timeline
+event creation, or profile-update helpers.
+
 - [ ] **Step 2: Preserve error compatibility**
 
 Keep:
@@ -967,6 +1191,16 @@ uv run pytest tests/service/crm/insights/test_stakeholders_service_participant_r
 
 Expected: PASS.
 
+- [ ] **Step 4: Verify the old monolith is only a facade**
+
+Run:
+
+```bash
+rg -n "async def (_ensure_contact_for_stakeholder|_ensure_deal_participant|_find_contact_participant|_get_participant_contact)|select\\(CRMDealParticipant\\)|select\\(CRMContact\\)" src/service/crm/insights/stakeholders_service.py
+```
+
+Expected: no output.
+
 ## Task 6: Route Routers To New Services
 
 **Files:**
@@ -987,8 +1221,16 @@ The router keeps:
 
 ```text
 commit/rollback
-post-commit stakeholder sync dispatch
 response shaping
+```
+
+Dispatch rule:
+
+```text
+await write_service.session.commit()
+then dispatch stakeholder sync/rematch only when contact_participant_changed is true
+if dispatch fails after commit, log/return according to the existing router behavior
+do not roll back the committed participant row
 ```
 
 - [ ] **Step 2: Route stakeholders API to stakeholder read/write services**
@@ -1012,6 +1254,14 @@ StakeholderJobVisibilityService job creation
 stakeholder research dispatch
 ```
 
+Dispatch rule:
+
+```text
+await write_service.session.commit()
+then create visible jobs and dispatch stakeholder research
+never create visible jobs or enqueue Celery research before the stakeholder row is committed
+```
+
 - [ ] **Step 3: Verify stakeholder API**
 
 Run:
@@ -1031,6 +1281,7 @@ Expected: PASS.
 - Modify: `src/agents/tools/crm/upsert_stakeholder.py`
 - Modify: `src/agents/tools/crm/list_stakeholders.py`
 - Modify: `src/agents/tools/crm/get_stakeholder_details.py`
+- Modify: `src/service/bots/form_handlers/add_stakeholder_handler.py` if it still imports `StakeholdersService`
 - Test: `tests/agents/tools/crm/test_create_stakeholder_if_missing.py`
 - Test: `tests/agents/tools/crm/test_upsert_stakeholder.py`
 - Test: `tests/service/agents/test_stakeholder_tools.py`
@@ -1052,6 +1303,15 @@ Use `StakeholderWriteService` in:
 add_stakeholder.py
 create_stakeholder_if_missing.py
 upsert_stakeholder.py
+```
+
+For each write tool:
+
+```text
+call the write service
+commit the session
+then dispatch visible jobs or research according to the tool's existing explicit/silent behavior
+if post-commit dispatch fails, do not roll back the committed stakeholder row
 ```
 
 - [ ] **Step 3: Preserve explicit versus silent post-create behavior**
@@ -1076,6 +1336,94 @@ Run:
 
 ```bash
 uv run pytest tests/agents/tools/crm/test_create_stakeholder_if_missing.py tests/agents/tools/crm/test_upsert_stakeholder.py tests/service/agents/test_stakeholder_tools.py -q
+```
+
+Expected: PASS.
+
+If `src/service/bots/form_handlers/add_stakeholder_handler.py` is migrated in this task, also run:
+
+```bash
+uv run pytest tests/service/bots/form_handlers/test_add_stakeholder_handler.py -q
+```
+
+Expected: PASS.
+
+## Task 7A: Route Contact Deal Link To ParticipantWriteService
+
+**Files:**
+
+- Modify: `src/service/crm/contacts/deal_link_service.py`
+- Test: `tests/service/crm/test_contact_deal_link_service.py`
+
+- [ ] **Step 1: Replace the compatibility import**
+
+Replace:
+
+```python
+from src.service.crm.internal.deal_participant_service import DealParticipantService
+```
+
+with:
+
+```python
+from src.service.crm.participants.participant_write_service import ParticipantWriteService
+```
+
+- [ ] **Step 2: Use ParticipantWriteService for the write**
+
+Instantiate `ParticipantWriteService` with the existing session, org boundary, and actor:
+
+```python
+participant_service = ParticipantWriteService(
+    session=self.org_session,
+    organisation_id=self.organisation_id,
+    actor_user_id=actor_user_id or uuid4(),
+)
+```
+
+Normalize the `ParticipantWriteResult` into the existing `ContactDealLinkResult` contract:
+
+```python
+result = await participant_service.add_participants(
+    deal_id,
+    [
+        {
+            "participant_type": "contact",
+            "related_id": contact_id,
+            "relationship_role": relationship_role,
+        }
+    ],
+)
+
+return ContactDealLinkResult(
+    created=[
+        {
+            "participant_id": participant.participant_id,
+            "participant_type": participant.participant_type,
+            "related_id": participant.related_local_id,
+            "relationship_role": participant.relationship_role,
+        }
+        for participant in result.created
+    ],
+    skipped=[
+        {
+            "participant_type": skipped.participant_type,
+            "related_id": skipped.related_id,
+            "relationship_role": skipped.relationship_role,
+            "reason": skipped.reason,
+        }
+        for skipped in result.skipped
+    ],
+    contact_participant_changed=result.contact_participant_changed,
+)
+```
+
+- [ ] **Step 3: Verify contact deal linking**
+
+Run:
+
+```bash
+uv run pytest tests/service/crm/test_contact_deal_link_service.py -q
 ```
 
 Expected: PASS.
@@ -1144,6 +1492,16 @@ uv run mypy --no-incremental src/service/crm/participants src/service/crm/intern
 
 Expected: PASS.
 
+- [ ] **Step 6: Verify no migration files changed**
+
+Run:
+
+```bash
+git diff --name-only -- migrations
+```
+
+Expected: no output for this service-standardization slice.
+
 ## Later Cleanup Phase
 
 Do this only after the new module is merged and production imports are migrated.
@@ -1180,6 +1538,15 @@ Do this only after the new module is merged and production imports are migrated.
 
    Do not route provider ingestion through the internal participant writer until we explicitly design provider-write semantics.
 
+5. Plan race-safe contact-participant uniqueness separately:
+
+   ```text
+   Count active duplicate contact participants by deal + contact_id and by deal + normalized email.
+   Decide whether to add partial unique indexes, a normalized email column/index expression,
+   or another race-safe database guard.
+   Do not include that migration in this service-standardization PR.
+   ```
+
 ## Rollout Notes
 
 - This plan combines participants and stakeholders at the service-module level, not by changing tables.
@@ -1189,6 +1556,7 @@ Do this only after the new module is merged and production imports are migrated.
 - Old service files stay temporarily as facades to avoid a risky big-bang refactor.
 - Workflow dispatcher integration is not part of this slice.
 - CRM mutation events for participant/stakeholder writes are not part of this slice.
+- Migration changes, including contact-participant uniqueness indexes, are not part of this slice.
 - Account/contact services should remain the source for durable account/contact writes.
 
 ## Success Criteria
@@ -1200,6 +1568,8 @@ Do this only after the new module is merged and production imports are migrated.
 - Stakeholder semantic writes use `StakeholderWriteService`.
 - Existing stakeholder APIs still return `participant_id`.
 - New service files do not commit transactions directly.
+- Migrated routers/tools/workflows commit before job creation or Celery dispatch.
 - Visible job creation and Celery dispatch remain at router/tool/workflow orchestration boundaries.
 - Compatibility facades keep existing imports working during rollout.
+- No migration files are modified by this implementation slice.
 - Focused participant, stakeholder, API, agent, ruff, and mypy checks pass before PR.

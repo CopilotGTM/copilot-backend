@@ -13,14 +13,14 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
     StakeholdersServiceError,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 
-def _service() -> StakeholdersService:
+def _service() -> StakeholderWriteService:
     session = AsyncMock()
-    return StakeholdersService(session, uuid4())
+    return StakeholderWriteService(session, uuid4())
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_update_stakeholder_applies_updates_and_tracks_manual_overrides() 
     assert participant.related_name == "Updated Name"
     assert participant.job_title == "Updated Title"
     assert participant.motivation == "Updated motivation"
-    service.session.commit.assert_awaited_once()
+    service.session.flush.assert_awaited()
     service.session.refresh.assert_awaited_once_with(participant)
 
 

@@ -6,6 +6,9 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.service.crm.insights.participant_stakeholder_adapter import (
+    participant_to_stakeholder_detail_dict as legacy_participant_to_stakeholder_detail_dict,
+)
+from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
 )
 
@@ -37,6 +40,10 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
     assert payload["stakeholder_research"] == "Participant research"
     assert "champion_potential" not in payload
     assert "engagement_score" not in payload
+
+
+def test_legacy_participant_adapter_reexports_new_adapter() -> None:
+    assert legacy_participant_to_stakeholder_detail_dict is participant_to_stakeholder_detail_dict
 
 
 def test_participant_adapter_prefers_contact_profile_when_loaded() -> None:

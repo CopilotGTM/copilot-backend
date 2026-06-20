@@ -48,6 +48,8 @@ from src.service.crm.jobs.deal_job_service import DealJobService
 from src.service.crm.jobs.stakeholder_job_visibility_service import (
     StakeholderJobVisibilityService,
 )
+from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 logger = get_logger(__name__)
 
@@ -104,7 +106,7 @@ async def _dispatch_auto_stakeholder_research(
         if not job_id:
             return None
         return DealJobResponse(
-            job_id=job_id,
+            job_id=UUID(job_id),
             job_type="stakeholder_research",
             status="pending",
         )
@@ -134,6 +136,36 @@ async def get_stakeholders_service(
             await service.close()
         except Exception:
             logger.debug("Stakeholders service close failed", exc_info=True)
+
+
+async def get_stakeholder_read_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields participant-backed stakeholder reads."""
+    service = StakeholderReadService(session, user_ids.organisation_id, user_ids.user_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Stakeholder read service close failed", exc_info=True)
+
+
+async def get_stakeholder_write_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields participant-backed stakeholder semantic writes."""
+    service = StakeholderWriteService(session, user_ids.organisation_id, user_ids.user_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Stakeholder write service close failed", exc_info=True)
 
 
 async def get_stakeholder_job_visibility_service(
@@ -173,7 +205,7 @@ async def get_deal_stakeholders(
         True, description="Include PENDING stakeholders awaiting approval"
     ),
     include_rejected: bool = Query(False, description="Include REJECTED stakeholders"),
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderReadService = Depends(get_stakeholder_read_service),
 ) -> GenericResponse[StakeholderListResponse]:
     """Get stakeholders associated with a specific deal.
 
@@ -221,7 +253,7 @@ async def list_available_contacts(
     response: FastAPIResponse,
     query: str | None = None,
     limit: int = 50,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderReadService = Depends(get_stakeholder_read_service),
 ) -> GenericResponse[list[AvailableContactItem]]:
     """
     List contacts that can be added as stakeholders to the deal.
@@ -261,7 +293,7 @@ async def add_contacts_as_stakeholders(
     deal_id: UUID,
     request: AddContactsAsStakeholdersRequest,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
     job_visibility_service: StakeholderJobVisibilityService = Depends(
         get_stakeholder_job_visibility_service
     ),
@@ -279,6 +311,7 @@ async def add_contacts_as_stakeholders(
     """
     try:
         result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
+        await service.session.commit()
         response_data = _to_api_model(AddContactsAsStakeholdersResponse, result)
         for stakeholder in response_data.added:
             await job_visibility_service.create_stakeholder_processing_jobs(
@@ -296,6 +329,7 @@ async def add_contacts_as_stakeholders(
             data=response_data,
         )
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning("Add contacts as stakeholders error: %s", e.message)
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
@@ -317,7 +351,7 @@ async def create_stakeholder(
     request: CreateStakeholderRequest,
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
     job_visibility_service: StakeholderJobVisibilityService = Depends(
         get_stakeholder_job_visibility_service
     ),
@@ -338,6 +372,7 @@ async def create_stakeholder(
     try:
         command = CreateStakeholderCommand.model_validate(request.model_dump())
         stakeholder_result = await service.create_stakeholder(deal_id, command)
+        await service.session.commit()
         stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
             deal_id,
@@ -360,6 +395,7 @@ async def create_stakeholder(
             response=response,
         )
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning(
             "Create stakeholder error",
             extra={
@@ -396,7 +432,7 @@ async def get_stakeholder_detail(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderReadService = Depends(get_stakeholder_read_service),
     deal_job_service: DealJobService = Depends(get_stakeholder_deal_job_service),
 ) -> GenericResponse[StakeholderFullDetail]:
     """Get full details of a specific stakeholder including engagement history.
@@ -462,15 +498,17 @@ async def update_stakeholder(
     participant_id: UUID,
     request: UpdateStakeholderRequest,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
 ) -> GenericResponse[StakeholderDetail]:
     """Partially update editable stakeholder fields."""
     try:
         command = UpdateStakeholderCommand.model_validate(request.model_dump(exclude_unset=True))
         stakeholder_result = await service.update_stakeholder(deal_id, participant_id, command)
+        await service.session.commit()
         stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
         return Response.success_response(message="Stakeholder updated", data=stakeholder)
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning(
             "Update stakeholder error",
             extra={
@@ -506,7 +544,7 @@ async def approve_stakeholder(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
 ) -> GenericResponse[StakeholderDetail]:
     """Approve a PENDING stakeholder for deal matching.
 
@@ -517,11 +555,13 @@ async def approve_stakeholder(
     """
     try:
         stakeholder = await service.approve_stakeholder(deal_id, participant_id)
+        await service.session.commit()
         return Response.success_response(
             message="Stakeholder approved",
             data=cast(StakeholderDetail, stakeholder),
         )
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning(
             "Approve stakeholder error",
             extra={
@@ -557,7 +597,7 @@ async def reject_stakeholder(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
 ) -> GenericResponse[StakeholderDetail]:
     """Reject a stakeholder to exclude from deal matching.
 
@@ -571,11 +611,13 @@ async def reject_stakeholder(
     """
     try:
         stakeholder = await service.reject_stakeholder(deal_id, participant_id)
+        await service.session.commit()
         return Response.success_response(
             message="Stakeholder rejected",
             data=cast(StakeholderDetail, stakeholder),
         )
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning(
             "Reject stakeholder error",
             extra={
@@ -612,7 +654,7 @@ async def trigger_stakeholder_research(
     participant_id: UUID,
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderReadService = Depends(get_stakeholder_read_service),
 ) -> GenericResponse[DealJobResponse]:
     """Manually trigger LinkedIn research for a stakeholder.
 
@@ -656,7 +698,7 @@ async def trigger_stakeholder_research(
             return Response.success_response(
                 message="Research job dispatched",
                 data=DealJobResponse(
-                    job_id=job_id,
+                    job_id=UUID(job_id),
                     job_type="stakeholder_research",
                     status="pending",
                 ),
@@ -697,7 +739,7 @@ async def remove_stakeholder(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
+    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
 ) -> GenericResponse[StakeholderDetail]:
     """Remove an approved stakeholder from the deal.
 
@@ -715,11 +757,13 @@ async def remove_stakeholder(
     """
     try:
         stakeholder = await service.remove_stakeholder(deal_id, participant_id)
+        await service.session.commit()
         return Response.success_response(
             message="Stakeholder removed",
             data=cast(StakeholderDetail, stakeholder),
         )
     except StakeholdersServiceError as e:
+        await service.session.rollback()
         logger.warning(
             "Remove stakeholder error",
             extra={
