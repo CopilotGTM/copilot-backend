@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -50,12 +51,27 @@ def _context(idempotency_key: str | None = None) -> DealWriteContext:
     )
 
 
+def test_deal_event_service_uses_scoped_idempotency_key() -> None:
+    source = Path("src/service/crm/deals/mutation_event_service.py").read_text()
+
+    assert "CRMMutationEventService" in source
+    assert "CRMMutationRecordCommand" in source
+    assert 'idempotency_scope=f"deal:' in source
+
+
+def test_deal_event_service_does_not_hash_payload_locally() -> None:
+    source = Path("src/service/crm/deals/mutation_event_service.py").read_text()
+
+    assert "hashlib" not in source
+    assert "json.dumps" not in source
+
+
 @pytest.mark.asyncio
 async def test_record_event_skips_empty_changed_fields() -> None:
     """No-op writes must not produce audit rows or workflow trigger input."""
     service = DealMutationEventService(_FakeSession(), uuid4())
 
-    recorded = await service.record_event(
+    result = await service.record_event(
         deal=_deal(),
         event_type="crm.deal.updated",
         operation="update_deal",
@@ -65,7 +81,8 @@ async def test_record_event_skips_empty_changed_fields() -> None:
         summary=None,
     )
 
-    assert recorded is None
+    assert result.changed is False
+    assert result.event_id is None
     assert service.session.added == []
 
 
@@ -74,7 +91,7 @@ async def test_record_event_persists_one_event_for_multi_field_update() -> None:
     """A multi-field deal update must be stored as one mutation event row."""
     service = DealMutationEventService(_FakeSession(), uuid4())
 
-    event = await service.record_event(
+    result = await service.record_event(
         deal=_deal(),
         event_type="crm.deal.updated",
         operation="update_deal",
@@ -87,6 +104,8 @@ async def test_record_event_persists_one_event_for_multi_field_update() -> None:
         summary="Updated deal",
     )
 
+    assert result.changed is True
+    event = service.session.added[0]
     assert isinstance(event, CRMDealMutationEvent)
     assert event.event_type == "crm.deal.updated"
     assert set(event.changed_fields) == {"amount", "stage_id"}
@@ -120,7 +139,7 @@ async def test_record_event_returns_existing_event_for_same_idempotency_payload(
     deal = _deal()
     changed_fields = {"amount": {"old": 100, "new": 200}}
     service = DealMutationEventService(_FakeSession(), uuid4())
-    first = await service.record_event(
+    await service.record_event(
         deal=deal,
         event_type="crm.deal.updated",
         operation="update_deal",
@@ -129,6 +148,7 @@ async def test_record_event_returns_existing_event_for_same_idempotency_payload(
         context=_context("retry-key"),
         summary="Updated deal",
     )
+    first = service.session.added[0]
 
     retry_session = _FakeSession(existing=first)
     retry_service = DealMutationEventService(retry_session, service.organisation_id)
@@ -142,7 +162,7 @@ async def test_record_event_returns_existing_event_for_same_idempotency_payload(
         summary="Updated deal",
     )
 
-    assert second is first
+    assert second.event_id == first.event_id
     assert retry_session.added == []
 
 

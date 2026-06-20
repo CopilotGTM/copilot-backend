@@ -171,3 +171,49 @@ async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_
     event_kwargs = service._record_mutation_event.await_args.kwargs  # type: ignore[attr-defined]
     assert event_kwargs["event_type"] == "crm.deal.created"
     assert event_kwargs["changed_fields"]["owner_id"]["new"] == owner_user_id
+
+
+@pytest.mark.asyncio
+async def test_create_deal_records_initial_core_fields_without_update_semantics() -> None:
+    session = _FakeOrgSession()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._record_mutation_event = AsyncMock()
+
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    integration_id = uuid4()
+    pipeline = SimpleNamespace(pipeline_id=pipeline_id, name="Sales")
+    stage = SimpleNamespace(stage_id=stage_id, name="Discovery")
+    integration = SimpleNamespace(integration_id=integration_id)
+
+    service._get_default_pipeline = AsyncMock(return_value=pipeline)
+    service._get_first_stage = AsyncMock(return_value=stage)
+
+    with patch(
+        "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
+        new=AsyncMock(return_value=integration),
+    ):
+        await service.create_deal(
+            {
+                "name": "New Deal",
+                "amount": 25000,
+                "currency": "USD",
+                "priority": "high",
+                "expected_close_date": "2026-07-31",
+            }
+        )
+
+    event_kwargs = service._record_mutation_event.await_args.kwargs
+    assert event_kwargs["event_type"] == "crm.deal.created"
+    assert event_kwargs["changed_fields"]["name"] == {"old": None, "new": "New Deal"}
+    assert event_kwargs["changed_fields"]["amount"] == {"old": None, "new": 25000}
+    assert event_kwargs["changed_fields"]["currency"] == {"old": None, "new": "USD"}
+    assert event_kwargs["changed_fields"]["pipeline_id"]["new"] == pipeline_id
+    assert event_kwargs["changed_fields"]["pipeline_name"] == {"old": None, "new": "Sales"}
+    assert event_kwargs["changed_fields"]["stage_id"]["new"] == stage_id
+    assert event_kwargs["changed_fields"]["stage_name"] == {"old": None, "new": "Discovery"}
