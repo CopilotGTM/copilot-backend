@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
+from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.internal.deal_write_service import DealWriteService
 
 
@@ -53,15 +54,10 @@ async def test_upsert_company_overwrites_existing_industry_and_country_when_prov
         last_seen_at=None,
     )
     session = _FakeOrgSession([existing_company])
-    service = DealWriteService(
-        org_session=session,
-        master_session=SimpleNamespace(),
-        organisation_id=uuid4(),
-        actor_user_id=uuid4(),
-    )
+    service = AccountWriteService(session, uuid4())
 
     now = datetime.now(UTC)
-    company, fallback = await service._upsert_company_from_account(
+    company, fallback = await service.upsert_company_from_account(
         account_payload={
             "name": "Acme",
             "domain": "acme.com",
@@ -93,14 +89,9 @@ async def test_upsert_company_preserves_industry_and_country_when_not_provided()
         last_seen_at=None,
     )
     session = _FakeOrgSession([existing_company])
-    service = DealWriteService(
-        org_session=session,
-        master_session=SimpleNamespace(),
-        organisation_id=uuid4(),
-        actor_user_id=uuid4(),
-    )
+    service = AccountWriteService(session, uuid4())
 
-    company, fallback = await service._upsert_company_from_account(
+    company, fallback = await service.upsert_company_from_account(
         account_payload={"name": "Acme", "domain": "acme.com"},
         integration_id=uuid4(),
         now=datetime.now(UTC),
@@ -126,14 +117,9 @@ async def test_upsert_company_clears_company_fields_when_explicitly_provided_as_
         last_seen_at=None,
     )
     session = _FakeOrgSession([existing_company])
-    service = DealWriteService(
-        org_session=session,
-        master_session=SimpleNamespace(),
-        organisation_id=uuid4(),
-        actor_user_id=uuid4(),
-    )
+    service = AccountWriteService(session, uuid4())
 
-    company, fallback = await service._upsert_company_from_account(
+    company, fallback = await service.upsert_company_from_account(
         account_payload={
             "name": "Acme",
             "domain": "acme.com",
@@ -236,7 +222,9 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
     )
 
     service._load_internal_deal = AsyncMock(return_value=existing_deal)
-    service._upsert_company_from_account = AsyncMock(return_value=(resolved_company, None))
+    service._account_writer.upsert_company_from_account = AsyncMock(
+        return_value=(resolved_company, None)
+    )
     service._has_active_company_participant = AsyncMock(return_value=True)
     service._replace_company_participant = AsyncMock()
 

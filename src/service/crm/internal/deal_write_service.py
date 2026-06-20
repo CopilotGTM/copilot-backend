@@ -28,14 +28,14 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.accounts.contracts import AccountWriteServiceError
+from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.internal.deal_participant_service import DealParticipantServiceError
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 
 logger = get_logger(__name__)
 
-_DOMAIN_CLEAN_RE = re.compile(r"^https?://", re.IGNORECASE)
-_COMPANY_NAME_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _CONTACT_NAME_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _CUSTOM_KEY_INVALID_RE = re.compile(r"[^a-z0-9_]+")
 
@@ -71,8 +71,12 @@ class DealWriteService:
         self.master_session = master_session  # For public schema reads
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
+        # Account materialization is an account-domain rule. DealWriteService
+        # keeps orchestration and participant side effects only.
+        self._account_writer = AccountWriteService(self.session, self.organisation_id)
 
     async def close(self) -> None:
+        """Close the org-scoped session when this service owns dependency cleanup."""
         try:
             await self.session.close()
         except Exception:
@@ -90,7 +94,8 @@ class DealWriteService:
         Raises:
             DealWriteServiceError: If validation fails or internal CRM not configured
         """
-        # Get internal CRM integration
+        # Deals created through this writer must belong to the internal CRM
+        # integration; external provider deals stay read-only elsewhere.
         setup_service = InternalCRMSetupService(
             self.session, self.organisation_id, self.actor_user_id
         )
@@ -150,7 +155,8 @@ class DealWriteService:
             owner_name = crm_user.full_name
             owner_email = crm_user.email
 
-        # Create deal
+        # The deal row is written before participants so downstream participant
+        # services can validate a real deal_id in the same transaction.
         now = datetime.now(UTC)
         deal_id = uuid4()
 
@@ -207,7 +213,8 @@ class DealWriteService:
         self.session.add(deal)
         await self.session.flush()
 
-        # Create initial stage history record
+        # Stage history starts at creation time so later analytics can compute
+        # stage dwell time without special-casing the first stage.
         history_id = uuid4()
         history = CRMDealStageHistory(
             history_id=history_id,
@@ -281,7 +288,8 @@ class DealWriteService:
 
         deal = await self._load_internal_deal(deal_id)
 
-        # Update allowed fields
+        # Only explicit payload keys are applied; omitted nullable fields must
+        # preserve their existing value while provided nulls clear the field.
         updated = False
         if "name" in payload:
             deal.name = payload["name"]
@@ -836,7 +844,7 @@ class DealWriteService:
         return deal
 
     async def update_account(self, deal_id: UUID, account_payload: dict[str, Any]) -> CRMDeal:
-        """Update account details for an internal CRM deal."""
+        """Update the account snapshot/link for one internal CRM deal."""
         if not account_payload or not any(account_payload.values()):
             raise DealWriteServiceError("No account fields to update", status_code=400)
 
@@ -867,7 +875,7 @@ class DealWriteService:
                         account_payload[field] = getattr(existing_company, field)
 
         try:
-            company, fallback_name = await self._upsert_company_from_account(
+            company, fallback_name = await self._account_writer.upsert_company_from_account(
                 account_payload, deal.integration_id, now
             )
             if company:
@@ -884,12 +892,18 @@ class DealWriteService:
                 else:
                     await self._replace_company_participant(deal, company, now)
             elif fallback_name:
+                # Ambiguous name-only account payloads are kept as a deal-level
+                # snapshot instead of linking to an arbitrary company record.
                 await self._apply_fallback_company_name(deal, fallback_name, now)
             else:
                 raise DealWriteServiceError(
                     "Account payload missing domain or name", status_code=400
                 )
         except DealParticipantServiceError as exc:
+            raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+        except AccountWriteServiceError as exc:
+            # Preserve the DealWriteService error contract for API callers while
+            # letting AccountWriteService own account-domain validation.
             raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
         logger.info("Updated account for internal CRM deal %s", deal.deal_id)
@@ -944,18 +958,21 @@ class DealWriteService:
         primary_contact_email: str | None,
         now: datetime,
     ) -> None:
+        """Apply optional account, primary contact, team, and contact participants."""
         try:
             company = None
             fallback_name = None
 
             if account_payload:
-                company, fallback_name = await self._upsert_company_from_account(
+                company, fallback_name = await self._account_writer.upsert_company_from_account(
                     account_payload, integration_id, now
                 )
 
             if company:
                 await self._add_company_participant(deal, company, now)
             elif fallback_name:
+                # During deal creation an ambiguous account name is still useful
+                # as display text, but it must not create a participant link.
                 deal.company_name = fallback_name
                 deal.source_modified_at = now
                 deal.synced_at = now
@@ -982,6 +999,8 @@ class DealWriteService:
             if contact_participants:
                 await self._add_contact_participants(deal, contact_participants)
         except DealParticipantServiceError as exc:
+            raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+        except AccountWriteServiceError as exc:
             raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
     async def _upsert_contact_from_primary(
@@ -1102,237 +1121,6 @@ class DealWriteService:
         self.session.add(contact)
         await self.session.flush()
         return contact, None, None
-
-    async def _upsert_company_from_account(
-        self,
-        account_payload: dict[str, Any],
-        integration_id: UUID,
-        now: datetime,
-    ) -> tuple[CRMCompany | None, str | None]:
-        explicit_company_id = account_payload.get("company_id")
-        if explicit_company_id:
-            if not isinstance(explicit_company_id, UUID):
-                raise DealWriteServiceError("Invalid account company_id", status_code=400)
-
-            company = await self._load_org_company(explicit_company_id)
-            return await self._ensure_internal_company_from_source(
-                company, integration_id, now
-            ), None
-
-        website_provided = "website" in account_payload
-        linkedin_provided = "linkedin_url" in account_payload
-        industry_provided = "industry" in account_payload
-        country_provided = "country" in account_payload
-        name = self._clean_string(account_payload.get("name"))
-        domain = self._normalize_domain(
-            account_payload.get("domain") or account_payload.get("website")
-        )
-        website = self._clean_string(account_payload.get("website"))
-        linkedin_url = self._clean_string(account_payload.get("linkedin_url"))
-        industry = self._clean_string(account_payload.get("industry"))
-        country = self._clean_string(account_payload.get("country"))
-        normalized_name = self._normalize_company_name(name)
-
-        if not domain:
-            if not name:
-                return None, None
-
-            # Name-only fallback: attempt a safe exact normalized-name match.
-            if normalized_name:
-                stmt = select(CRMCompany).where(
-                    col(CRMCompany.organisation_id) == self.organisation_id,
-                    col(CRMCompany.integration_id) == integration_id,
-                    col(CRMCompany.is_deleted).is_(False),
-                    func.lower(func.trim(CRMCompany.name)) == normalized_name,
-                )
-                result = await self.session.execute(stmt)
-                name_matches = list(result.scalars().all())
-
-                if len(name_matches) == 1:
-                    company = name_matches[0]
-                    updated = False
-                    if website_provided and company.website != website:
-                        company.website = website
-                        updated = True
-                    if linkedin_provided and company.linkedin_url != linkedin_url:
-                        company.linkedin_url = linkedin_url
-                        updated = True
-                    if industry_provided and company.industry != industry:
-                        company.industry = industry
-                        updated = True
-                    if country_provided and company.country != country:
-                        company.country = country
-                        updated = True
-                    if updated:
-                        company.source_modified_at = now
-                        company.synced_at = now
-                        company.last_seen_at = now
-                        self.session.add(company)
-                    return company, None
-
-                if len(name_matches) > 1:
-                    return None, name
-
-            # No safe match found: create a provisional company with name only.
-            company_id = uuid4()
-            company = CRMCompany(
-                company_id=company_id,
-                organisation_id=self.organisation_id,
-                integration_id=integration_id,
-                name=name,
-                domain=None,
-                website=website,
-                linkedin_url=linkedin_url,
-                industry=industry,
-                country=country,
-                source_created_at=now,
-                source_modified_at=now,
-                synced_at=now,
-                last_seen_at=now,
-                properties={
-                    "source": "internal_crm",
-                    "created_via": "deal_create",
-                    "is_provisional": True,
-                    "match_source": "name_only_import",
-                    "normalized_name": normalized_name or name.lower(),
-                },
-            )
-            self.session.add(company)
-            await self.session.flush()
-            return company, None
-
-        stmt = select(CRMCompany).where(
-            col(CRMCompany.organisation_id) == self.organisation_id,
-            col(CRMCompany.integration_id) == integration_id,
-            col(CRMCompany.is_deleted).is_(False),
-            func.lower(CRMCompany.domain) == domain.lower(),
-        )
-        result = await self.session.execute(stmt)
-        matched_company = result.scalars().first()
-
-        if matched_company:
-            updated = False
-            # Always update name when user provides one — fixes previously
-            # corrupted records where name was set to the domain value.
-            if name and matched_company.name != name:
-                matched_company.name = name
-                updated = True
-            if website_provided and matched_company.website != website:
-                matched_company.website = website
-                updated = True
-            if linkedin_provided and matched_company.linkedin_url != linkedin_url:
-                matched_company.linkedin_url = linkedin_url
-                updated = True
-            if industry_provided and matched_company.industry != industry:
-                matched_company.industry = industry
-                updated = True
-            if country_provided and matched_company.country != country:
-                matched_company.country = country
-                updated = True
-
-            if updated:
-                matched_company.source_modified_at = now
-                matched_company.synced_at = now
-                matched_company.last_seen_at = now
-                self.session.add(matched_company)
-            return matched_company, None
-
-        company_id = uuid4()
-        company = CRMCompany(
-            company_id=company_id,
-            organisation_id=self.organisation_id,
-            integration_id=integration_id,
-            name=name or domain,
-            domain=domain,
-            website=website,
-            linkedin_url=linkedin_url,
-            industry=industry,
-            country=country,
-            source_created_at=now,
-            source_modified_at=now,
-            synced_at=now,
-            last_seen_at=now,
-            properties={"source": "internal_crm", "created_via": "deal_create"},
-        )
-        self.session.add(company)
-        await self.session.flush()
-        return company, None
-
-    async def _load_org_company(self, company_id: UUID) -> CRMCompany:
-        company = await self.session.get(CRMCompany, company_id)
-        if company is None or company.organisation_id != self.organisation_id or company.is_deleted:
-            raise DealWriteServiceError("Account not found", status_code=404)
-        return company
-
-    async def _ensure_internal_company_from_source(
-        self,
-        source_company: CRMCompany,
-        integration_id: UUID,
-        now: datetime,
-    ) -> CRMCompany:
-        if source_company.integration_id == integration_id:
-            return source_company
-
-        domain = self._normalize_domain(source_company.domain or source_company.website)
-        if domain:
-            stmt = select(CRMCompany).where(
-                col(CRMCompany.organisation_id) == self.organisation_id,
-                col(CRMCompany.integration_id) == integration_id,
-                col(CRMCompany.is_deleted).is_(False),
-                func.lower(CRMCompany.domain) == domain.lower(),
-            )
-            result = await self.session.execute(stmt)
-            matched_company = result.scalars().first()
-            if matched_company:
-                return matched_company
-
-        normalized_name = self._normalize_company_name(source_company.name)
-        if normalized_name:
-            stmt = select(CRMCompany).where(
-                col(CRMCompany.organisation_id) == self.organisation_id,
-                col(CRMCompany.integration_id) == integration_id,
-                col(CRMCompany.is_deleted).is_(False),
-                func.lower(func.trim(CRMCompany.name)) == normalized_name,
-            )
-            result = await self.session.execute(stmt)
-            name_matches = list(result.scalars().all())
-            if len(name_matches) == 1:
-                return name_matches[0]
-
-        company_id = uuid4()
-        company = CRMCompany(
-            company_id=company_id,
-            organisation_id=self.organisation_id,
-            integration_id=integration_id,
-            name=source_company.name,
-            domain=domain,
-            website=source_company.website,
-            description=source_company.description,
-            industry=source_company.industry,
-            company_type=source_company.company_type,
-            lifecycle_stage=source_company.lifecycle_stage,
-            phone=source_company.phone,
-            city=source_company.city,
-            state=source_company.state,
-            country=source_company.country,
-            address=source_company.address,
-            postal_code=source_company.postal_code,
-            timezone=source_company.timezone,
-            linkedin_url=source_company.linkedin_url,
-            source_created_at=now,
-            source_modified_at=now,
-            synced_at=now,
-            last_seen_at=now,
-            properties={
-                "source": "internal_crm",
-                "created_via": "deal_create",
-                "copied_from_company_id": str(source_company.company_id),
-                "copied_from_integration_id": str(source_company.integration_id),
-            },
-        )
-        self.session.add(company)
-        await self.session.flush()
-        return company
 
     async def _add_company_participant(
         self,
@@ -1663,27 +1451,11 @@ class DealWriteService:
 
     @staticmethod
     def _normalize_domain(value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        cleaned = _DOMAIN_CLEAN_RE.sub("", cleaned)
-        cleaned = cleaned.split("/")[0]
-        cleaned = cleaned.lower()
-        if cleaned.startswith("www."):
-            cleaned = cleaned[4:]
-        return cleaned or None
+        return AccountWriteService._normalize_domain(value)
 
     @staticmethod
     def _normalize_company_name(value: str | None) -> str | None:
-        cleaned = DealWriteService._clean_string(value)
-        if not cleaned:
-            return None
-        cleaned = cleaned.lower()
-        cleaned = _COMPANY_NAME_NON_ALNUM_RE.sub(" ", cleaned)
-        cleaned = " ".join(cleaned.split())
-        return cleaned or None
+        return AccountWriteService.normalize_company_name(value)
 
     @staticmethod
     def _normalize_contact_name(value: str | None) -> str | None:
@@ -1717,7 +1489,8 @@ class DealWriteService:
         if deal.is_deleted:
             raise DealWriteServiceError("Deal not found", status_code=404)
 
-        # Check if deal is from internal CRM
+        # Internal CRM ownership is enforced here so write endpoints cannot
+        # mutate provider-synced deals that should remain read-only.
         setup_service = InternalCRMSetupService(
             self.session, self.organisation_id, self.actor_user_id
         )

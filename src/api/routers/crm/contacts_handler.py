@@ -27,10 +27,15 @@ from src.api.schemas.crm_contact_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.contacts_access_service import (
-    ContactsAccessService,
-    ContactsAccessServiceError,
+from src.service.crm.contacts.contracts import (
+    ContactDealLinkServiceError,
+    ContactReadServiceError,
+    ContactWriteContext,
+    ContactWriteServiceError,
 )
+from src.service.crm.contacts.deal_link_service import ContactDealLinkService
+from src.service.crm.contacts.read_service import ContactReadService
+from src.service.crm.contacts.write_service import ContactWriteService
 
 logger = get_logger("contacts_handler")
 
@@ -40,12 +45,12 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 contacts_router = APIRouter()
 
 
-async def get_contacts_service(
+async def get_contact_read_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a ContactsAccessService instance for the current org."""
-    service = ContactsAccessService(org_session, user_ids.organisation_id)
+    """Dependency that yields a ContactReadService instance for the current org."""
+    service = ContactReadService(org_session, user_ids.organisation_id)
     try:
         yield service
     finally:
@@ -53,6 +58,36 @@ async def get_contacts_service(
             await service.close()
         except Exception:
             logger.debug("Contacts service close failed", exc_info=True)
+
+
+async def get_contact_write_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a ContactWriteService instance for the current org."""
+    service = ContactWriteService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Contact write service close failed", exc_info=True)
+
+
+async def get_contact_deal_link_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a ContactDealLinkService instance for the current org."""
+    service = ContactDealLinkService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Contact deal-link service close failed", exc_info=True)
 
 
 @contacts_router.get(
@@ -66,7 +101,7 @@ async def list_contacts(
     limit: int = Query(25, ge=1, le=100, description="Maximum contacts per page"),
     q: str | None = Query(None, description="Case-insensitive search on name, email, or company"),
     company_id: UUID | None = Query(None, description="Filter contacts by company UUID"),
-    service: ContactsAccessService = Depends(get_contacts_service),
+    service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactsPage]:
     """List CRM contacts with optional filters and pagination."""
@@ -110,7 +145,7 @@ async def list_contacts(
             total_pages=total_pages,
         )
         return Response.success_response(message="Contacts retrieved", data=data)
-    except ContactsAccessServiceError as e:
+    except ContactReadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -129,7 +164,8 @@ async def list_contacts(
 async def create_contact(
     body: CreateContactRequest,
     response: FastAPIResponse,
-    service: ContactsAccessService = Depends(get_contacts_service),
+    service: ContactWriteService = Depends(get_contact_write_service),
+    user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactListItem]:
@@ -145,7 +181,18 @@ async def create_contact(
         if body.company_id is not None:
             extra["company_id"] = body.company_id
 
-        contact = await service.create_contact(email=body.email, name=body.name, **extra)
+        result = await service.create_contact(
+            email=body.email,
+            name=body.name,
+            context=ContactWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="contacts_app",
+            ),
+            **extra,
+        )
+        await service.org_session.commit()
+        contact = result.contact
 
         data = ContactListItem(
             contact_id=contact.contact_id,
@@ -166,11 +213,13 @@ async def create_contact(
             updated_at=contact.updated_at,
         )
         return Response.created_response(message="Contact created", data=data)
-    except ContactsAccessServiceError as e:
+    except ContactWriteServiceError as e:
+        await service.org_session.rollback()
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await service.org_session.rollback()
         logger.error("Error creating contact", exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -185,7 +234,7 @@ async def create_contact(
 async def get_contact_detail(
     contact_id: UUID,
     response: FastAPIResponse,
-    service: ContactsAccessService = Depends(get_contacts_service),
+    service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactDetail]:
     """Get full contact detail including deal involvement."""
@@ -239,7 +288,7 @@ async def get_contact_detail(
             deal_involvement=deal_involvement,
         )
         return Response.success_response(message="Contact retrieved", data=data)
-    except ContactsAccessServiceError as e:
+    except ContactReadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -261,16 +310,29 @@ async def update_contact(
     contact_id: UUID,
     body: UpdateContactRequest,
     response: FastAPIResponse,
-    service: ContactsAccessService = Depends(get_contacts_service),
+    service: ContactWriteService = Depends(get_contact_write_service),
+    user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactListItem]:
     """Update allowed fields on a contact."""
     try:
         updates = body.model_dump(exclude_unset=True)
-        contact = await service.update_contact(contact_id, updates)
+        result = await service.update_contact(
+            contact_id,
+            updates,
+            context=ContactWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="contacts_app",
+            ),
+        )
+        await service.org_session.commit()
+        contact = result.contact
 
-        source = await service.resolve_source_for_contact(contact.integration_id)
+        source = await ContactReadService(
+            service.org_session, service.organisation_id
+        ).resolve_source_for_contact(contact.integration_id)
 
         data = ContactListItem(
             contact_id=contact.contact_id,
@@ -291,11 +353,13 @@ async def update_contact(
             updated_at=contact.updated_at,
         )
         return Response.success_response(message="Contact updated", data=data)
-    except ContactsAccessServiceError as e:
+    except ContactWriteServiceError as e:
+        await service.org_session.rollback()
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await service.org_session.rollback()
         logger.error("Error updating contact", extra={"contact_id": str(contact_id)}, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -311,19 +375,24 @@ async def add_contact_to_deal(
     contact_id: UUID,
     body: AddContactToDealRequest,
     response: FastAPIResponse,
-    service: ContactsAccessService = Depends(get_contacts_service),
+    service: ContactDealLinkService = Depends(get_contact_deal_link_service),
     user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     """Add a contact to a deal as a participant."""
     try:
-        result = await service.add_contact_to_deal(
+        link_result = await service.add_contact_to_deal(
             contact_id=contact_id,
             deal_id=body.deal_id,
             relationship_role=body.relationship_role,
             actor_user_id=user_ids.user_id,
         )
+        result = {
+            "created": link_result.created,
+            "skipped": link_result.skipped,
+            "contact_participant_changed": link_result.contact_participant_changed,
+        }
 
         # Commit participant records so the async worker can see them
         await service.org_session.commit()
@@ -354,11 +423,13 @@ async def add_contact_to_deal(
                 )
 
         return Response.success_response(message="Contact added to deal", data=result)
-    except ContactsAccessServiceError as e:
+    except ContactDealLinkServiceError as e:
+        await service.org_session.rollback()
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await service.org_session.rollback()
         logger.error(
             "Error adding contact to deal",
             extra={"contact_id": str(contact_id), "deal_id": str(body.deal_id)},

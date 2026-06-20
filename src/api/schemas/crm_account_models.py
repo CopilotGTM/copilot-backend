@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AccountContactItem(BaseModel):
@@ -67,12 +68,46 @@ class AccountsPage(BaseModel):
     total_pages: int
 
 
+class AccountSearchItem(BaseModel):
+    company_id: UUID
+    name: str | None
+    domain: str | None
+    website: str | None
+    industry: str | None
+
+
+class AccountSearchPage(BaseModel):
+    items: list[AccountSearchItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class CreateAccountRequest(BaseModel):
-    name: str
+    name: str | None = None
     domain: str | None = None
     website: str | None = None
     industry: str | None = None
     linkedin_url: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_name(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> CreateAccountRequest:
+        if self.name:
+            return self
+        if self.domain and self.domain.strip():
+            return self
+        if self.website and self.website.strip():
+            return self
+        raise ValueError("name, domain, or website is required")
 
 
 class UpdateAccountRequest(BaseModel):

@@ -6,6 +6,7 @@ import pytest
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.internal.deal_write_service import DealWriteService
 
 
@@ -26,7 +27,6 @@ class _ScalarResult:
 @pytest.mark.asyncio
 async def test_selected_external_account_is_copied_to_internal_crm_company() -> None:
     org_id = uuid4()
-    actor_user_id = uuid4()
     internal_integration_id = uuid4()
     external_integration_id = uuid4()
     external_company_id = uuid4()
@@ -50,14 +50,9 @@ async def test_selected_external_account_is_copied_to_internal_crm_company() -> 
     session.execute = AsyncMock(return_value=_ScalarResult([]))
     session.add = Mock()
     session.flush = AsyncMock()
-    service = DealWriteService(
-        org_session=session,
-        master_session=AsyncMock(),
-        organisation_id=org_id,
-        actor_user_id=actor_user_id,
-    )
+    service = AccountWriteService(session, org_id)
 
-    company, ambiguous_name = await service._upsert_company_from_account(  # noqa: SLF001
+    company, ambiguous_name = await service.upsert_company_from_account(
         {"company_id": external_company_id},
         internal_integration_id,
         now,

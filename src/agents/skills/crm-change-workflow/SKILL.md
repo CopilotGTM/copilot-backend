@@ -65,7 +65,7 @@ Use the narrowest available tool for the requested change:
 | Intent | Tool behavior |
 | --- | --- |
 | Create deal | Call `CreateDeal` once deal name is known |
-| Create account | Call `CreateAccount` once account name is known |
+| Create account | Call `CreateAccount` once account name, domain, or website is known |
 | Create contact | Call `CreateContact` once name and email are known |
 | Add stakeholder | Resolve the deal, then call `AddStakeholder` once deal and email are known |
 | Add deal note | Resolve the deal, then call `AddDealNote` once deal and note text are known |

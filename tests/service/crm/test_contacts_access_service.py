@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -13,7 +14,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
-from src.service.crm.access.contacts_access_service import ContactsAccessService
+from src.service.crm.access.contacts_access_service import (
+    ContactsAccessService,
+    ContactsAccessServiceError,
+)
+from src.service.crm.accounts.contracts import AccountWriteServiceError
 
 
 class _FakeResult:
@@ -137,3 +142,17 @@ async def test_get_contact_detail_uses_participant_id_for_deal_involvement() -> 
     assert detail["deals"][0]["participant_id"] == participant_id
     assert "stakeholder_id" not in detail["deals"][0]
     assert detail["deals"][0]["relationship_role"] == "economic_buyer"
+
+
+@pytest.mark.asyncio
+async def test_create_account_facade_translates_account_write_errors() -> None:
+    service = ContactsAccessService(org_session=MagicMock(), organisation_id=uuid4())  # type: ignore[arg-type]
+    service._account_writer.create_account = AsyncMock(
+        side_effect=AccountWriteServiceError("Account exists", status_code=409)
+    )
+
+    with pytest.raises(ContactsAccessServiceError) as exc:
+        await service.create_account("Acme")
+
+    assert exc.value.status_code == 409
+    assert exc.value.message == "Account exists"

@@ -21,6 +21,8 @@ from src.api.schemas.crm_account_models import (
     AccountDealItem,
     AccountDetail,
     AccountListItem,
+    AccountSearchItem,
+    AccountSearchPage,
     AccountsPage,
     AccountSuggestion,
     CreateAccountRequest,
@@ -28,10 +30,13 @@ from src.api.schemas.crm_account_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.accounts_access_service import (
-    AccountsAccessService,
-    AccountsAccessServiceError,
+from src.service.crm.accounts.contracts import (
+    AccountReadServiceError,
+    AccountWriteContext,
+    AccountWriteServiceError,
 )
+from src.service.crm.accounts.read_service import AccountReadService
+from src.service.crm.accounts.write_service import AccountWriteService
 
 logger = get_logger("accounts_handler")
 
@@ -40,19 +45,34 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 accounts_router = APIRouter()
 
 
-async def get_accounts_service(
+async def get_account_read_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields an AccountsAccessService instance for the current org."""
-    service = AccountsAccessService(org_session, user_ids.organisation_id)
+    """Yield a read-only account service bound to the authenticated organisation."""
+    service = AccountReadService(org_session, user_ids.organisation_id)
     try:
         yield service
     finally:
         try:
             await service.close()
         except Exception:
-            logger.debug("AccountsAccessService close failed", exc_info=True)
+            logger.debug("AccountReadService close failed", exc_info=True)
+
+
+async def get_account_write_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Yield an account writer; endpoint handlers still own commit/rollback."""
+    service = AccountWriteService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.session.close()
+        except Exception:
+            logger.debug("AccountWriteService close failed", exc_info=True)
 
 
 @accounts_router.get(
@@ -67,10 +87,10 @@ async def list_accounts(
     limit: int = Query(25, ge=1, le=100, description="Maximum accounts per page"),
     q: str | None = Query(None, description="Case-insensitive search on name or domain"),
     industry: str | None = Query(None, description="Filter by industry (partial match)"),
-    service: AccountsAccessService = Depends(get_accounts_service),
+    service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[AccountsPage]:
-    """List CRM accounts with optional filters and pagination."""
+    """List CRM accounts with UI summary metrics for the authenticated org."""
     try:
         items_raw, total_count = await service.list_accounts(
             page=page, limit=limit, q=q, industry=industry
@@ -87,7 +107,7 @@ async def list_accounts(
             total_pages=total_pages,
         )
         return Response.success_response("Accounts retrieved successfully", data=page_data)
-    except AccountsAccessServiceError as exc:
+    except AccountReadServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
@@ -105,10 +125,10 @@ async def list_accounts(
 async def suggest_account(
     response: FastAPIResponse,
     email_domain: str = Query(..., description="Email domain to match (e.g., 'acme.com')"),
-    service: AccountsAccessService = Depends(get_accounts_service),
+    service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[AccountSuggestion | None]:
-    """Suggest an account matching an email domain for the account dropdown."""
+    """Suggest an account by domain for contact/account picker workflows."""
     try:
         suggestion = await service.suggest_account_by_domain(email_domain)
         if suggestion:
@@ -117,6 +137,39 @@ async def suggest_account(
         return Response.success_response("No matching account found", data=None)
     except Exception:
         logger.exception("Unexpected error suggesting account")
+        return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
+
+
+@accounts_router.get(
+    "/accounts/search",
+    response_model=GenericResponse[AccountSearchPage],
+    tags=["crm", "accounts"],
+    summary="Search CRM accounts with cursor pagination",
+)
+async def search_accounts(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Case-insensitive search on name, domain, or website"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum accounts per cursor page"),
+    cursor: str | None = Query(None, description="Opaque cursor returned by the previous page"),
+    service: AccountReadService = Depends(get_account_read_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[AccountSearchPage]:
+    """Return lightweight account rows for pickers and typeahead dropdowns."""
+    try:
+        items_raw, next_cursor = await service.search_accounts(q=q, limit=limit, cursor=cursor)
+        items = [AccountSearchItem(**row) for row in items_raw]
+        page_data = AccountSearchPage(
+            items=items,
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
+        return Response.success_response("Accounts search results retrieved", data=page_data)
+    except AccountReadServiceError as exc:
+        return Response.error_response(
+            status_code=exc.status_code, message=exc.message, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error searching accounts")
         return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
 
 
@@ -129,21 +182,31 @@ async def suggest_account(
 async def create_account(
     response: FastAPIResponse,
     body: CreateAccountRequest,
-    service: AccountsAccessService = Depends(get_accounts_service),
+    user_ids: UserIDs = Depends(get_current_user),
+    service: AccountWriteService = Depends(get_account_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("accounts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[AccountListItem]:
-    """Create a new internal CRM account."""
+    """Create a new internal CRM account and commit the API-owned transaction."""
     try:
-        company = await service.create_account(
+        result = await service.create_account(
             name=body.name,
             domain=body.domain,
             website=body.website,
             industry=body.industry,
             linkedin_url=body.linkedin_url,
+            context=AccountWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="accounts_app",
+                duplicate_scope="strict_org",
+            ),
         )
-        await service.org_session.commit()
+        # AccountWriteService never commits because deal workflows may combine
+        # account writes with participant/deal writes in one transaction.
+        await service.session.commit()
 
+        company = result.account
         item = AccountListItem(
             **company.model_dump(),
             contact_count=0,
@@ -151,7 +214,7 @@ async def create_account(
             pipeline_value=0.0,
         )
         return Response.created_response("Account created successfully", data=item)
-    except AccountsAccessServiceError as exc:
+    except AccountWriteServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
@@ -169,10 +232,10 @@ async def create_account(
 async def get_account_detail(
     company_id: UUID,
     response: FastAPIResponse,
-    service: AccountsAccessService = Depends(get_accounts_service),
+    service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[AccountDetail]:
-    """Get full account detail including contacts, deals, and summary metrics."""
+    """Get account detail after AccountReadService verifies tenant ownership."""
     try:
         data = await service.get_account_detail(company_id)
 
@@ -189,7 +252,8 @@ async def get_account_detail(
 
         deal_items: list[AccountDealItem] = []
         for dl in data["deals"]:
-            # Resolve stage_name and owner_name from deal dict — may come from model_dump
+            # `data["deals"]` comes from model_dump, so optional fields are read
+            # defensively to tolerate older rows that lack stage/owner snapshots.
             deal_items.append(
                 AccountDealItem(
                     deal_id=dl["deal_id"],
@@ -208,7 +272,7 @@ async def get_account_detail(
             deals=deal_items,
         )
         return Response.success_response("Account detail retrieved successfully", data=detail)
-    except AccountsAccessServiceError as exc:
+    except AccountReadServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
@@ -227,14 +291,27 @@ async def update_account(
     company_id: UUID,
     response: FastAPIResponse,
     body: UpdateAccountRequest,
-    service: AccountsAccessService = Depends(get_accounts_service),
+    user_ids: UserIDs = Depends(get_current_user),
+    service: AccountWriteService = Depends(get_account_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("accounts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[AccountListItem]:
-    """Update allowed fields on an existing CRM account."""
+    """Update an internal CRM account and commit the API-owned transaction."""
     try:
         updates = body.model_dump(exclude_unset=True)
-        company = await service.update_account(company_id, updates)
+        company = await service.update_account(
+            company_id,
+            updates,
+            context=AccountWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="accounts_app",
+                duplicate_scope="strict_org",
+            ),
+        )
+        # Keep create/update transaction ownership symmetric. Without this
+        # commit, the API can return success while the account update rolls back.
+        await service.session.commit()
 
         item = AccountListItem(
             **company.model_dump(),
@@ -243,7 +320,7 @@ async def update_account(
             pipeline_value=0.0,
         )
         return Response.success_response("Account updated successfully", data=item)
-    except AccountsAccessServiceError as exc:
+    except AccountWriteServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
@@ -262,10 +339,10 @@ async def get_account_contacts(
     company_id: UUID,
     response: FastAPIResponse,
     limit: int = Query(25, ge=1, le=100, description="Maximum contacts to return"),
-    service: AccountsAccessService = Depends(get_accounts_service),
+    service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[list[AccountContactItem]]:
-    """Return contacts whose email domain matches the account's domain."""
+    """Return account contacts after the read service verifies account ownership."""
     try:
         contacts = await service.list_account_contacts(company_id, limit=limit)
 
@@ -280,7 +357,7 @@ async def get_account_contacts(
             for ct in contacts
         ]
         return Response.success_response("Account contacts retrieved successfully", data=items)
-    except AccountsAccessServiceError as exc:
+    except AccountReadServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
@@ -298,10 +375,10 @@ async def get_account_contacts(
 async def get_account_deals(
     company_id: UUID,
     response: FastAPIResponse,
-    service: AccountsAccessService = Depends(get_accounts_service),
+    service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[list[AccountDealItem]]:
-    """Return deals linked to the account via internal company_id."""
+    """Return active deals linked to one tenant-owned account."""
     try:
         deals = await service.get_account_deals(company_id)
 
@@ -318,7 +395,7 @@ async def get_account_deals(
             for dl in deals
         ]
         return Response.success_response("Account deals retrieved successfully", data=items)
-    except AccountsAccessServiceError as exc:
+    except AccountReadServiceError as exc:
         return Response.error_response(
             status_code=exc.status_code, message=exc.message, response=response
         )
