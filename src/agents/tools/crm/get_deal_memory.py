@@ -153,7 +153,7 @@ def create_get_deal_memory(
             "[TOOL RESULT] get_deal_memory - status: %s",
             result.get("status", "unknown") if result else "None",
         )
-        return result
+        return cast(dict[str, Any], result)
 
     return get_deal_memory_tool
 

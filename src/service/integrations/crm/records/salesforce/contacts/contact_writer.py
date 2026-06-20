@@ -204,6 +204,7 @@ class SalesforceContactWriter:
             mobile_phone=contact.mobile_phone,
             fax=contact.fax,
             website=contact.website,
+            linkedin_url=contact.linkedin_url,
             owner_id=resolved_owner_id,
             lifecycle_stage=contact.lifecycle_stage,
             lead_status=contact.lead_status,
@@ -244,6 +245,7 @@ class SalesforceContactWriter:
         row.mobile_phone = contact.mobile_phone
         row.fax = contact.fax
         row.website = contact.website
+        row.linkedin_url = contact.linkedin_url
         row.owner_id = resolved_owner_id
         row.lifecycle_stage = contact.lifecycle_stage
         row.lead_status = contact.lead_status

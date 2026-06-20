@@ -58,6 +58,7 @@ async def test_fetcher_describes_allowed_contact_fields_and_ignores_unused_custo
                     {"name": "FirstName", "type": "string"},
                     {"name": "LastName", "type": "string"},
                     {"name": "Email", "type": "email"},
+                    {"name": "LinkedIn_URL__c", "type": "url"},
                     {"name": "AccountId", "type": "reference"},
                     {"name": "OwnerId", "type": "reference"},
                     {"name": "MailingStreet", "type": "textarea"},
@@ -100,6 +101,7 @@ async def test_fetcher_describes_allowed_contact_fields_and_ignores_unused_custo
     query_soql = client.get.call_args_list[1].kwargs["params"]["q"]
     assert "Id" in query_soql
     assert "Email" in query_soql
+    assert "LinkedIn_URL__c" in query_soql
     assert "AccountId" in query_soql
     assert "OwnerId" in query_soql
     assert "MailingStreet" in query_soql

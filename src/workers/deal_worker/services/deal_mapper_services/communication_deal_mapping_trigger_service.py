@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
@@ -89,7 +90,7 @@ class CommunicationRecord:
     """Minimal communication shape needed for deal candidate resolution."""
 
     record_id: UUID
-    participant_emails: list[str]
+    participant_emails: list[str | None]
     existing_deal_ids: list[UUID] = field(default_factory=list)
 
 
@@ -908,7 +909,7 @@ class CommunicationDealMappingTriggerService:
         return record_ids
 
     @staticmethod
-    def _normalize_email_list(values: list[str | None]) -> set[str]:
+    def _normalize_email_list(values: Sequence[str | None]) -> set[str]:
         return {
             normalized
             for value in values

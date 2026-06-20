@@ -15,6 +15,7 @@ def test_normalize_contacts_maps_canonical_fields_and_lowercases_email() -> None
                 "Department": "Sales",
                 "Phone": "123",
                 "MobilePhone": "456",
+                "LinkedIn_URL__c": "https://www.linkedin.com/in/alex-morgan",
                 "AccountId": "001A",
                 "OwnerId": "005A",
                 "MailingStreet": "1 Main St",
@@ -36,6 +37,7 @@ def test_normalize_contacts_maps_canonical_fields_and_lowercases_email() -> None
     assert contact.email == "owner@acme.com"
     assert contact.full_name == "Alex Morgan"
     assert contact.job_title == "VP Sales"
+    assert contact.linkedin_url == "https://www.linkedin.com/in/alex-morgan"
     assert contact.company_external_id == "001A"
     assert contact.owner_external_id == "005A"
     assert contact.city == "Pune"

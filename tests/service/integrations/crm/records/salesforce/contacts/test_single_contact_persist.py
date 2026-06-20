@@ -238,68 +238,12 @@ async def test_persist_loads_company_and_owner_maps_for_current_chunk_only(
 
 
 @pytest.mark.asyncio
-async def test_deal_primary_contact_backfill_pages_referenced_contacts_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_deal_primary_contact_backfill_is_noop_after_external_id_column_removal() -> None:
     service = SalesforceContactRecordSyncService()
-    organisation_id = uuid4()
-    integration_id = uuid4()
-    committed = 0
-    deal_reference_calls: list[str | None] = []
-    contact_lookup_ids: list[list[str]] = []
-    backfill_mappings: list[list[str]] = []
 
-    class FakeSession:
-        async def commit(self) -> None:
-            nonlocal committed
-            committed += 1
+    result = await service._backfill_deal_primary_contacts()
 
-    async def fake_acquire_session(_organisation_id):
-        yield FakeSession()
-
-    async def fake_load_deal_refs(**kwargs):
-        after_external_id = kwargs["after_external_id"]
-        deal_reference_calls.append(after_external_id)
-        if after_external_id is None:
-            return ["003A", "003B"]
-        if after_external_id == "003B":
-            return ["003C"]
-        return []
-
-    async def fake_load_contact_backfill_map(**kwargs):
-        external_ids = list(kwargs["external_ids"])
-        contact_lookup_ids.append(external_ids)
-        return {
-            external_id: (uuid4(), external_id, None, f"{external_id.lower()}@example.com")
-            for external_id in external_ids
-            if external_id != "003B"
-        }
-
-    async def fake_backfill_crm_deals(_session, *, organisation_id, integration_id, ops):
-        mapping = dict(ops[0].mapping)
-        backfill_mappings.append(list(mapping))
-
-        class Result:
-            rows_updated = len(mapping)
-            per_op = {"primary_contact_id": len(mapping)}
-
-        return Result()
-
-    monkeypatch.setattr(contact_sync_service, "acquire_org_async_session", fake_acquire_session)
-    monkeypatch.setattr(service, "_load_deal_primary_contact_external_ids", fake_load_deal_refs)
-    monkeypatch.setattr(service, "_load_contact_backfill_map", fake_load_contact_backfill_map)
-    monkeypatch.setattr(contact_sync_service, "backfill_crm_deals", fake_backfill_crm_deals)
-
-    result = await service._backfill_deal_primary_contacts(
-        organisation_id=organisation_id,
-        integration_id=integration_id,
-    )
-
-    assert deal_reference_calls == [None, "003B", "003C"]
-    assert contact_lookup_ids == [["003A", "003B"], ["003C"]]
-    assert backfill_mappings == [["003A"], ["003C"]]
-    assert committed == 2
-    assert result == {"rows_updated": 2, "per_op": {"primary_contact_id": 2}}
+    assert result == {"rows_updated": 0, "per_op": {}}
 
 
 def _normalized_contact(
@@ -322,6 +266,7 @@ def _normalized_contact(
         mobile_phone=None,
         fax=None,
         website=None,
+        linkedin_url=None,
         owner_external_id=owner_external_id,
         lifecycle_stage=None,
         lead_status=None,

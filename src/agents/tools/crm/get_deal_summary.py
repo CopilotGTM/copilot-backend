@@ -171,7 +171,7 @@ def create_get_deal_summary(
         else:
             logger.info("[TOOL RESULT] get_deal_summary returned None")
 
-        return result
+        return cast(dict[str, Any] | None, result)
 
     return get_deal_summary_tool
 
