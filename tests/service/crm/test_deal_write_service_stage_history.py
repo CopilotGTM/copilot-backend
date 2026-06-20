@@ -92,7 +92,7 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
     service._get_first_stage = AsyncMock(return_value=stage)
 
     with patch(
-        "src.service.crm.internal.deal_write_service.InternalCRMSetupService.get_internal_integration",
+        "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
         new=AsyncMock(return_value=integration),
     ):
         deal = await service.create_deal({"name": "New Deal"})

@@ -141,10 +141,8 @@ class CreateDealFormHandler(BaseFormHandler):
                 return FormHandlerResult(success=False, message=exc.message)
 
             # Create the deal
-            from src.service.crm.internal.deal_write_service import (
-                DealWriteService,
-                DealWriteServiceError,
-            )
+            from src.service.crm.deals.contracts import DealWriteServiceError
+            from src.service.crm.deals.write_service import DealWriteService
 
             async for master_session in acquire_master_async_session():
                 async for org_session in acquire_org_async_session(org_id):

@@ -1,3 +1,9 @@
+"""Public import surface for organisation-scoped CRM models.
+
+Keeping model exports centralized lets services and migrations import stable
+names while individual CRM model files continue to own table definitions.
+"""
+
 from .activities import (
     CRMActivity,
     CRMActivityObjectType,
@@ -22,6 +28,7 @@ from .custom_fields import (
 )
 from .deals import (
     CRMDeal,
+    CRMDealMutationEvent,
     CRMDealParticipant,
     CRMDealStage,
     CRMDealStageHistory,
@@ -87,6 +94,7 @@ __all__ = [
     "CRMStageState",
     # Deals
     "CRMDeal",
+    "CRMDealMutationEvent",
     "CRMDealParticipant",
     "CRMDealStageHistory",
     "CRMDealStatus",

@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.internal.deal_update_policy import classify_deal_update_policy
-from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
