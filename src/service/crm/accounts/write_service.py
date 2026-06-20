@@ -27,6 +27,13 @@ from src.service.crm.accounts.contracts import (
     AccountWriteResult,
     AccountWriteServiceError,
 )
+from src.service.crm.mutations.contracts import (
+    CRMMutationContext,
+    CRMMutationEventServiceError,
+    CRMMutationRecordCommand,
+)
+from src.service.crm.mutations.event_service import CRMMutationEventService
+from src.service.crm.mutations.policies import AccountMutationPolicy
 
 _DOMAIN_PROTOCOL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _DOMAIN_WWW_RE = re.compile(r"^www\.", re.IGNORECASE)
@@ -40,6 +47,7 @@ class AccountWriteService:
         """Bind writes to one org-scoped session without taking commit ownership."""
         self.session = session
         self.organisation_id = organisation_id
+        self._mutation_events = CRMMutationEventService(session, organisation_id)
 
     @staticmethod
     def _clean_string(value: str | None) -> str | None:
@@ -183,6 +191,7 @@ class AccountWriteService:
         self.session.add(company)
         await self.session.flush()
         await self.session.refresh(company)
+        await self._record_account_create_event(company, context=context)
         return AccountWriteResult(account=company, created=True, matched_by="created")
 
     async def update_account(
@@ -193,7 +202,6 @@ class AccountWriteService:
         context: AccountWriteContext | None = None,
     ) -> CRMCompany:
         """Update supported account fields on one tenant-owned active account."""
-        _ = context
         c = cast(Any, CRMCompany).__table__.c
         # The company_id may come from a request or agent tool; organisation_id
         # is the security boundary that prevents cross-tenant updates.
@@ -253,6 +261,10 @@ class AccountWriteService:
             "timezone",
             "linkedin_url",
         }
+        old_values = {
+            field_name: getattr(company, field_name, None)
+            for field_name in AccountMutationPolicy.UPDATE_AUDIT_FIELDS
+        }
 
         for field, value in updates.items():
             # Unknown fields are intentionally ignored for compatibility with
@@ -269,6 +281,17 @@ class AccountWriteService:
         self.session.add(company)
         await self.session.flush()
         await self.session.refresh(company)
+        changed_fields: dict[str, dict[str, Any]] = {}
+        for field_name, old_value in old_values.items():
+            if change := AccountMutationPolicy.changed_field(
+                field_name, old_value, getattr(company, field_name, None)
+            ):
+                changed_fields[field_name] = change
+        await self._record_account_update_event(
+            company,
+            changed_fields=changed_fields,
+            context=context,
+        )
         return company
 
     async def upsert_company_from_account(
@@ -521,6 +544,68 @@ class AccountWriteService:
         """Return the current account state for future mutation/audit event writers."""
         company = await self.load_org_company(company_id)
         return company.model_dump()
+
+    async def _record_account_create_event(
+        self,
+        account: CRMCompany,
+        *,
+        context: AccountWriteContext | None,
+    ) -> None:
+        changed_fields = AccountMutationPolicy.build_create_changed_fields(account)
+        command = CRMMutationRecordCommand(
+            entity_type="account",
+            entity_id=account.company_id,
+            event_type="crm.account.created",
+            operation="create_account",
+            changed_fields=changed_fields,
+            semantic_event_types=AccountMutationPolicy.semantic_for_create(),
+            context=self._mutation_context(context),
+            summary=f"Account created: {account.name or account.domain or account.company_id}",
+            integration_id=account.integration_id,
+            idempotency_scope=f"account:create:{account.company_id}",
+        )
+        await self._record_mutation_event(command)
+
+    async def _record_account_update_event(
+        self,
+        account: CRMCompany,
+        *,
+        changed_fields: dict[str, dict[str, Any]],
+        context: AccountWriteContext | None,
+    ) -> None:
+        command = CRMMutationRecordCommand(
+            entity_type="account",
+            entity_id=account.company_id,
+            event_type="crm.account.updated",
+            operation="update_account",
+            changed_fields=changed_fields,
+            semantic_event_types=AccountMutationPolicy.semantic_for_update(changed_fields),
+            context=self._mutation_context(context),
+            summary=f"Account updated: {account.name or account.domain or account.company_id}",
+            integration_id=account.integration_id,
+            idempotency_scope=f"account:update:{account.company_id}",
+        )
+        await self._record_mutation_event(command)
+
+    async def _record_mutation_event(self, command: CRMMutationRecordCommand) -> None:
+        try:
+            await self._mutation_events.record_event(command)
+        except CRMMutationEventServiceError as exc:
+            raise AccountWriteServiceError(
+                exc.message,
+                status_code=exc.status_code,
+                data=exc.data,
+            ) from exc
+
+    @staticmethod
+    def _mutation_context(context: AccountWriteContext | None) -> CRMMutationContext:
+        if context is None:
+            return CRMMutationContext(source="api")
+        return CRMMutationContext(
+            source=context.source,
+            actor_user_id=context.actor_user_id,
+            source_label=context.source_label,
+        )
 
     async def _get_or_create_internal_integration(
         self, context: AccountWriteContext | None = None

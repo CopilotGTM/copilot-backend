@@ -33,6 +33,7 @@ from src.service.crm.deals.stage_service import DealStageService
 from src.service.crm.internal.deal_participant_service import DealParticipantServiceError
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
+from src.service.crm.mutations.policies import DealMutationPolicy
 
 logger = get_logger(__name__)
 
@@ -94,37 +95,21 @@ class DealWriteService:
         operation: str,
         changed_fields: dict[str, dict[str, Any]],
         summary: str | None,
+        context: DealWriteContext | None = None,
     ) -> None:
-        semantic_event_types: list[str] = []
-        for field_name in changed_fields:
-            semantic_event_type = self._semantic_event_type(field_name)
-            if semantic_event_type:
-                semantic_event_types.append(semantic_event_type)
+        semantic_event_types = DealMutationPolicy.semantic_for_event(
+            event_type,
+            changed_fields,
+        )
         await self._mutation_events.record_event(
             deal=deal,
             event_type=event_type,
             operation=operation,
             changed_fields=changed_fields,
             semantic_event_types=semantic_event_types,
-            context=self._write_context(),
+            context=context or self._write_context(),
             summary=summary,
         )
-
-    @staticmethod
-    def _semantic_event_type(field_name: str) -> str | None:
-        if field_name in {"stage_id", "stage_name"}:
-            return "crm.deal.stage_changed"
-        if field_name in {"amount", "currency"}:
-            return "crm.deal.amount_changed"
-        if field_name in {"owner_id", "owner_name", "owner_email"}:
-            return "crm.deal.owner_changed"
-        if field_name in {"company_id", "company_name", "company_domain"}:
-            return "crm.deal.account_changed"
-        if field_name in {"primary_contact_id", "primary_contact_name", "primary_contact_email"}:
-            return "crm.deal.primary_contact_changed"
-        if field_name in {"deal_status", "closed_won_at", "closed_lost_at", "closed_reason"}:
-            return "crm.deal.lifecycle_changed"
-        return f"crm.deal.{field_name}_changed"
 
     @staticmethod
     def _collect_changed_fields(
@@ -138,7 +123,12 @@ class DealWriteService:
                 changed_fields[field_name] = change
         return changed_fields
 
-    async def create_deal(self, payload: dict[str, Any]) -> CRMDeal:
+    async def create_deal(
+        self,
+        payload: dict[str, Any],
+        *,
+        context: DealWriteContext | None = None,
+    ) -> CRMDeal:
         """Create a new internal CRM deal.
 
         Args:
@@ -150,6 +140,8 @@ class DealWriteService:
         Raises:
             DealWriteServiceError: If validation fails or internal CRM not configured
         """
+        write_context = context or self._write_context()
+
         # Deals created through this writer must belong to the internal CRM
         # integration; external provider deals stay read-only elsewhere.
         setup_service = InternalCRMSetupService(
@@ -216,7 +208,7 @@ class DealWriteService:
         deal_status = CRMDealStatus(deal_status_raw) if deal_status_raw else CRMDealStatus.OPEN
 
         # Build properties dict: merge base properties with any custom properties
-        created_via = payload.get("created_via", "api")
+        created_via = payload.get("created_via", write_context.source)
         properties: dict[str, Any] = {"is_internal_crm": True, "created_via": created_via}
         custom_properties = payload.get("custom_properties")
         if custom_properties:
@@ -263,9 +255,8 @@ class DealWriteService:
 
         self.session.add(deal)
         await self.session.flush()
-        owner_result = None
         if crm_user is not None:
-            owner_result = self._owners.apply_owner(deal=deal, crm_user=crm_user)
+            self._owners.apply_owner(deal=deal, crm_user=crm_user)
             await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
 
         # Stage history starts at creation time so later analytics can compute
@@ -313,13 +304,7 @@ class DealWriteService:
             if contact:
                 await self._replace_primary_contact_participant(deal, contact, now)
 
-        created_changed_fields: dict[str, dict[str, Any]] = {
-            "deal_id": {"old": None, "new": deal.deal_id},
-            "name": {"old": None, "new": deal.name},
-            "stage_id": {"old": None, "new": deal.stage_id},
-        }
-        if owner_result is not None:
-            created_changed_fields.update(owner_result.changed_fields)
+        created_changed_fields = DealMutationPolicy.build_create_changed_fields(deal)
 
         await self._record_mutation_event(
             deal=deal,
@@ -327,6 +312,7 @@ class DealWriteService:
             operation="create_deal",
             changed_fields=created_changed_fields,
             summary=f"Created deal {deal.name}" if deal.name else "Created deal",
+            context=write_context,
         )
         logger.info("Created internal CRM deal %s: %s", deal.deal_id, deal.name)
         return deal
@@ -337,6 +323,7 @@ class DealWriteService:
         payload: dict[str, Any],
         *,
         skip_custom_validation: bool = False,
+        context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Update an internal CRM deal.
 
@@ -368,8 +355,6 @@ class DealWriteService:
             "closed_lost_at",
             "closed_reason",
             "crm_url",
-            "source_created_at",
-            "last_activity_at",
             "description",
             "deal_type",
             "priority",
@@ -459,7 +444,8 @@ class DealWriteService:
         deal.synced_at = now
         deal.last_seen_at = now
         # New dict so SQLAlchemy detects the JSONB column change.
-        deal.properties = {**(deal.properties or {}), "updated_via": "api"}
+        write_context = context or self._write_context()
+        deal.properties = {**(deal.properties or {}), "updated_via": write_context.source}
 
         changed_fields = self._collect_changed_fields(old_values=old_values, obj=deal)
         if "custom_properties" in payload and payload["custom_properties"] is not None:
@@ -478,6 +464,7 @@ class DealWriteService:
             operation="update_deal",
             changed_fields=changed_fields,
             summary=f"Updated deal {deal.name}" if deal.name else "Updated deal",
+            context=write_context,
         )
         logger.info("Updated internal CRM deal %s", deal.deal_id)
         return deal
@@ -608,7 +595,12 @@ class DealWriteService:
             )
         return normalized
 
-    async def delete_deal(self, deal_id: UUID) -> CRMDeal:
+    async def delete_deal(
+        self,
+        deal_id: UUID,
+        *,
+        context: DealWriteContext | None = None,
+    ) -> CRMDeal:
         """Soft delete an internal CRM deal.
 
         Args:
@@ -632,7 +624,8 @@ class DealWriteService:
         deal.source_modified_at = now
         deal.synced_at = now
         deal.last_seen_at = now
-        deal.properties = {**(deal.properties or {}), "deleted_via": "api"}
+        write_context = context or self._write_context()
+        deal.properties = {**(deal.properties or {}), "deleted_via": write_context.source}
 
         await self.session.flush()
         await self._record_mutation_event(
@@ -641,11 +634,18 @@ class DealWriteService:
             operation="delete_deal",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary=f"Deleted deal {deal.name}" if deal.name else "Deleted deal",
+            context=write_context,
         )
         logger.info("Deleted internal CRM deal %s", deal.deal_id)
         return deal
 
-    async def move_stage(self, deal_id: UUID, stage_id: UUID) -> CRMDeal:
+    async def move_stage(
+        self,
+        deal_id: UUID,
+        stage_id: UUID,
+        *,
+        context: DealWriteContext | None = None,
+    ) -> CRMDeal:
         """Move a deal to a new stage and record stage history.
 
         Args:
@@ -671,13 +671,15 @@ class DealWriteService:
             "stage_id": deal.stage_id,
             "stage_name": deal.stage_name,
         }
-        await self._stages.apply_stage(deal=deal, stage=stage, source="api")
+        write_context = context or self._write_context()
+        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
         await self._record_mutation_event(
             deal=deal,
             event_type="crm.deal.stage_changed",
             operation="move_stage",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary=f"Moved deal to {stage.name}",
+            context=write_context,
         )
 
         logger.info("Moved deal %s to stage %s", deal.deal_id, stage.name)
@@ -691,6 +693,7 @@ class DealWriteService:
         closed_reason: str | None,
         close_date: datetime | None = None,
         stage_id: UUID | None = None,
+        context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Close an internal deal as won/lost and record closure metadata."""
         normalized_outcome = outcome.strip().lower()
@@ -725,7 +728,8 @@ class DealWriteService:
         if final_close_at.tzinfo is None:
             final_close_at = final_close_at.replace(tzinfo=UTC)
 
-        await self._stages.apply_stage(deal=deal, stage=stage, source="api")
+        write_context = context or self._write_context()
+        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
 
         deal.deal_status = CRMDealStatus(normalized_outcome)
         deal.close_date = final_close_at
@@ -740,7 +744,7 @@ class DealWriteService:
 
         deal.properties = {
             **(deal.properties or {}),
-            "closed_via": "api",
+            "closed_via": write_context.source,
             "closed_by_user_id": str(self.actor_user_id),
         }
 
@@ -751,6 +755,7 @@ class DealWriteService:
             operation="close_deal",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary=f"Closed deal as {normalized_outcome}",
+            context=write_context,
         )
         logger.info("Closed deal %s with outcome=%s", deal.deal_id, normalized_outcome)
         return deal
@@ -761,6 +766,7 @@ class DealWriteService:
         *,
         stage_id: UUID | None = None,
         clear_closed_reason: bool = False,
+        context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Reopen a closed internal deal and move it to an open stage."""
         deal = await self._load_internal_deal(deal_id)
@@ -780,7 +786,8 @@ class DealWriteService:
             target_state=CRMDealStatus.OPEN.value,
             stage_id=stage_id,
         )
-        await self._stages.apply_stage(deal=deal, stage=stage, source="api")
+        write_context = context or self._write_context()
+        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
 
         deal.deal_status = CRMDealStatus.OPEN
         deal.closed_won_at = None
@@ -790,7 +797,7 @@ class DealWriteService:
 
         deal.properties = {
             **(deal.properties or {}),
-            "reopened_via": "api",
+            "reopened_via": write_context.source,
             "reopened_by_user_id": str(self.actor_user_id),
         }
 
@@ -801,6 +808,7 @@ class DealWriteService:
             operation="reopen_deal",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary="Reopened deal",
+            context=write_context,
         )
         logger.info("Reopened deal %s", deal.deal_id)
         return deal
@@ -851,7 +859,13 @@ class DealWriteService:
     def _normalize_stage_state(value: Any) -> str:
         return value.value if hasattr(value, "value") else str(value).strip().lower()
 
-    async def assign_owner(self, deal_id: UUID, owner_user_id: UUID | None) -> CRMDeal:
+    async def assign_owner(
+        self,
+        deal_id: UUID,
+        owner_user_id: UUID | None,
+        *,
+        context: DealWriteContext | None = None,
+    ) -> CRMDeal:
         """Assign or clear the owner for an internal CRM deal.
 
         Args:
@@ -898,6 +912,7 @@ class DealWriteService:
             operation="assign_owner",
             changed_fields=owner_result.changed_fields,
             summary="Changed deal owner",
+            context=context,
         )
         logger.info(
             "Assigned owner %s to deal %s",
@@ -906,7 +921,13 @@ class DealWriteService:
         )
         return deal
 
-    async def update_account(self, deal_id: UUID, account_payload: dict[str, Any]) -> CRMDeal:
+    async def update_account(
+        self,
+        deal_id: UUID,
+        account_payload: dict[str, Any],
+        *,
+        context: DealWriteContext | None = None,
+    ) -> CRMDeal:
         """Update the account snapshot/link for one internal CRM deal."""
         if not account_payload or not any(account_payload.values()):
             raise DealWriteServiceError("No account fields to update", status_code=400)
@@ -981,6 +1002,7 @@ class DealWriteService:
             operation="update_account",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary="Updated deal account",
+            context=context,
         )
         return deal
 
@@ -991,6 +1013,7 @@ class DealWriteService:
         primary_contact_name: str | None,
         primary_contact_email: str | None,
         company_name: str | None = None,
+        context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Update primary contact for an internal CRM deal."""
         if not primary_contact_name and not primary_contact_email:
@@ -1030,6 +1053,7 @@ class DealWriteService:
             operation="update_primary_contact",
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary="Updated deal primary contact",
+            context=context,
         )
         return deal
 

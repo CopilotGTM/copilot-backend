@@ -102,7 +102,7 @@ async def test_create_account_allows_name_only_when_no_duplicate_exists() -> Non
     assert result.account.name == "Acme"
     assert result.account.domain is None
     assert result.created is True
-    session.add.assert_called_once_with(result.account)
+    session.add.assert_any_call(result.account)
 
 
 @pytest.mark.asyncio
@@ -144,7 +144,7 @@ async def test_create_account_normalizes_domain() -> None:
     assert result.created is True
     assert result.matched_by == "created"
     assert result.account.domain == "acme.com"
-    session.add.assert_called_once_with(result.account)
+    session.add.assert_any_call(result.account)
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(result.account)
 
@@ -237,8 +237,8 @@ async def test_update_account_ignores_unknown_fields() -> None:
     assert company.name == "Acme Corp"
     assert company.domain == "acme.com"
     assert not hasattr(company, "unknown")
-    session.add.assert_called_once_with(company)
-    session.flush.assert_awaited_once()
+    session.add.assert_any_call(company)
+    session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(company)
 
 
