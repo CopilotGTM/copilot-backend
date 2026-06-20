@@ -47,6 +47,7 @@ class StakeholderDetail(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided")
+    linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
@@ -69,6 +70,7 @@ class CreateStakeholderCommand(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = None
+    linkedin_url: str | None = None
     stance: StakeholderStance = StakeholderStance.UNKNOWN
     decision_power: DecisionPower = DecisionPower.UNKNOWN
     department: str | None = None
@@ -83,6 +85,7 @@ class UpdateStakeholderCommand(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = None
+    linkedin_url: str | None = None
     department: str | None = None
     stance: StakeholderStance | None = None
     decision_power: DecisionPower | None = None

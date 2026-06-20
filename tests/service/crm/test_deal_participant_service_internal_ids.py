@@ -1,3 +1,5 @@
+"""Regression tests for internal CRM participant writer boundary rules."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -19,9 +21,11 @@ class _FakeResult:
         self._rows = rows
 
     def scalars(self) -> _FakeResult:
+        """Return self to mimic SQLAlchemy scalar result chaining."""
         return self
 
     def first(self) -> object | None:
+        """Return the first configured fake row, matching scalar result behavior."""
         return self._rows[0] if self._rows else None
 
 
@@ -32,17 +36,21 @@ class _FakeSession:
         self._objects: dict[object, object] = {}
 
     async def execute(self, _stmt):
+        """Return configured rows without evaluating SQL expressions."""
         return _FakeResult(self._rows)
 
     async def get(self, _model, obj_id):
+        """Look up fake ORM instances by primary key."""
         return self._objects.get(obj_id)
 
     def add(self, obj: object) -> None:
+        """Capture added or mutated ORM instances for assertions."""
         self._added.append(obj)
 
 
 @pytest.mark.asyncio
 async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
+    """Company participants update the internal deal company snapshot."""
     session = _FakeSession()
     organisation_id = uuid4()
     company_id = uuid4()
@@ -87,6 +95,7 @@ async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
 
 @pytest.mark.asyncio
 async def test_add_participants_reuses_contact_when_same_contact_has_multiple_roles() -> None:
+    """Contact participants dedupe by person while preserving primary-contact state."""
     session = _FakeSession()
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -136,6 +145,7 @@ async def test_add_participants_reuses_contact_when_same_contact_has_multiple_ro
 
 @pytest.mark.asyncio
 async def test_participant_write_service_returns_typed_result() -> None:
+    """Participant writes return counters and rows through the canonical result contract."""
     session = _FakeSession()
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -178,3 +188,48 @@ async def test_participant_write_service_returns_typed_result() -> None:
     assert result.contact_participant_changed is True
     assert result.integration_id == integration_id
     assert result.created[0].is_primary_contact is True
+
+
+@pytest.mark.asyncio
+async def test_update_participant_role_to_owner_does_not_mutate_deal_owner_snapshot() -> None:
+    """Raw participant role changes must not become authoritative owner assignment."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    existing_owner_id = uuid4()
+    participant_user_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        owner_id=existing_owner_id,
+        owner_name="Existing Owner",
+        owner_email="existing@example.com",
+    )
+    participant = CRMDealParticipant(
+        participant_id=participant_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.USER,
+        related_local_id=participant_user_id,
+        relationship_role="collaborator",
+        is_deleted=False,
+    )
+    session = _FakeSession()
+    session._objects[participant_id] = participant
+    service = ParticipantWriteService(
+        session=session,
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+    )
+    service._get_internal_deal = AsyncMock(  # type: ignore[method-assign]
+        return_value=(deal, integration_id)
+    )
+    service._find_existing_participant = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    updated = await service.update_participant_role(deal_id, participant_id, "owner")
+
+    assert updated.relationship_role == "owner"
+    assert deal.owner_id == existing_owner_id
+    assert deal.owner_name == "Existing Owner"
+    assert deal.owner_email == "existing@example.com"

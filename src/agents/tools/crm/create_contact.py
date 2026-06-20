@@ -318,7 +318,7 @@ async def create_contact_direct(
                         kwargs[key] = cleaned
                 linkedin = _clean_optional(linkedin_url)
                 if linkedin:
-                    kwargs["properties"] = {"linkedin_url": linkedin}
+                    kwargs["linkedin_url"] = linkedin
                 contact_result = await contact_writer.create_contact(
                     email=normalized_email,
                     name=cleaned_name,

@@ -277,6 +277,24 @@ class ParticipantWriteService:
         self.session.add(participant)
         return participant
 
+    async def sync_owner_participant(self, *, deal: CRMDeal, owner_user_id: UUID) -> None:
+        """Create the owner participant projection and remove stale owner rows."""
+        await self.add_participants(
+            deal.deal_id,
+            [
+                {
+                    "participant_type": CRMParticipantType.USER.value,
+                    "related_id": owner_user_id,
+                    "relationship_role": "owner",
+                }
+            ],
+        )
+        await self._soft_delete_owner_participants(deal=deal, keep_user_id=owner_user_id)
+
+    async def clear_owner_participants(self, *, deal: CRMDeal) -> None:
+        """Soft-delete owner projection rows while preserving normal collaborators."""
+        await self._soft_delete_owner_participants(deal=deal, keep_user_id=None)
+
     async def _get_internal_deal(self, deal_id: UUID) -> tuple[CRMDeal, UUID]:
         """Return the internal CRM deal and integration boundary for writes."""
         setup_service = InternalCRMSetupService(
@@ -431,6 +449,34 @@ class ParticipantWriteService:
             deal.last_seen_at = updated_at
         self.session.add(deal)
 
+    async def _soft_delete_owner_participants(
+        self,
+        *,
+        deal: CRMDeal,
+        keep_user_id: UUID | None,
+    ) -> None:
+        """Remove owner-role USER projections under the internal deal boundary."""
+        now = datetime.now(UTC)
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.USER.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            self.owner_role_sql_expression() == "owner",
+        )
+        result = await self.session.execute(stmt)
+        for participant in result.scalars().all():
+            if not self.is_owner_role(participant.relationship_role):
+                continue
+            if keep_user_id is not None and participant.related_local_id == keep_user_id:
+                continue
+            participant.is_deleted = True
+            participant.source_modified_at = now
+            participant.synced_at = now
+            participant.last_seen_at = now
+            self.session.add(participant)
+
     async def _refresh_deal_company_after_removal(
         self,
         *,
@@ -491,6 +537,20 @@ class ParticipantWriteService:
         if not cleaned:
             return False
         return cleaned.lower().replace(" ", "_") == "primary_contact"
+
+    @staticmethod
+    def is_owner_role(value: str | None) -> bool:
+        """Normalize legacy role strings before deciding whether a row is owner-only."""
+        cleaned = ParticipantWriteService._clean_string(value)
+        if not cleaned:
+            return False
+        return cleaned.lower().replace(" ", "_") == "owner"
+
+    @staticmethod
+    def owner_role_sql_expression() -> Any:
+        """Return the SQL expression used to identify owner projection rows."""
+        c = cast(Any, CRMDealParticipant).__table__.c
+        return func.lower(func.replace(func.trim(func.coalesce(c.relationship_role, "")), " ", "_"))
 
     @staticmethod
     def _build_name(first_name: str | None, last_name: str | None) -> str | None:

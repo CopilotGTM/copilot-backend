@@ -320,6 +320,7 @@ class StakeholderDetail(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided by CRM or user")
+    linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
@@ -374,6 +375,7 @@ class StakeholderFullDetail(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided by CRM or user")
+    linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     department: str | None = Field(
         None, description="Inferred department from title or external sources"
     )
@@ -471,6 +473,11 @@ class CreateStakeholderRequest(BaseModel):
     phone_number: str | None = Field(
         None,
         description="Phone number (stored as-is, no formatting applied)",
+        json_schema_extra={"ui_category": "primary"},
+    )
+    linkedin_url: str | None = Field(
+        None,
+        description="LinkedIn profile URL",
         json_schema_extra={"ui_category": "primary"},
     )
     stance: StakeholderStance = Field(
@@ -571,6 +578,10 @@ class UpdateStakeholderRequest(BaseModel):
     phone_number: str | None = Field(
         None,
         description="Phone number (stored as-is, no formatting applied)",
+    )
+    linkedin_url: str | None = Field(
+        None,
+        description="LinkedIn profile URL",
     )
     department: str | None = Field(
         None,

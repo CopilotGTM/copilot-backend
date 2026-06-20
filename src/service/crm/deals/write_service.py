@@ -67,7 +67,12 @@ class DealWriteService:
         self._account_writer = AccountWriteService(self.session, self.organisation_id)
         self._custom_fields = DealCustomFieldWriteService(self.session, self.organisation_id)
         self._mutation_events = DealMutationEventService(self.session, self.organisation_id)
-        self._owners = DealOwnerService()
+        self._owners = DealOwnerService(
+            session=self.session,
+            organisation_id=self.organisation_id,
+            actor_user_id=self.actor_user_id,
+            master_session=self.master_session,
+        )
         self._stages = DealStageService(self.session, self.organisation_id)
 
     async def close(self) -> None:
@@ -190,9 +195,7 @@ class DealWriteService:
 
         # Handle owner assignment
         owner_user_id = payload.get("owner_user_id")
-        owner_id = None
-        owner_name = None
-        owner_email = None
+        crm_user = None
 
         if owner_user_id:
             user_service = InternalCRMUserService(
@@ -202,9 +205,6 @@ class DealWriteService:
                 actor_user_id=self.actor_user_id,
             )
             crm_user = await user_service.ensure_crm_user(owner_user_id)
-            owner_id = crm_user.user_id
-            owner_name = crm_user.full_name
-            owner_email = crm_user.email
 
         # The deal row is written before participants so downstream participant
         # services can validate a real deal_id in the same transaction.
@@ -236,9 +236,9 @@ class DealWriteService:
             deal_status=deal_status,
             probability=payload.get("probability"),
             forecast_category=payload.get("forecast_category"),
-            owner_id=owner_id,
-            owner_name=owner_name,
-            owner_email=owner_email,
+            owner_id=None,
+            owner_name=None,
+            owner_email=None,
             close_date=payload.get("close_date"),
             expected_close_date=payload.get("expected_close_date"),
             closed_won_at=payload.get("closed_won_at"),
@@ -263,6 +263,10 @@ class DealWriteService:
 
         self.session.add(deal)
         await self.session.flush()
+        owner_result = None
+        if crm_user is not None:
+            owner_result = self._owners.apply_owner(deal=deal, crm_user=crm_user)
+            await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
 
         # Stage history starts at creation time so later analytics can compute
         # stage dwell time without special-casing the first stage.
@@ -309,15 +313,19 @@ class DealWriteService:
             if contact:
                 await self._replace_primary_contact_participant(deal, contact, now)
 
+        created_changed_fields: dict[str, dict[str, Any]] = {
+            "deal_id": {"old": None, "new": deal.deal_id},
+            "name": {"old": None, "new": deal.name},
+            "stage_id": {"old": None, "new": deal.stage_id},
+        }
+        if owner_result is not None:
+            created_changed_fields.update(owner_result.changed_fields)
+
         await self._record_mutation_event(
             deal=deal,
             event_type="crm.deal.created",
             operation="create_deal",
-            changed_fields={
-                "deal_id": {"old": None, "new": deal.deal_id},
-                "name": {"old": None, "new": deal.name},
-                "stage_id": {"old": None, "new": deal.stage_id},
-            },
+            changed_fields=created_changed_fields,
             summary=f"Created deal {deal.name}" if deal.name else "Created deal",
         )
         logger.info("Created internal CRM deal %s: %s", deal.deal_id, deal.name)
@@ -839,40 +847,6 @@ class DealWriteService:
             )
         return matching_stage
 
-    def _apply_stage_update(self, *, deal: CRMDeal, stage: CRMDealStage, now: datetime) -> None:
-        deal.stage_id = stage.stage_id
-        deal.stage_name = stage.name
-        deal.stage_entered_at = now
-        deal.stage_updated_at = now
-        deal.source_modified_at = now
-        deal.synced_at = now
-        deal.last_seen_at = now
-        self.session.add(deal)
-
-    def _record_stage_history(
-        self,
-        *,
-        deal: CRMDeal,
-        stage: CRMDealStage,
-        now: datetime,
-        from_stage_id: UUID | None = None,
-        source: str | None = None,
-    ) -> None:
-        history_id = uuid4()
-        history = CRMDealStageHistory(
-            history_id=history_id,
-            organisation_id=self.organisation_id,
-            integration_id=deal.integration_id,
-            deal_id=deal.deal_id,
-            stage_id=stage.stage_id,
-            from_stage_id=from_stage_id,
-            entered_at=now,
-            source=source,
-            synced_at=now,
-            last_seen_at=now,
-        )
-        self.session.add(history)
-
     @staticmethod
     def _normalize_stage_state(value: Any) -> str:
         return value.value if hasattr(value, "value") else str(value).strip().lower()
@@ -891,11 +865,6 @@ class DealWriteService:
             DealWriteServiceError: If deal or user not found, or validation fails
         """
         deal = await self._load_internal_deal(deal_id)
-        old_values = {
-            "owner_id": deal.owner_id,
-            "owner_name": deal.owner_name,
-            "owner_email": deal.owner_email,
-        }
 
         crm_user = None
         if owner_user_id:
@@ -908,7 +877,14 @@ class DealWriteService:
             )
             crm_user = await user_service.ensure_crm_user(owner_user_id)
 
-        self._owners.apply_owner(deal=deal, crm_user=crm_user)
+        owner_result = self._owners.apply_owner(deal=deal, crm_user=crm_user)
+        if not owner_result.changed:
+            return deal
+
+        if crm_user is not None:
+            await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
+        else:
+            await self._owners.clear_owner_participants(deal=deal)
 
         now = datetime.now(UTC)
         deal.source_modified_at = now
@@ -920,7 +896,7 @@ class DealWriteService:
             deal=deal,
             event_type="crm.deal.owner_changed",
             operation="assign_owner",
-            changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
+            changed_fields=owner_result.changed_fields,
             summary="Changed deal owner",
         )
         logger.info(

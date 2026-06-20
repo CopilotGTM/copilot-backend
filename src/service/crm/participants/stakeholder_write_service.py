@@ -125,6 +125,7 @@ class StakeholderWriteService:
         name: str | None,
         job_title: str | None,
         phone_number: str | None,
+        linkedin_url: str | None = None,
         department: str | None = None,
         external_links: list[dict] | None = None,
     ) -> UUID | None:
@@ -157,6 +158,7 @@ class StakeholderWriteService:
                 for key, value in {
                     "job_title": job_title,
                     "phone": phone_number,
+                    "linkedin_url": linkedin_url,
                     "properties": {
                         profile_key: profile_value
                         for profile_key, profile_value in {
@@ -179,6 +181,7 @@ class StakeholderWriteService:
         name: str | None,
         job_title: str | None = None,
         phone_number: str | None = None,
+        linkedin_url: str | None = None,
         department: str | None = None,
         external_links: list[dict] | None = None,
         stance: str | None = None,
@@ -223,6 +226,7 @@ class StakeholderWriteService:
             participant.job_title = job_title or participant.job_title
             participant.department = department or participant.department
             participant.phone_number = phone_number or participant.phone_number
+            participant.linkedin_url = linkedin_url or participant.linkedin_url
             participant.external_links = external_links or participant.external_links
             participant.participant_source = participant_source
             participant.approval_status = approval_status
@@ -246,6 +250,7 @@ class StakeholderWriteService:
             job_title=job_title,
             department=department,
             phone_number=phone_number,
+            linkedin_url=linkedin_url,
             external_links=external_links,
             stance=stance or "UNKNOWN",
             decision_power=decision_power or "UNKNOWN",
@@ -362,6 +367,11 @@ class StakeholderWriteService:
                 contact.phone = updates["phone_number"]
             participant.phone_number = updates["phone_number"]
 
+        if "linkedin_url" in updates:
+            if contact:
+                contact.linkedin_url = updates["linkedin_url"]
+            participant.linkedin_url = updates["linkedin_url"]
+
         contact_properties = dict(contact.properties or {}) if contact else {}
         if "department" in updates:
             if contact:
@@ -379,6 +389,11 @@ class StakeholderWriteService:
                 else:
                     contact_properties["external_links"] = serialized_links
             participant.external_links = serialized_links
+            linkedin_url = self._extract_linkedin_url(serialized_links)
+            if linkedin_url:
+                if contact:
+                    contact.linkedin_url = linkedin_url
+                participant.linkedin_url = linkedin_url
 
         if contact:
             contact.properties = contact_properties
@@ -473,6 +488,18 @@ class StakeholderWriteService:
             )
 
         return serialized
+
+    @staticmethod
+    def _extract_linkedin_url(external_links: list[dict] | None) -> str | None:
+        """Keep LinkedIn first-class without dropping the full external link list."""
+        for link in external_links or []:
+            platform = str(link.get("platform") or link.get("type") or "").lower()
+            url = link.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            if platform == "linkedin" or "linkedin." in url.lower():
+                return url.strip()
+        return None
 
     async def get_stakeholder(
         self, deal_id: UUID, participant_id: UUID
@@ -624,6 +651,7 @@ class StakeholderWriteService:
             )
 
         external_links_data = self._serialize_external_links(request.external_links)
+        linkedin_url = request.linkedin_url or self._extract_linkedin_url(external_links_data)
 
         # Contact owns durable profile fields; participant keeps a deal-local
         # snapshot for list reads.
@@ -632,6 +660,7 @@ class StakeholderWriteService:
             name=request.name,
             job_title=request.job_title,
             phone_number=request.phone_number,
+            linkedin_url=linkedin_url,
             department=request.department,
             external_links=external_links_data,
         )
@@ -694,6 +723,7 @@ class StakeholderWriteService:
             name=request.name,
             job_title=request.job_title,
             phone_number=request.phone_number,
+            linkedin_url=linkedin_url,
             department=request.department,
             external_links=external_links_data,
             stance=request.stance.value if hasattr(request.stance, "value") else request.stance,
@@ -858,6 +888,7 @@ class StakeholderWriteService:
                 name=name,
                 job_title=contact.job_title,
                 phone_number=contact.phone or contact.mobile_phone,
+                linkedin_url=contact.linkedin_url,
                 department=properties.get("department"),
                 external_links=properties.get("external_links")
                 if isinstance(properties.get("external_links"), list)

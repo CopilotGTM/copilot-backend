@@ -177,7 +177,7 @@ async def create_contact(
         if body.phone is not None:
             extra["phone"] = body.phone
         if body.linkedin_url is not None:
-            extra["properties"] = {"linkedin_url": body.linkedin_url}
+            extra["linkedin_url"] = body.linkedin_url
         if body.company_id is not None:
             extra["company_id"] = body.company_id
 
@@ -278,7 +278,10 @@ async def get_contact_detail(
             updated_at=contact.updated_at,
             additional_emails=contact.additional_emails or [],
             mobile_phone=contact.mobile_phone,
-            linkedin_url=contact.properties.get("linkedin_url") if contact.properties else None,
+            linkedin_url=contact.linkedin_url or (contact.properties or {}).get("linkedin_url"),
+            profile_enrichment=contact.profile_enrichment or {},
+            profile_enrichment_source=contact.profile_enrichment_source,
+            profile_enriched_at=contact.profile_enriched_at,
             address=contact.address,
             city=contact.city,
             state=contact.state,

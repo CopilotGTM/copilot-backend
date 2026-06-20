@@ -25,6 +25,7 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
         related_email="alex@example.com",
         job_title="CFO",
         phone_number="+1 555 0100",
+        linkedin_url="https://linkedin.com/in/alex",
         approval_status="APPROVED",
         participant_source="CRM",
         stakeholder_research="Participant research",
@@ -37,6 +38,7 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
     assert payload["email"] == "alex@example.com"
     assert payload["job_title"] == "CFO"
     assert payload["phone_number"] == "+1 555 0100"
+    assert payload["linkedin_url"] == "https://linkedin.com/in/alex"
     assert payload["stakeholder_research"] == "Participant research"
     assert "champion_potential" not in payload
     assert "engagement_score" not in payload
@@ -72,6 +74,7 @@ def test_participant_adapter_prefers_contact_profile_when_loaded() -> None:
         email="new@example.com",
         job_title="CFO",
         phone="+1 555 0100",
+        linkedin_url="https://linkedin.com/in/new-person",
         contact_research="Fresh contact research",
     )
 
@@ -83,4 +86,5 @@ def test_participant_adapter_prefers_contact_profile_when_loaded() -> None:
     assert payload["email"] == "new@example.com"
     assert payload["job_title"] == "CFO"
     assert payload["phone_number"] == "+1 555 0100"
+    assert payload["linkedin_url"] == "https://linkedin.com/in/new-person"
     assert payload["stakeholder_research"] == "Fresh contact research"

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.service.crm.contacts.contracts import (
     ContactWriteContext,
@@ -54,14 +55,16 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     assert result.contact.email == "jane@example.com"
     assert result.contact.first_name == "Jane"
     assert result.contact.last_name == "Doe"
-    session.add.assert_called_once()
+    added_rows = [call.args[0] for call in session.add.call_args_list]
+    assert any(isinstance(row, CRMContact) for row in added_rows)
+    assert any(isinstance(row, CRMDealMutationEvent) for row in added_rows)
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(result.contact)
     session.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_create_contact_accepts_properties_payload() -> None:
+async def test_create_contact_promotes_linkedin_url_to_profile_column() -> None:
     org_id = uuid4()
     integration = KnowledgeIntegration(
         organisation_id=org_id,
@@ -81,7 +84,8 @@ async def test_create_contact_accepts_properties_payload() -> None:
         properties={"linkedin_url": "https://linkedin.com/in/jane"},
     )
 
-    assert result.contact.properties == {"linkedin_url": "https://linkedin.com/in/jane"}
+    assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
+    assert result.contact.properties == {}
 
 
 @pytest.mark.asyncio
@@ -127,7 +131,7 @@ async def test_find_or_create_by_email_reuses_existing_contact_and_merges_profil
         "linkedin_url": "https://linkedin.com/in/buyer",
         "department": "Finance",
     }
-    session.flush.assert_awaited_once()
+    assert session.flush.await_count == 2
     session.refresh.assert_awaited_once_with(existing)
     session.commit.assert_not_called()
 
@@ -205,7 +209,7 @@ async def test_update_contact_rejects_existing_email_change() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_contact_stores_linkedin_url_in_properties_without_commit() -> None:
+async def test_update_contact_stores_linkedin_url_in_profile_column_without_commit() -> None:
     org_id = uuid4()
     contact = CRMContact(
         organisation_id=org_id,
@@ -227,7 +231,7 @@ async def test_update_contact_stores_linkedin_url_in_properties_without_commit()
         {"linkedin_url": "https://linkedin.com/in/jane"},
     )
 
-    assert result.contact.properties == {"linkedin_url": "https://linkedin.com/in/jane"}
-    session.flush.assert_awaited_once()
+    assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
+    assert session.flush.await_count == 2
     session.refresh.assert_awaited_once_with(contact)
     session.commit.assert_not_called()

@@ -20,6 +20,13 @@ def _contact_external_links(contact: CRMContact | None) -> list[dict[str, Any]] 
     return links if isinstance(links, list) else None
 
 
+def _contact_linkedin_url(contact: CRMContact | None) -> str | None:
+    if not contact:
+        return None
+    linkedin_url = contact.linkedin_url or contact.properties.get("linkedin_url")
+    return linkedin_url if isinstance(linkedin_url, str) else None
+
+
 def participant_to_stakeholder_detail_dict(
     participant: CRMDealParticipant,
     *,
@@ -52,6 +59,7 @@ def participant_to_stakeholder_detail_dict(
             if contact and contact.mobile_phone
             else participant.phone_number
         ),
+        "linkedin_url": _contact_linkedin_url(contact) or participant.linkedin_url,
         "external_links": _contact_external_links(contact) or participant.external_links,
         "stance": participant.stance,
         "decision_power": participant.decision_power,

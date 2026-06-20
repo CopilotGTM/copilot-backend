@@ -416,6 +416,10 @@ class StakeholderSyncService:
         if "phone_number" not in override_fields and phone:
             changed |= self._set_if_different(stakeholder, "phone_number", phone)
 
+        linkedin_url = getattr(contact, "linkedin_url", None)
+        if "linkedin_url" not in override_fields and linkedin_url:
+            changed |= self._set_if_different(stakeholder, "linkedin_url", linkedin_url)
+
         department = properties.get("department")
         if department:
             changed |= self._set_if_different(stakeholder, "department", department)

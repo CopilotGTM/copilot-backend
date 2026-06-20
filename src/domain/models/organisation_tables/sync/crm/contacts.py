@@ -65,6 +65,11 @@ class CRMContact(SyncedRecordMixin, table=True):
     mobile_phone: str | None = Field(default=None, description="Mobile phone number.")
     fax: str | None = Field(default=None, description="Fax number if supplied.")
     website: str | None = Field(default=None, description="Website associated with the contact.")
+    linkedin_url: str | None = Field(
+        default=None,
+        sa_column=Column(String(500), nullable=True),
+        description="Canonical LinkedIn profile URL for this person.",
+    )
 
     # Owner & segmentation
     owner_email: str | None = Field(
@@ -143,6 +148,25 @@ class CRMContact(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent time contact research was completed.",
+    )
+    profile_enrichment: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text(EMPTY_JSONB_SQL),
+        ),
+        description="Structured person enrichment from providers such as Apollo.",
+    )
+    profile_enrichment_source: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="Provider or workflow that last populated structured enrichment.",
+    )
+    profile_enriched_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time structured profile enrichment was completed.",
     )
 
     # Payloads
