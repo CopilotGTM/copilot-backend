@@ -15,7 +15,6 @@ The Celery task delegates to this service for the actual work.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -27,14 +26,13 @@ from src.agents.workflows.risk_blocker_extraction import (
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerSource,
-    RiskBlockerStatus,
-    RiskBlockerType,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    build_risk_blocker_timeline_event,
+from src.service.crm.risks.contracts import RiskBlockerActor, RiskBlockerWriteContext
+from src.service.crm.risks.write_service import (
+    RiskBlockerWriteService,
+    build_extraction_risk_blocker,
 )
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
@@ -118,7 +116,7 @@ class RiskBlockerExtractionService:
         """
         self.organisation_id = organisation_id
         self.publisher = publisher
-        self.last_token_usage = None
+        self.last_token_usage: Any = None
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
@@ -145,63 +143,31 @@ class RiskBlockerExtractionService:
         Returns:
             Created DealRiskBlocker
         """
-        item = DealRiskBlocker(
+        context = self._extraction_context()
+        item = build_extraction_risk_blocker(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
-            item_type=extracted.item_type,
-            category=extracted.category,
-            severity=extracted.severity,
-            status=RiskBlockerStatus.OPEN,
-            title=extracted.title,
-            description=extracted.description,
-            quote=extracted.quote,
+            extracted=extracted,
+            context=context,
             source_type=source_type,
             source_record_id=source_record_id,
-            source_context=extracted.source_context,
-            is_ai_generated=True,
-            ai_confidence=extracted.confidence,
-            ai_reasoning=extracted.reasoning,
-            owner_name=extracted.suggested_owner,
-            created_by_user_id=AUTOMATED_PIPELINE_USER_ID,
-            created_by_user_name=AI_EXTRACTION_ACTOR_NAME,
-            last_modified_by_user_id=AUTOMATED_PIPELINE_USER_ID,
-            last_modified_by_user_name=AI_EXTRACTION_ACTOR_NAME,
-            risk_blocker_data={
-                "audit_trail": [
-                    {
-                        "action": "opened",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "actor_type": "system",
-                        "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
-                        "actor_name": AI_EXTRACTION_ACTOR_NAME,
-                        "details": {
-                            "source": "ai_extraction",
-                            "confidence": extracted.confidence,
-                            "reasoning": extracted.reasoning,
-                        },
-                    }
-                ],
-                "unique_modifiers": [str(AUTOMATED_PIPELINE_USER_ID)],
-            },
         )
 
         session.add(item)
-
-        # Create timeline event for the AI-extracted risk/blocker
-        timeline_event_type = (
-            TimelineEventType.RISK_FLAGGED
-            if extracted.item_type == RiskBlockerType.RISK
-            else TimelineEventType.BLOCKER_ADDED
-        )
-        timeline_event = build_risk_blocker_timeline_event(
-            organisation_id=self.organisation_id,
-            deal_id=deal_id,
-            risk_blocker=item,
-            event_type=timeline_event_type,
-        )
-        session.add(timeline_event)
+        writer = RiskBlockerWriteService(session, self.organisation_id)
+        session.add(writer._build_opened_timeline_event(item))
 
         return item
+
+    def _extraction_context(self) -> RiskBlockerWriteContext:
+        return RiskBlockerWriteContext(
+            source="ai_extraction",
+            actor=RiskBlockerActor(
+                actor_type="system",
+                actor_id=AUTOMATED_PIPELINE_USER_ID,
+                actor_name=AI_EXTRACTION_ACTOR_NAME,
+            ),
+        )
 
     async def run_extraction(
         self,
@@ -284,10 +250,11 @@ class RiskBlockerExtractionService:
                     # Use source_type from agent output (agent specifies exact platform)
                     source_type = extracted_item.source_type
 
-                    self.create_risk_blocker_from_extracted(
-                        session=session,
+                    writer = RiskBlockerWriteService(session, self.organisation_id)
+                    await writer.create_from_extraction(
                         deal_id=deal_id,
                         extracted=extracted_item,
+                        context=self._extraction_context(),
                         source_type=source_type,
                     )
                     created_count += 1

@@ -67,7 +67,7 @@ def _patch_nonce(monkeypatch, *, valid=True):
 
 
 def _patch_task_service(monkeypatch, created_payloads, created_deal_ids=None):
-    """Patch TasksWriteService and acquire_org_async_session."""
+    """Patch TaskWriteService and acquire_org_async_session."""
 
     @dataclass
     class FakeTask:
@@ -85,7 +85,7 @@ def _patch_task_service(monkeypatch, created_payloads, created_deal_ids=None):
             return FakeTask(subject=payload.get("subject", ""))
 
     monkeypatch.setattr(
-        "src.service.crm.internal.tasks_write_service.TasksWriteService",
+        "src.service.bots.form_handlers.confirm_task_handler.TaskWriteService",
         FakeWriteService,
     )
 

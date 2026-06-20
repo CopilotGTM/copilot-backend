@@ -44,14 +44,9 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.tasks_access_service import (
-    TasksAccessService,
-    TasksAccessServiceError,
-)
-from src.service.crm.internal.tasks_write_service import (
-    TasksWriteService,
-    TasksWriteServiceError,
-)
+from src.service.crm.tasks.contracts import TaskReadServiceError, TaskWriteServiceError
+from src.service.crm.tasks.read_service import TaskReadService
+from src.service.crm.tasks.write_service import TaskWriteService
 
 logger = get_logger("tasks_handler")
 
@@ -188,7 +183,7 @@ async def get_tasks_access_service(
 ):
     """Dependency that yields a TasksAccessService instance for the current org."""
 
-    service = TasksAccessService(org_session, user_ids.organisation_id)
+    service = TaskReadService(org_session, user_ids.organisation_id)
     try:
         yield service
     finally:
@@ -204,7 +199,7 @@ async def get_tasks_write_service(
 ):
     """Dependency that yields a TasksWriteService instance for the current org."""
 
-    service = TasksWriteService(
+    service = TaskWriteService(
         org_session,
         user_ids.organisation_id,
         user_ids.user_id,
@@ -233,7 +228,7 @@ async def _enrich_task_list_item(task, session: AsyncSession) -> TaskListItem:
             "deal_name": deal_name,
             "assigned_to": _build_task_assignee(task),
             **_build_task_due_metadata(task),
-            # Mirrors the write-path guard in tasks_write_service._load_user_task:
+            # Mirrors the write-path guard in TaskWriteService._load_user_task:
             # integration_id is the authoritative CRM-synced predicate. Do NOT use
             # `source` here — it is nullable and can drift from integration_id.
             "is_read_only": task.integration_id is not None,
@@ -257,7 +252,7 @@ async def _enrich_task_detail(task, session: AsyncSession) -> TaskDetail:
             "reminder": reminder_dict,
             "assigned_to": _build_task_assignee(task),
             **_build_task_due_metadata(task),
-            # Mirrors the write-path guard in tasks_write_service._load_user_task:
+            # Mirrors the write-path guard in TaskWriteService._load_user_task:
             # integration_id is the authoritative CRM-synced predicate. Do NOT use
             # `source` here — it is nullable and can drift from integration_id.
             "is_read_only": task.integration_id is not None,
@@ -343,7 +338,7 @@ async def list_tasks(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Page size"),
     user_ids: UserIDs = Depends(get_current_user),
-    service: TasksAccessService = Depends(get_tasks_access_service),
+    service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TasksPage]:
     """Global task listing with rich filtering."""
@@ -383,7 +378,7 @@ async def list_tasks(
         )
         return Response.success_response(message="Tasks retrieved successfully", data=payload)
 
-    except TasksAccessServiceError as exc:
+    except TaskReadServiceError as exc:
         logger.warning("Tasks access error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message, status_code=exc.status_code, response=response
@@ -406,7 +401,7 @@ async def list_task_assignees(
     response: FastAPIResponse,
     q: str | None = Query(None, description="Search assignee name or email"),
     limit: int = Query(200, ge=1, le=500),
-    service: TasksAccessService = Depends(get_tasks_access_service),
+    service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TaskAssigneesResponse]:
     try:
@@ -427,7 +422,7 @@ async def list_task_assignees(
             message="Task assignees retrieved successfully",
             data=payload,
         )
-    except TasksAccessServiceError as exc:
+    except TaskReadServiceError as exc:
         logger.warning("Task assignee access error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message, status_code=exc.status_code, response=response
@@ -449,7 +444,7 @@ async def list_task_assignees(
 async def get_current_user_task_assignees(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
-    service: TasksAccessService = Depends(get_tasks_access_service),
+    service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TaskAssigneesResponse]:
     try:
@@ -476,7 +471,7 @@ async def get_current_user_task_assignees(
             message="Current user task assignees resolved successfully",
             data=payload,
         )
-    except TasksAccessServiceError as exc:
+    except TaskReadServiceError as exc:
         logger.warning(
             "Current user task assignee resolution error: %s", exc.message, exc_info=True
         )
@@ -513,7 +508,7 @@ async def list_deal_tasks(
         None,
         description="Filter by task types (TASK/TODO only).",
     ),
-    service: TasksAccessService = Depends(get_tasks_access_service),
+    service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TasksPage]:
     """List tasks for a specific deal."""
@@ -540,7 +535,7 @@ async def list_deal_tasks(
         )
         return Response.success_response(message="Tasks retrieved successfully", data=payload)
 
-    except TasksAccessServiceError as exc:
+    except TaskReadServiceError as exc:
         logger.warning("Tasks access error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message, status_code=exc.status_code, response=response
@@ -587,7 +582,7 @@ async def get_task_options(
 async def get_task(
     task_id: UUID,
     response: FastAPIResponse,
-    service: TasksAccessService = Depends(get_tasks_access_service),
+    service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TaskDetail]:
     """Retrieve detailed information for a single task."""
@@ -603,7 +598,7 @@ async def get_task(
         detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task retrieved successfully", data=detail)
 
-    except TasksAccessServiceError as exc:
+    except TaskReadServiceError as exc:
         logger.warning("Task access error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message, status_code=exc.status_code, response=response
@@ -626,7 +621,7 @@ async def get_task(
 async def create_task(
     request: CreateTaskRequest,
     response: FastAPIResponse,
-    service: TasksWriteService = Depends(get_tasks_write_service),
+    service: TaskWriteService = Depends(get_tasks_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("tasks:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
@@ -644,7 +639,7 @@ async def create_task(
             data=detail,
             response=response,
         )
-    except TasksWriteServiceError as exc:
+    except TaskWriteServiceError as exc:
         await service.session.rollback()
         logger.warning("Task write error: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -670,7 +665,7 @@ async def create_deal_task(
     deal_id: UUID,
     request: CreateTaskRequest,
     response: FastAPIResponse,
-    service: TasksWriteService = Depends(get_tasks_write_service),
+    service: TaskWriteService = Depends(get_tasks_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("tasks:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
@@ -688,7 +683,7 @@ async def create_deal_task(
             data=detail,
             response=response,
         )
-    except TasksWriteServiceError as exc:
+    except TaskWriteServiceError as exc:
         await service.session.rollback()
         logger.warning("Task write error: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -713,7 +708,7 @@ async def update_task(
     task_id: UUID,
     request: UpdateTaskRequest,
     response: FastAPIResponse,
-    service: TasksWriteService = Depends(get_tasks_write_service),
+    service: TaskWriteService = Depends(get_tasks_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("tasks:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
@@ -725,7 +720,7 @@ async def update_task(
         await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task updated successfully", data=detail)
-    except TasksWriteServiceError as exc:
+    except TaskWriteServiceError as exc:
         await service.session.rollback()
         logger.warning("Task update error: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -749,7 +744,7 @@ async def update_task(
 async def delete_task(
     task_id: UUID,
     response: FastAPIResponse,
-    service: TasksWriteService = Depends(get_tasks_write_service),
+    service: TaskWriteService = Depends(get_tasks_write_service),
     _crm_write_guard: None = Depends(require_crm_write_scope("tasks:delete")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
@@ -761,7 +756,7 @@ async def delete_task(
         await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task deleted successfully", data=detail)
-    except TasksWriteServiceError as exc:
+    except TaskWriteServiceError as exc:
         await service.session.rollback()
         logger.warning("Task delete error: %s", exc.message, exc_info=True)
         return Response.error_response(

@@ -2,7 +2,7 @@
 
 When create_task sends a preview card with Confirm/Cancel buttons, the Confirm
 button carries the full task payload as a JSON string in its value field. This
-handler deserializes the payload and creates the CRMActivity via TasksWriteService.
+handler deserializes the payload and creates the CRMActivity via TaskWriteService.
 
 The Cancel button is handled by a simple CancelFormHandler (no DB cleanup needed
 since no row exists until confirmation).
@@ -22,6 +22,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.bots.form_handlers.base import BaseFormHandler, FormHandlerResult
 from src.service.bots.form_handlers.identity import resolve_user_from_activity
+from src.service.crm.tasks.write_service import TaskWriteService
 
 logger = get_logger(__name__)
 
@@ -136,7 +137,7 @@ class ConfirmTaskFormHandler(BaseFormHandler):
             except ValueError:
                 logger.warning("Invalid assign_to_user_id: %s", assign_to_str)
 
-        # Build the payload for TasksWriteService
+        # Build the payload for TaskWriteService
         write_payload: dict[str, Any] = {
             "subject": title,
         }
@@ -189,10 +190,8 @@ class ConfirmTaskFormHandler(BaseFormHandler):
         user_id = user.user_id
 
         try:
-            from src.service.crm.internal.tasks_write_service import TasksWriteService
-
             async for session in acquire_org_async_session(org_id):
-                service = TasksWriteService(session, org_id, user_id)
+                service = TaskWriteService(session, org_id, user_id)
                 task = await service.create_task(write_payload, deal_id=deal_id)
                 await session.commit()
 

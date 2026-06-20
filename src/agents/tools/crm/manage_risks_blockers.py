@@ -21,24 +21,23 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm.attributes import flag_modified
-
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
-    DealRiskBlocker,
     RiskBlockerSeverity,
     RiskBlockerStatus,
     RiskBlockerType,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    build_risk_blocker_timeline_event,
+from src.service.crm.risks.contracts import (
+    RiskBlockerActor,
+    RiskBlockerNotFoundError,
+    RiskBlockerWriteContext,
 )
+from src.service.crm.risks.lifecycle_service import RiskBlockerLifecycleService
+from src.service.crm.risks.write_service import RiskBlockerWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -50,6 +49,21 @@ logger = logging.getLogger(__name__)
 # (project-wide convention; matches deal_memory_service.py and the extraction service).
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 AI_EXTRACTION_ACTOR_NAME = "AI Extraction Agent"
+
+
+def _tool_context() -> RiskBlockerWriteContext:
+    return RiskBlockerWriteContext(
+        source="ai_extraction_tool",
+        actor=RiskBlockerActor(
+            actor_type="system",
+            actor_id=AUTOMATED_PIPELINE_USER_ID,
+            actor_name=AI_EXTRACTION_ACTOR_NAME,
+        ),
+    )
+
+
+def _status_value(status: RiskBlockerStatus | str) -> str:
+    return status.value if hasattr(status, "value") else str(status)
 
 
 # ---------------------------------------------------------------------------
@@ -80,110 +94,34 @@ async def update_risk_blocker_impl(
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
 
-    c = cast(Any, DealRiskBlocker).__table__.c
-
     async with context.acquire_session() as session:
-        result = await session.execute(
-            select(DealRiskBlocker).where(
-                c.risk_blocker_id == rb_uuid,
-                c.organisation_id == organisation_id,
-            )
-        )
-        item = result.scalar_one_or_none()
+        updates: dict[str, Any] = {}
+        if item_type:
+            with suppress(ValueError):
+                updates["item_type"] = RiskBlockerType(item_type)
 
+        if severity:
+            with suppress(ValueError):
+                updates["severity"] = RiskBlockerSeverity(severity)
+
+        if description:
+            updates["description"] = description
+
+        if reasoning:
+            updates["ai_reasoning"] = reasoning
+
+        if recommended_next_step:
+            updates["recommended_next_step"] = recommended_next_step
+
+        service = RiskBlockerWriteService(session, organisation_id)
+        item = await service.update_fields(rb_uuid, updates, _tool_context())
         if not item:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
 
-        changes: dict[str, dict[str, str]] = {}
-
-        if item_type:
-            try:
-                new_item_type = RiskBlockerType(item_type)
-                old_val = (
-                    item.item_type.value
-                    if hasattr(item.item_type, "value")
-                    else str(item.item_type)
-                )
-                if old_val != new_item_type.value:
-                    changes["item_type"] = {"old": old_val, "new": new_item_type.value}
-                    item.item_type = new_item_type
-            except ValueError:
-                pass
-
-        if severity:
-            try:
-                new_severity = RiskBlockerSeverity(severity)
-                old_val = (
-                    item.severity.value if hasattr(item.severity, "value") else str(item.severity)
-                )
-                if old_val != new_severity.value:
-                    changes["severity"] = {"old": old_val, "new": new_severity.value}
-                    item.severity = new_severity
-            except ValueError:
-                pass
-
-        if description:
-            old_desc = item.description or ""
-            if old_desc != description:
-                changes["description"] = {
-                    "old": old_desc[:100] + "..." if len(old_desc) > 100 else old_desc,
-                    "new": description[:100] + "..." if len(description) > 100 else description,
-                }
-                item.description = description
-
-        if reasoning:
-            old_reasoning = item.ai_reasoning or ""
-            if old_reasoning != reasoning:
-                changes["ai_reasoning"] = {
-                    "old": old_reasoning[:100] + "..."
-                    if len(old_reasoning) > 100
-                    else old_reasoning,
-                    "new": reasoning[:100] + "..." if len(reasoning) > 100 else reasoning,
-                }
-                item.ai_reasoning = reasoning
-
-        data = item.risk_blocker_data or {}
-        if recommended_next_step:
-            old_next_step = str(data.get("recommended_next_step") or "")
-            if old_next_step != recommended_next_step:
-                changes["recommended_next_step"] = {
-                    "old": old_next_step[:100] + "..."
-                    if len(old_next_step) > 100
-                    else old_next_step,
-                    "new": recommended_next_step[:100] + "..."
-                    if len(recommended_next_step) > 100
-                    else recommended_next_step,
-                }
-                data["recommended_next_step"] = recommended_next_step
-
-        if not changes:
+        if not service.last_changes:
             return {"status": "no_changes", "message": "No fields changed"}
 
-        now = datetime.now(UTC)
-
-        # Audit trail
-        trail = data.get("audit_trail", [])
-        trail.append(
-            {
-                "action": "updated",
-                "timestamp": now.isoformat(),
-                "actor_type": "system",
-                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
-                "actor_name": AI_EXTRACTION_ACTOR_NAME,
-                "details": {
-                    "fields_changed": list(changes.keys()),
-                    "changes": changes,
-                },
-            }
-        )
-        data["audit_trail"] = trail
-        item.risk_blocker_data = data
-        flag_modified(item, "risk_blocker_data")
-
-        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
-        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
-        item.updated_at = now
-
+        changes = service.last_changes
         await session.commit()
 
         logger.info("AI updated risk/blocker %s: %s", risk_blocker_id, list(changes.keys()))
@@ -214,22 +152,13 @@ async def dismiss_risk_blocker_impl(
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
 
-    c = cast(Any, DealRiskBlocker).__table__.c
-
     async with context.acquire_session() as session:
-        result = await session.execute(
-            select(DealRiskBlocker).where(
-                c.risk_blocker_id == rb_uuid,
-                c.organisation_id == organisation_id,
-            )
-        )
-        item = result.scalar_one_or_none()
-
-        if not item:
+        service = RiskBlockerLifecycleService(session, organisation_id)
+        current_status_raw = await service.get_status(rb_uuid)
+        if current_status_raw is None:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
 
-        current_status = item.status.value if hasattr(item.status, "value") else str(item.status)
-
+        current_status = _status_value(current_status_raw)
         if current_status in [RiskBlockerStatus.RESOLVED.value, RiskBlockerStatus.DISMISSED.value]:
             return {
                 "status": "skipped",
@@ -237,35 +166,10 @@ async def dismiss_risk_blocker_impl(
             }
 
         previous_status = current_status
-        now = datetime.now(UTC)
-        item.status = RiskBlockerStatus.DISMISSED
-        item.closed_at = now
-        item.closed_by_user_id = AUTOMATED_PIPELINE_USER_ID
-        item.closed_by_user_name = AI_EXTRACTION_ACTOR_NAME
-        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
-        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
-        item.updated_at = now
-
-        # Audit trail
-        data = item.risk_blocker_data or {}
-        trail = data.get("audit_trail", [])
-        trail.append(
-            {
-                "action": "dismissed",
-                "timestamp": now.isoformat(),
-                "actor_type": "system",
-                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
-                "actor_name": AI_EXTRACTION_ACTOR_NAME,
-                "details": {
-                    "previous_status": previous_status,
-                    "reason": reason,
-                },
-            }
-        )
-        data["audit_trail"] = trail
-        item.risk_blocker_data = data
-        flag_modified(item, "risk_blocker_data")
-
+        try:
+            await service.dismiss(rb_uuid, context=_tool_context(), reason=reason)
+        except RiskBlockerNotFoundError:
+            return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
         await session.commit()
 
         logger.info("AI dismissed risk/blocker %s: %s", risk_blocker_id, reason[:100])
@@ -298,22 +202,13 @@ async def resolve_risk_blocker_impl(
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
 
-    c = cast(Any, DealRiskBlocker).__table__.c
-
     async with context.acquire_session() as session:
-        result = await session.execute(
-            select(DealRiskBlocker).where(
-                c.risk_blocker_id == rb_uuid,
-                c.organisation_id == organisation_id,
-            )
-        )
-        item = result.scalar_one_or_none()
-
-        if not item:
+        service = RiskBlockerLifecycleService(session, organisation_id)
+        current_status_raw = await service.get_status(rb_uuid)
+        if current_status_raw is None:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
 
-        current_status = item.status.value if hasattr(item.status, "value") else str(item.status)
-
+        current_status = _status_value(current_status_raw)
         if current_status in [RiskBlockerStatus.RESOLVED.value, RiskBlockerStatus.DISMISSED.value]:
             return {
                 "status": "skipped",
@@ -321,45 +216,10 @@ async def resolve_risk_blocker_impl(
             }
 
         previous_status = current_status
-        now = datetime.now(UTC)
-        item.status = RiskBlockerStatus.RESOLVED
-        item.resolution_notes = resolution_notes
-        item.closed_at = now
-        item.closed_by_user_id = AUTOMATED_PIPELINE_USER_ID
-        item.closed_by_user_name = AI_EXTRACTION_ACTOR_NAME
-        item.last_modified_by_user_id = AUTOMATED_PIPELINE_USER_ID
-        item.last_modified_by_user_name = AI_EXTRACTION_ACTOR_NAME
-        item.updated_at = now
-
-        # Audit trail
-        data = item.risk_blocker_data or {}
-        trail = data.get("audit_trail", [])
-        trail.append(
-            {
-                "action": "resolved",
-                "timestamp": now.isoformat(),
-                "actor_type": "system",
-                "actor_id": str(AUTOMATED_PIPELINE_USER_ID),
-                "actor_name": AI_EXTRACTION_ACTOR_NAME,
-                "details": {
-                    "previous_status": previous_status,
-                    "resolution_notes": resolution_notes,
-                },
-            }
-        )
-        data["audit_trail"] = trail
-        item.risk_blocker_data = data
-        flag_modified(item, "risk_blocker_data")
-
-        # Timeline event
-        timeline_event = build_risk_blocker_timeline_event(
-            organisation_id=organisation_id,
-            deal_id=item.deal_id,
-            risk_blocker=item,
-            event_type=TimelineEventType.BLOCKER_RESOLVED,
-        )
-        session.add(timeline_event)
-
+        try:
+            await service.resolve(rb_uuid, resolution_notes, context=_tool_context())
+        except RiskBlockerNotFoundError:
+            return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
         await session.commit()
 
         logger.info("AI resolved risk/blocker %s: %s", risk_blocker_id, resolution_notes[:100])
@@ -413,21 +273,24 @@ def create_update_risk_blocker(
         """
         logger.info("[TOOL CALLED] update_risk_blocker - id=%s", risk_blocker_id)
 
-        result = await execute_with_capabilities(
-            capabilities_getter(),
-            tool_name="UpdateRiskBlocker",
-            tool_func=update_risk_blocker_impl,
-            parameters={
-                "context": context,
-                "risk_blocker_id": risk_blocker_id,
-                "item_type": item_type,
-                "severity": severity,
-                "description": description,
-                "reasoning": reasoning,
-                "recommended_next_step": recommended_next_step,
-            },
-            description="Updating risk or blocker",
-            fallback_value={"status": "error", "message": "Tool execution failed"},
+        result = cast(
+            dict[str, Any],
+            await execute_with_capabilities(
+                capabilities_getter(),
+                tool_name="UpdateRiskBlocker",
+                tool_func=update_risk_blocker_impl,
+                parameters={
+                    "context": context,
+                    "risk_blocker_id": risk_blocker_id,
+                    "item_type": item_type,
+                    "severity": severity,
+                    "description": description,
+                    "reasoning": reasoning,
+                    "recommended_next_step": recommended_next_step,
+                },
+                description="Updating risk or blocker",
+                fallback_value={"status": "error", "message": "Tool execution failed"},
+            ),
         )
 
         logger.info("[TOOL RESULT] update_risk_blocker - %s", result.get("status", "unknown"))
@@ -461,17 +324,20 @@ def create_dismiss_risk_blocker(
         """
         logger.info("[TOOL CALLED] dismiss_risk_blocker - id=%s", risk_blocker_id)
 
-        result = await execute_with_capabilities(
-            capabilities_getter(),
-            tool_name="DismissRiskBlocker",
-            tool_func=dismiss_risk_blocker_impl,
-            parameters={
-                "context": context,
-                "risk_blocker_id": risk_blocker_id,
-                "reason": reason,
-            },
-            description="Dismissing risk or blocker",
-            fallback_value={"status": "error", "message": "Tool execution failed"},
+        result = cast(
+            dict[str, Any],
+            await execute_with_capabilities(
+                capabilities_getter(),
+                tool_name="DismissRiskBlocker",
+                tool_func=dismiss_risk_blocker_impl,
+                parameters={
+                    "context": context,
+                    "risk_blocker_id": risk_blocker_id,
+                    "reason": reason,
+                },
+                description="Dismissing risk or blocker",
+                fallback_value={"status": "error", "message": "Tool execution failed"},
+            ),
         )
 
         logger.info("[TOOL RESULT] dismiss_risk_blocker - %s", result.get("status", "unknown"))
@@ -503,17 +369,20 @@ def create_resolve_risk_blocker(
         """
         logger.info("[TOOL CALLED] resolve_risk_blocker - id=%s", risk_blocker_id)
 
-        result = await execute_with_capabilities(
-            capabilities_getter(),
-            tool_name="ResolveRiskBlocker",
-            tool_func=resolve_risk_blocker_impl,
-            parameters={
-                "context": context,
-                "risk_blocker_id": risk_blocker_id,
-                "resolution_notes": resolution_notes,
-            },
-            description="Resolving risk or blocker",
-            fallback_value={"status": "error", "message": "Tool execution failed"},
+        result = cast(
+            dict[str, Any],
+            await execute_with_capabilities(
+                capabilities_getter(),
+                tool_name="ResolveRiskBlocker",
+                tool_func=resolve_risk_blocker_impl,
+                parameters={
+                    "context": context,
+                    "risk_blocker_id": risk_blocker_id,
+                    "resolution_notes": resolution_notes,
+                },
+                description="Resolving risk or blocker",
+                fallback_value={"status": "error", "message": "Tool execution failed"},
+            ),
         )
 
         logger.info("[TOOL RESULT] resolve_risk_blocker - %s", result.get("status", "unknown"))

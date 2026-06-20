@@ -10,7 +10,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-from src.service.crm.internal.deal_notes_service import DealNotesService
+from src.service.crm.notes.read_service import NotesReadService
 
 
 class _ScalarRows:
@@ -53,7 +53,7 @@ async def test_deal_note_mentions_use_active_approved_contact_participants() -> 
         approval_status=ApprovalStatus.APPROVED.value,
     )
     session = _NotesSession([participant])
-    service = DealNotesService(session, organisation_id)
+    service = NotesReadService(session, organisation_id)
     deal = SimpleNamespace(owner_email="owner@example.com", owner_name="Owner")
 
     participants = await service._get_deal_participants(deal_id, deal)  # noqa: SLF001

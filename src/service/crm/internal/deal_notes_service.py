@@ -1,74 +1,39 @@
-"""Service for managing deal notes (CRM-synced and user-created)."""
+"""Compatibility facade for legacy deal note callers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, cast
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
-from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivitySource,
-    CRMActivityType,
-)
-from src.domain.models.organisation_tables.sync.crm.deals import (
-    CRMDeal,
-    CRMDealParticipant,
-    CRMParticipantType,
-)
-from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.domain.models.organisation_tables.sync.crm import CRMActivity
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_pipeline,
-    get_or_create_deal_memory_job,
+from src.service.crm.notes.contracts import (
+    CreateUserNoteResult,
+    NotesServiceError,
+    NoteWriteContext,
+    ParticipantInfo,
 )
+from src.service.crm.notes.insight_dispatch_service import NotesInsightDispatchService
+from src.service.crm.notes.read_service import NotesReadService
+from src.service.crm.notes.write_service import NotesWriteService
 
 logger = get_logger("deal_notes_service")
 
-
-@dataclass
-class ParticipantInfo:
-    """Simple container for participant data returned by the service."""
-
-    email: str
-    name: str | None
-
-
-@dataclass
-class CreateUserNoteResult:
-    """Result wrapper for user note creation with idempotency semantics."""
-
-    note: CRMActivity
-    created_new: bool
-
-
-class DealNotesServiceError(Exception):
-    """Custom exception for deal notes service errors."""
-
-    def __init__(self, message: str, status_code: int = 500):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+DealNotesServiceError = NotesServiceError
 
 
 class DealNotesService:
-    """Service for managing deal notes (CRM-synced and user-created).
-
-    Notes are stored in the crm_activities table with activity_type = NOTE.
-    User-created notes have integration_id = NULL to distinguish from CRM-synced notes.
-    """
+    """Compatibility facade; use notes read/write/dispatch services for new code."""
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._reader = NotesReadService(org_session, organisation_id)
+        self._writer = NotesWriteService(org_session, organisation_id)
+        self._dispatcher = NotesInsightDispatchService(org_session, organisation_id)
 
     async def close(self) -> None:
-        """Dispose the underlying session when the service is released."""
         try:
             await self.org_session.close()
         except Exception:
@@ -85,137 +50,12 @@ class DealNotesService:
         cursor: str | None = None,
         sort_order: str = "desc",
     ) -> tuple[list[CRMActivity], str | None, int, list[ParticipantInfo]]:
-        """Retrieve notes for a specific deal with cursor-based pagination.
-
-        Args:
-            deal_id: Internal deal UUID
-            limit: Maximum number of notes to return
-            cursor: Pagination cursor from previous response
-            sort_order: Sort order (desc = newest first, asc = oldest first)
-
-        Returns:
-            Tuple of (notes list, next cursor, total count, participants)
-
-        Raises:
-            DealNotesServiceError: If deal not found or access denied
-        """
-        # Verify deal exists and belongs to this organization
-        deal = await self._verify_deal_access(deal_id)
-
-        c = cast(Any, CRMActivity).__table__.c
-
-        # Use a stable, null-safe timestamp for sorting/pagination.
-        # CRM notes should have source_created_at, but user-created notes and
-        # some provider payloads may not.
-        sort_ts = func.coalesce(c.source_created_at, c.created_at)
-
-        # Base query for notes linked to this deal
-        base_where = and_(
-            c.organisation_id == self.organisation_id,
-            c.deal_id == deal_id,
-            c.activity_type == CRMActivityType.NOTE.value,
-            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+        return await self._reader.get_deal_notes(
+            deal_id=deal_id,
+            limit=limit,
+            cursor=cursor,
+            sort_order=sort_order,
         )
-
-        # Get total count
-        count_stmt = select(func.count()).select_from(CRMActivity).where(base_where)
-        count_result = await self.org_session.execute(count_stmt)
-        total_count = count_result.scalar() or 0
-
-        # Build notes query
-        stmt = select(CRMActivity).where(base_where)
-
-        # Handle cursor-based pagination
-        if cursor:
-            try:
-                ts, activity_id = decode_cursor(cursor)
-            except Exception as exc:
-                raise DealNotesServiceError("Invalid cursor", status_code=400) from exc
-
-            if sort_order == "desc":
-                stmt = stmt.where(
-                    or_(
-                        sort_ts < ts,
-                        and_(sort_ts == ts, c.activity_id < activity_id),
-                    )
-                )
-            else:
-                stmt = stmt.where(
-                    or_(
-                        sort_ts > ts,
-                        and_(sort_ts == ts, c.activity_id > activity_id),
-                    )
-                )
-
-        # Apply sorting
-        if sort_order == "desc":
-            stmt = stmt.order_by(sort_ts.desc(), c.activity_id.desc())
-        else:
-            stmt = stmt.order_by(sort_ts.asc(), c.activity_id.asc())
-
-        # Fetch one extra to determine if there are more results
-        stmt = stmt.limit(limit + 1)
-
-        result = await self.org_session.execute(stmt)
-        rows: list[CRMActivity] = list(result.scalars().all())
-
-        # Determine if there are more results
-        has_more = len(rows) > limit
-        items = rows[:limit]
-
-        # Build next cursor if there are more results
-        next_cursor: str | None = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(last.source_created_at or last.created_at, last.activity_id)
-
-        # Fetch participants (deal owner + stakeholders) for @mentions
-        participants = await self._get_deal_participants(deal_id, deal)
-
-        return items, next_cursor, total_count, participants
-
-    async def _get_deal_participants(self, deal_id: UUID, deal: CRMDeal) -> list[ParticipantInfo]:
-        """Fetch all participants for a deal (owner + contact participants)."""
-        participants: list[ParticipantInfo] = []
-        seen_emails: set[str] = set()
-
-        # Add deal owner if available
-        if deal.owner_email:
-            owner_email = deal.owner_email.lower()
-            seen_emails.add(owner_email)
-            participants.append(
-                ParticipantInfo(
-                    email=deal.owner_email,
-                    name=deal.owner_name,
-                )
-            )
-
-        participants_stmt = select(CRMDealParticipant).where(
-            col(CRMDealParticipant.deal_id) == deal_id,
-            col(CRMDealParticipant.organisation_id) == self.organisation_id,
-            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
-            col(CRMDealParticipant.is_deleted).is_(False),
-            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
-        )
-        result = await self.org_session.execute(participants_stmt)
-        contact_participants = list(result.scalars().all())
-
-        for participant in contact_participants:
-            if not participant.related_email:
-                continue
-            email_lower = participant.related_email.lower()
-            # Avoid duplicates (e.g., owner is also a stakeholder)
-            if email_lower in seen_emails:
-                continue
-            seen_emails.add(email_lower)
-            participants.append(
-                ParticipantInfo(
-                    email=participant.related_email,
-                    name=participant.related_name,
-                )
-            )
-
-        return participants
 
     async def create_user_note(
         self,
@@ -227,82 +67,19 @@ class DealNotesService:
         user_email: str | None,
         created_via: str = "api",
     ) -> CreateUserNoteResult:
-        """Create a new user-generated note for a deal.
-
-        User-created notes are distinguished from CRM-synced notes by:
-        - integration_id = NULL
-        - properties contains {"is_user_created": True, "created_via": ...}
-
-        Args:
-            deal_id: Internal deal UUID
-            content: Note content/body
-            subject: Note subject/title (optional)
-            user_id: ID of user creating the note
-            user_name: Name of user creating the note
-            user_email: Email of user creating the note
-            created_via: Source channel — "api", "import", "bot", etc.
-
-        Returns:
-            CreateUserNoteResult containing the note and whether a new note was created
-
-        Raises:
-            DealNotesServiceError: If deal not found or access denied
-        """
-        await self._verify_deal_access(deal_id)
-
-        # Idempotency guard for double-submits/retries:
-        # if an identical active user note already exists for this deal,
-        # return it instead of creating another row.
-        existing_note = await self._find_existing_user_note(
+        context = NoteWriteContext(
+            source=created_via,
+            actor_user_id=user_id,
+            actor_name=user_name,
+            actor_email=user_email,
+            created_via=created_via,
+        )
+        return await self._writer.create_user_note(
             deal_id=deal_id,
             content=content,
             subject=subject,
+            context=context,
         )
-        if existing_note:
-            logger.info(
-                "Duplicate user note ignored for deal %s by user %s; existing note %s reused",
-                deal_id,
-                user_id,
-                existing_note.activity_id,
-            )
-            return CreateUserNoteResult(note=existing_note, created_new=False)
-
-        now = datetime.now(UTC)
-        note_id = uuid4()
-
-        note = CRMActivity(
-            activity_id=note_id,
-            organisation_id=self.organisation_id,
-            integration_id=None,  # NULL indicates user-created
-            activity_type=CRMActivityType.NOTE.value,
-            subject=subject,
-            body=content,
-            deal_id=deal_id,
-            owner_name=user_name,
-            owner_email=user_email,
-            source=CRMActivitySource.MANUAL.value,
-            created_by_user_id=user_id,
-            source_created_at=now,
-            synced_at=now,
-            last_seen_at=now,
-            properties={
-                "is_user_created": True,
-                "created_via": created_via,
-            },
-        )
-
-        self.org_session.add(note)
-        await self.org_session.flush()
-        await self.org_session.refresh(note)
-
-        logger.info(
-            "Created user note %s for deal %s by user %s",
-            note.activity_id,
-            deal_id,
-            user_id,
-        )
-
-        return CreateUserNoteResult(note=note, created_new=True)
 
     async def update_user_note(
         self,
@@ -310,55 +87,12 @@ class DealNotesService:
         note_id: UUID,
         payload: dict[str, Any],
     ) -> CRMActivity:
-        """Update a user-created note for a deal."""
-        if not payload:
-            raise DealNotesServiceError("No fields to update", status_code=400)
-
-        note = await self._load_user_note(deal_id, note_id)
-
-        updated = False
-        if "content" in payload:
-            if payload["content"] is None:
-                raise DealNotesServiceError("Content cannot be null", status_code=400)
-            note.body = payload["content"]
-            updated = True
-        if "subject" in payload:
-            note.subject = payload["subject"]
-            updated = True
-
-        if not updated:
-            raise DealNotesServiceError("No fields to update", status_code=400)
-
-        now = datetime.now(UTC)
-        note.source_modified_at = now
-        note.synced_at = now
-        note.last_seen_at = now
-        properties = note.properties or {}
-        properties["updated_via"] = "api"
-        note.properties = properties
-
-        await self.org_session.flush()
-        await self.org_session.refresh(note)
-
-        return note
+        return await self._writer.update_user_note(
+            deal_id=deal_id, note_id=note_id, payload=payload
+        )
 
     async def delete_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
-        """Soft delete a user-created note for a deal."""
-        note = await self._load_user_note(deal_id, note_id)
-
-        now = datetime.now(UTC)
-        note.is_deleted = True
-        note.source_modified_at = now
-        note.synced_at = now
-        note.last_seen_at = now
-        properties = note.properties or {}
-        properties["deleted_via"] = "api"
-        note.properties = properties
-
-        await self.org_session.flush()
-        await self.org_session.refresh(note)
-
-        return note
+        return await self._writer.delete_user_note(deal_id=deal_id, note_id=note_id)
 
     async def trigger_deal_insight_pipeline(
         self,
@@ -367,144 +101,12 @@ class DealNotesService:
         trigger_source: str = "note_creation",
         trigger_source_id: UUID | None = None,
     ) -> UUID | None:
-        """Trigger deal memory update after note creation.
-
-        Creates a DealJob for deal memory and dispatches it. Deal memory
-        is the single source of truth — other insights (summary, risks,
-        stakeholders) are derived from it separately.
-
-        Args:
-            deal_id: The deal UUID to process
-            user_id: User ID for job attribution
-            trigger_source: Source of the trigger for metadata
-            trigger_source_id: Optional source record ID that triggered the pipeline
-
-        Returns:
-            The job ID if created, None if trigger failed
-        """
-        try:
-            org_id_str = str(self.organisation_id)
-
-            job_id, _ = await get_or_create_deal_memory_job(
-                self.org_session,
-                self.organisation_id,
-                deal_id,
-                trigger_source,
-                "new_note",
-                user_id=user_id,
-                trigger_source_id=trigger_source_id,
-            )
-            await self.org_session.commit()
-
-            dispatch_deal_insight_pipeline(org_id_str, str(deal_id), str(job_id))
-
-            logger.info(
-                "Triggered deal insight pipeline after %s: deal=%s job=%s",
-                trigger_source,
-                deal_id,
-                job_id,
-            )
-            return job_id
-
-        except Exception as exc:
-            logger.warning(
-                "Failed to trigger deal memory pipeline: deal=%s error=%s",
-                deal_id,
-                str(exc),
-            )
-            return None
-
-    async def _verify_deal_access(self, deal_id: UUID) -> CRMDeal:
-        """Verify deal exists and belongs to this organization.
-
-        Args:
-            deal_id: Internal deal UUID
-
-        Returns:
-            CRMDeal record if found
-
-        Raises:
-            DealNotesServiceError: If deal not found or access denied
-        """
-        c = cast(Any, CRMDeal).__table__.c
-        stmt = select(CRMDeal).where(
-            c.organisation_id == self.organisation_id,
-            c.deal_id == deal_id,
+        return await self._dispatcher.trigger_deal_insight_pipeline(
+            deal_id=deal_id,
+            user_id=user_id,
+            trigger_source=trigger_source,
+            trigger_source_id=trigger_source_id,
         )
-        result = await self.org_session.execute(stmt)
-        deal = result.scalar_one_or_none()
-
-        if not deal:
-            raise DealNotesServiceError(
-                f"Deal {deal_id} not found or access denied",
-                status_code=404,
-            )
-
-        return deal
-
-    async def _load_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
-        note = await self.org_session.get(CRMActivity, note_id)
-        if not note or note.organisation_id != self.organisation_id:
-            raise DealNotesServiceError("Note not found", status_code=404)
-        if note.deal_id != deal_id:
-            raise DealNotesServiceError("Note not found", status_code=404)
-        if note.is_deleted:
-            raise DealNotesServiceError("Note not found", status_code=404)
-        if note.activity_type != CRMActivityType.NOTE.value:
-            raise DealNotesServiceError("Note not found", status_code=404)
-        if note.integration_id is not None:
-            raise DealNotesServiceError("External CRM notes are read-only", status_code=409)
-        return note
-
-    async def _find_existing_user_note(
-        self,
-        deal_id: UUID,
-        content: str,
-        subject: str | None,
-    ) -> CRMActivity | None:
-        """Find an existing active user-created note with exact same content/subject."""
-        c = cast(Any, CRMActivity).__table__.c
-
-        stmt = select(CRMActivity).where(
-            c.organisation_id == self.organisation_id,
-            c.deal_id == deal_id,
-            c.activity_type == CRMActivityType.NOTE.value,
-            c.integration_id.is_(None),
-            c.body == content,
-            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
-        )
-
-        if subject is None:
-            stmt = stmt.where(c.subject.is_(None))
-        else:
-            stmt = stmt.where(c.subject == subject)
-
-        sort_ts = func.coalesce(c.source_created_at, c.created_at)
-        stmt = stmt.order_by(sort_ts.desc(), c.activity_id.desc()).limit(1)
-
-        result = await self.org_session.execute(stmt)
-        return result.scalars().first()
 
     def determine_note_source(self, note: CRMActivity) -> str:
-        """Determine the source of a note (user, hubspot, salesforce).
-
-        Args:
-            note: CRMActivity note record
-
-        Returns:
-            Source identifier string
-        """
-        # User-created notes have no integration_id
-        if note.integration_id is None:
-            return "user"
-
-        # Check properties for provider hints
-        properties: dict[str, Any] = note.properties or {}
-        provider_raw = properties.get("provider")
-        if isinstance(provider_raw, str):
-            provider = provider_raw.strip().lower()
-            if provider:
-                return provider
-
-        # Default to hubspot for CRM-synced notes
-        return "hubspot"
+        return self._reader.determine_note_source(note)

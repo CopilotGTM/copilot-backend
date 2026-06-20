@@ -10,8 +10,9 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityObjectType,
     CRMActivityStatus,
 )
-from src.service.crm.internal.deal_notes_service import DealNotesService
-from src.service.crm.internal.tasks_write_service import TasksWriteService
+from src.service.crm.notes.contracts import NoteWriteContext
+from src.service.crm.notes.write_service import NotesWriteService
+from src.service.crm.tasks.write_service import TaskWriteService
 
 
 class _FakeSession:
@@ -39,7 +40,7 @@ async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> N
         deal_id=uuid4(),
         name="Acme",
     )
-    service = TasksWriteService(session, organisation_id, actor_user_id)
+    service = TaskWriteService(session, organisation_id, actor_user_id)
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._resolve_owner = AsyncMock(  # type: ignore[method-assign]
         return_value=(owner_crm_user_id, "Owner", "owner@example.com")
@@ -74,7 +75,7 @@ async def test_user_created_note_uses_local_ids_without_fake_external_ids() -> N
         owner_email=None,
         owner_name=None,
     )
-    service = DealNotesService(session, organisation_id)
+    service = NotesWriteService(session, organisation_id)
     service._verify_deal_access = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._find_existing_user_note = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
@@ -82,10 +83,13 @@ async def test_user_created_note_uses_local_ids_without_fake_external_ids() -> N
         deal_id=deal_id,
         content="Useful note",
         subject=None,
-        user_id=user_id,
-        user_name="Owner",
-        user_email="owner@example.com",
-        created_via="api",
+        context=NoteWriteContext(
+            source="api",
+            actor_user_id=user_id,
+            actor_name="Owner",
+            actor_email="owner@example.com",
+            created_via="api",
+        ),
     )
 
     note = result.note
