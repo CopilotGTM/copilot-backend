@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -30,9 +32,12 @@ from src.infra.utils.logger import get_logger
 from src.service.crm.insights.risk_blocker_service import (
     InvalidStatusTransitionError,
     RiskBlockerNotFoundError,
-    RiskBlockerService,
     RiskBlockerServiceError,
 )
+from src.service.crm.risks.contracts import RiskBlockerActor, RiskBlockerWriteContext
+from src.service.crm.risks.lifecycle_service import RiskBlockerLifecycleService
+from src.service.crm.risks.read_service import RiskBlockerReadService
+from src.service.crm.risks.write_service import RiskBlockerWriteService
 
 logger = get_logger("risks_blockers_handler")
 
@@ -41,16 +46,37 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 risks_blockers_router = APIRouter()
 
 
+@dataclass
+class RiskBlockerRequestServices:
+    read: RiskBlockerReadService
+    write: RiskBlockerWriteService
+    lifecycle: RiskBlockerLifecycleService
+    session: AsyncSession
+    context: RiskBlockerWriteContext
+
+    async def close(self) -> None:
+        await self.session.close()
+
+
 async def get_risk_blocker_service(
     user: UserIDs = Depends(get_current_user),
     session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a RiskBlockerService instance for the current user/org."""
-    service = RiskBlockerService(
+    """Dependency that yields request-scoped canonical risk/blocker services."""
+    context = RiskBlockerWriteContext(
+        source="api",
+        actor=RiskBlockerActor(
+            actor_type="user",
+            actor_id=user.user_id,
+            actor_name=user.user_name if hasattr(user, "user_name") else None,
+        ),
+    )
+    service = RiskBlockerRequestServices(
+        read=RiskBlockerReadService(session, user.organisation_id),
+        write=RiskBlockerWriteService(session, user.organisation_id),
+        lifecycle=RiskBlockerLifecycleService(session, user.organisation_id),
         session=session,
-        organisation_id=user.organisation_id,
-        user_id=user.user_id,
-        user_name=user.user_name if hasattr(user, "user_name") else None,
+        context=context,
     )
     try:
         yield service
@@ -59,6 +85,32 @@ async def get_risk_blocker_service(
             await service.close()
         except Exception:
             logger.debug("RiskBlockerService close failed", exc_info=True)
+
+
+def _read_service(service: Any) -> Any:
+    return service.read if hasattr(service, "read") else service
+
+
+def _write_service(service: Any) -> Any:
+    return service.write if hasattr(service, "write") else service
+
+
+def _lifecycle_service(service: Any) -> Any:
+    return service.lifecycle if hasattr(service, "lifecycle") else service
+
+
+def _write_context(service: Any) -> RiskBlockerWriteContext | None:
+    return service.context if hasattr(service, "context") else None
+
+
+async def _commit_if_owned(service: Any) -> None:
+    if hasattr(service, "session"):
+        await service.session.commit()
+
+
+async def _rollback_if_owned(service: Any) -> None:
+    if hasattr(service, "session"):
+        await service.session.rollback()
 
 
 @risks_blockers_router.get(
@@ -71,7 +123,7 @@ async def get_risk_blocker_service(
 async def list_risks_blockers(
     deal_id: UUID,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
     query: RiskBlockerListQueryParams = Depends(),
 ) -> GenericResponse[RiskBlockerListResponse]:
     """
@@ -105,7 +157,7 @@ async def list_risks_blockers(
                 except ValueError:
                     logger.warning(f"Invalid status filter: {s}")
 
-        items, total_count, summary = await service.list_for_deal(
+        items, total_count, summary = await _read_service(service).list_for_deal(
             deal_id=deal_id,
             limit=query.limit,
             page=query.page,
@@ -154,7 +206,7 @@ async def list_risks_blockers(
 async def get_risk_blocker(
     risk_blocker_id: UUID,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Get full details of a risk/blocker.
@@ -168,7 +220,7 @@ async def get_risk_blocker(
     - Complete audit trail of all changes
     """
     try:
-        item = await service.get_by_id(risk_blocker_id)
+        item = await _read_service(service).get_by_id(risk_blocker_id)
 
         if not item:
             return Response.error_response(
@@ -203,7 +255,7 @@ async def create_risk_blocker(
     deal_id: UUID,
     body: RiskBlockerCreateRequest,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Create a new risk or blocker manually.
@@ -211,17 +263,33 @@ async def create_risk_blocker(
     Items are created directly with status=OPEN.
     """
     try:
-        item = await service.create(
-            deal_id=deal_id,
-            item_type=body.item_type,
-            title=body.title,
-            description=body.description,
-            category=body.category,
-            severity=body.severity,
-            owner_name=body.owner_name,
-            owner_email=body.owner_email,
-            assigned_team=body.assigned_team,
-        )
+        context = _write_context(service)
+        if context:
+            item = await _write_service(service).create_manual(
+                deal_id=deal_id,
+                item_type=body.item_type,
+                title=body.title,
+                context=context,
+                description=body.description,
+                category=body.category,
+                severity=body.severity,
+                owner_name=body.owner_name,
+                owner_email=body.owner_email,
+                assigned_team=body.assigned_team,
+            )
+            await _commit_if_owned(service)
+        else:
+            item = await service.create(
+                deal_id=deal_id,
+                item_type=body.item_type,
+                title=body.title,
+                description=body.description,
+                category=body.category,
+                severity=body.severity,
+                owner_name=body.owner_name,
+                owner_email=body.owner_email,
+                assigned_team=body.assigned_team,
+            )
 
         return Response.created_response(
             message="Risk/blocker created successfully",
@@ -230,11 +298,13 @@ async def create_risk_blocker(
         )
 
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to create risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -252,7 +322,7 @@ async def update_risk_blocker(
     risk_blocker_id: UUID,
     body: RiskBlockerUpdateRequest,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Update a risk/blocker.
@@ -261,7 +331,13 @@ async def update_risk_blocker(
     """
     try:
         updates = body.model_dump(exclude_none=True)
-        item = await service.update(risk_blocker_id, updates)
+        context = _write_context(service)
+        if context:
+            item = await _write_service(service).update_fields(risk_blocker_id, updates, context)
+            if item:
+                await _commit_if_owned(service)
+        else:
+            item = await service.update(risk_blocker_id, updates)
 
         if not item:
             return Response.error_response(
@@ -274,11 +350,13 @@ async def update_risk_blocker(
         )
 
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to update risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -295,7 +373,7 @@ async def update_risk_blocker(
 async def dismiss_risk_blocker(
     risk_blocker_id: UUID,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Dismiss a risk/blocker.
@@ -304,7 +382,12 @@ async def dismiss_risk_blocker(
     The item is moved to DISMISSED status.
     """
     try:
-        item = await service.dismiss(risk_blocker_id)
+        context = _write_context(service)
+        if context:
+            item = await _lifecycle_service(service).dismiss(risk_blocker_id, context=context)
+            await _commit_if_owned(service)
+        else:
+            item = await service.dismiss(risk_blocker_id)
 
         return Response.success_response(
             message="Risk/blocker dismissed successfully",
@@ -312,15 +395,18 @@ async def dismiss_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
+        await _rollback_if_owned(service)
         return Response.error_response(
             message="Risk/blocker not found", status_code=404, response=response
         )
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to dismiss risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -338,7 +424,7 @@ async def resolve_risk_blocker(
     risk_blocker_id: UUID,
     body: RiskBlockerResolveRequest,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Resolve a risk/blocker.
@@ -347,7 +433,16 @@ async def resolve_risk_blocker(
     how the issue was addressed.
     """
     try:
-        item = await service.resolve(risk_blocker_id, body.resolution_notes)
+        context = _write_context(service)
+        if context:
+            item = await _lifecycle_service(service).resolve(
+                risk_blocker_id,
+                body.resolution_notes,
+                context=context,
+            )
+            await _commit_if_owned(service)
+        else:
+            item = await service.resolve(risk_blocker_id, body.resolution_notes)
 
         return Response.success_response(
             message="Risk/blocker resolved successfully",
@@ -355,15 +450,18 @@ async def resolve_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
+        await _rollback_if_owned(service)
         return Response.error_response(
             message="Risk/blocker not found", status_code=404, response=response
         )
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to resolve risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -380,7 +478,7 @@ async def resolve_risk_blocker(
 async def reopen_risk_blocker(
     risk_blocker_id: UUID,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
     Reopen a resolved or dismissed risk/blocker.
@@ -388,7 +486,12 @@ async def reopen_risk_blocker(
     Clears resolution data and moves the item back to OPEN status.
     """
     try:
-        item = await service.reopen(risk_blocker_id)
+        context = _write_context(service)
+        if context:
+            item = await _lifecycle_service(service).reopen(risk_blocker_id, context=context)
+            await _commit_if_owned(service)
+        else:
+            item = await service.reopen(risk_blocker_id)
 
         return Response.success_response(
             message="Risk/blocker reopened successfully",
@@ -396,17 +499,21 @@ async def reopen_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
+        await _rollback_if_owned(service)
         return Response.error_response(
             message="Risk/blocker not found", status_code=404, response=response
         )
     except InvalidStatusTransitionError as e:
+        await _rollback_if_owned(service)
         return Response.error_response(message=e.message, status_code=400, response=response)
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to reopen risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -423,7 +530,7 @@ async def reopen_risk_blocker(
 async def delete_risk_blocker(
     risk_blocker_id: UUID,
     response: FastAPIResponse,
-    service: RiskBlockerService = Depends(get_risk_blocker_service),
+    service: Any = Depends(get_risk_blocker_service),
 ) -> GenericResponse[None]:
     """
     Delete a risk/blocker.
@@ -432,7 +539,12 @@ async def delete_risk_blocker(
     instead to preserve the audit trail.
     """
     try:
-        await service.delete(risk_blocker_id)
+        context = _write_context(service)
+        if context:
+            await _write_service(service).delete(risk_blocker_id)
+            await _commit_if_owned(service)
+        else:
+            await service.delete(risk_blocker_id)
 
         return Response.success_response(
             message="Risk/blocker deleted successfully",
@@ -440,15 +552,18 @@ async def delete_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
+        await _rollback_if_owned(service)
         return Response.error_response(
             message="Risk/blocker not found", status_code=404, response=response
         )
     except RiskBlockerServiceError as e:
+        await _rollback_if_owned(service)
         logger.warning(f"Risk/blocker service error: {e.message}")
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
+        await _rollback_if_owned(service)
         logger.exception("Failed to delete risk/blocker")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response

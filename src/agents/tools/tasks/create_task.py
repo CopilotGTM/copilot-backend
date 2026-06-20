@@ -103,12 +103,10 @@ def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_tasks_write_service() -> tuple[type[Any], type[Exception]]:
-    from src.service.crm.internal.tasks_write_service import (
-        TasksWriteService,
-        TasksWriteServiceError,
-    )
+    from src.service.crm.tasks.contracts import TaskWriteServiceError
+    from src.service.crm.tasks.write_service import TaskWriteService
 
-    return TasksWriteService, TasksWriteServiceError
+    return TaskWriteService, TaskWriteServiceError
 
 
 def _task_title_missing_message() -> str:
@@ -760,7 +758,7 @@ async def create_task(
     assign_to: str | None = None,
     reminder: str | None = None,
 ) -> dict[str, Any]:
-    """Create a CRM task directly through TasksWriteService."""
+    """Create a CRM task directly through TaskWriteService."""
     organisation_id = context.organisation_id
     user_id = context.user_id
 
@@ -895,10 +893,11 @@ async def create_task(
             return result
         except service_error_cls as exc:
             await session.rollback()
-            logger.warning("create_task: TasksWriteServiceError: %s", exc.message)
+            message = str(getattr(exc, "message", str(exc)))
+            logger.warning("create_task: TasksWriteServiceError: %s", message)
             return {
                 "status": "error",
-                "message": f"Could not create task: {exc.message}",
+                "message": f"Could not create task: {message}",
             }
         except Exception:
             await session.rollback()

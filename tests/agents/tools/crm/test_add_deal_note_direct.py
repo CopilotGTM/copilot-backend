@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -119,12 +119,16 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
     create_result = SimpleNamespace(note=note, created_new=True)
     insight_job_id = uuid4()
 
-    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
-        service = MagicMock()
-        service.create_user_note = AsyncMock(return_value=create_result)
-        service.trigger_deal_insight_pipeline = AsyncMock(return_value=insight_job_id)
-        service.determine_note_source.return_value = "user"
-        service_cls.return_value = service
+    with (
+        patch("src.agents.tools.crm.add_deal_note.NotesWriteService") as write_cls,
+        patch("src.agents.tools.crm.add_deal_note.NotesInsightDispatchService") as dispatch_cls,
+    ):
+        write_service = MagicMock()
+        write_service.create_user_note = AsyncMock(return_value=create_result)
+        write_cls.return_value = write_service
+        dispatch_service = MagicMock()
+        dispatch_service.trigger_deal_insight_pipeline = AsyncMock(return_value=insight_job_id)
+        dispatch_cls.return_value = dispatch_service
 
         result = await add_deal_note_direct(
             context=context,
@@ -134,18 +138,22 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
             subject=" Budget approval ",
         )
 
-    service_cls.assert_called_once_with(org_session, context.organisation_id)
-    service.create_user_note.assert_awaited_once_with(
+    write_cls.assert_called_once_with(org_session, context.organisation_id)
+    dispatch_cls.assert_called_once_with(org_session, context.organisation_id)
+    write_service.create_user_note.assert_awaited_once_with(
         deal_id=deal_id,
         content="Budget approval is expected Friday.",
         subject="Budget approval",
-        user_id=context.user_id,
-        user_name="Seller Person",
-        user_email=context.user_email,
-        created_via="agent_add_deal_note",
+        context=ANY,
     )
+    note_context = write_service.create_user_note.await_args.kwargs["context"]
+    assert note_context.source == "agent"
+    assert note_context.actor_user_id == context.user_id
+    assert note_context.actor_name == "Seller Person"
+    assert note_context.actor_email == context.user_email
+    assert note_context.created_via == "agent_add_deal_note"
     org_session.commit.assert_awaited_once()
-    service.trigger_deal_insight_pipeline.assert_awaited_once_with(
+    dispatch_service.trigger_deal_insight_pipeline.assert_awaited_once_with(
         deal_id=deal_id,
         user_id=context.user_id,
         trigger_source="note_creation",
@@ -170,11 +178,18 @@ async def test_add_deal_note_direct_returns_success_when_insight_dispatch_fails(
     note = _note(deal_id=deal_id)
     create_result = SimpleNamespace(note=note, created_new=True)
 
-    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
-        service = MagicMock()
-        service.create_user_note = AsyncMock(return_value=create_result)
-        service.trigger_deal_insight_pipeline = AsyncMock(side_effect=RuntimeError("broker down"))
-        service_cls.return_value = service
+    with (
+        patch("src.agents.tools.crm.add_deal_note.NotesWriteService") as write_cls,
+        patch("src.agents.tools.crm.add_deal_note.NotesInsightDispatchService") as dispatch_cls,
+    ):
+        write_service = MagicMock()
+        write_service.create_user_note = AsyncMock(return_value=create_result)
+        write_cls.return_value = write_service
+        dispatch_service = MagicMock()
+        dispatch_service.trigger_deal_insight_pipeline = AsyncMock(
+            side_effect=RuntimeError("broker down")
+        )
+        dispatch_cls.return_value = dispatch_service
 
         result = await add_deal_note_direct(
             context=context,
@@ -200,12 +215,16 @@ async def test_add_deal_note_direct_existing_note_skips_insight_pipeline() -> No
     note = _note()
     create_result = SimpleNamespace(note=note, created_new=False)
 
-    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
-        service = MagicMock()
-        service.create_user_note = AsyncMock(return_value=create_result)
-        service.trigger_deal_insight_pipeline = AsyncMock()
-        service.determine_note_source.return_value = "user"
-        service_cls.return_value = service
+    with (
+        patch("src.agents.tools.crm.add_deal_note.NotesWriteService") as write_cls,
+        patch("src.agents.tools.crm.add_deal_note.NotesInsightDispatchService") as dispatch_cls,
+    ):
+        write_service = MagicMock()
+        write_service.create_user_note = AsyncMock(return_value=create_result)
+        write_cls.return_value = write_service
+        dispatch_service = MagicMock()
+        dispatch_service.trigger_deal_insight_pipeline = AsyncMock()
+        dispatch_cls.return_value = dispatch_service
 
         result = await add_deal_note_direct(
             context=context,
@@ -216,7 +235,7 @@ async def test_add_deal_note_direct_existing_note_skips_insight_pipeline() -> No
         )
 
     org_session.commit.assert_awaited_once()
-    service.trigger_deal_insight_pipeline.assert_not_awaited()
+    dispatch_service.trigger_deal_insight_pipeline.assert_not_awaited()
     assert result["status"] == "exists"
     assert "already exists" in result["message"]
 
@@ -228,12 +247,12 @@ async def test_add_deal_note_direct_returns_structured_service_error() -> None:
     org_session.rollback = AsyncMock()
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
 
-    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
-        service = MagicMock()
-        service.create_user_note = AsyncMock(
+    with patch("src.agents.tools.crm.add_deal_note.NotesWriteService") as write_cls:
+        write_service = MagicMock()
+        write_service.create_user_note = AsyncMock(
             side_effect=DealNotesServiceError("Deal not found or access denied", status_code=404)
         )
-        service_cls.return_value = service
+        write_cls.return_value = write_service
 
         result = await add_deal_note_direct(
             context=context,
@@ -282,12 +301,16 @@ async def test_add_deal_note_direct_builds_slack_success_payload() -> None:
     note = _note()
     create_result = SimpleNamespace(note=note, created_new=True)
 
-    with patch("src.agents.tools.crm.add_deal_note.DealNotesService") as service_cls:
-        service = MagicMock()
-        service.create_user_note = AsyncMock(return_value=create_result)
-        service.trigger_deal_insight_pipeline = AsyncMock(return_value=None)
-        service.determine_note_source.return_value = "user"
-        service_cls.return_value = service
+    with (
+        patch("src.agents.tools.crm.add_deal_note.NotesWriteService") as write_cls,
+        patch("src.agents.tools.crm.add_deal_note.NotesInsightDispatchService") as dispatch_cls,
+    ):
+        write_service = MagicMock()
+        write_service.create_user_note = AsyncMock(return_value=create_result)
+        write_cls.return_value = write_service
+        dispatch_service = MagicMock()
+        dispatch_service.trigger_deal_insight_pipeline = AsyncMock(return_value=None)
+        dispatch_cls.return_value = dispatch_service
 
         result = await add_deal_note_direct(
             context=context,

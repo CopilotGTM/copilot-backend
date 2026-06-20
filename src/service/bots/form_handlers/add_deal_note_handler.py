@@ -1,7 +1,7 @@
 """Form handler for add-deal-note submissions.
 
 Processes "add_deal_note_submit" actions from interactive cards,
-validates the form data, and creates the note via DealNotesService.
+validates the form data, and creates the note via NotesWriteService.
 """
 
 from __future__ import annotations
@@ -101,12 +101,13 @@ class AddDealNoteFormHandler(BaseFormHandler):
                 except ValueError:
                     pass
 
-            # Create the note
-            from src.service.crm.internal.deal_notes_service import DealNotesService
+            # Create the note through the canonical notes write service.
+            from src.service.crm.notes.contracts import NoteWriteContext
+            from src.service.crm.notes.write_service import NotesWriteService
 
             async for org_session in acquire_org_async_session(org_id):
                 try:
-                    notes_service = DealNotesService(
+                    notes_service = NotesWriteService(
                         org_session=org_session,
                         organisation_id=org_id,
                     )
@@ -115,9 +116,13 @@ class AddDealNoteFormHandler(BaseFormHandler):
                         deal_id=deal_id,
                         content=note_content,
                         subject=None,
-                        user_id=user.user_id,
-                        user_name=f"{user.first_name} {user.last_name}",
-                        user_email=user.email,
+                        context=NoteWriteContext(
+                            source="bot",
+                            actor_user_id=user.user_id,
+                            actor_name=f"{user.first_name} {user.last_name}",
+                            actor_email=user.email,
+                            created_via="bot",
+                        ),
                     )
                     await org_session.commit()
 

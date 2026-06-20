@@ -16,13 +16,15 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
-from src.service.crm.internal.deal_notes_service import DealNotesService, DealNotesServiceError
+from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
+from src.service.crm.notes.insight_dispatch_service import NotesInsightDispatchService
+from src.service.crm.notes.write_service import NotesWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -65,7 +67,7 @@ def _note_result_timestamp(note: Any) -> str | None:
     if timestamp is None:
         return None
     if hasattr(timestamp, "isoformat"):
-        return timestamp.isoformat()
+        return cast(str, timestamp.isoformat())
     return str(timestamp)
 
 
@@ -269,23 +271,27 @@ async def add_deal_note_direct(
     )
 
     async with context.acquire_session() as session:
-        service = DealNotesService(session, organisation_id)
+        notes_write = NotesWriteService(session, organisation_id)
+        insight_dispatch = NotesInsightDispatchService(session, organisation_id)
         try:
-            create_result = await service.create_user_note(
+            create_result = await notes_write.create_user_note(
                 deal_id=deal_uuid,
                 content=clean_content,
                 subject=clean_subject,
-                user_id=user_id,
-                user_name=user_name,
-                user_email=context.user_email,
-                created_via="agent_add_deal_note",
+                context=NoteWriteContext(
+                    source="agent",
+                    actor_user_id=user_id,
+                    actor_name=user_name,
+                    actor_email=context.user_email,
+                    created_via="agent_add_deal_note",
+                ),
             )
             await session.commit()
 
             insight_job_id = None
             if create_result.created_new:
                 try:
-                    insight_job_id = await service.trigger_deal_insight_pipeline(
+                    insight_job_id = await insight_dispatch.trigger_deal_insight_pipeline(
                         deal_id=deal_uuid,
                         user_id=user_id,
                         trigger_source="note_creation",
@@ -304,7 +310,7 @@ async def add_deal_note_direct(
                 created_new=create_result.created_new,
                 insight_job_id=insight_job_id,
             )
-        except DealNotesServiceError as exc:
+        except NotesServiceError as exc:
             await session.rollback()
             logger.warning("add_deal_note_direct: DealNotesServiceError: %s", exc.message)
             return {"status": "error", "message": f"Could not add note: {exc.message}"}
@@ -444,7 +450,7 @@ async def add_deal_note_form(
 
         confirm_value = json.dumps(confirm_data, separators=(",", ":"))
         cancel_value = json.dumps(cancel_data, separators=(",", ":"))
-        slack_blocks = [
+        slack_blocks: list[dict[str, Any]] = [
             {
                 "type": "header",
                 "text": {"type": "plain_text", "text": "Add Note to Deal"},
@@ -493,8 +499,8 @@ async def add_deal_note_form(
             },
         ]
 
-        bot_service = SlackBotService()
-        sent = await bot_service.send_block_kit_message(
+        slack_service = SlackBotService()
+        sent = await slack_service.send_block_kit_message(
             team_id=team_id,
             channel_id=channel_id,
             blocks=slack_blocks,
@@ -517,8 +523,8 @@ async def add_deal_note_form(
             ],
         }
 
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
+        teams_service = TeamsBotService()
+        sent = await teams_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
             payload=card_payload,

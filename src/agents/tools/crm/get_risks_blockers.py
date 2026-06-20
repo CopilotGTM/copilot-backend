@@ -12,20 +12,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
-
-from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
-    DealRiskBlocker,
     RiskBlockerCategory,
     RiskBlockerSeverity,
     RiskBlockerSource,
     RiskBlockerStatus,
     RiskBlockerType,
 )
+from src.service.crm.risks.read_service import RiskBlockerReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -70,26 +68,22 @@ async def get_existing_risks_blockers(
         logger.warning("get_existing_risks_blockers: no deal_id provided and none in context")
         return []
 
-    # Use table columns for SQLAlchemy operations (type-safe pattern)
-    c = cast(Any, DealRiskBlocker).__table__.c
-
-    # SECURITY: Both organisation_id and deal_id from context (immutable)
-    stmt = select(DealRiskBlocker).where(
-        c.organisation_id == organisation_id,
-        c.deal_id == actual_deal_id,
-    )
-
-    # Optionally exclude dismissed items
-    if not include_dismissed:
-        stmt = stmt.where(c.status != RiskBlockerStatus.DISMISSED.value)
-
-    stmt = stmt.order_by(c.created_at.desc())
-
-    # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            items = result.scalars().all()
+            service = RiskBlockerReadService(session, organisation_id)
+            statuses = None
+            if not include_dismissed:
+                statuses = [
+                    RiskBlockerStatus.OPEN,
+                    RiskBlockerStatus.IN_PROGRESS,
+                    RiskBlockerStatus.RESOLVED,
+                    RiskBlockerStatus.WONT_FIX,
+                ]
+            items = await service.list_models_for_deal(
+                deal_id=actual_deal_id,
+                statuses=statuses,
+                limit=100,
+            )
         except Exception as e:
             logger.exception(f"get_existing_risks_blockers: database error: {e}")
             return []

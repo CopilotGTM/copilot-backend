@@ -26,10 +26,24 @@ from src.api.schemas.crm_note_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivity
 from src.infra.utils.logger import get_logger
-from src.service.crm.internal.deal_notes_service import (
-    DealNotesService,
-    DealNotesServiceError,
-)
+from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
+from src.service.crm.notes.insight_dispatch_service import NotesInsightDispatchService
+from src.service.crm.notes.read_service import NotesReadService
+from src.service.crm.notes.write_service import NotesWriteService
+
+
+class DealNotesServices:
+    """Request-scoped notes services sharing one org session."""
+
+    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+        self.session = org_session
+        self.read = NotesReadService(org_session, organisation_id)
+        self.write = NotesWriteService(org_session, organisation_id)
+        self.dispatch = NotesInsightDispatchService(org_session, organisation_id)
+
+    async def close(self) -> None:
+        await self.session.close()
+
 
 logger = get_logger("deal_notes_handler")
 
@@ -38,22 +52,25 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 deal_notes_router = APIRouter()
 
 
-async def get_deal_notes_service(
+async def get_deal_notes_services(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a DealNotesService instance for the current org.
+    """Dependency that yields request-scoped notes services for the current org.
 
     Ensures proper cleanup of database connections via try/finally pattern.
     """
-    service = DealNotesService(org_session, user_ids.organisation_id)
+    service = DealNotesServices(org_session, user_ids.organisation_id)
     try:
         yield service
     finally:
         try:
             await service.close()
         except Exception:
-            logger.debug("DealNotesService close failed", exc_info=True)
+            logger.debug("DealNotesServices close failed", exc_info=True)
+
+
+get_deal_notes_service = get_deal_notes_services
 
 
 def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
@@ -105,7 +122,7 @@ async def get_deal_notes(
     limit: int = Query(50, ge=1, le=100, description="Maximum notes per page"),
     cursor: str | None = Query(None, description="Pagination cursor from previous response"),
     sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order by created date"),
-    service: DealNotesService = Depends(get_deal_notes_service),
+    service: DealNotesServices = Depends(get_deal_notes_services),
 ) -> GenericResponse[DealNotesPage]:
     """Get paginated notes for a deal.
 
@@ -118,7 +135,7 @@ async def get_deal_notes(
     - sort: Sort order (desc = newest first, asc = oldest first)
     """
     try:
-        notes, next_cursor, total_count, participants = await service.get_deal_notes(
+        notes, next_cursor, total_count, participants = await service.read.get_deal_notes(
             deal_id=deal_id,
             limit=limit,
             cursor=cursor,
@@ -126,7 +143,9 @@ async def get_deal_notes(
         )
 
         # Map to response schema
-        items = [_map_note_to_schema(note, service.determine_note_source(note)) for note in notes]
+        items = [
+            _map_note_to_schema(note, service.read.determine_note_source(note)) for note in notes
+        ]
 
         # Map participants to schema
         participant_list = [
@@ -147,7 +166,7 @@ async def get_deal_notes(
             ),
         )
 
-    except DealNotesServiceError as exc:
+    except NotesServiceError as exc:
         logger.warning("Deal notes access error: %s", exc.message, exc_info=True)
         return Response.error_response(
             message=exc.message, status_code=exc.status_code, response=response
@@ -171,7 +190,7 @@ async def create_deal_note(
     request: CreateNoteRequest,
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
-    service: DealNotesService = Depends(get_deal_notes_service),
+    service: DealNotesServices = Depends(get_deal_notes_services),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealNoteItem]:
     """Create a new user-generated note for a deal.
@@ -181,13 +200,17 @@ async def create_deal_note(
     owns the deal can create notes.
     """
     try:
-        create_result = await service.create_user_note(
+        create_result = await service.write.create_user_note(
             deal_id=deal_id,
             content=request.content,
             subject=request.subject,
-            user_id=user_ids.user_id,
-            user_name=user_ids.user_name,
-            user_email=user_ids.user_email,
+            context=NoteWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                actor_name=user_ids.user_name,
+                actor_email=user_ids.user_email,
+                created_via="api",
+            ),
         )
 
         # Commit the transaction
@@ -196,12 +219,12 @@ async def create_deal_note(
         # Map to response schema
         note_schema = _map_note_to_schema(
             create_result.note,
-            service.determine_note_source(create_result.note),
+            service.read.determine_note_source(create_result.note),
         )
 
         if create_result.created_new:
             # Trigger deal memory update after note creation
-            await service.trigger_deal_insight_pipeline(
+            await service.dispatch.trigger_deal_insight_pipeline(
                 deal_id=deal_id,
                 user_id=user_ids.user_id,
                 trigger_source="note_creation",
@@ -220,7 +243,7 @@ async def create_deal_note(
             response=response,
         )
 
-    except DealNotesServiceError as exc:
+    except NotesServiceError as exc:
         logger.warning("Failed to create note: %s", exc.message, exc_info=True)
         await service.session.rollback()
         return Response.error_response(
@@ -250,20 +273,20 @@ async def update_deal_note(
     note_id: UUID,
     request: UpdateNoteRequest,
     response: FastAPIResponse,
-    service: DealNotesService = Depends(get_deal_notes_service),
+    service: DealNotesServices = Depends(get_deal_notes_services),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealNoteItem]:
     """Update a user-created note for a deal."""
     try:
-        note = await service.update_user_note(
+        note = await service.write.update_user_note(
             deal_id=deal_id,
             note_id=note_id,
             payload=request.model_dump(exclude_unset=True),
         )
         await service.session.commit()
-        note_schema = _map_note_to_schema(note, service.determine_note_source(note))
+        note_schema = _map_note_to_schema(note, service.read.determine_note_source(note))
         return Response.success_response(message="Note updated successfully", data=note_schema)
-    except DealNotesServiceError as exc:
+    except NotesServiceError as exc:
         await service.session.rollback()
         logger.warning("Failed to update note: %s", exc.message, exc_info=True)
         return Response.error_response(
@@ -293,16 +316,16 @@ async def delete_deal_note(
     deal_id: UUID,
     note_id: UUID,
     response: FastAPIResponse,
-    service: DealNotesService = Depends(get_deal_notes_service),
+    service: DealNotesServices = Depends(get_deal_notes_services),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealNoteItem]:
     """Soft delete a user-created note for a deal."""
     try:
-        note = await service.delete_user_note(deal_id=deal_id, note_id=note_id)
+        note = await service.write.delete_user_note(deal_id=deal_id, note_id=note_id)
         await service.session.commit()
-        note_schema = _map_note_to_schema(note, service.determine_note_source(note))
+        note_schema = _map_note_to_schema(note, service.read.determine_note_source(note))
         return Response.success_response(message="Note deleted successfully", data=note_schema)
-    except DealNotesServiceError as exc:
+    except NotesServiceError as exc:
         await service.session.rollback()
         logger.warning("Failed to delete note: %s", exc.message, exc_info=True)
         return Response.error_response(
