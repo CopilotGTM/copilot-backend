@@ -1,3 +1,5 @@
+"""Regression tests for deal write stage history and owner create orchestration."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -15,14 +17,17 @@ class _FakeOrgSession:
         self.added: list[object] = []
 
     def add(self, obj: object) -> None:
+        """Capture rows that would be pending in the org session."""
         self.added.append(obj)
 
     async def flush(self) -> None:
+        """Mirror AsyncSession.flush without needing a database."""
         return None
 
 
 @pytest.mark.asyncio
 async def test_move_stage_records_previous_stage_context_and_updates_stage_timestamps() -> None:
+    """Stage moves preserve from-stage context through DealStageService."""
     session = _FakeOrgSession()
     service = DealWriteService(
         org_session=session,
@@ -73,6 +78,7 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
 
 @pytest.mark.asyncio
 async def test_create_deal_sets_initial_stage_timestamps_and_history_source() -> None:
+    """Deal creation writes initial stage history with internal identifiers only."""
     session = _FakeOrgSession()
     service = DealWriteService(
         org_session=session,
@@ -112,3 +118,56 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
     assert history.from_stage_id is None
     assert not hasattr(history, "from_stage_external_id")
     assert history.source == "api"
+
+
+@pytest.mark.asyncio
+async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_fields() -> None:
+    """Initial owner assignment is part of create, not a second owner-change event."""
+    session = _FakeOrgSession()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    integration_id = uuid4()
+    owner_user_id = uuid4()
+    pipeline = SimpleNamespace(pipeline_id=pipeline_id, name="Sales")
+    stage = SimpleNamespace(stage_id=stage_id, name="Discovery")
+    integration = SimpleNamespace(integration_id=integration_id)
+    crm_user = SimpleNamespace(
+        user_id=owner_user_id,
+        full_name="Owner User",
+        email="owner@example.com",
+    )
+
+    service._get_default_pipeline = AsyncMock(return_value=pipeline)
+    service._get_first_stage = AsyncMock(return_value=stage)
+    service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
+    service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
+            new=AsyncMock(return_value=integration),
+        ),
+        patch(
+            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            new=AsyncMock(return_value=crm_user),
+        ),
+    ):
+        deal = await service.create_deal({"name": "New Deal", "owner_user_id": owner_user_id})
+
+    service._owners.sync_owner_participant.assert_awaited_once_with(  # type: ignore[attr-defined]
+        deal=deal,
+        crm_user=crm_user,
+    )
+    assert deal.owner_id == owner_user_id
+    assert deal.owner_name == "Owner User"
+    assert deal.owner_email == "owner@example.com"
+    event_kwargs = service._record_mutation_event.await_args.kwargs  # type: ignore[attr-defined]
+    assert event_kwargs["event_type"] == "crm.deal.created"
+    assert event_kwargs["changed_fields"]["owner_id"]["new"] == owner_user_id

@@ -23,11 +23,14 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
 from src.service.crm.deals.contracts import DealReadServiceError
+from src.service.crm.participants.participant_write_service import ParticipantWriteService
 
 logger = get_logger("deal_read_service")
 
 
 class DealOwnerFilterRow(TypedDict):
+    """Compact owner row used by deal owner filter endpoints."""
+
     owner_id: UUID
     name: str | None
     email: str | None
@@ -556,8 +559,9 @@ class DealReadService:
                     c.organisation_id == self.organisation_id,
                     c.deal_id.in_(deal_ids),
                     c.participant_type == CRMParticipantType.USER.value,
-                    # NULL means a normal team member; SQL `!=` would otherwise drop it.
-                    func.coalesce(c.relationship_role, "") != "owner",
+                    # Owner rows are a roster projection and are returned from
+                    # owner_details; normalize legacy casing so they do not leak.
+                    ParticipantWriteService.owner_role_sql_expression() != "owner",
                     c.is_deleted.is_(False),
                 )
                 .order_by(
