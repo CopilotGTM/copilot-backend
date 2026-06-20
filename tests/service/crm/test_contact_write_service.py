@@ -85,6 +85,85 @@ async def test_create_contact_accepts_properties_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_or_create_by_email_reuses_existing_contact_and_merges_profile() -> None:
+    org_id = uuid4()
+    contact_id = uuid4()
+    existing = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@example.com",
+        full_name="Old Name",
+        properties={"linkedin_url": "https://linkedin.com/in/buyer"},
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[existing]))
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.commit = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+
+    result = await service.find_or_create_contact_by_email(
+        email=" Buyer@Example.com ",
+        name="New Name",
+        context=ContactWriteContext(source="stakeholder"),
+        profile_updates={
+            "job_title": "CFO",
+            "phone": "+15555550100",
+            "properties": {"department": "Finance"},
+        },
+    )
+
+    assert result.contact.contact_id == contact_id
+    assert result.created is False
+    assert result.matched_by == "email"
+    assert existing.full_name == "New Name"
+    assert existing.first_name == "New"
+    assert existing.last_name == "Name"
+    assert existing.job_title == "CFO"
+    assert existing.phone == "+15555550100"
+    assert existing.properties == {
+        "linkedin_url": "https://linkedin.com/in/buyer",
+        "department": "Finance",
+    }
+    session.flush.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(existing)
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_by_email_creates_missing_contact() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[_FakeResult(), _FakeResult(), _FakeResult(scalars=[integration])]
+    )
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+
+    result = await service.find_or_create_contact_by_email(
+        email="buyer@example.com",
+        name="Buyer Name",
+        context=ContactWriteContext(source="stakeholder"),
+        profile_updates={"phone": "+15555550100"},
+    )
+
+    assert result.created is True
+    assert result.matched_by == "created"
+    assert result.contact.email == "buyer@example.com"
+    assert result.contact.full_name == "Buyer Name"
+    assert result.contact.phone == "+15555550100"
+
+
+@pytest.mark.asyncio
 async def test_create_contact_rejects_duplicate_email_in_org() -> None:
     org_id = uuid4()
     existing = CRMContact(

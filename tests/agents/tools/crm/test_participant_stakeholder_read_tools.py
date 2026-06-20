@@ -44,8 +44,10 @@ class _FakeResult:
 class _SequencedSession:
     def __init__(self, results: list[_FakeResult]):
         self._results = results
+        self.executed = 0
 
     async def execute(self, _stmt):
+        self.executed += 1
         return self._results.pop(0)
 
 
@@ -83,7 +85,13 @@ async def test_list_deal_stakeholders_returns_participant_ids() -> None:
     deal_id = uuid4()
     participant_id = uuid4()
     participant = _participant(org_id, integration_id, deal_id, participant_id)
-    session = _SequencedSession([_FakeResult(scalars=[participant])])
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="Expansion",
+    )
+    session = _SequencedSession([_FakeResult(scalar=deal), _FakeResult(scalars=[participant])])
     context = _context(org_id, deal_id, session)
 
     result = await list_deal_stakeholders(context=context)  # type: ignore[arg-type]
@@ -103,7 +111,14 @@ async def test_get_stakeholder_details_resolves_participant_id() -> None:
     participant_id = uuid4()
     contact_id = uuid4()
     participant = _participant(org_id, integration_id, deal_id, participant_id, contact_id)
-    session = _SequencedSession([_FakeResult(scalar=participant)])
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=contact_id,
+        email="buyer@example.com",
+        full_name="Buyer Snapshot",
+    )
+    session = _SequencedSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
     context = _context(org_id, deal_id, session)
 
     result = await get_stakeholder_details(
@@ -118,6 +133,21 @@ async def test_get_stakeholder_details_resolves_participant_id() -> None:
     assert result["email"] == "buyer@example.com"
     assert result["decision_power"] == "DECISION_MAKER"
     assert "engagement_score" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_stakeholder_details_requires_deal_context() -> None:
+    org_id = uuid4()
+    session = _SequencedSession([])
+    context = _context(org_id, None, session)
+
+    result = await get_stakeholder_details(
+        str(uuid4()),
+        context=context,  # type: ignore[arg-type]
+    )
+
+    assert result is None
+    assert session.executed == 0
 
 
 @pytest.mark.asyncio

@@ -136,7 +136,7 @@ class TestAddStakeholderHandler:
                 side_effect=fake_acquire_gen,
             ),
             patch(
-                "src.service.crm.insights.stakeholders_service.StakeholdersService",
+                "src.service.crm.participants.stakeholder_write_service.StakeholderWriteService",
                 mock_service_cls,
             ),
         ):
@@ -186,7 +186,7 @@ class TestAddStakeholderHandler:
                 side_effect=fake_acquire_gen,
             ),
             patch(
-                "src.service.crm.insights.stakeholders_service.StakeholdersService",
+                "src.service.crm.participants.stakeholder_write_service.StakeholderWriteService",
                 mock_service_cls,
             ),
             patch(

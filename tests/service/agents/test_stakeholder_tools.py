@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -120,7 +121,7 @@ async def test_upsert_stakeholder_updates_existing_participant(monkeypatch) -> N
     context, session = _make_context()
     existing = _participant(related_name=None, name=None, decision_power="UNKNOWN")
     service = _FakeStakeholdersService(existing=existing)
-    monkeypatch.setattr(upsert_module, "StakeholdersService", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
     research_dispatch = AsyncMock()
     monkeypatch.setattr(
         "src.workers.deal_worker.utils.stakeholder_research_dispatch."
@@ -153,7 +154,7 @@ async def test_upsert_only_fill_missing_does_not_overwrite_known_values(monkeypa
     context, session = _make_context()
     existing = _participant(related_name="Known Name", name="Known Name")
     service = _FakeStakeholdersService(existing=existing)
-    monkeypatch.setattr(upsert_module, "StakeholdersService", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
 
     result = await upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -180,7 +181,7 @@ async def test_upsert_stakeholder_creates_when_missing(monkeypatch) -> None:
         name="Created Buyer",
     )
     service = _FakeStakeholdersService(existing=None, created=created)
-    monkeypatch.setattr(upsert_module, "StakeholdersService", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
     research_dispatch = AsyncMock()
     monkeypatch.setattr(
         "src.workers.deal_worker.utils.stakeholder_research_dispatch."
@@ -216,7 +217,7 @@ async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_o
     context, _session = _make_context()
     existing = _participant(stance="SUPPORTER", decision_power="INFLUENCER", temperature="WARM")
     service = _FakeStakeholdersService(existing=existing)
-    monkeypatch.setattr(upsert_module, "StakeholdersService", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
     tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
 
     result = await tool(
@@ -245,7 +246,7 @@ async def test_upsert_stakeholder_tool_factory_honors_create_if_missing_false(
 ) -> None:
     context, _session = _make_context()
     service = _FakeStakeholdersService(existing=None)
-    monkeypatch.setattr(upsert_module, "StakeholdersService", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
     tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
 
     result = await tool(email="upsert-not-found@acme.com", create_if_missing=False)
@@ -302,3 +303,13 @@ def test_registry_keeps_summary_agent_on_create_if_missing() -> None:
         "SummaryAgent should create net-new external stakeholders discovered in meetings"
     )
     assert ToolName.UPSERT_STAKEHOLDER not in tools
+
+
+def test_stakeholder_read_tools_use_read_service() -> None:
+    for path in [
+        Path("src/agents/tools/crm/list_stakeholders.py"),
+        Path("src/agents/tools/crm/get_stakeholder_details.py"),
+    ]:
+        source = path.read_text()
+        assert "select(CRMDealParticipant)" not in source
+        assert "StakeholderReadService(" in source

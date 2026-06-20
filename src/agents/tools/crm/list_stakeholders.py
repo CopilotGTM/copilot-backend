@@ -14,25 +14,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import select
-
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.deals import (
-    CRMDealParticipant,
-    CRMParticipantType,
-)
-from src.service.crm.insights.participant_stakeholder_adapter import (
-    participant_to_stakeholder_detail_dict,
-)
+from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
 
 
 async def list_deal_stakeholders(
@@ -72,52 +68,41 @@ async def list_deal_stakeholders(
 
     effective_limit = max(1, min(limit, 50))
 
-    c = cast(Any, CRMDealParticipant).__table__.c
-
-    # SECURITY: Both organisation_id and deal_id from context (immutable)
-    stmt = (
-        select(CRMDealParticipant)
-        .where(
-            c.organisation_id == organisation_id,
-            c.deal_id == actual_deal_id,
-            c.participant_type == CRMParticipantType.CONTACT.value,
-            c.is_deleted.is_(False),
-        )
-        .order_by(
-            c.decision_power.asc(),
-            c.related_name.asc().nullslast(),
-        )
-        .limit(effective_limit)
-    )
-
     # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            participants = result.scalars().all()
+            service = StakeholderReadService(
+                session,
+                organisation_id,
+                getattr(context, "user_id", None),
+            )
+            result = await service.list_stakeholders_by_deal(
+                actual_deal_id,
+                include_pending=True,
+                include_rejected=False,
+                limit=effective_limit,
+            )
         except Exception as e:
             logger.exception(f"list_deal_stakeholders: database error: {e}")
             return []
 
-        # Transform to output format (while session is active)
         output: list[dict[str, Any]] = []
-        for participant in participants:
-            payload = participant_to_stakeholder_detail_dict(participant)
+        for stakeholder in result.stakeholders:
             output.append(
                 {
-                    "participant_id": str(payload["participant_id"]),
-                    "email": payload["email"],
-                    "name": payload["name"],
-                    "job_title": payload["job_title"],
-                    "phone_number": payload["phone_number"],
-                    "department": payload["department"],
-                    "stance": payload["stance"],
-                    "decision_power": payload["decision_power"],
-                    "temperature": payload["temperature"],
-                    "last_contact_at": payload["last_contact_at"].isoformat()
-                    if payload["last_contact_at"]
+                    "participant_id": str(stakeholder.participant_id),
+                    "email": stakeholder.email,
+                    "name": stakeholder.name,
+                    "job_title": stakeholder.job_title,
+                    "phone_number": stakeholder.phone_number,
+                    "department": getattr(stakeholder, "department", None),
+                    "stance": _enum_value(stakeholder.stance),
+                    "decision_power": _enum_value(stakeholder.decision_power),
+                    "temperature": _enum_value(stakeholder.temperature),
+                    "last_contact_at": stakeholder.last_contact_at.isoformat()
+                    if stakeholder.last_contact_at
                     else None,
-                    "source": payload["source"],
+                    "source": _enum_value(stakeholder.source),
                 }
             )
     # Session released

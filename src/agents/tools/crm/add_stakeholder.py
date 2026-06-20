@@ -30,12 +30,12 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
     StakeholdersServiceError,
 )
 from src.service.crm.jobs.stakeholder_job_visibility_service import (
     StakeholderJobVisibilityService,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
     dispatch_stakeholder_research_async,
 )
@@ -376,9 +376,10 @@ async def add_stakeholder_direct(
     # Keep DB session scope tight to this path; all writes stay in-service and
     # can fail independently from the outbound research dispatch.
     async with context.acquire_session() as session:
-        service = StakeholdersService(session, organisation_id, user_id)
+        service = StakeholderWriteService(session, organisation_id, user_id)
         try:
             stakeholder = await service.create_stakeholder(deal_uuid, request)
+            await session.commit()
             processing_jobs: list[Any] = []
             processing_error = None
             research_job_id = None

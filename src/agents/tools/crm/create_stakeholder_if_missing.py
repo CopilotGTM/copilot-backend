@@ -35,9 +35,9 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
     StakeholdersServiceError,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -86,7 +86,7 @@ async def create_stakeholder_if_missing(
 
     async with context.acquire_session() as session:
         try:
-            service = StakeholdersService(
+            service = StakeholderWriteService(
                 session,
                 organisation_id,
                 user_id=context.user_id or AUTOMATED_PIPELINE_USER_ID,
@@ -131,6 +131,8 @@ async def create_stakeholder_if_missing(
             except StakeholdersServiceError:
                 logger.exception("create_stakeholder_if_missing: service create failed")
                 return None
+
+            await session.commit()
 
             # Dispatch stakeholder research (fire-and-forget)
             try:

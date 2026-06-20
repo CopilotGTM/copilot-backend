@@ -24,13 +24,15 @@ class _AsyncSessionContext:
 
 
 def _context() -> AgentContext:
+    session = MagicMock()
+    session.commit = AsyncMock()
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
         user_id=UUID("22222222-2222-2222-2222-222222222222"),
         user_email="seller@copilotgtm.com",
         channel="web",
     )
-    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(MagicMock()))
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
     return context
 
 
@@ -62,7 +64,7 @@ async def test_upsert_stakeholder_create_path_uses_participant_id_for_research()
             "src.agents.tools.crm.upsert_stakeholder.is_internal_email",
             AsyncMock(return_value=False),
         ),
-        patch("src.agents.tools.crm.upsert_stakeholder.StakeholdersService") as service_cls,
+        patch("src.agents.tools.crm.upsert_stakeholder.StakeholderWriteService") as service_cls,
         patch(
             "src.workers.deal_worker.utils.stakeholder_research_dispatch.dispatch_stakeholder_research_async",
             AsyncMock(return_value=uuid4()),

@@ -1,4 +1,4 @@
-"""Tests for stakeholder-to-contact linking in StakeholdersService."""
+"""Tests for stakeholder-to-contact linking in StakeholderWriteService."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.service.crm.insights.stakeholders_service import StakeholdersService
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -90,7 +90,7 @@ async def test_ensure_contact_links_existing_contact() -> None:
     """When a CRMContact exists for the email, return its contact_id."""
     existing_contact = SimpleNamespace(contact_id=uuid4(), email="buyer@customer.com")
     session = FakeSession(existing_contact=existing_contact)
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     contact_id = await service._ensure_contact_for_stakeholder(
@@ -112,7 +112,7 @@ async def test_ensure_contact_creates_new_contact_when_missing() -> None:
         existing_contact=None,
         internal_integration=internal_integration,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     contact_id = await service._ensure_contact_for_stakeholder(
@@ -137,7 +137,7 @@ async def test_ensure_contact_creates_new_contact_when_missing() -> None:
 async def test_ensure_contact_returns_none_when_no_internal_integration() -> None:
     """When internal CRM integration doesn't exist, return None."""
     session = FakeSession(existing_contact=None, internal_integration=None)
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     contact_id = await service._ensure_contact_for_stakeholder(
@@ -195,7 +195,7 @@ async def test_ensure_deal_participant_creates_for_internal_deal() -> None:
         internal_integration=internal_integration,
         deal=deal,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     contact_id = uuid4()
     participant = await service._ensure_deal_participant(
@@ -229,7 +229,7 @@ async def test_ensure_deal_participant_creates_for_external_deal() -> None:
         internal_integration=internal_integration,
         deal=deal,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     participant = await service._ensure_deal_participant(
         deal_id=DEAL_ID,
@@ -272,7 +272,7 @@ async def test_ensure_deal_participant_skips_when_already_exists() -> None:
         deal=deal,
         existing_participant=existing_participant,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     participant = await service._ensure_deal_participant(
         deal_id=DEAL_ID,
@@ -323,7 +323,7 @@ async def test_soft_delete_internal_participant() -> None:
         internal_integration=internal_integration,
         participant=participant,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     await service._soft_delete_internal_participant(DEAL_ID, "buyer@customer.com")
 
@@ -338,7 +338,7 @@ async def test_soft_delete_skips_when_no_participant() -> None:
         internal_integration=internal_integration,
         participant=None,
     )
-    service = StakeholdersService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
+    service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
 
     # Should not raise
     await service._soft_delete_internal_participant(DEAL_ID, "nobody@nowhere.com")

@@ -109,6 +109,56 @@ class ContactWriteService:
         await self.org_session.refresh(contact)
         return ContactWriteResult(contact=contact, created=True, matched_by="created")
 
+    async def find_or_create_contact_by_email(
+        self,
+        *,
+        email: str,
+        name: str | None,
+        context: ContactWriteContext | None = None,
+        profile_updates: dict[str, Any] | None = None,
+    ) -> ContactWriteResult:
+        """Find by normalized email or create one internal CRM contact.
+
+        Stakeholder, agent, workflow, and form callers use this path so contact
+        normalization and future contact mutation events stay in one service.
+        """
+        normalized_email = email.strip().lower()
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            func.lower(col(CRMContact.email)) == normalized_email,
+        )
+        result = await self.org_session.execute(stmt)
+        existing = result.scalars().first()
+        updates = dict(profile_updates or {})
+
+        if existing:
+            if name:
+                existing.full_name = name.strip()
+                first_name, last_name = self._split_name(name)
+                existing.first_name = first_name
+                existing.last_name = last_name
+
+            properties = updates.pop("properties", None)
+            if isinstance(properties, dict):
+                existing.properties = {**(existing.properties or {}), **properties}
+
+            for field, value in updates.items():
+                if hasattr(existing, field):
+                    setattr(existing, field, value)
+
+            self.org_session.add(existing)
+            await self.org_session.flush()
+            await self.org_session.refresh(existing)
+            return ContactWriteResult(contact=existing, created=False, matched_by="email")
+
+        return await self.create_contact(
+            normalized_email,
+            name or normalized_email,
+            context=context,
+            **updates,
+        )
+
     async def update_contact(
         self,
         contact_id: UUID,

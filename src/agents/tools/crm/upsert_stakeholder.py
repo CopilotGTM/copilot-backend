@@ -24,9 +24,9 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
-    StakeholdersService,
     StakeholdersServiceError,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -38,6 +38,13 @@ AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 class UpsertStakeholderInput(BaseModel):
+    """Input contract for agent-driven stakeholder upserts.
+
+    The agent supplies org/deal boundaries through `AgentContext`, not through
+    this payload. Keeping the model field-only prevents tools from overriding
+    immutable security context.
+    """
+
     email: Annotated[str, Field(description="Stakeholder email (required)")]
     name: Annotated[str | None, Field(default=None, description="Full name")] = None
     job_title: Annotated[str | None, Field(default=None, description="Job title")] = None
@@ -196,7 +203,7 @@ async def upsert_stakeholder(
 
     async with context.acquire_session() as session:
         try:
-            service = StakeholdersService(
+            service = StakeholderWriteService(
                 session,
                 organisation_id,
                 user_id=context.user_id or AUTOMATED_PIPELINE_USER_ID,
@@ -351,6 +358,8 @@ async def upsert_stakeholder(
             except StakeholdersServiceError:
                 logger.exception("upsert_stakeholder: service create failed")
                 return None
+
+            await session.commit()
 
             # Dispatch stakeholder research for newly created stakeholder
             try:

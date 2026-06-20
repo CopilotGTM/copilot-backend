@@ -65,13 +65,13 @@ from src.service.crm.access.deals_access_service import (
     extract_deal_health,
     extract_deal_health_reason,
 )
-from src.service.crm.insights.stakeholders_service import StakeholdersService
 from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
 from src.service.crm.jobs.stakeholder_job_visibility_service import (
     StakeholderJobVisibilityService,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -1023,8 +1023,9 @@ async def create_deal(
     """Create a new internal CRM deal."""
     try:
         deal = await service.create_deal(request.model_dump())
+        inline_stakeholder_ids: list[UUID] = []
         if request.contact_participants:
-            stakeholder_service = StakeholdersService(
+            stakeholder_service = StakeholderWriteService(
                 service.session,
                 service.organisation_id,
                 service.actor_user_id,
@@ -1033,25 +1034,32 @@ async def create_deal(
                 deal.deal_id,
                 [participant.contact_id for participant in request.contact_participants],
             )
-            if stakeholder_result.total_added > 0:
-                job_visibility_service = StakeholderJobVisibilityService(
-                    service.session,
-                    service.organisation_id,
-                    service.actor_user_id,
-                )
-                for stakeholder in stakeholder_result.added:
-                    await job_visibility_service.create_stakeholder_processing_jobs(
-                        deal.deal_id,
-                        stakeholder.participant_id,
-                    )
-                    await _dispatch_auto_stakeholder_research(
-                        organisation_id=service.organisation_id,
-                        participant_id=stakeholder.participant_id,
-                        deal_id=deal.deal_id,
-                        user_id=service.actor_user_id,
-                    )
+            inline_stakeholder_ids = [
+                stakeholder.participant_id for stakeholder in stakeholder_result.added
+            ]
         await service.session.commit()
         await service.session.refresh(deal)
+
+        if inline_stakeholder_ids:
+            job_visibility_service = StakeholderJobVisibilityService(
+                service.session,
+                service.organisation_id,
+                service.actor_user_id,
+            )
+            for participant_id in inline_stakeholder_ids:
+                await job_visibility_service.create_stakeholder_processing_jobs(
+                    deal.deal_id,
+                    participant_id,
+                )
+            await service.session.commit()
+            for participant_id in inline_stakeholder_ids:
+                await _dispatch_auto_stakeholder_research(
+                    organisation_id=service.organisation_id,
+                    participant_id=participant_id,
+                    deal_id=deal.deal_id,
+                    user_id=service.actor_user_id,
+                )
+
         payload = _map_deal_write_response(deal)
         return Response.created_response(
             message="Deal created successfully", data=payload, response=response
