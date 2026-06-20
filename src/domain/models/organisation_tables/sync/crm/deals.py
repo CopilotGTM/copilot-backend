@@ -587,6 +587,11 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         sa_column=Column(String(50), nullable=True),
         description="Denormalized CRMContact phone snapshot for list reads.",
     )
+    linkedin_url: str | None = Field(
+        default=None,
+        sa_column=Column(String(500), nullable=True),
+        description="Denormalized CRMContact LinkedIn profile URL snapshot for list reads.",
+    )
     external_links: list[dict] | None = Field(
         default=None,
         sa_column=Column(JSONB, nullable=True),

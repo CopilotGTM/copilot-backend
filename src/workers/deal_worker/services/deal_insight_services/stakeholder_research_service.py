@@ -363,16 +363,19 @@ class StakeholderResearchService:
             participant_values["department"] = department
             contact_properties["department"] = department
 
-        if result.linkedin_url and not self._has_linkedin(ctx.external_links):
-            participant_values["external_links"] = ctx.external_links + [
-                {
-                    "platform": "linkedin",
-                    "url": result.linkedin_url,
-                    "label": "LinkedIn",
-                    "added_at": now.isoformat(),
-                }
-            ]
-            contact_properties["external_links"] = participant_values["external_links"]
+        if result.linkedin_url:
+            participant_values["linkedin_url"] = result.linkedin_url
+            contact_values["linkedin_url"] = result.linkedin_url
+            if not self._has_linkedin(ctx.external_links):
+                participant_values["external_links"] = ctx.external_links + [
+                    {
+                        "platform": "linkedin",
+                        "url": result.linkedin_url,
+                        "label": "LinkedIn",
+                        "added_at": now.isoformat(),
+                    }
+                ]
+                contact_properties["external_links"] = participant_values["external_links"]
 
         await self._write_research_values(
             stakeholder_id,

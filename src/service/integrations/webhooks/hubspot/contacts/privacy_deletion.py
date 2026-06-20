@@ -62,6 +62,7 @@ class HubSpotContactPrivacyDeletionHandler:
         contact.mobile_phone = None
         contact.fax = None
         contact.website = None
+        contact.linkedin_url = None
         contact.owner_email = None
         contact.owner_name = None
         contact.address = None
@@ -74,6 +75,9 @@ class HubSpotContactPrivacyDeletionHandler:
         contact.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
         contact.contact_research = None
         contact.last_researched_at = None
+        contact.profile_enrichment = {}
+        contact.profile_enrichment_source = None
+        contact.profile_enriched_at = None
 
         for activity in activities:
             activity.is_deleted = True
@@ -97,6 +101,7 @@ class HubSpotContactPrivacyDeletionHandler:
             participant.job_title = None
             participant.department = None
             participant.phone_number = None
+            participant.linkedin_url = None
             participant.external_links = None
             participant.motivation = None
             participant.pain_points = None

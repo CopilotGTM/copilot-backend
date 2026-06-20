@@ -300,6 +300,8 @@ async def enrich_stakeholder(
                 s_contact_properties["department"] = department
 
     if linkedin_url:
+        participant_updates["linkedin_url"] = linkedin_url
+        contact_updates["linkedin_url"] = linkedin_url
         has_linkedin = any(
             isinstance(link, dict) and link.get("platform", "").lower() == "linkedin"
             for link in s_external_links

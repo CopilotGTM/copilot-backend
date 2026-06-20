@@ -36,11 +36,15 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         additional_emails=["ada@personal.example"],
         phone="+155501",
         mobile_phone="+155502",
+        linkedin_url="https://linkedin.com/in/ada",
         address="1 Main St",
         properties={"email": "ada@example.com"},
         metrics={"touches": 3},
         contact_research="Reusable profile research",
         last_researched_at=datetime.now(UTC),
+        profile_enrichment={"apollo_id": "person_123"},
+        profile_enrichment_source="apollo",
+        profile_enriched_at=datetime.now(UTC),
     )
     activity = CRMActivity(
         organisation_id=organisation_id,
@@ -66,6 +70,7 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         job_title="CTO",
         department="Engineering",
         phone_number="+155501",
+        linkedin_url="https://linkedin.com/in/ada",
         external_links=[{"url": "https://linkedin.example/ada"}],
         motivation="Improve forecasting",
         pain_points=["manual reporting"],
@@ -97,6 +102,10 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert contact.metrics == {"privacy_deleted": True}
     assert contact.contact_research is None
     assert contact.last_researched_at is None
+    assert contact.linkedin_url is None
+    assert contact.profile_enrichment == {}
+    assert contact.profile_enrichment_source is None
+    assert contact.profile_enriched_at is None
     assert not hasattr(contact, "data_payload")
 
     assert activity.is_deleted is True
@@ -115,6 +124,7 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert participant.job_title is None
     assert participant.department is None
     assert participant.phone_number is None
+    assert participant.linkedin_url is None
     assert participant.external_links is None
     assert participant.motivation is None
     assert participant.pain_points is None

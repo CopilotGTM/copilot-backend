@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -48,6 +49,9 @@ class ContactDetail(ContactListItem):
     additional_emails: list[str] = Field(default_factory=list)
     mobile_phone: str | None
     linkedin_url: str | None
+    profile_enrichment: dict[str, Any] = Field(default_factory=dict)
+    profile_enrichment_source: str | None
+    profile_enriched_at: datetime | None
     address: str | None
     city: str | None
     state: str | None

@@ -22,6 +22,13 @@ from src.service.crm.contacts.contracts import (
     ContactWriteResult,
     ContactWriteServiceError,
 )
+from src.service.crm.mutations.contracts import (
+    CRMMutationContext,
+    CRMMutationEventServiceError,
+    CRMMutationRecordCommand,
+)
+from src.service.crm.mutations.event_service import CRMMutationEventService
+from src.service.crm.mutations.policies import ContactMutationPolicy
 
 
 class ContactWriteService:
@@ -32,6 +39,7 @@ class ContactWriteService:
         self.org_session = org_session
         self.organisation_id = organisation_id
         self._account_writer = AccountWriteService(org_session, organisation_id)
+        self._mutation_events = CRMMutationEventService(org_session, organisation_id)
 
     async def close(self) -> None:
         """Close the owned org session when used as a FastAPI dependency."""
@@ -54,7 +62,6 @@ class ContactWriteService:
         **kwargs: Any,
     ) -> ContactWriteResult:
         """Create an internal CRM contact with explicit-only account linking."""
-        _ = context
         normalized_email = email.strip().lower()
         dup_stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
@@ -76,6 +83,10 @@ class ContactWriteService:
         properties = kwargs.pop("properties", {}) or {}
         metrics = kwargs.pop("metrics", {}) or {}
         additional_emails = kwargs.pop("additional_emails", []) or []
+        linkedin_url = kwargs.pop("linkedin_url", None) or properties.pop("linkedin_url", None)
+        profile_enrichment = kwargs.pop("profile_enrichment", {}) or {}
+        profile_enrichment_source = kwargs.pop("profile_enrichment_source", None)
+        profile_enriched_at = kwargs.pop("profile_enriched_at", None)
 
         if explicit_company_id:
             try:
@@ -91,6 +102,7 @@ class ContactWriteService:
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
             email=normalized_email,
+            linkedin_url=linkedin_url,
             first_name=first_name,
             last_name=last_name,
             full_name=name.strip(),
@@ -100,6 +112,9 @@ class ContactWriteService:
             is_deleted=False,
             properties=properties,
             metrics=metrics,
+            profile_enrichment=profile_enrichment,
+            profile_enrichment_source=profile_enrichment_source,
+            profile_enriched_at=profile_enriched_at,
             additional_emails=additional_emails,
             **kwargs,
         )
@@ -107,6 +122,7 @@ class ContactWriteService:
         self.org_session.add(contact)
         await self.org_session.flush()
         await self.org_session.refresh(contact)
+        await self._record_contact_create_event(contact, context=context)
         return ContactWriteResult(contact=contact, created=True, matched_by="created")
 
     async def find_or_create_contact_by_email(
@@ -133,23 +149,53 @@ class ContactWriteService:
         updates = dict(profile_updates or {})
 
         if existing:
+            changed_fields: dict[str, dict[str, Any]] = {}
             if name:
-                existing.full_name = name.strip()
+                stripped_name = name.strip()
+                if change := ContactMutationPolicy.changed_field(
+                    "full_name", existing.full_name, stripped_name
+                ):
+                    changed_fields["full_name"] = change
+                existing.full_name = stripped_name
                 first_name, last_name = self._split_name(name)
+                if change := ContactMutationPolicy.changed_field(
+                    "first_name", existing.first_name, first_name
+                ):
+                    changed_fields["first_name"] = change
+                if change := ContactMutationPolicy.changed_field(
+                    "last_name", existing.last_name, last_name
+                ):
+                    changed_fields["last_name"] = change
                 existing.first_name = first_name
                 existing.last_name = last_name
 
             properties = updates.pop("properties", None)
             if isinstance(properties, dict):
+                linkedin_url = properties.pop("linkedin_url", None)
+                if linkedin_url is not None:
+                    if change := ContactMutationPolicy.changed_field(
+                        "linkedin_url", existing.linkedin_url, linkedin_url
+                    ):
+                        changed_fields["linkedin_url"] = change
+                    existing.linkedin_url = linkedin_url
                 existing.properties = {**(existing.properties or {}), **properties}
 
             for field, value in updates.items():
                 if hasattr(existing, field):
+                    if change := ContactMutationPolicy.changed_field(
+                        field, getattr(existing, field), value
+                    ):
+                        changed_fields[field] = change
                     setattr(existing, field, value)
 
             self.org_session.add(existing)
             await self.org_session.flush()
             await self.org_session.refresh(existing)
+            await self._record_contact_update_event(
+                existing,
+                changed_fields=changed_fields,
+                context=context,
+            )
             return ContactWriteResult(contact=existing, created=False, matched_by="email")
 
         return await self.create_contact(
@@ -167,7 +213,6 @@ class ContactWriteService:
         context: ContactWriteContext | None = None,
     ) -> ContactWriteResult:
         """Update allowed fields on one tenant-owned active contact."""
-        _ = context
         stmt = select(CRMContact).where(
             col(CRMContact.contact_id) == contact_id,
             col(CRMContact.organisation_id) == self.organisation_id,
@@ -178,6 +223,8 @@ class ContactWriteService:
 
         if not contact:
             raise ContactWriteServiceError("Contact not found", status_code=404)
+
+        changed_fields: dict[str, dict[str, Any]] = {}
 
         new_email = updates.pop("email", None)
         if new_email is not None:
@@ -198,6 +245,10 @@ class ContactWriteService:
                     f"A contact with email '{normalized_email}' already exists",
                     status_code=409,
                 )
+            if change := ContactMutationPolicy.changed_field(
+                "email", contact.email, normalized_email
+            ):
+                changed_fields["email"] = change
             contact.email = normalized_email
 
         if "company_id" in updates:
@@ -224,22 +275,41 @@ class ContactWriteService:
                 raise ContactWriteServiceError(
                     exc.message, status_code=exc.status_code, data=exc.data
                 ) from exc
+            if change := ContactMutationPolicy.changed_field(
+                "company_id", contact.company_id, new_company_id
+            ):
+                changed_fields["company_id"] = change
+            if change := ContactMutationPolicy.changed_field(
+                "company_name", contact.company_name, company.name
+            ):
+                changed_fields["company_name"] = change
             contact.company_id = new_company_id
             contact.company_name = company.name
 
-        linkedin_url = updates.pop("linkedin_url", None)
-        if linkedin_url is not None:
-            props = dict(contact.properties or {})
-            props["linkedin_url"] = linkedin_url
-            contact.properties = props
+        if "linkedin_url" in updates:
+            linkedin_url = updates.pop("linkedin_url")
+            if change := ContactMutationPolicy.changed_field(
+                "linkedin_url", contact.linkedin_url, linkedin_url
+            ):
+                changed_fields["linkedin_url"] = change
+            contact.linkedin_url = linkedin_url
 
         for field, value in updates.items():
             if hasattr(contact, field):
+                if change := ContactMutationPolicy.changed_field(
+                    field, getattr(contact, field), value
+                ):
+                    changed_fields[field] = change
                 setattr(contact, field, value)
 
         self.org_session.add(contact)
         await self.org_session.flush()
         await self.org_session.refresh(contact)
+        await self._record_contact_update_event(
+            contact,
+            changed_fields=changed_fields,
+            context=context,
+        )
         return ContactWriteResult(contact=contact, created=False, matched_by="explicit_id")
 
     async def _get_or_create_internal_integration(
@@ -273,3 +343,65 @@ class ContactWriteService:
         await self.org_session.flush()
         await self.org_session.refresh(integration)
         return integration
+
+    async def _record_contact_create_event(
+        self,
+        contact: CRMContact,
+        *,
+        context: ContactWriteContext | None,
+    ) -> None:
+        changed_fields = ContactMutationPolicy.build_create_changed_fields(contact)
+        command = CRMMutationRecordCommand(
+            entity_type="contact",
+            entity_id=contact.contact_id,
+            event_type="crm.contact.created",
+            operation="create_contact",
+            changed_fields=changed_fields,
+            semantic_event_types=ContactMutationPolicy.semantic_for_create(),
+            context=self._mutation_context(context),
+            summary=f"Contact created: {contact.full_name or contact.email or contact.contact_id}",
+            integration_id=contact.integration_id,
+            idempotency_scope=f"contact:create:{contact.contact_id}",
+        )
+        await self._record_mutation_event(command)
+
+    async def _record_contact_update_event(
+        self,
+        contact: CRMContact,
+        *,
+        changed_fields: dict[str, dict[str, Any]],
+        context: ContactWriteContext | None,
+    ) -> None:
+        command = CRMMutationRecordCommand(
+            entity_type="contact",
+            entity_id=contact.contact_id,
+            event_type="crm.contact.updated",
+            operation="update_contact",
+            changed_fields=changed_fields,
+            semantic_event_types=ContactMutationPolicy.semantic_for_update(changed_fields),
+            context=self._mutation_context(context),
+            summary=f"Contact updated: {contact.full_name or contact.email or contact.contact_id}",
+            integration_id=contact.integration_id,
+            idempotency_scope=f"contact:update:{contact.contact_id}",
+        )
+        await self._record_mutation_event(command)
+
+    async def _record_mutation_event(self, command: CRMMutationRecordCommand) -> None:
+        try:
+            await self._mutation_events.record_event(command)
+        except CRMMutationEventServiceError as exc:
+            raise ContactWriteServiceError(
+                exc.message,
+                status_code=exc.status_code,
+                data=exc.data,
+            ) from exc
+
+    @staticmethod
+    def _mutation_context(context: ContactWriteContext | None) -> CRMMutationContext:
+        if context is None:
+            return CRMMutationContext(source="api")
+        return CRMMutationContext(
+            source=context.source,
+            actor_user_id=context.actor_user_id,
+            source_label=context.source_label,
+        )

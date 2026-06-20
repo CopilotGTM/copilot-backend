@@ -188,6 +188,8 @@ async def test_persist_result_writes_contact_and_participant_research(monkeypatc
     )
     assert updates_by_table["crm_deal_participants"]["related_name"] == "Ada Lovelace"
     assert updates_by_table["crm_deal_participants"]["job_title"] == "CTO"
+    assert updates_by_table["crm_deal_participants"]["linkedin_url"] == ("https://linkedin/in/ada")
+    assert updates_by_table["crm_contacts"]["linkedin_url"] == "https://linkedin/in/ada"
     assert updates_by_table["crm_deal_participants"]["department"] == "Engineering"
     assert session.commits >= 1
 

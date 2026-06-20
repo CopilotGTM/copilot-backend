@@ -45,6 +45,7 @@ class DealParticipantItem(BaseModel):
     related_local_id: UUID | None = None
     related_name: str | None = None
     related_email: str | None = None
+    linkedin_url: str | None = None
     relationship_role: str | None = None
     is_deleted: bool
 

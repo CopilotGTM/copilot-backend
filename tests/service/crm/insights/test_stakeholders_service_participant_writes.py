@@ -79,6 +79,7 @@ def _participant(
         related_email=email,
         related_name="Buyer",
         job_title="Old Title",
+        linkedin_url="https://linkedin.com/in/old-buyer",
         approval_status=status,
         participant_source=StakeholderSource.MANUAL.value,
         stance="UNKNOWN",
@@ -125,6 +126,7 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
             email=" Buyer@Example.com ",
             name="Buyer",
             job_title="CFO",
+            linkedin_url="https://linkedin.com/in/buyer",
         ),
     )
 
@@ -132,6 +134,7 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
     assert result.email == "buyer@example.com"
     assert result.name == "Buyer"
     assert result.job_title == "Old Title"
+    assert result.linkedin_url == "https://linkedin.com/in/old-buyer"
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
     assert not session.committed
 
@@ -155,6 +158,7 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
         full_name="Old Buyer",
         job_title="Old Title",
         phone="111",
+        linkedin_url="https://linkedin.com/in/old-buyer",
     )
     session = _WriteSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
     service = StakeholderWriteService(session, org_id)  # type: ignore[arg-type]
@@ -166,6 +170,7 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
             name="New Buyer",
             job_title="CFO",
             phone_number="222",
+            linkedin_url="https://linkedin.com/in/new-buyer",
             stance="CHAMPION",
             motivation="Owns budget",
         ),
@@ -175,9 +180,11 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
     assert contact.full_name == "New Buyer"
     assert contact.job_title == "CFO"
     assert contact.phone == "222"
+    assert contact.linkedin_url == "https://linkedin.com/in/new-buyer"
     assert participant.related_name == "New Buyer"
     assert participant.job_title == "CFO"
     assert participant.phone_number == "222"
+    assert participant.linkedin_url == "https://linkedin.com/in/new-buyer"
     assert participant.stance == "CHAMPION"
     assert participant.motivation == "Owns budget"
     assert not session.committed
@@ -229,6 +236,7 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
         full_name="Contact Buyer",
         job_title="VP Sales",
         phone="+1 555-0101",
+        linkedin_url="https://linkedin.com/in/contact-buyer",
     )
     participant = _participant(
         org_id=org_id,
@@ -251,5 +259,6 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
     assert result.total_added == 1
     assert result.total_skipped == 0
     assert result.added[0].participant_id == participant.participant_id
+    assert result.added[0].linkedin_url == "https://linkedin.com/in/contact-buyer"
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
     assert not session.committed
