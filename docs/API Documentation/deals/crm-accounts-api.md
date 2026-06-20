@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-04-06
+> Last Updated: 2026-06-18
 
 ---
 
@@ -206,8 +206,8 @@ type UUID = string;
 type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:30:00Z")
 
 /**
- * Account item returned in list views (GET /accounts).
- * Use for table rows, cards, and search results.
+ * Account item returned in page-based list views (GET /accounts).
+ * Use for table rows and account index pages.
  *
  * contact_count, deal_count, and pipeline_value are computed at query time.
  */
@@ -312,12 +312,33 @@ export interface AccountsPage {
 }
 
 /**
+ * Lightweight account item returned by GET /accounts/search.
+ * Use for dropdowns, typeahead, and infinite-scroll pickers.
+ */
+export interface AccountSearchItem {
+  company_id: UUID;
+  name: string | null;
+  domain: string | null;
+  website: string | null;
+  industry: string | null;
+}
+
+/**
+ * Cursor response wrapper for account picker search.
+ */
+export interface AccountSearchPage {
+  items: AccountSearchItem[];
+  next_cursor: string | null;         // Opaque cursor for the next request
+  has_more: boolean;                  // true when next_cursor is non-null
+}
+
+/**
  * Request to create a new account.
  */
 export interface CreateAccountRequest {
-  name: string;                       // Required. Company name
-  domain?: string | null;             // Auto-normalised (protocol/www stripped, lowercased)
-  website?: string | null;
+  name?: string | null;               // Optional when domain or website is supplied
+  domain?: string | null;             // Optional; auto-normalised when provided
+  website?: string | null;            // Optional; domain can be derived when provided
   industry?: string | null;
   linkedin_url?: string | null;
 }
@@ -482,13 +503,69 @@ GET /users/crm/accounts/suggest?email_domain=acme.com
 
 ---
 
-### 3. Create Account
+### 3. Search Accounts with Cursor
+
+```http
+GET /users/crm/accounts/search
+```
+
+Lightweight cursor-based account search for dropdowns, typeahead, and infinite-scroll pickers. This endpoint does not compute `contact_count`, `deal_count`, `pipeline_value`, or `total_count`; use `GET /users/crm/accounts` for the full table view.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `q` | string | — | Optional | Case-insensitive partial match on `name`, `domain`, or `website` |
+| `limit` | integer | `20` | `1–50` | Maximum accounts per cursor page |
+| `cursor` | string | — | Opaque token | Cursor returned by the previous response |
+
+#### Example Request
+
+```http
+GET /users/crm/accounts/search?q=acme&limit=20
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Accounts search results retrieved",
+  "data": {
+    "items": [
+      {
+        "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+        "name": "Acme Corp",
+        "domain": "acme.com",
+        "website": "https://acme.com",
+        "industry": "Technology"
+      }
+    ],
+    "next_cursor": "eyJuYW1lIjoiYWNtZSBjb3JwIiwiY29tcGFueV9pZCI6ImQzYjA3Mzg0LWQ5YTEtNGUzYi04YzFhLTFmMmUzZDRjNWI2YSJ9",
+    "has_more": true
+  }
+}
+```
+
+Use `next_cursor` on the next request. When `next_cursor` is `null`, there are no more rows for the current query.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Invalid cursor"` | Cursor is malformed or not produced by this endpoint |
+| `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
+| `422` | Pydantic validation error | Invalid `limit` |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+### 4. Create Account
 
 ```http
 POST /users/crm/accounts
 ```
 
-Creates a new account owned by the `INTERNAL_CRM` integration. The domain is normalised before storage and checked for uniqueness.
+Creates a new account owned by the `INTERNAL_CRM` integration. Creation requires at least one identity field: `name`, `domain`, or `website`. When `domain` or `website` is supplied, the service derives a normalised domain, checks it for uniqueness, and stores it as the account's primary domain. If `name` is omitted, the account name falls back to the normalised domain (for example, `acme.com`).
 
 #### Request Headers
 
@@ -501,15 +578,15 @@ Creates a new account owned by the `INTERNAL_CRM` integration. The domain is nor
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
-| `name` | string | **Yes** | Non-empty | Company name |
-| `domain` | string | No | — | Company domain (auto-normalised; see table below) |
-| `website` | string | No | — | Full website URL |
+| `name` | string | Conditionally | Non-empty when present | Company display name. Required only when neither `domain` nor `website` is supplied |
+| `domain` | string | Conditionally | Auto-normalised when present | Company domain. Can satisfy the identity requirement without `name` |
+| `website` | string | Conditionally | Used to derive `domain` when `domain` is omitted | Full website URL. Can satisfy the identity requirement without `name` |
 | `industry` | string | No | — | Industry classification |
 | `linkedin_url` | string | No | — | LinkedIn company page URL |
 
 #### Domain Normalisation
 
-The `domain` field is automatically cleaned before storage:
+The `domain` field is automatically cleaned before storage. If only `website` is supplied, the same normalisation is applied to `website` and the result is stored as `domain`.
 
 | Input | Stored As | Rule Applied |
 |-------|-----------|--------------|
@@ -538,6 +615,16 @@ The `domain` field is automatically cleaned before storage:
   "name": "Quick Account"
 }
 ```
+
+#### Domain-only Request
+
+```json
+{
+  "domain": "https://www.acme.com"
+}
+```
+
+This creates an account with `name: "acme.com"` and `domain: "acme.com"` if no existing account already owns that normalised domain.
 
 #### Success Response (201)
 
@@ -577,8 +664,9 @@ The `domain` field is automatically cleaned before storage:
 | HTTP Status | `message` | `data` | When |
 |-------------|-----------|--------|------|
 | `409` | `"An account with domain 'acme.com' already exists"` | `{"company_id": "..."}` | Non-deleted account with same normalised domain exists |
+| `409` | `"An account named 'Acme' already exists"` | `{"company_id": "..."}` | No domain/website was provided and a non-deleted account with the exact same name exists |
 | `409` | `"Internal CRM integration not configured"` | `null` | Org has no INTERNAL_CRM integration (should not happen in normal operation) |
-| `422` | Pydantic validation error | Validation details | Invalid request body (e.g., missing `name`) |
+| `422` | Pydantic validation error | Validation details | Invalid request body, including when `name`, `domain`, and `website` are all missing or blank |
 | `429` | `"Too many requests ..."` | `null` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | `null` | Unhandled server error |
 
@@ -595,7 +683,7 @@ if (response.status === 409 && response.data?.company_id) {
 
 ---
 
-### 4. Get Account Detail
+### 5. Get Account Detail
 
 ```http
 GET /users/crm/accounts/{company_id}
@@ -699,13 +787,13 @@ Full account detail including nested contacts array, deals array, and all extend
 
 ---
 
-### 5. Update Account
+### 6. Update Account
 
 ```http
 PATCH /users/crm/accounts/{company_id}
 ```
 
-Partial update — only send fields you want to change. Omitted fields remain unchanged. Domain is normalised if provided.
+Partial update — only send fields you want to change. Omitted fields remain unchanged. Domain is normalised if provided. Updating `domain`, or updating `website` while omitting `domain`, also checks that no other active account in the organisation already owns the resulting normalised domain.
 
 #### Path Parameters
 
@@ -768,13 +856,14 @@ Returns the updated `AccountListItem`. `contact_count`, `deal_count`, and `pipel
 | HTTP Status | `message` | When |
 |-------------|-----------|------|
 | `404` | `"Account not found"` | No non-deleted account with this ID in this organisation |
+| `409` | `"An account with domain '...' already exists"` | Updated domain/website normalises to a domain owned by another active account |
 | `422` | Pydantic validation error | Invalid field types in body |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 6. Get Account Contacts
+### 7. Get Account Contacts
 
 ```http
 GET /users/crm/accounts/{company_id}/contacts
@@ -823,7 +912,7 @@ Returns contacts whose email domain matches the account's `domain`. If the accou
 
 ---
 
-### 7. Get Account Deals
+### 8. Get Account Deals
 
 ```http
 GET /users/crm/accounts/{company_id}/deals
@@ -873,7 +962,7 @@ Returns deals linked to the account via local `company_id`.
 
 ---
 
-### 8. Enrich Account
+### 9. Enrich Account
 
 ```http
 POST /users/crm/accounts/{company_id}/enrich
@@ -919,11 +1008,13 @@ Consolidated reference of all error responses across all endpoints.
 | HTTP Status | Error Message | Endpoint(s) | Cause |
 |-------------|--------------|-------------|-------|
 | `400` | `"Page must be >= 1"` | List accounts | Invalid page parameter |
+| `400` | `"Invalid cursor"` | Search accounts | Malformed or stale cursor token |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
 | `404` | `"Account not found"` | Get detail, Update, Enrich | Account doesn't exist or is deleted |
-| `409` | `"An account with domain '...' already exists"` | Create | Duplicate normalised domain |
+| `409` | `"An account with domain '...' already exists"` | Create, Update | Duplicate normalised domain |
+| `409` | `"An account named '...' already exists"` | Create | Duplicate exact account name when no domain/website was supplied |
 | `409` | `"Internal CRM integration not configured"` | Create | Missing INTERNAL_CRM integration |
-| `422` | Pydantic validation error | Create, Update, Suggest | Invalid request body or query parameters |
+| `422` | Pydantic validation error | Create, Update, Suggest, Search | Invalid request body or query parameters |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
 | `429` | `"Too many requests (per-hour limit exceeded)"` | All | Per-hour rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | All | Unhandled exception |
@@ -951,13 +1042,14 @@ Consolidated reference of all error responses across all endpoints.
 
 ### Service Layer
 
-**Class:** `AccountsAccessService` (`src/service/crm/access/accounts_access_service.py`)
+**Classes:** `AccountReadService` and `AccountWriteService` (`src/service/crm/accounts/`)
 
 - Receives `org_session` and `organisation_id` at construction
 - All queries filter by `organisation_id` and `is_deleted = False`
-- `list_accounts()` uses correlated subqueries for `contact_count`, `deal_count`, `pipeline_value` to avoid N+1
-- `create_account()` checks domain uniqueness (normalised, case-insensitive) and auto-creates `INTERNAL_CRM` integration if missing
-- `update_account()` normalises domain if provided, only updates allowed fields (ignores unknown fields)
+- `AccountReadService.list_accounts()` uses correlated subqueries for `contact_count`, `deal_count`, `pipeline_value` to avoid N+1
+- `AccountReadService.search_accounts()` is a lightweight cursor search for pickers; it returns no totals or aggregate metrics
+- `AccountWriteService.create_account()` requires at least one of `name`, `domain`, or `website`, checks domain uniqueness when a domain or website is supplied, falls back to exact name duplicate checks for name-only creates, derives `name` from the normalised domain when missing, and auto-creates `INTERNAL_CRM` integration if missing
+- `update_account()` normalises domain if provided, derives domain from `website` when `domain` is omitted, rejects duplicate domains owned by another account, and only updates allowed fields (ignores unknown fields)
 - Domain normalisation strips protocol (`https://`), `www.` prefix, paths, query strings, and lowercases
 
 ### Domain Matching SQL Pattern

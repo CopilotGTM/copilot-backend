@@ -9,6 +9,12 @@ import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.service.crm.access.accounts_access_service import AccountsAccessService
+from src.service.crm.accounts.contracts import AccountReadServiceError
+from src.service.crm.accounts.read_service import (
+    AccountReadService,
+    _decode_account_search_cursor,
+    _encode_account_search_cursor,
+)
 
 
 def test_normalize_domain_plain_uppercase() -> None:
@@ -51,19 +57,6 @@ def test_normalize_domain_no_protocol() -> None:
     assert AccountsAccessService._normalize_domain("www.Acme.COM") == "acme.com"
 
 
-class _RowLikeCount:
-    """Minimal SQLAlchemy Row-like object for count query results."""
-
-    def __init__(self, contact_id, count: int) -> None:
-        self._values = (contact_id, count)
-
-    def __getitem__(self, index: int):
-        return self._values[index]
-
-    def __iter__(self):
-        return iter(self._values)
-
-
 def _mock_scalars_first(row):
     mock_scalars = MagicMock()
     mock_scalars.first.return_value = row
@@ -72,10 +65,19 @@ def _mock_scalars_first(row):
     return mock_result
 
 
-def _mock_result_all(rows: list[object]):
-    mock_result = MagicMock()
-    mock_result.all.return_value = rows
-    return mock_result
+def test_account_search_cursor_round_trips_name_and_id() -> None:
+    company_id = uuid4()
+    cursor = _encode_account_search_cursor("Acme", company_id)
+
+    assert _decode_account_search_cursor(cursor) == ("acme", company_id)
+
+
+def test_account_search_cursor_rejects_invalid_payload() -> None:
+    with pytest.raises(AccountReadServiceError) as exc_info:
+        _decode_account_search_cursor("not-a-cursor")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Invalid cursor"
 
 
 @pytest.mark.asyncio
@@ -86,7 +88,7 @@ async def test_get_account_detail_maps_row_like_count_results() -> None:
     contact_without_count_id = uuid4()
 
     mock_db = AsyncMock()
-    service = AccountsAccessService(org_session=mock_db, organisation_id=organisation_id)
+    service = AccountReadService(org_session=mock_db, organisation_id=organisation_id)
 
     company = MagicMock()
     company.model_dump.return_value = {"company_id": company_id, "name": "Acme"}
@@ -113,14 +115,24 @@ async def test_get_account_detail_maps_row_like_count_results() -> None:
     won_deal.deal_status = CRMDealStatus.WON.value
     won_deal.model_dump.return_value = {"deal_id": str(uuid4()), "amount": 900}
 
-    mock_db.execute = AsyncMock(
-        side_effect=[
-            _mock_scalars_first(company),
-            _mock_result_all([_RowLikeCount(contact_with_count_id, 3)]),
+    mock_db.execute = AsyncMock(return_value=_mock_scalars_first(company))
+    service.list_account_contacts = AsyncMock(
+        return_value=[
+            {
+                "contact_id": contact_with_count.contact_id,
+                "full_name": contact_with_count.full_name,
+                "email": contact_with_count.email,
+                "job_title": contact_with_count.job_title,
+                "deal_count": 3,
+            },
+            {
+                "contact_id": contact_without_count.contact_id,
+                "full_name": contact_without_count.full_name,
+                "email": contact_without_count.email,
+                "job_title": contact_without_count.job_title,
+                "deal_count": 0,
+            },
         ]
-    )
-    service.get_account_contacts = AsyncMock(
-        return_value=[contact_with_count, contact_without_count]
     )
     service.get_account_deals = AsyncMock(return_value=[open_deal, won_deal])
 

@@ -414,7 +414,7 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_ACCOUNT,
-        description="Create or reuse a CRM account once the user provides the account name.",
+        description="Create or reuse a CRM account once the user provides a name, domain, or website.",
         parameters={
             "type": "object",
             "properties": {

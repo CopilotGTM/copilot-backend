@@ -8,10 +8,17 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
-from src.service.crm.access.contacts_access_service import (
-    ContactsAccessService,
-    ContactsAccessServiceError,
+from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
+from src.service.crm.accounts.read_service import AccountReadService
+from src.service.crm.accounts.write_service import AccountWriteService
+from src.service.crm.contacts.contracts import (
+    ContactDealLinkServiceError,
+    ContactWriteContext,
+    ContactWriteServiceError,
 )
+from src.service.crm.contacts.deal_link_service import ContactDealLinkService
+from src.service.crm.contacts.read_service import ContactReadService
+from src.service.crm.contacts.write_service import ContactWriteService
 from src.workers.deal_worker.client import send_deal_task_async
 from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
 
@@ -252,9 +259,13 @@ async def create_contact_direct(
         return {"status": "error", "message": "deal_id must be a valid UUID."}
 
     async with context.acquire_session() as org_session:
-        service = ContactsAccessService(org_session, organisation_id)
+        contact_reader = ContactReadService(org_session, organisation_id)
+        contact_writer = ContactWriteService(org_session, organisation_id)
+        account_reader = AccountReadService(org_session, organisation_id)
+        account_writer = AccountWriteService(org_session, organisation_id)
+        deal_linker = ContactDealLinkService(org_session, organisation_id)
         try:
-            contact = await service.find_contact_by_email(normalized_email)
+            contact = await contact_reader.find_contact_by_email(normalized_email)
             status = "exists" if contact else "created"
             created_account = None
 
@@ -267,7 +278,7 @@ async def create_contact_direct(
                         normalized_email
                     )
                     matches = (
-                        await service.find_accounts_by_domain(lookup_domain)
+                        await account_reader.find_accounts_by_domain(lookup_domain)
                         if lookup_domain
                         else []
                     )
@@ -278,13 +289,23 @@ async def create_contact_direct(
                         kwargs["company_name"] = matches[0].name
                     elif _clean_optional(account_name):
                         name_value = _clean_optional(account_name) or ""
-                        name_matches = await service.find_accounts_by_name(name_value)
+                        name_matches = await account_reader.find_accounts_by_name(name_value)
                         if len(name_matches) > 1:
                             return _selection_result(name_matches)
                         account = (
                             name_matches[0]
                             if name_matches
-                            else await service.create_account(name=name_value)
+                            else (
+                                await account_writer.create_account(
+                                    name=name_value,
+                                    context=AccountWriteContext(
+                                        source="agent_tool",
+                                        actor_user_id=context.user_id,
+                                        created_via="chat_tool",
+                                        duplicate_scope="internal_only",
+                                    ),
+                                )
+                            ).account
                         )
                         kwargs["company_id"] = account.company_id
                         kwargs["company_name"] = account.name
@@ -298,25 +319,37 @@ async def create_contact_direct(
                 linkedin = _clean_optional(linkedin_url)
                 if linkedin:
                     kwargs["properties"] = {"linkedin_url": linkedin}
-                contact = await service.create_contact(
+                contact_result = await contact_writer.create_contact(
                     email=normalized_email,
                     name=cleaned_name,
+                    context=ContactWriteContext(
+                        source="agent_tool",
+                        actor_user_id=context.user_id,
+                        created_via="chat_tool",
+                    ),
                     **kwargs,
                 )
+                contact = contact_result.contact
+                await org_session.commit()
 
             result = _contact_result(contact, status=status)
             if created_account:
                 result["created_account"] = created_account
 
             if parsed_deal_id:
-                link = await service.add_contact_to_deal(
+                link_result = await deal_linker.add_contact_to_deal(
                     contact_id=contact.contact_id,
                     deal_id=parsed_deal_id,
                     relationship_role=_clean_optional(relationship_role),
                     actor_user_id=context.user_id,
                 )
                 await org_session.commit()
-                if link.get("created"):
+                link = {
+                    "created": link_result.created,
+                    "skipped": link_result.skipped,
+                    "contact_participant_changed": link_result.contact_participant_changed,
+                }
+                if link["created"]:
                     try:
                         await _dispatch_stakeholder_sync(organisation_id, parsed_deal_id)
                     except Exception:
@@ -327,7 +360,11 @@ async def create_contact_direct(
                 result["deal_id"] = str(parsed_deal_id)
                 if _clean_optional(deal_name):
                     result["deal_name"] = _clean_optional(deal_name)
-        except ContactsAccessServiceError as exc:
+        except (
+            AccountWriteServiceError,
+            ContactWriteServiceError,
+            ContactDealLinkServiceError,
+        ) as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create contact: {exc.message}"}
         except Exception:

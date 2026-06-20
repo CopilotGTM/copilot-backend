@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
-from src.service.crm.access.accounts_access_service import AccountsAccessService
+from src.service.crm.accounts.read_service import AccountReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -36,7 +36,7 @@ async def search_accounts(
         return []
 
     async with context.acquire_session() as org_session:
-        service = AccountsAccessService(org_session, organisation_id)
+        service = AccountReadService(org_session, organisation_id)
         try:
             rows, _total = await service.list_accounts(
                 page=1,

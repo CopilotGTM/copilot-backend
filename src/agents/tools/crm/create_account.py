@@ -8,10 +8,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
-from src.service.crm.access.accounts_access_service import (
-    AccountsAccessService,
-    AccountsAccessServiceError,
+from src.service.crm.accounts.contracts import (
+    AccountWriteContext,
+    AccountWriteServiceError,
 )
+from src.service.crm.accounts.read_service import AccountReadService
+from src.service.crm.accounts.write_service import AccountWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -188,15 +190,16 @@ async def create_account_direct(
         return {"status": "error", "message": "Cannot create account without an organization."}
 
     cleaned_name = _clean_optional(name)
-    if not cleaned_name:
-        return {"status": "error", "message": "Account name is required."}
+    cleaned_website = _clean_optional(website)
+    normalized_domain = _normalize_domain(domain or cleaned_website)
+    if not cleaned_name and not normalized_domain and not cleaned_website:
+        return {"status": "error", "message": "Account name, domain, or website is required."}
 
-    normalized_domain = _normalize_domain(domain)
     kwargs = {
         key: value
         for key, value in {
             "domain": normalized_domain,
-            "website": _clean_optional(website),
+            "website": cleaned_website,
             "industry": _clean_optional(industry),
             "linkedin_url": _clean_optional(linkedin_url),
             "phone": _clean_optional(phone),
@@ -206,20 +209,35 @@ async def create_account_direct(
     }
 
     async with context.acquire_session() as org_session:
-        service = AccountsAccessService(org_session, organisation_id)
+        reader = AccountReadService(org_session, organisation_id)
+        writer = AccountWriteService(org_session, organisation_id)
         try:
-            existing = (
-                await service.find_accounts_by_domain(normalized_domain)
-                if normalized_domain
-                else await service.find_accounts_by_name(cleaned_name)
-            )
+            if normalized_domain:
+                existing = await reader.find_accounts_by_domain(normalized_domain)
+            else:
+                if cleaned_name is None:
+                    return {
+                        "status": "error",
+                        "message": "Account name, domain, or website is required.",
+                    }
+                existing = await reader.find_accounts_by_name(cleaned_name)
             if existing:
                 result = _account_result(existing[0], status="exists")
             else:
-                account = await service.create_account(name=cleaned_name, **kwargs)
+                write_result = await writer.create_account(
+                    name=cleaned_name,
+                    context=AccountWriteContext(
+                        source="agent_tool",
+                        actor_user_id=context.user_id,
+                        created_via="chat_tool",
+                        duplicate_scope="internal_only",
+                    ),
+                    **kwargs,
+                )
+                account = write_result.account
                 await org_session.commit()
                 result = _account_result(account, status="created")
-        except AccountsAccessServiceError as exc:
+        except AccountWriteServiceError as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create account: {exc.message}"}
         except Exception:
@@ -250,7 +268,7 @@ def create_create_account(
         phone: str | None = None,
         country: str | None = None,
     ) -> dict[str, Any]:
-        """Create an internal CRM account directly once the account name is known."""
+        """Create an internal CRM account once a name, domain, or website is known."""
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateAccount",

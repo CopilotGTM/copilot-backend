@@ -1039,7 +1039,7 @@ if (result.created > 0) {
 The frontend account dropdown is **split into two sections**:
 
 - **Suggested** (top) — populated from `GET /accounts/suggest?email_domain=...`. **Shown but not auto-selected.** The user must click to confirm.
-- **Search** (input + results) — typing fires `GET /accounts?q=...`. Results show under the suggestion.
+- **Search** (input + cursor results) — typing fires `GET /accounts/search?q=...`. Results show under the suggestion and load more with `next_cursor`.
 
 The dropdown should display **account name + domain** (and optionally industry) — never the raw `company_id` UUID.
 
@@ -1061,7 +1061,7 @@ The dropdown should display **account name + domain** (and optionally industry) 
    - Search input
 4. User can:
    - Click suggested → selects it
-   - Type to search → GET /accounts?q=...
+   - Type to search → GET /accounts/search?q=...
    - Click "Create new account" → POST /accounts inline
    - Skip → leaves dropdown empty
 5. Submit → POST /contacts with company_id (or without)
@@ -1092,9 +1092,12 @@ async function onEmailChange(email: string) {
 }
 
 // 2. User searches for an account
-async function onAccountSearch(query: string) {
-  const { data } = await api.get(`/users/crm/accounts?q=${query}`);
+async function onAccountSearch(query: string, cursor?: string) {
+  const params = new URLSearchParams({ q: query, limit: '20' });
+  if (cursor) params.set('cursor', cursor);
+  const { data } = await api.get(`/users/crm/accounts/search?${params.toString()}`);
   setSearchResults(data.items);
+  setNextAccountCursor(data.next_cursor);
 }
 
 // 3. Gate the dropdown on existing contact's email + lock state
@@ -1108,7 +1111,7 @@ const canEditAccount = contact.email !== null && contact.company_id === null;
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /users/crm/accounts/suggest?email_domain=...` | Auto-suggest based on email domain |
-| `GET /users/crm/accounts?q=...` | Search accounts by name/domain |
+| `GET /users/crm/accounts/search?q=...&cursor=...` | Cursor search accounts by name/domain/website for dropdowns |
 | `POST /users/crm/accounts` | Create a new account inline |
 | `POST /users/crm/contacts` (with `company_id`) | Create contact with account link |
 | `PATCH /users/crm/contacts/{id}` (with `company_id`) | Link an existing contact (one-time) |
