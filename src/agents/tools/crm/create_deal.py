@@ -32,7 +32,8 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.infra.database.sessions import acquire_master_async_session
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
-from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.write_service import DealWriteService
 from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 if TYPE_CHECKING:
@@ -487,7 +488,7 @@ async def create_deal_form(
             _slack_field("Account", account_name or em),
             _slack_field("Domain", account_domain or em),
         ]
-        slack_blocks = [
+        slack_blocks: list[dict[str, Any]] = [
             {
                 "type": "header",
                 "text": {"type": "plain_text", "text": "Create New Deal"},
@@ -543,8 +544,8 @@ async def create_deal_form(
             },
         ]
 
-        bot_service = SlackBotService()
-        sent = await bot_service.send_block_kit_message(
+        slack_bot_service = SlackBotService()
+        sent = await slack_bot_service.send_block_kit_message(
             team_id=team_id,
             channel_id=channel_id,
             blocks=slack_blocks,
@@ -568,8 +569,8 @@ async def create_deal_form(
         }
 
         # Send the card
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
+        teams_bot_service = TeamsBotService()
+        sent = await teams_bot_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
             payload=card_payload,

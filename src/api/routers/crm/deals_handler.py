@@ -59,13 +59,13 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.deals_access_service import (
-    DealsAccessService,
-    DealsAccessServiceError,
+from src.service.crm.deals.contracts import DealReadServiceError, DealWriteServiceError
+from src.service.crm.deals.read_service import (
+    DealReadService,
     extract_deal_health,
     extract_deal_health_reason,
 )
-from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
+from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
 from src.service.crm.jobs.stakeholder_job_visibility_service import (
@@ -160,8 +160,8 @@ async def get_deals_access_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a DealsAccessService instance for the current org."""
-    service = DealsAccessService(org_session, user_ids.organisation_id)
+    """Dependency that yields a DealReadService instance for the current org."""
+    service = DealReadService(org_session, user_ids.organisation_id)
     try:
         yield service
     finally:
@@ -473,7 +473,7 @@ def _extract_custom_columns(
 async def list_deals(
     response: FastAPIResponse,
     params: DealsListParams = Depends(get_deals_list_params),
-    service: DealsAccessService = Depends(get_deals_access_service),
+    service: DealReadService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
@@ -568,7 +568,7 @@ async def list_deals(
         )
         return Response.success_response(message="Deals retrieved successfully", data=page_response)
 
-    except DealsAccessServiceError as e:
+    except DealReadServiceError as e:
         logger.warning("Deals access error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,
@@ -604,7 +604,7 @@ async def list_deal_owners(
         None,
         description="Owner IDs to hydrate even if they are outside the current search result.",
     ),
-    service: DealsAccessService = Depends(get_deals_access_service),
+    service: DealReadService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealOwnerFilters]:
     """List distinct deal owners for filter dropdowns."""
@@ -627,7 +627,7 @@ async def list_deal_owners(
         ]
         payload = DealOwnerFilters(items=items)
         return Response.success_response(message="Deal owners retrieved successfully", data=payload)
-    except DealsAccessServiceError as e:
+    except DealReadServiceError as e:
         logger.warning("Deal owners access error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,
@@ -658,7 +658,7 @@ async def list_deal_owners(
 async def get_current_user_deal_owners(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
-    service: DealsAccessService = Depends(get_deals_access_service),
+    service: DealReadService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealOwnerFilters]:
     """Resolve current app user to CRM owner filter options."""
@@ -680,7 +680,7 @@ async def get_current_user_deal_owners(
             message="Current user deal owners resolved successfully",
             data=payload,
         )
-    except DealsAccessServiceError as e:
+    except DealReadServiceError as e:
         logger.warning("Current user deal owner resolution error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,
@@ -713,7 +713,7 @@ async def get_current_user_deal_owners(
 )
 async def get_deals_stats(
     response: FastAPIResponse,
-    service: DealsAccessService = Depends(get_deals_access_service),
+    service: DealReadService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsStats]:
     """Calculate and return aggregate statistics for deals.
@@ -728,7 +728,7 @@ async def get_deals_stats(
             message="Statistics retrieved successfully", data=stats_model
         )
 
-    except DealsAccessServiceError as e:
+    except DealReadServiceError as e:
         logger.warning("Deals stats error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,
@@ -765,7 +765,7 @@ async def get_deals_stats(
 async def get_deal(
     deal_id: UUID,
     response: FastAPIResponse,
-    service: DealsAccessService = Depends(get_deals_access_service),
+    service: DealReadService = Depends(get_deals_access_service),
     deal_job_service: DealJobService = Depends(get_deal_job_service),
     include_empty_custom_columns: bool = Query(
         True,
@@ -990,7 +990,7 @@ async def get_deal(
 
         return Response.success_response(message="Deal retrieved successfully", data=detail)
 
-    except DealsAccessServiceError as e:
+    except DealReadServiceError as e:
         logger.warning("Deal access error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,

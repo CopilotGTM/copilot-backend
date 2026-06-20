@@ -21,7 +21,8 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadStatusHistory,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.internal.internal_crm_user_service import (
     InternalCRMUserService,
     InternalCRMUserServiceError,

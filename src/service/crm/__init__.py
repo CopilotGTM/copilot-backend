@@ -10,8 +10,8 @@ Import these directly if needed:
     from src.service.crm.meetings.meetings_service import MeetingsService
 """
 
-from src.service.crm.access.deals_access_service import DealsAccessService
 from src.service.crm.access.tasks_access_service import TasksAccessService
+from src.service.crm.deals.read_service import DealReadService
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
 from src.service.crm.jobs.deal_meeting_job_service import (
@@ -29,6 +29,7 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
 )
 
 __all__ = [
+    "DealReadService",
     "DealsAccessService",
     "DealJobService",
     "DealJobServiceError",
@@ -42,3 +43,5 @@ __all__ = [
     "build_meeting_timeline_event",
     "TasksAccessService",
 ]
+
+DealsAccessService = DealReadService

@@ -1,14 +1,30 @@
+"""CRM deal, participant, stage, and mutation-event tenant models.
+
+These tables live inside each organisation schema. `CRMDeal` is the current
+state record, while `CRMDealMutationEvent` is the immutable ledger/outbox used
+to audit internal CRM writes and later feed workflow dispatch.
+"""
+
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Index, Numeric, String, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    Numeric,
+    String,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, Relationship
 
-from ...base_mixins import utcnow
+from ...base_mixins import TimestampMixin, utcnow
 from ..base import SyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
 
@@ -716,3 +732,148 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
     )
 
     deal: CRMDeal | None = Relationship(back_populates="stage_history")
+
+
+class CRMDealMutationEvent(TimestampMixin, table=True):
+    """Immutable CRM mutation ledger row for internal CRM writes.
+
+    One business write creates one row with all changed fields. Workflow fanout
+    is represented by semantic event types here; claim/retry/run state belongs
+    in a future child dispatch table because one mutation can trigger many workflows.
+    """
+
+    __tablename__ = "crm_mutation_events"
+    __table_args__ = (
+        # Multi-field updates can expose several workflow semantics from one audit event.
+        Index(
+            "ix_crm_mutation_events_semantic_event_types",
+            "semantic_event_types",
+            postgresql_using="gin",
+        ),
+        Index(
+            "ix_crm_mutation_events_entity",
+            "organisation_id",
+            "entity_type",
+            "entity_id",
+            "created_at",
+        ),
+        Index("ix_crm_mutation_events_deal", "organisation_id", "deal_id", "occurred_at"),
+        Index(
+            "ux_crm_mutation_events_idempotency",
+            "organisation_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
+
+    event_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Internal UUID for the CRM mutation event row.",
+    )
+    organisation_id: UUID = Field(
+        index=True,
+        description="Organisation that owns the mutation event and related CRM entity.",
+    )
+    event_type: str = Field(
+        sa_column=Column(String(128), nullable=False, index=True),
+        description="Primary stable business event name, e.g. crm.deal.updated.",
+    )
+    # Stable business events matched by workflow triggers, derived from changed_fields.
+    semantic_event_types: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            ARRAY(sa.Text()),
+            nullable=False,
+            server_default=text("ARRAY[]::text[]"),
+        ),
+        description="Workflow-matchable event names derived from the changed fields.",
+    )
+    mutation_group_id: UUID = Field(
+        default_factory=uuid4,
+        index=True,
+        description="Groups fields that changed together in one user/API action.",
+    )
+    entity_type: str = Field(
+        sa_column=Column(String(64), nullable=False),
+        description="CRM entity category affected by the mutation, currently deal.",
+    )
+    entity_id: UUID = Field(
+        index=True,
+        description="Primary entity UUID affected by the mutation.",
+    )
+    deal_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_deals.deal_id",
+        index=True,
+        description="Direct deal UUID for fast deal-history and workflow lookups.",
+    )
+    operation: str = Field(
+        sa_column=Column(String(64), nullable=False, index=True),
+        description="Internal write operation that produced the event.",
+    )
+    occurred_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Business time when the CRM mutation occurred.",
+    )
+    changed_fields: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
+        description="Canonical old/new values for all fields changed by this mutation.",
+    )
+    summary: str | None = Field(
+        default=None,
+        sa_column=Column(String(500), nullable=True),
+        description="Human-readable audit summary for CRM history screens.",
+    )
+    integration_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="CRM integration context for the affected entity, when known.",
+    )
+    provider: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="External provider name if the mutation originated from provider sync.",
+    )
+    source_object_mapping_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="Source mapping row that tied a provider object to this CRM entity.",
+    )
+    actor_user_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="User or automated pipeline actor responsible for the mutation.",
+    )
+    source: str = Field(
+        sa_column=Column(String(64), nullable=False, index=True),
+        description="System surface that initiated the mutation, e.g. api, agent, workflow.",
+    )
+    source_label: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Display label for the mutation source in audit timelines.",
+    )
+    approval_state_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="Approval state that authorized the mutation, when approval was required.",
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Request/job correlation identifier for tracing this mutation.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Tenant-scoped key that lets callers safely retry the same mutation.",
+    )
+    payload_hash: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="Hash of the canonical payload used to detect idempotency conflicts.",
+    )
