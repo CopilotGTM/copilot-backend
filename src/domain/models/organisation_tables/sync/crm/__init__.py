@@ -6,16 +6,23 @@ names while individual CRM model files continue to own table definitions.
 
 from .activities import (
     CRMActivity,
+    CRMActivityEmailDisplayPayload,
+    CRMActivityLink,
+    CRMActivityMeetingDisplayPayload,
     CRMActivityObjectType,
+    CRMActivityParticipantPreview,
     CRMActivityPriority,
     CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
     # Backwards compatibility aliases
     CRMDealTask,
+    CRMNote,
+    CRMTask,
     CRMTaskPriority,
     CRMTaskStatus,
     CRMTaskType,
+    validate_crm_activity_display_payload,
 )
 from .associations import CRMAssociationCategory, CRMObjectAssociation, CRMObjectType
 from .companies import CRMCompany
@@ -72,6 +79,13 @@ __all__ = [
     "CRMActivityPriority",
     "CRMActivityObjectType",
     "CRMActivitySource",
+    "CRMActivityParticipantPreview",
+    "CRMActivityEmailDisplayPayload",
+    "CRMActivityMeetingDisplayPayload",
+    "validate_crm_activity_display_payload",
+    "CRMActivityLink",
+    "CRMTask",
+    "CRMNote",
     # Backwards compatibility aliases for Tasks
     "CRMDealTask",
     "CRMTaskStatus",
