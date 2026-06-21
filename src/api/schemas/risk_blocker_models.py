@@ -2,117 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, Field
+from src.contracts.crm.risk_blockers import (
+    RiskBlockerDetail as RiskBlockerDetail,
+)
+from src.contracts.crm.risk_blockers import (
+    RiskBlockerListItem,
+    RiskBlockerSummary,
+)
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerCategory,
     RiskBlockerSeverity,
-    RiskBlockerSource,
     RiskBlockerStatus,
     RiskBlockerType,
 )
-
-
-class RiskBlockerListItem(BaseModel):
-    """Response model for a risk/blocker in list view.
-
-    Optimized for UI table display with only essential fields:
-    - TITLE, TYPE, OWNER, SOURCE, STATUS columns
-    """
-
-    risk_blocker_id: UUID
-    item_type: RiskBlockerType  # RISK or BLOCKER
-    status: RiskBlockerStatus
-    severity: RiskBlockerSeverity
-
-    # Content (for title column)
-    title: str
-    quote: str | None = None  # Snippet shown in AI suggested panel
-
-    # Source (for source column with icon)
-    source_type: RiskBlockerSource
-    source_record_id: str | None = None
-    source_context: str | None = None  # e.g., "Discovery Call - Dec 15"
-
-    # Assignment (for owner column)
-    owner_name: str | None = None
-
-    # AI metadata (for AI suggested badge)
-    is_ai_generated: bool
-
-    model_config = {"from_attributes": True}
-
-
-class RiskBlockerDetail(BaseModel):
-    """Response model for full risk/blocker details including audit trail."""
-
-    risk_blocker_id: UUID
-    deal_id: UUID
-    item_type: RiskBlockerType
-    category: RiskBlockerCategory
-    severity: RiskBlockerSeverity
-    status: RiskBlockerStatus
-
-    # Content
-    title: str
-    description: str | None = None
-    quote: str | None = None
-
-    # Source
-    source_type: RiskBlockerSource
-    source_record_id: str | None = None
-    source_context: str | None = None
-
-    # AI metadata
-    is_ai_generated: bool
-    ai_confidence: float | None = None
-    ai_reasoning: str | None = None
-    extraction_run_id: UUID | None = None
-
-    # Assignment
-    owner_name: str | None = None
-    owner_email: str | None = None
-    assigned_team: str | None = None
-
-    # Resolution / closure
-    resolution_notes: str | None = None
-    closed_at: datetime | None = None
-    closed_by_user_id: UUID | None = None
-    closed_by_user_name: str | None = None
-
-    # Provenance
-    created_by_user_id: UUID | None = None
-    created_by_user_name: str | None = None
-    last_modified_by_user_id: UUID | None = None
-    last_modified_by_user_name: str | None = None
-
-    # Timestamps
-    identified_at: datetime
-    created_at: datetime
-    updated_at: datetime
-
-    # Full audit trail
-    audit_trail: list[dict] = Field(default_factory=list)
-    modification_count: int = 0
-    unique_modifier_count: int = 0
-
-    model_config = {"from_attributes": True}
-
-
-class RiskBlockerSummary(BaseModel):
-    """Summary statistics for risks/blockers on a deal."""
-
-    total_count: int = 0
-    risks_count: int = 0
-    blockers_count: int = 0
-    open_count: int = 0
-    in_progress_count: int = 0
-    resolved_count: int = 0
-    critical_count: int = 0
-    high_count: int = 0
 
 
 class RiskBlockerListResponse(BaseModel):

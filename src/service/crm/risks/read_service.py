@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.risk_blocker_models import (
+from src.contracts.crm.risk_blockers import (
     RiskBlockerDetail,
     RiskBlockerListItem,
     RiskBlockerSummary,
