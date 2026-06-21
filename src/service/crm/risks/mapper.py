@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.api.schemas.risk_blocker_models import RiskBlockerDetail, RiskBlockerListItem
+from src.contracts.crm.risk_blockers import RiskBlockerDetail, RiskBlockerListItem
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
 
 
