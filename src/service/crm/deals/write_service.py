@@ -671,14 +671,78 @@ class DealWriteService:
             "stage_id": deal.stage_id,
             "stage_name": deal.stage_name,
         }
+        for lifecycle_field in (
+            "deal_status",
+            "close_date",
+            "closed_won_at",
+            "closed_lost_at",
+            "closed_reason",
+        ):
+            if hasattr(deal, lifecycle_field):
+                old_values[lifecycle_field] = getattr(deal, lifecycle_field)
         write_context = context or self._write_context()
         await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
+
+        lifecycle_action: str | None = None
+        stage_state_raw = getattr(stage, "stage_state", None)
+        if stage_state_raw is not None:
+            stage_state = self._normalize_stage_state(stage_state_raw)
+            if stage_state in {CRMDealStatus.WON.value, CRMDealStatus.LOST.value}:
+                closed_at = getattr(deal, "stage_entered_at", None) or datetime.now(UTC)
+                if closed_at.tzinfo is None:
+                    closed_at = closed_at.replace(tzinfo=UTC)
+
+                deal.deal_status = CRMDealStatus(stage_state)
+                deal.close_date = closed_at
+                if stage_state == CRMDealStatus.WON.value:
+                    deal.closed_won_at = closed_at
+                    deal.closed_lost_at = None
+                else:
+                    deal.closed_lost_at = closed_at
+                    deal.closed_won_at = None
+
+                deal.properties = {
+                    **(getattr(deal, "properties", None) or {}),
+                    "closed_via": write_context.source,
+                    "closed_by_user_id": str(self.actor_user_id),
+                }
+                lifecycle_action = "closed"
+            elif stage_state == CRMDealStatus.OPEN.value:
+                current_status = getattr(deal, "deal_status", None)
+                if (
+                    current_status is not None
+                    and self._normalize_stage_state(current_status) != CRMDealStatus.OPEN.value
+                ):
+                    deal.deal_status = CRMDealStatus.OPEN
+                    deal.closed_won_at = None
+                    deal.closed_lost_at = None
+                    deal.properties = {
+                        **(getattr(deal, "properties", None) or {}),
+                        "reopened_via": write_context.source,
+                        "reopened_by_user_id": str(self.actor_user_id),
+                    }
+                    lifecycle_action = "reopened"
+
+        if lifecycle_action:
+            await self.session.flush()
+
+        changed_fields = self._collect_changed_fields(old_values=old_values, obj=deal)
+        event_type = "crm.deal.stage_changed"
+        summary = f"Moved deal to {stage.name}"
+        lifecycle_fields = {"deal_status", "close_date", "closed_won_at", "closed_lost_at"}
+        if lifecycle_action == "closed" and lifecycle_fields.intersection(changed_fields):
+            event_type = "crm.deal.closed"
+            summary = f"Closed deal as {self._normalize_stage_state(deal.deal_status)}"
+        elif lifecycle_action == "reopened" and lifecycle_fields.intersection(changed_fields):
+            event_type = "crm.deal.reopened"
+            summary = "Reopened deal"
+
         await self._record_mutation_event(
             deal=deal,
-            event_type="crm.deal.stage_changed",
+            event_type=event_type,
             operation="move_stage",
-            changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
-            summary=f"Moved deal to {stage.name}",
+            changed_fields=changed_fields,
+            summary=summary,
             context=write_context,
         )
 

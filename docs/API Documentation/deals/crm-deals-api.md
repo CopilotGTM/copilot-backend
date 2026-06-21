@@ -588,6 +588,10 @@ POST /users/crm/deals/{deal_id}/stage
 ```
 
 **Note**: Moving to a new stage automatically creates a stage history record with timestamp.
+If the target stage has `stage_state: "won"` or `stage_state: "lost"`, the deal lifecycle
+is closed and `deal_status` becomes `won` or `lost`. If the target stage has
+`stage_state: "open"` and the deal was closed, the deal is reopened and `deal_status`
+becomes `open`.
 
 ### Error Responses
 
@@ -1162,7 +1166,11 @@ GET /users/crm/pipelines?include_stages=true
 8. **Account + Team**: Use `account` + `team_members` to capture company + internal team
    in one request. Company is created/linked only when `account.domain` is supplied.
 9. **Owner filter options**: Use `/users/crm/deals/owners` and filter by `owner_ids`; do not derive options from the current page.
-10. **Close flow**: Use `POST /users/crm/deals/{deal_id}/close` and `POST /users/crm/deals/{deal_id}/reopen` for lifecycle transitions instead of generic edit.
+10. **Close flow**: Use `POST /users/crm/deals/{deal_id}/close` and
+    `POST /users/crm/deals/{deal_id}/reopen` when you need explicit close/reopen
+    controls. Stage picker moves through `POST /users/crm/deals/{deal_id}/stage`
+    also update lifecycle when the selected stage has `stage_state` `won`, `lost`,
+    or `open`.
 11. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code).
 12. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
 
@@ -1228,6 +1236,11 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 ---
 
 ## Changelog
+
+### 2026-06-21
+
+1. Documented that `POST /users/crm/deals/{deal_id}/stage` keeps `deal_status`
+   in sync with target stage state for closed and reopened lifecycle transitions.
 
 ### 2026-04-18
 
