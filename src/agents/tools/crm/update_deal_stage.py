@@ -241,23 +241,23 @@ async def update_deal_stage_form(
     if channel == "slack":
         from src.service.bots.slack_bot_service import SlackBotService
 
-        bot_service = SlackBotService()
+        slack_service = SlackBotService()
         blocks = card_payload.get("blocks")
         text_fallback = card_payload.get("text") or "Update deal stage form"
         if blocks:
-            sent = await bot_service.send_block_kit_message(
+            sent = await slack_service.send_block_kit_message(
                 team_id=team_id,
                 channel_id=channel_id,
                 blocks=blocks,
                 text_fallback=text_fallback,
             )
         else:
-            sent = await bot_service._send_message(team_id, channel_id, text_fallback)
+            sent = await slack_service._send_message(team_id, channel_id, text_fallback)
     else:
         from src.service.bots.teams_bot_service import TeamsBotService
 
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_payload(
+        teams_service = TeamsBotService()
+        sent = await teams_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
             payload=card_payload,

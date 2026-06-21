@@ -26,6 +26,7 @@ class NormalizedSalesforceContact:
     mobile_phone: str | None
     fax: str | None
     website: str | None
+    linkedin_url: str | None
     owner_external_id: str | None
     lifecycle_stage: str | None
     lead_status: str | None

@@ -58,6 +58,7 @@ def _normalize_one(raw: object) -> NormalizedSalesforceContact | None:
         mobile_phone=_coerce_str(raw.get("MobilePhone")),
         fax=_coerce_str(raw.get("Fax")),
         website=_coerce_str(raw.get("Website")),
+        linkedin_url=_coerce_str(raw.get("LinkedIn_URL__c")),
         owner_external_id=_coerce_str(raw.get("OwnerId")),
         lifecycle_stage=None,
         lead_status=None,

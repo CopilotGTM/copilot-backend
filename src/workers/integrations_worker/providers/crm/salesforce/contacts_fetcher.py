@@ -36,6 +36,7 @@ _CONTACT_FIELD_ALLOWLIST = (
     "MobilePhone",
     "Fax",
     "Website",
+    "LinkedIn_URL__c",
     "MailingStreet",
     "MailingCity",
     "MailingState",

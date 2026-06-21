@@ -23,6 +23,7 @@ def _normalized_contact(
     external_id: str,
     company_external_id: str | None,
     owner_external_id: str | None,
+    linkedin_url: str | None = None,
 ) -> NormalizedSalesforceContact:
     return NormalizedSalesforceContact(
         external_id=external_id,
@@ -38,6 +39,7 @@ def _normalized_contact(
         mobile_phone="456",
         fax=None,
         website=None,
+        linkedin_url=linkedin_url,
         owner_external_id=owner_external_id,
         lifecycle_stage=None,
         lead_status=None,
@@ -94,11 +96,13 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
                 external_id="003A",
                 company_external_id="001MISSING",
                 owner_external_id="005MISSING",
+                linkedin_url="https://www.linkedin.com/in/existing",
             ),
             _normalized_contact(
                 external_id="003B",
                 company_external_id="001A",
                 owner_external_id="005A",
+                linkedin_url="https://www.linkedin.com/in/created",
             ),
         ],
         company_map={"001A": company_id},
@@ -111,11 +115,13 @@ async def test_writer_creates_and_updates_contacts_with_write_time_fk_resolution
     assert result.unresolved_owner_link == 1
     assert existing.company_id is None
     assert existing.owner_id is None
+    assert existing.linkedin_url == "https://www.linkedin.com/in/existing"
     created_rows = [call.args[0] for call in session.add.call_args_list]
     assert len(created_rows) == 1
     assert not hasattr(created_rows[0], "external_id")
     assert created_rows[0].company_id == company_id
     assert created_rows[0].owner_id == owner_id
+    assert created_rows[0].linkedin_url == "https://www.linkedin.com/in/created"
     mapping_helper.upsert_integration_mapping.assert_not_awaited()
     mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
