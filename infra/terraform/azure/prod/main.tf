@@ -213,8 +213,7 @@ module "master_storage_account" {
   log_analytics_workspace_id         = var.enable_storage_diagnostics ? azurerm_log_analytics_workspace.storage_diagnostics[0].id : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
-    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
-    "http://localhost:3000"
+    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com"
   ]
   tags = {
     environment = var.env
@@ -247,8 +246,7 @@ module "org_storage_account" {
   log_analytics_workspace_id         = var.enable_storage_diagnostics ? azurerm_log_analytics_workspace.storage_diagnostics[0].id : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
-    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
-    "http://localhost:3000"
+    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com"
   ]
   tags = {
     environment = var.env
