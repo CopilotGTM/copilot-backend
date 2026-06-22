@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import User
 from src.domain.models.master_tables.organisation_models import Organisation
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
@@ -43,7 +43,7 @@ class TaskNotificationService:
             )
 
     async def send_external_assignment_email(
-        self, task: CRMActivity, deal: CRMDeal | None, *, is_update: bool = False
+        self, task: CRMTask, deal: CRMDeal | None, *, is_update: bool = False
     ) -> None:
         """Send task assignment or update email to external assignee, CC the assigner."""
         if not task.external_assignee_email:
@@ -61,8 +61,10 @@ class TaskNotificationService:
             logger.debug("Could not resolve assigner details", exc_info=True)
 
         due_date_str = None
-        if task.due_date:
-            due_date_str = task.due_date.strftime("%B %d, %Y at %I:%M %p")
+        if task.due_at:
+            due_date_str = task.due_at.strftime("%B %d, %Y at %I:%M %p")
+        elif task.due_date:
+            due_date_str = task.due_date.strftime("%B %d, %Y")
 
         try:
             from src.infra.auth.email_service import email_service
@@ -71,8 +73,8 @@ class TaskNotificationService:
                 to_email=task.external_assignee_email,
                 assignee_name=task.external_assignee_name,
                 assigner_name=assigner_name,
-                task_subject=task.subject or "(no subject)",
-                task_body=task.body,
+                task_subject=task.title or "(no subject)",
+                task_body=task.description,
                 task_priority=task.priority,
                 task_due_date=due_date_str,
                 task_status=task.status,
@@ -84,7 +86,7 @@ class TaskNotificationService:
             logger.warning(
                 "Failed to send external %s email for task %s to %s",
                 "update" if is_update else "assignment",
-                task.activity_id,
+                task.task_id,
                 task.external_assignee_email,
                 exc_info=True,
             )

@@ -8,10 +8,10 @@ from uuid import uuid4
 import pytest
 from src.domain.models.organisation_tables.job_models import DealJobType
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
     CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
+    CRMTask,
 )
 from src.service.crm.internal.deal_task_automation_service import (
     DealTaskAutomationError,
@@ -30,6 +30,9 @@ class _FakeSession:
 
     async def get(self, _model: object, _entity_id: object) -> object | None:
         return self.get_result
+
+    async def execute(self, _statement: object):
+        return SimpleNamespace()
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
@@ -71,18 +74,19 @@ def _deal(*, organisation_id):
     )
 
 
-def _task(*, organisation_id, deal_id, integration_id=None) -> CRMActivity:
-    return CRMActivity(
-        activity_id=uuid4(),
+def _task(*, organisation_id, deal_id, integration_id=None) -> CRMTask:
+    return CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id=str(uuid4()),
-        activity_type=CRMActivityType.TASK.value,
         status=CRMActivityStatus.NOT_STARTED.value,
-        subject="Send pricing proposal",
+        title="Send pricing proposal",
         deal_id=deal_id,
-        source=CRMActivitySource.AI_MEETING.value,
-        properties={},
+        task_metadata={
+            "source": CRMActivitySource.AI_MEETING.value,
+            "task_type": CRMActivityType.TASK.value,
+            "external_id": str(uuid4()),
+        },
     )
 
 

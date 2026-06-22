@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,28 @@ class TaskWriteContext:
 class TaskWriteResult:
     """Canonical task write result returned to API, agents, bot forms, and workflows."""
 
-    task: CRMActivity
+    task: CRMTask
+
+
+@dataclass(frozen=True)
+class TaskReminderSummary:
+    """API-neutral reminder fields needed by task read responses."""
+
+    reminder_id: UUID
+    status: str
+    trigger_time: datetime | None
+    recurrence: str | None
+    delivery_channel: str | None
+
+
+@dataclass(frozen=True)
+class TaskReadRecord:
+    """Task source row plus API display fields resolved outside crm_tasks."""
+
+    task: CRMTask
+    deal_name: str | None = None
+    has_active_reminder: bool = False
+    reminder: TaskReminderSummary | None = None
 
 
 class TaskReadServiceError(Exception):

@@ -51,6 +51,8 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.service.crm.access.tasks_access_service import TasksAccessServiceError
+from src.service.crm.notes.contracts import NoteReadRecord
+from src.service.crm.tasks.contracts import TaskReadRecord
 
 logger = logging.getLogger(__name__)
 
@@ -1573,7 +1575,7 @@ def deals_dependency_overrides(client, test_user_ids, fake_deals_service, fake_d
 
 
 class FakeNote:
-    """Fake CRMActivity (NOTE type) model for testing."""
+    """Fake CRMNote model for testing."""
 
     def __init__(
         self,
@@ -1589,20 +1591,30 @@ class FakeNote:
         created_at: datetime | None = None,
         synced_at: datetime | None = None,
         is_deleted: bool = False,
+        author_user_id: UUID | None = None,
+        note_metadata: dict[str, Any] | None = None,
     ):
         self.activity_id = activity_id
+        self.note_id = activity_id
         self.deal_id = deal_id
         self.organisation_id = organisation_id
         self.body = body
         self.subject = subject
+        self.title = subject
         self.owner_name = owner_name
         self.owner_email = owner_email
+        self.author_name = owner_name
+        self.author_email = owner_email
+        self.author_user_id = author_user_id
         self.integration_id = integration_id
         self.source_created_at = source_created_at or datetime.now(UTC)
         self.created_at = created_at or datetime.now(UTC)
         self.synced_at = synced_at
+        self.source_modified_at = synced_at
+        self.updated_at = synced_at or self.created_at
         self.is_deleted = is_deleted
         self.activity_type = "NOTE"
+        self.note_metadata = note_metadata or {}
 
 
 class FakeDealNotesService:
@@ -1614,6 +1626,9 @@ class FakeDealNotesService:
         self._deals: set[UUID] = set()  # Valid deal IDs
         self._participants: dict[UUID, list] = {}  # deal_id -> participants
         self.session = FakeSession()
+        self.read = self
+        self.write = self
+        self.dispatch = self
 
     async def close(self):
         """Release fake notes service resources for test cleanup."""
@@ -1645,11 +1660,11 @@ class FakeDealNotesService:
         sort_order: str = "desc",
     ):
         """Get notes for a deal with pagination."""
-        from src.service.crm.internal.deal_notes_service import DealNotesServiceError
+        from src.service.crm.notes.contracts import NotesServiceError
 
         # Check deal exists
         if deal_id not in self._deals:
-            raise DealNotesServiceError("Deal not found", status_code=404)
+            raise NotesServiceError("Deal not found", status_code=404)
 
         notes = list(self._notes.get(deal_id, []))
 
@@ -1673,7 +1688,7 @@ class FakeDealNotesService:
                 else:
                     notes = [n for n in notes if (n.source_created_at or n.created_at) > cursor_ts]
             except Exception as err:
-                raise DealNotesServiceError("Invalid cursor", status_code=400) from err
+                raise NotesServiceError("Invalid cursor", status_code=400) from err
 
         has_more = len(notes) > limit
         items = notes[:limit]
@@ -1691,25 +1706,20 @@ class FakeDealNotesService:
 
         participants = self._participants.get(deal_id, [])
 
-        return items, next_cursor, total_count, participants
+        return [NoteReadRecord(note=note) for note in items], next_cursor, total_count, participants
 
     async def create_user_note(
         self,
         deal_id: UUID,
         content: str,
         subject: str | None,
-        user_id: UUID,
-        user_name: str | None,
-        user_email: str | None,
+        context,
     ):
         """Create a user note."""
-        from src.service.crm.internal.deal_notes_service import (
-            CreateUserNoteResult,
-            DealNotesServiceError,
-        )
+        from src.service.crm.notes.contracts import CreateUserNoteResult, NotesServiceError
 
         if deal_id not in self._deals:
-            raise DealNotesServiceError("Deal not found", status_code=404)
+            raise NotesServiceError("Deal not found", status_code=404)
 
         existing = next(
             (
@@ -1718,7 +1728,7 @@ class FakeDealNotesService:
                 if n.integration_id is None
                 and not n.is_deleted
                 and n.body == content
-                and n.subject == subject
+                and n.title == subject
             ),
             None,
         )
@@ -1731,16 +1741,23 @@ class FakeDealNotesService:
             organisation_id=self.organisation_id,
             body=content,
             subject=subject,
-            owner_name=user_name,
-            owner_email=user_email,
+            owner_name=context.actor_name,
+            owner_email=context.actor_email,
             integration_id=None,  # User-created
+            note_metadata={
+                "source": "user",
+                "is_user_created": True,
+                "created_via": context.created_via,
+                "created_by_public_user_id": str(context.actor_user_id),
+            },
         )
         self.add_note(note)
         return CreateUserNoteResult(note=note, created_new=True)
 
-    def determine_note_source(self, note: FakeNote) -> str:
+    def determine_note_source(self, note: FakeNote | NoteReadRecord) -> str:
         """Determine note source."""
-        if note.integration_id is None:
+        source_note = note.note if isinstance(note, NoteReadRecord) else note
+        if source_note.integration_id is None:
             return "user"
         return "hubspot"  # Default CRM source
 
@@ -1749,6 +1766,7 @@ class FakeDealNotesService:
         deal_id: UUID,
         user_id: UUID,
         trigger_source: str,
+        trigger_source_id: UUID | None = None,
     ) -> dict[str, object]:
         """No-op pipeline trigger for API tests that mock note creation flow."""
         return {
@@ -2373,6 +2391,8 @@ def notes_dependency_overrides(client, test_user_ids, fake_notes_service):
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_deal_notes_service] = _override_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield {
         "service": fake_notes_service,
         "user_ids": test_user_ids,
@@ -2515,7 +2535,7 @@ def create_risk_blocker(
 
 
 class FakeTask:
-    """Fake CRMActivity (Task) model for testing."""
+    """Fake CRMTask model for testing."""
 
     def __init__(
         self,
@@ -2528,6 +2548,8 @@ class FakeTask:
         activity_type: str = "TASK",
         priority: str = "MEDIUM",
         due_date: datetime | None = None,
+        due_at: datetime | None = None,
+        is_all_day: bool = False,
         completed_date: datetime | None = None,
         reminder_date: datetime | None = None,
         owner_id: UUID | None = None,
@@ -2548,21 +2570,31 @@ class FakeTask:
         **kwargs,
     ):
         self.activity_id = activity_id
-        self.task_id = activity_id  # Alias
+        self.task_id = activity_id
         self.deal_id = deal_id
         self.organisation_id = organisation_id
         self.subject = subject
+        self.title = subject
         self.body = body
+        self.description = body
         self.status = status
         self.activity_type = activity_type
-        self.task_type = activity_type  # Alias
+        self.task_type = activity_type
         self.priority = priority
-        self.due_date = due_date
+        self.due_at = due_at if due_at is not None else None if is_all_day else due_date
+        self.due_date = due_date.date() if due_date else None
+        self.is_all_day = is_all_day
         self.completed_date = completed_date
+        self.completed_at = completed_date
         self.reminder_date = reminder_date
+        self.reminder_at = reminder_date
         self.owner_id = owner_id
         self.owner_name = owner_name
         self.owner_email = owner_email
+        self.assigned_to_user_id = owner_id
+        self.assigned_to_name = owner_name
+        self.assigned_to_email = owner_email
+        self.owner_user_id = owner_id
         self.external_assignee_email = external_assignee_email
         self.external_assignee_name = external_assignee_name
         self.created_by_user_id = created_by_user_id
@@ -2570,7 +2602,13 @@ class FakeTask:
         self.is_deleted = is_deleted
         self.is_deleted_remote = is_deleted_remote
         self.integration_id = integration_id
-        self.properties = properties
+        self.properties = properties or {}
+        self.task_metadata = dict(self.properties)
+        self.task_metadata.setdefault("task_type", activity_type)
+        if external_assignee_email or external_assignee_name:
+            self.task_metadata["assignee_kind"] = "external"
+            self.assigned_to_email = external_assignee_email
+            self.assigned_to_name = external_assignee_name
         self.metrics = metrics
         self.source_created_at = source_created_at
         self.source_modified_at = source_modified_at
@@ -2614,7 +2652,7 @@ class FakeTasksAccessService:
         statuses: list[str] | None = None,
         priorities: list[str] | None = None,
         task_types: list[str] | None = None,
-    ) -> tuple[list[FakeTask], int]:
+    ) -> tuple[list[TaskReadRecord], int]:
         """List tasks for a deal with filtering and pagination."""
         tasks = [t for t in self._tasks.get(deal_id, []) if not t.is_deleted]
 
@@ -2641,12 +2679,15 @@ class FakeTasksAccessService:
 
         total_count = len(tasks)
         offset = max(page - 1, 0) * limit
-        return tasks[offset : offset + limit], total_count
+        return [
+            TaskReadRecord(task=task, deal_name=task.related_name)
+            for task in tasks[offset : offset + limit]
+        ], total_count
 
     async def list_tasks(
         self,
         **kwargs,
-    ) -> tuple[list[FakeTask], int]:
+    ) -> tuple[list[TaskReadRecord], int]:
         self.list_tasks_calls.append(kwargs)
         if kwargs.get("scope") == "assigned_to_user" and not kwargs.get("assigned_to_key"):
             raise TasksAccessServiceError(
@@ -2660,7 +2701,10 @@ class FakeTasksAccessService:
             if not task.is_deleted and task.activity_type in {"TASK", "TODO"}
         ]
         total_count = len(tasks)
-        return tasks[: kwargs.get("limit", 50)], total_count
+        return [
+            TaskReadRecord(task=task, deal_name=task.related_name)
+            for task in tasks[: kwargs.get("limit", 50)]
+        ], total_count
 
     async def resolve_current_user_task_assignees(
         self,
@@ -2680,7 +2724,7 @@ class FakeTasksAccessService:
             }
         ]
 
-    async def get_task_by_id(self, task_id: UUID) -> FakeTask | None:
+    async def get_task_by_id(self, task_id: UUID) -> TaskReadRecord | None:
         """Get a task by ID."""
         for tasks_list in self._tasks.values():
             for task in tasks_list:
@@ -2689,7 +2733,7 @@ class FakeTasksAccessService:
                     and not task.is_deleted
                     and task.activity_type in {"TASK", "TODO"}
                 ):
-                    return task
+                    return TaskReadRecord(task=task, deal_name=task.related_name)
         return None
 
 
@@ -2934,6 +2978,8 @@ def create_task(
     priority: str = "MEDIUM",
     activity_type: str = "TASK",
     due_date: datetime | None = None,
+    due_at: datetime | None = None,
+    is_all_day: bool = False,
     **kwargs,
 ) -> FakeTask:
     """Factory function to create a task."""
@@ -2946,6 +2992,8 @@ def create_task(
         priority=priority,
         activity_type=activity_type,
         due_date=due_date,
+        due_at=due_at,
+        is_all_day=is_all_day,
         **kwargs,
     )
 

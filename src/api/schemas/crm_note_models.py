@@ -37,8 +37,12 @@ class DealNoteItem(BaseModel):
 
     note_id: UUID = Field(description="Internal note UUID")
     deal_id: UUID = Field(description="Deal ID this note belongs to")
-    content: str = Field(description="Note content/body")
-    subject: str | None = Field(default=None, description="Note subject/title")
+    title: str | None = Field(default=None, description="Stored note title")
+    body: str = Field(description="Stored note body")
+    display_title: str | None = Field(
+        default=None,
+        description="Server-derived title for list display; title or 30-character body preview",
+    )
     created_at: datetime = Field(description="When note was created")
     updated_at: datetime | None = Field(default=None, description="When note was last updated")
     source: str = Field(description="Note source: user, hubspot, salesforce")
@@ -67,30 +71,32 @@ class DealNotesPage(BaseModel):
 class CreateNoteRequest(BaseModel):
     """Request payload to create a new note."""
 
-    content: str = Field(
+    body: str = Field(
         min_length=1,
         max_length=10000,
-        description="Note content (required, max 10000 characters)",
+        description="Note body (required, max 10000 characters)",
     )
-    subject: str | None = Field(
+    title: str | None = Field(
         default=None,
         max_length=500,
-        description="Note subject/title (optional, max 500 characters)",
+        description="Note title (optional, max 500 characters)",
     )
 
-    @field_validator("content")
+    model_config = {"extra": "forbid"}
+
+    @field_validator("body")
     @classmethod
-    def content_not_empty(cls, v: str) -> str:
-        """Validate content is not empty or whitespace-only."""
+    def body_not_empty(cls, v: str) -> str:
+        """Validate body is not empty or whitespace-only."""
         if not v or not v.strip():
-            msg = "Content cannot be empty or whitespace-only"
+            msg = "Body cannot be empty or whitespace-only"
             raise ValueError(msg)
         return v.strip()
 
-    @field_validator("subject")
+    @field_validator("title")
     @classmethod
-    def subject_strip_whitespace(cls, v: str | None) -> str | None:
-        """Strip whitespace from subject if provided."""
+    def title_strip_whitespace(cls, v: str | None) -> str | None:
+        """Strip whitespace from title if provided."""
         if v is not None:
             v = v.strip()
             return v if v else None
@@ -100,33 +106,35 @@ class CreateNoteRequest(BaseModel):
 class UpdateNoteRequest(BaseModel):
     """Request payload to update an existing note."""
 
-    content: str | None = Field(
+    body: str | None = Field(
         default=None,
         max_length=10000,
-        description="Updated note content (optional, max 10000 characters).",
+        description="Updated note body (optional, max 10000 characters).",
     )
-    subject: str | None = Field(
+    title: str | None = Field(
         default=None,
         max_length=500,
-        description="Updated note subject/title (optional, max 500 characters).",
+        description="Updated note title (optional, max 500 characters).",
     )
 
-    @field_validator("content")
+    model_config = {"extra": "forbid"}
+
+    @field_validator("body")
     @classmethod
-    def content_not_empty(cls, v: str | None) -> str | None:
-        """Validate content is not empty or whitespace-only."""
+    def body_not_empty(cls, v: str | None) -> str | None:
+        """Validate body is not empty or whitespace-only."""
         if v is None:
             return None
         trimmed = v.strip()
         if not trimmed:
-            msg = "Content cannot be empty or whitespace-only"
+            msg = "Body cannot be empty or whitespace-only"
             raise ValueError(msg)
         return trimmed
 
-    @field_validator("subject")
+    @field_validator("title")
     @classmethod
-    def subject_strip_whitespace(cls, v: str | None) -> str | None:
-        """Strip whitespace from subject if provided."""
+    def title_strip_whitespace(cls, v: str | None) -> str | None:
+        """Strip whitespace from title if provided."""
         if v is not None:
             v = v.strip()
             return v if v else None

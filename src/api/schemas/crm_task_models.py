@@ -16,6 +16,7 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 
 VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack"}
+_ALLOWED_TASK_STATUS_VALUES = {"NOT_STARTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
 
 
 class TaskAssignee(BaseModel):
@@ -369,6 +370,14 @@ class CreateTaskRequest(BaseModel):
             raise ValueError(msg)
         return value
 
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, value: CRMActivityStatus | None) -> CRMActivityStatus | None:
+        if value is not None and value.value not in _ALLOWED_TASK_STATUS_VALUES:
+            msg = "status must be one of: CANCELLED, COMPLETED, IN_PROGRESS, NOT_STARTED"
+            raise ValueError(msg)
+        return value
+
     @model_validator(mode="after")
     def _require_subject_or_body(self) -> CreateTaskRequest:
         if not self.subject and not self.body:
@@ -472,6 +481,14 @@ class UpdateTaskRequest(BaseModel):
             return None
         if value not in {CRMActivityType.TASK, CRMActivityType.TODO}:
             msg = "task_type must be TASK or TODO"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, value: CRMActivityStatus | None) -> CRMActivityStatus | None:
+        if value is not None and value.value not in _ALLOWED_TASK_STATUS_VALUES:
+            msg = "status must be one of: CANCELLED, COMPLETED, IN_PROGRESS, NOT_STARTED"
             raise ValueError(msg)
         return value
 

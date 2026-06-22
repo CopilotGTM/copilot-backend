@@ -492,10 +492,10 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
             "properties": {
                 "deal_id": {"type": "string"},
                 "deal_name": {"type": "string"},
-                "note_content": {"type": "string"},
-                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "title": {"type": "string"},
             },
-            "required": ["deal_id", "deal_name", "note_content"],
+            "required": ["deal_id", "deal_name", "body"],
             "additionalProperties": False,
         },
         factory_builder=_build_add_deal_note_factory,

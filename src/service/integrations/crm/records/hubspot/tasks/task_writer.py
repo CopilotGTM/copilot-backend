@@ -1,4 +1,4 @@
-"""Write normalized HubSpot tasks into the shared CRM activity table.
+"""Write normalized HubSpot tasks into the canonical CRM task table.
 
 Called by both full task sync and single-record webhook/incremental refresh.
 The `deactivate_missing` switch is the safety boundary: full snapshots may
@@ -15,11 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityType,
     CRMSourceObjectType,
+    CRMTask,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.tasks.task_types import (
     ActivityDimensionHit,
@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 
 class HubSpotTaskWriter:
-    """Active-snapshot writer for HubSpot tasks into crm_activities."""
+    """Active-snapshot writer for HubSpot tasks into crm_tasks."""
 
     def __init__(
         self,
@@ -49,6 +49,7 @@ class HubSpotTaskWriter:
             integration_id=integration_id,
             provider="hubspot",
         )
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
@@ -155,7 +156,8 @@ class HubSpotTaskWriter:
                     now=now,
                 )
                 self.session.add(row)
-                await self._upsert_source_mapping(task, row.activity_id, now=now)
+                await self._upsert_source_mapping(task, row.task_id, now=now)
+                await self._projection.upsert_task(row)
                 result.tasks_created += 1
                 continue
 
@@ -180,7 +182,8 @@ class HubSpotTaskWriter:
                 result.tasks_reactivated += 1
             else:
                 result.tasks_updated += 1
-            await self._upsert_source_mapping(task, existing.activity_id, now=now)
+            await self._upsert_source_mapping(task, existing.task_id, now=now)
+            await self._projection.upsert_task(existing)
 
         if deactivate_missing:
             # Only full sync owns tombstoning. Incremental and webhook refreshes
@@ -192,6 +195,7 @@ class HubSpotTaskWriter:
                     continue
                 if not row.is_deleted:
                     row.is_deleted = True
+                    await self._projection.soft_delete_activity_projection(row.task_id)
                     result.tasks_deactivated += 1
             await self.source_mappings.mark_missing_deleted(
                 object_type=CRMSourceObjectType.TASK,
@@ -256,43 +260,38 @@ class HubSpotTaskWriter:
             return company_hit.internal_id, company_hit.name
         return None, None
 
-    async def _load_existing_rows(self) -> dict[str, CRMActivity]:
+    async def _load_existing_rows(self) -> dict[str, CRMTask]:
         external_to_local = await self.source_mappings.load_local_id_map(
             object_type=CRMSourceObjectType.TASK,
             include_deleted=True,
         )
         if not external_to_local:
             return {}
-        stmt = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == self.organisation_id,
-            col(CRMActivity.integration_id) == self.integration_id,
-            col(CRMActivity.activity_type).in_(
-                [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-            ),
-            col(CRMActivity.activity_id).in_(set(external_to_local.values())),
+        stmt = select(CRMTask).where(
+            col(CRMTask.organisation_id) == self.organisation_id,
+            col(CRMTask.integration_id) == self.integration_id,
+            col(CRMTask.task_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
         local_to_external = {
             local_id: external_id for external_id, local_id in external_to_local.items()
         }
         return {
-            local_to_external[row.activity_id]: row
-            for row in rows
-            if row.activity_id in local_to_external
+            local_to_external[row.task_id]: row for row in rows if row.task_id in local_to_external
         }
 
     async def _upsert_source_mapping(
         self,
         task: NormalizedHubSpotTask,
-        local_activity_id: UUID,
+        local_task_id: UUID,
         *,
         now: datetime,
     ) -> None:
         await self.source_mappings.upsert_integration_mapping(
             external_object_type=CRMSourceObjectType.TASK,
             external_id=task.external_id,
-            local_object_type=CRMSourceObjectType.ACTIVITY,
-            local_object_id=local_activity_id,
+            local_object_type=CRMSourceObjectType.TASK,
+            local_object_id=local_task_id,
             data_payload=task.data_payload,
             source_created_at=task.source_created_at,
             source_modified_at=task.source_modified_at,
@@ -310,40 +309,40 @@ class HubSpotTaskWriter:
         related_local_id: UUID | None,
         related_name: str | None,
         now: datetime,
-    ) -> CRMActivity:
-        return CRMActivity(
+    ) -> CRMTask:
+        return CRMTask(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            related_object_type=task.related_object_type,
-            related_local_id=related_local_id,
-            related_name=related_name,
             deal_id=deal_hit.internal_id if deal_hit is not None else None,
-            contact_id=contact_hit.internal_id if contact_hit is not None else None,
-            company_id=company_hit.internal_id if company_hit is not None else None,
-            subject=task.subject,
-            body=task.body,
-            status=task.status,
-            activity_type=CRMActivityType.TASK.value,
-            activity_subtype=task.activity_subtype,
-            priority=task.priority,
-            owner_name=owner_hit.name if owner_hit is not None else None,
+            title=_task_title(task),
+            description=task.body,
+            status=task.status or "NOT_STARTED",
+            priority=task.priority or "NONE",
+            due_date=task.due_date.date() if task.due_date is not None else None,
+            due_at=task.due_date,
+            is_all_day=False,
+            completed_at=task.completed_date,
+            assigned_to_user_id=owner_hit.internal_id if owner_hit is not None else None,
+            assigned_to_name=owner_hit.name if owner_hit is not None else None,
+            assigned_to_email=owner_hit.email if owner_hit is not None else None,
+            owner_user_id=owner_hit.internal_id if owner_hit is not None else None,
             owner_email=owner_hit.email if owner_hit is not None else None,
-            owner_id=owner_hit.internal_id if owner_hit is not None else None,
-            source="CRM_SYNC",
-            due_date=task.due_date,
-            completed_date=task.completed_date,
             source_created_at=task.source_created_at,
             source_modified_at=task.source_modified_at,
-            synced_at=now,
-            last_seen_at=now,
             is_deleted=False,
-            properties=task.properties,
-            metrics={},
+            task_metadata=_task_metadata(
+                task=task,
+                contact_hit=contact_hit,
+                company_hit=company_hit,
+                related_local_id=related_local_id,
+                related_name=related_name,
+                now=now,
+            ),
         )
 
     def _apply_updates(
         self,
-        row: CRMActivity,
+        row: CRMTask,
         *,
         task: NormalizedHubSpotTask,
         owner_hit: ActivityDimensionHit | None,
@@ -354,34 +353,71 @@ class HubSpotTaskWriter:
         related_name: str | None,
         now: datetime,
     ) -> None:
-        row.related_object_type = task.related_object_type
-        row.related_local_id = related_local_id
-        row.related_name = related_name
         row.deal_id = deal_hit.internal_id if deal_hit is not None else None
-        row.contact_id = contact_hit.internal_id if contact_hit is not None else None
-        row.company_id = company_hit.internal_id if company_hit is not None else None
-        row.subject = task.subject
-        row.body = task.body
-        row.status = task.status
-        row.activity_type = CRMActivityType.TASK.value
-        row.activity_subtype = task.activity_subtype
-        row.priority = task.priority
-        row.owner_name = owner_hit.name if owner_hit is not None else None
+        row.title = _task_title(task)
+        row.description = task.body
+        row.status = task.status or "NOT_STARTED"
+        row.priority = task.priority or "NONE"
+        row.due_date = task.due_date.date() if task.due_date is not None else None
+        row.due_at = task.due_date
+        row.is_all_day = False
+        row.completed_at = task.completed_date
+        row.assigned_to_user_id = owner_hit.internal_id if owner_hit is not None else None
+        row.assigned_to_name = owner_hit.name if owner_hit is not None else None
+        row.assigned_to_email = owner_hit.email if owner_hit is not None else None
+        row.owner_user_id = owner_hit.internal_id if owner_hit is not None else None
         row.owner_email = owner_hit.email if owner_hit is not None else None
-        row.owner_id = owner_hit.internal_id if owner_hit is not None else None
-        row.source = "CRM_SYNC"
-        row.due_date = task.due_date
-        row.completed_date = task.completed_date
         row.source_created_at = task.source_created_at
         row.source_modified_at = task.source_modified_at
-        row.synced_at = now
-        row.last_seen_at = now
         row.is_deleted = False
-        row.properties = task.properties
-        row.metrics = {}
+        row.task_metadata = _task_metadata(
+            task=task,
+            contact_hit=contact_hit,
+            company_hit=company_hit,
+            related_local_id=related_local_id,
+            related_name=related_name,
+            now=now,
+        )
 
 
-def _is_stale_task(row: CRMActivity, task: NormalizedHubSpotTask) -> bool:
+def _task_title(task: NormalizedHubSpotTask) -> str:
+    subject = task.subject.strip() if task.subject else ""
+    if subject:
+        return subject
+    body = " ".join(task.body.split()) if task.body else ""
+    return body[:80].rstrip() if body else "Untitled task"
+
+
+def _task_metadata(
+    *,
+    task: NormalizedHubSpotTask,
+    contact_hit: ActivityDimensionHit | None,
+    company_hit: ActivityDimensionHit | None,
+    related_local_id: UUID | None,
+    related_name: str | None,
+    now: datetime,
+) -> dict:
+    metadata = dict(task.properties)
+    metadata.update(
+        {
+            "source": "CRM_SYNC",
+            "provider": "hubspot",
+            "task_type": "TASK",
+            "activity_subtype": task.activity_subtype,
+            "related_object_type": task.related_object_type,
+            "related_external_id": task.related_external_id,
+            "related_local_id": str(related_local_id) if related_local_id else None,
+            "related_name": related_name,
+            "contact_id": str(contact_hit.internal_id) if contact_hit is not None else None,
+            "company_id": str(company_hit.internal_id) if company_hit is not None else None,
+            "synced_at": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+        }
+    )
+    return metadata
+
+
+def _is_stale_task(row: CRMTask, task: NormalizedHubSpotTask) -> bool:
     """Return whether a provider snapshot is older than the local active row."""
     if row.source_modified_at is None or task.source_modified_at is None:
         return False

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -19,6 +16,11 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.task_presenter import (
+    present_task_assignee,
+    present_task_detail,
+    present_task_list_item,
+)
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_task_models import (
     CreateTaskRequest,
@@ -26,25 +28,22 @@ from src.api.schemas.crm_task_models import (
     TaskAssigneeOption,
     TaskAssigneesResponse,
     TaskDetail,
-    TaskListItem,
     TaskOption,
     TaskOptionsResponse,
     TasksPage,
     UpdateTaskRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.reminder_models import (
-    ReminderStatus,
-    UserReminder,
-)
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
     CRMActivitySource,
-    CRMActivityStatus,
     CRMActivityType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.tasks.contracts import TaskReadServiceError, TaskWriteServiceError
+from src.service.crm.tasks.contracts import (
+    TaskReadServiceError,
+    TaskWriteServiceError,
+)
 from src.service.crm.tasks.read_service import TaskReadService
 from src.service.crm.tasks.write_service import TaskWriteService
 
@@ -55,12 +54,10 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 tasks_router = APIRouter()
 
 _TASK_STATUS_OPTIONS = [
-    TaskOption(value=CRMActivityStatus.NOT_STARTED.value, label="To Do"),
-    TaskOption(value=CRMActivityStatus.IN_PROGRESS.value, label="In Progress"),
-    TaskOption(value=CRMActivityStatus.WAITING.value, label="Waiting"),
-    TaskOption(value=CRMActivityStatus.DEFERRED.value, label="Deferred"),
-    TaskOption(value=CRMActivityStatus.COMPLETED.value, label="Done"),
-    TaskOption(value=CRMActivityStatus.CANCELLED.value, label="Cancelled"),
+    TaskOption(value="NOT_STARTED", label="To Do"),
+    TaskOption(value="IN_PROGRESS", label="In Progress"),
+    TaskOption(value="COMPLETED", label="Done"),
+    TaskOption(value="CANCELLED", label="Cancelled"),
 ]
 _TASK_PRIORITY_OPTIONS = [
     TaskOption(value=CRMActivityPriority.NONE.value, label="None"),
@@ -79,102 +76,6 @@ _TASK_SOURCE_OPTIONS = [
     TaskOption(value=CRMActivitySource.AI_MEETING.value, label="AI Meeting"),
     TaskOption(value=CRMActivitySource.AI_INSIGHT.value, label="AI Insight"),
 ]
-
-
-def _compute_is_overdue(due_date: datetime | None, status: str | None) -> bool:
-    """Return True when a task is past due and not in a terminal state."""
-
-    if not due_date or status in ("COMPLETED", "CANCELLED"):
-        return False
-
-    reference = datetime.now(UTC)
-    due = due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)
-    return due < reference
-
-
-def _normalize_email(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip().lower()
-    return normalized or None
-
-
-def _parse_uuid(value: str | UUID | None) -> UUID | None:
-    if isinstance(value, UUID):
-        return value
-    if not value:
-        return None
-    try:
-        return UUID(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _build_task_assignee(task) -> TaskAssignee | None:
-    """Return a stable assignee contract over CRM owner/external-assignee columns."""
-
-    properties = getattr(task, "properties", None) or {}
-
-    external_email = _normalize_email(getattr(task, "external_assignee_email", None))
-    external_name = getattr(task, "external_assignee_name", None)
-    if external_email or external_name:
-        if external_email:
-            filter_key = f"email:{external_email}"
-        else:
-            filter_key = f"external_name:{str(external_name).strip().lower()}"
-        return TaskAssignee(
-            kind="external",
-            filter_key=filter_key,
-            name=external_name,
-            email=external_email,
-        )
-
-    owner_email = _normalize_email(getattr(task, "owner_email", None))
-    owner_name = getattr(task, "owner_name", None)
-    public_user_id = _parse_uuid(properties.get("assigned_to_public_user_id"))
-    crm_user_id = _parse_uuid(getattr(task, "owner_id", None))
-
-    if owner_email:
-        filter_key = f"email:{owner_email}"
-    elif public_user_id:
-        filter_key = f"public_user:{public_user_id}"
-    elif crm_user_id:
-        filter_key = f"crm_user:{crm_user_id}"
-    elif owner_name:
-        filter_key = f"name:{str(owner_name).strip().lower()}"
-    else:
-        return None
-
-    kind = "internal_user" if public_user_id else "crm_owner" if crm_user_id else "unknown"
-    return TaskAssignee(
-        kind=kind,
-        filter_key=filter_key,
-        name=owner_name,
-        email=owner_email,
-        public_user_id=public_user_id,
-        crm_user_id=crm_user_id,
-    )
-
-
-def _build_task_due_metadata(task) -> dict[str, str | bool | None]:
-    properties = getattr(task, "properties", None) or {}
-    is_all_day = bool(getattr(task, "is_all_day", False))
-    timezone_name = properties.get("due_timezone")
-    due_local_date = properties.get("due_local_date")
-
-    due_date = getattr(task, "due_date", None)
-    if is_all_day and due_date is not None and timezone_name and not due_local_date:
-        try:
-            due = due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)
-            due_local_date = due.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-        except (ZoneInfoNotFoundError, ValueError):
-            due_local_date = None
-
-    return {
-        "due_local_date": due_local_date if isinstance(due_local_date, str) else None,
-        "due_timezone": timezone_name if isinstance(timezone_name, str) else None,
-        "is_all_day": is_all_day,
-    }
 
 
 async def get_tasks_access_service(
@@ -212,94 +113,6 @@ async def get_tasks_write_service(
             await service.close()
         except Exception:
             logger.debug("Tasks write service close failed", exc_info=True)
-
-
-async def _enrich_task_list_item(task, session: AsyncSession) -> TaskListItem:
-    """Build a TaskListItem with computed fields (is_overdue, has_reminder, deal_name)."""
-    item = TaskListItem.model_validate(task, from_attributes=True)
-
-    has_reminder = await _has_active_reminder(session, task.activity_id)
-    deal_name = task.related_name if task.deal_id else None
-
-    return item.model_copy(
-        update={
-            "is_overdue": _compute_is_overdue(task.due_date, task.status),
-            "has_reminder": has_reminder,
-            "deal_name": deal_name,
-            "assigned_to": _build_task_assignee(task),
-            **_build_task_due_metadata(task),
-            # Mirrors the write-path guard in TaskWriteService._load_user_task:
-            # integration_id is the authoritative CRM-synced predicate. Do NOT use
-            # `source` here — it is nullable and can drift from integration_id.
-            "is_read_only": task.integration_id is not None,
-        }
-    )
-
-
-async def _enrich_task_detail(task, session: AsyncSession) -> TaskDetail:
-    """Build a TaskDetail with computed fields."""
-    detail = TaskDetail.model_validate(task, from_attributes=True)
-
-    has_reminder = await _has_active_reminder(session, task.activity_id)
-    deal_name = task.related_name if task.deal_id else None
-    reminder_dict = await _get_reminder_dict(session, task.activity_id)
-
-    return detail.model_copy(
-        update={
-            "is_overdue": _compute_is_overdue(task.due_date, task.status),
-            "has_reminder": has_reminder,
-            "deal_name": deal_name,
-            "reminder": reminder_dict,
-            "assigned_to": _build_task_assignee(task),
-            **_build_task_due_metadata(task),
-            # Mirrors the write-path guard in TaskWriteService._load_user_task:
-            # integration_id is the authoritative CRM-synced predicate. Do NOT use
-            # `source` here — it is nullable and can drift from integration_id.
-            "is_read_only": task.integration_id is not None,
-        }
-    )
-
-
-async def _has_active_reminder(session: AsyncSession, activity_id: UUID) -> bool:
-    """Check if at least one active reminder is linked to this activity."""
-    stmt = (
-        select(func.count())
-        .select_from(UserReminder)
-        .where(
-            col(UserReminder.activity_id) == activity_id,
-            col(UserReminder.status) == ReminderStatus.ACTIVE.value,
-        )
-    )
-    count = await session.scalar(stmt) or 0
-    return count > 0
-
-
-async def _get_reminder_dict(session: AsyncSession, activity_id: UUID) -> dict | None:
-    """Get linked reminder details for task detail view."""
-    stmt = (
-        select(UserReminder)
-        .where(
-            col(UserReminder.activity_id) == activity_id,
-            col(UserReminder.status).in_(
-                [
-                    ReminderStatus.ACTIVE.value,
-                    ReminderStatus.PAUSED.value,
-                ]
-            ),
-        )
-        .limit(1)
-    )
-    result = await session.execute(stmt)
-    reminder = result.scalar_one_or_none()
-    if not reminder:
-        return None
-    return {
-        "reminder_id": str(reminder.reminder_id),
-        "status": reminder.status,
-        "trigger_time": reminder.next_trigger_at.isoformat() if reminder.next_trigger_at else None,
-        "recurrence": reminder.recurrence,
-        "delivery_channel": reminder.delivery_channel,
-    }
 
 
 # ── Global task list ─────────────────────────────────────────────
@@ -366,7 +179,7 @@ async def list_tasks(
             limit=limit,
         )
 
-        items = [await _enrich_task_list_item(task, service.session) for task in tasks]
+        items = [present_task_list_item(task) for task in tasks]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(
@@ -408,7 +221,7 @@ async def list_task_assignees(
         rows = await service.list_task_assignees(q=q, limit=limit)
         options: list[TaskAssigneeOption] = []
         for row in rows:
-            assigned_to = _build_task_assignee(row["task"])
+            assigned_to = present_task_assignee(row["task"])
             if assigned_to is None:
                 continue
             options.append(
@@ -523,7 +336,7 @@ async def list_deal_tasks(
             task_types=task_types,
         )
 
-        items = [await _enrich_task_list_item(task, service.session) for task in tasks]
+        items = [present_task_list_item(task) for task in tasks]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(
@@ -595,7 +408,7 @@ async def get_task(
                 message="Task not found", status_code=404, response=response
             )
 
-        detail = await _enrich_task_detail(task, service.session)
+        detail = present_task_detail(task)
         return Response.success_response(message="Task retrieved successfully", data=detail)
 
     except TaskReadServiceError as exc:
@@ -632,8 +445,8 @@ async def create_task(
         deal_id = payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
-        await service.session.refresh(task)
-        detail = await _enrich_task_detail(task, service.session)
+        record = await service.read_task_record(task.task_id)
+        detail = present_task_detail(record)
         return Response.created_response(
             message="Task created successfully",
             data=detail,
@@ -676,8 +489,8 @@ async def create_deal_task(
         payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
-        await service.session.refresh(task)
-        detail = await _enrich_task_detail(task, service.session)
+        record = await service.read_task_record(task.task_id)
+        detail = present_task_detail(record)
         return Response.created_response(
             message="Task created successfully",
             data=detail,
@@ -717,8 +530,8 @@ async def update_task(
     try:
         task = await service.update_task(task_id, request.model_dump(exclude_unset=True))
         await service.session.commit()
-        await service.session.refresh(task)
-        detail = await _enrich_task_detail(task, service.session)
+        record = await service.read_task_record(task.task_id)
+        detail = present_task_detail(record)
         return Response.success_response(message="Task updated successfully", data=detail)
     except TaskWriteServiceError as exc:
         await service.session.rollback()
@@ -753,8 +566,7 @@ async def delete_task(
     try:
         task = await service.delete_task(task_id)
         await service.session.commit()
-        await service.session.refresh(task)
-        detail = await _enrich_task_detail(task, service.session)
+        detail = present_task_detail(task)
         return Response.success_response(message="Task deleted successfully", data=detail)
     except TaskWriteServiceError as exc:
         await service.session.rollback()

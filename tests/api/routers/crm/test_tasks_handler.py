@@ -11,7 +11,11 @@ Focuses on:
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from src.api.presenters.crm.task_presenter import present_task_detail
+from src.api.schemas.crm_task_models import CreateTaskRequest
 
 from tests.api.routers.crm.conftest import create_task
 
@@ -58,6 +62,23 @@ def test_current_user_task_assignees(client: TestClient, tasks_dependency_overri
     assignees = body["data"]["assignees"]
     assert assignees[0]["assigned_to"]["filter_key"] == "email:test@example.com"
     assert assignees[0]["task_count"] == 3
+
+
+def test_task_options_use_db_backed_statuses(client: TestClient, tasks_dependency_overrides):
+    resp = client.get("/users/crm/tasks/options")
+
+    assert resp.status_code == 200, resp.text
+    values = {item["value"] for item in resp.json()["data"]["statuses"]}
+    assert values == {"NOT_STARTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
+
+
+def test_create_task_request_rejects_status_outside_crm_task_constraint():
+    try:
+        CreateTaskRequest(subject="Follow up", status="WAITING")
+    except ValidationError as exc:
+        assert "status must be one of" in str(exc)
+    else:
+        raise AssertionError("WAITING must be rejected before TaskWriteService is called")
 
 
 # =============================================================================
@@ -353,6 +374,59 @@ def test_get_task_success(client: TestClient, tasks_dependency_overrides):
     assert body["status"] == "SUCCESS"
     assert body["data"]["subject"] == "My Task"
     assert body["data"]["task_id"] == str(task.activity_id)
+
+
+def test_task_response_maps_crm_task_source_fields(client: TestClient, tasks_dependency_overrides):
+    service = tasks_dependency_overrides["service"]
+    org_id = tasks_dependency_overrides["user_ids"]["organisation_id"]
+    deal_id = uuid4()
+    task = create_task(
+        deal_id,
+        org_id,
+        subject="Source table title",
+        body="Source table description",
+        due_date=datetime.now(UTC) + timedelta(days=1),
+        properties={
+            "source": "MANUAL",
+            "assigned_to_public_user_id": str(tasks_dependency_overrides["user_ids"]["user_id"]),
+        },
+    )
+    service.add_task(task)
+
+    resp = client.get(f"/users/crm/tasks/{task.task_id}")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["task_id"] == str(task.task_id)
+    assert data["subject"] == "Source table title"
+    assert data["body"] == "Source table description"
+    assert data["source"] == "MANUAL"
+
+
+@pytest.mark.asyncio
+async def test_task_response_reads_all_day_due_metadata():
+    org_id = uuid4()
+    deal_id = uuid4()
+    task = create_task(
+        deal_id,
+        org_id,
+        subject="All day task",
+        due_date=datetime(2026, 3, 24, tzinfo=UTC),
+        due_at=None,
+        is_all_day=True,
+        properties={
+            "source": "MANUAL",
+            "due_timezone": "Asia/Kolkata",
+            "due_local_date": "2026-03-24",
+        },
+    )
+    detail = present_task_detail(task)
+
+    data = detail.model_dump(mode="json")
+    assert data["due_date"] == "2026-03-24T00:00:00Z"
+    assert data["due_local_date"] == "2026-03-24"
+    assert data["due_timezone"] == "Asia/Kolkata"
+    assert data["is_all_day"] is True
 
 
 def test_get_task_not_found(client: TestClient, tasks_dependency_overrides):

@@ -14,11 +14,11 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
     CRMActivityPriority,
     CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
+    CRMTask,
 )
 from src.service.crm.internal.deal_task_automation_service import (
     DealTaskAutomationError,
@@ -104,18 +104,19 @@ def _deal(*, organisation_id):
     )
 
 
-def _task(*, organisation_id, deal_id, integration_id=None, status="NOT_STARTED") -> CRMActivity:
+def _task(*, organisation_id, deal_id, integration_id=None, status="NOT_STARTED") -> CRMTask:
     """Create a minimal CRM task stub with defaults for completion/list tests."""
-    return CRMActivity(
-        activity_id=uuid4(),
+    return CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        activity_type=CRMActivityType.TASK.value,
         status=status,
-        subject="Send pricing proposal",
+        title="Send pricing proposal",
         deal_id=deal_id,
-        source=CRMActivitySource.AI_MEETING.value,
-        properties={},
+        task_metadata={
+            "source": CRMActivitySource.AI_MEETING.value,
+            "task_type": CRMActivityType.TASK.value,
+        },
     )
 
 
@@ -136,9 +137,9 @@ async def test_list_deal_tasks_scopes_query_to_org_deal_and_task_types() -> None
     assert tasks == [existing_task]
     assert len(session.executed_statements) == 1
     statement_sql = str(session.executed_statements[0])
-    assert "crm_activities.organisation_id" in statement_sql
-    assert "crm_activities.deal_id" in statement_sql
-    assert "crm_activities.activity_type" in statement_sql
+    assert "crm_tasks.organisation_id" in statement_sql
+    assert "crm_tasks.deal_id" in statement_sql
+    assert "crm_tasks.task_metadata" in statement_sql
 
 
 @pytest.mark.asyncio
@@ -185,8 +186,8 @@ async def test_create_ai_meeting_task_with_resolved_owner() -> None:
     assert task.priority == CRMActivityPriority.HIGH.value
     assert task.status == CRMActivityStatus.NOT_STARTED.value
     assert task.deal_id == deal.deal_id
-    assert task.related_local_id == deal.deal_id
-    assert task.related_name == deal.name
+    assert task.properties["related_local_id"] == str(deal.deal_id)
+    assert task.properties["related_name"] == deal.name
     assert not hasattr(task, "external_id")
     assert not hasattr(task, "deal_external_id")
     assert not hasattr(task, "related_external_id")

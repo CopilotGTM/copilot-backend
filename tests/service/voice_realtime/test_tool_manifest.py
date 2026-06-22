@@ -80,8 +80,10 @@ def test_add_deal_note_voice_schema_is_available_for_direct_write() -> None:
 
     schema = schemas[ToolName.ADD_DEAL_NOTE.value]
     assert schema["description"].startswith("Create a note directly")
-    assert schema["parameters"]["required"] == ["deal_id", "deal_name", "note_content"]
-    assert "subject" in schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == ["deal_id", "deal_name", "body"]
+    assert "title" in schema["parameters"]["properties"]
+    assert "note_content" not in schema["parameters"]["properties"]
+    assert "subject" not in schema["parameters"]["properties"]
 
 
 def test_add_stakeholder_voice_schema_is_available_for_direct_write() -> None:

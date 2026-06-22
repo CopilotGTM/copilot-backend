@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     ReminderType,
     UserReminder,
 )
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
@@ -34,8 +34,8 @@ class TaskReminderService:
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
 
-    async def create_task_reminder(self, task: CRMActivity, cfg: dict[str, Any]) -> UserReminder:
-        """Create a static reminder linked to a task via activity_id."""
+    async def create_task_reminder(self, task: CRMTask, cfg: dict[str, Any]) -> UserReminder:
+        """Create a static reminder linked to a task via task_id."""
         trigger_time = cfg["trigger_time"]
         recurrence_str = cfg.get("recurrence", "NONE").lower()
         recurrence = ReminderRecurrence(recurrence_str)
@@ -43,15 +43,15 @@ class TaskReminderService:
             cfg.get("delivery_channel")
         )
 
-        reminder_message = f"Reminder for task: {task.subject or '(no subject)'}"
-        if task.body:
-            reminder_message = f"{reminder_message}\n\n{task.body}"
+        reminder_message = f"Reminder for task: {task.title or '(no subject)'}"
+        if task.description:
+            reminder_message = f"{reminder_message}\n\n{task.description}"
 
         reminder = UserReminder(
             organisation_id=self.organisation_id,
             user_id=self.actor_user_id,
             reminder_type=ReminderType.STATIC,
-            title=task.subject or "Task reminder",
+            title=task.title or "Task reminder",
             message_content=reminder_message,
             next_trigger_at=trigger_time,
             user_timezone=cfg.get("timezone") or "UTC",
@@ -59,7 +59,7 @@ class TaskReminderService:
             delivery_channel=delivery_channel,
             delivery_context=delivery_context,
             status=ReminderStatus.ACTIVE,
-            activity_id=task.activity_id,
+            activity_id=task.task_id,
         )
 
         self.session.add(reminder)
@@ -67,7 +67,7 @@ class TaskReminderService:
 
         self.safe_schedule(reminder.reminder_id, trigger_time.timestamp())
 
-        task.reminder_date = trigger_time
+        task.reminder_at = trigger_time
         await self.session.flush()
 
         return reminder
@@ -92,9 +92,9 @@ class TaskReminderService:
         await self.session.flush()
 
         if reminder.activity_id:
-            task = await self.session.get(CRMActivity, reminder.activity_id)
+            task = await self.session.get(CRMTask, reminder.activity_id)
             if task:
-                task.reminder_date = reminder.next_trigger_at
+                task.reminder_at = reminder.next_trigger_at
                 await self.session.flush()
 
         self.safe_unschedule(reminder.reminder_id)
@@ -116,9 +116,9 @@ class TaskReminderService:
             self.safe_unschedule(reminder.reminder_id)
 
         if reminders:
-            task = await self.session.get(CRMActivity, activity_id)
+            task = await self.session.get(CRMTask, activity_id)
             if task:
-                task.reminder_date = None
+                task.reminder_at = None
             await self.session.flush()
 
     async def get_active_reminder(self, activity_id: UUID) -> UserReminder | None:
