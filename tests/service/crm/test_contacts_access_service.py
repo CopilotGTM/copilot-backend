@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -94,6 +95,98 @@ async def test_list_contacts_counts_deals_from_participants() -> None:
     statements = "\n".join(session.statements).lower()
     assert "crm_deal_participants" in statements
     assert "deal_stakeholders" not in statements
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_returns_nested_company_and_owner_annotations() -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    company_id = uuid4()
+    owner_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        full_name="Buyer Contact",
+        company_id=company_id,
+        company_name="Fallback Company",
+        owner_id=owner_id,
+        owner_name="Nikhil Sharma",
+        owner_email="nikhil@example.com",
+    )
+    company = CRMCompany(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        company_id=company_id,
+        name="Example Corp",
+        domain="example.com",
+    )
+    session = _SequencedSession(
+        [
+            _FakeResult(scalar=1),
+            _FakeResult(rows=[SimpleNamespace(CRMContact=contact, deal_count=2)]),
+            _FakeResult(rows=[(integration_id, IntegrationType.INTERNAL_CRM.value)]),
+            _FakeResult(rows=[company]),
+        ]
+    )
+    service = ContactsAccessService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+
+    rows, _ = await service.list_contacts()
+
+    assert rows[0]["company"] == {
+        "id": company_id,
+        "name": "Example Corp",
+        "domain": "example.com",
+    }
+    assert rows[0]["owner"] == {
+        "id": owner_id,
+        "name": "Nikhil Sharma",
+        "email": "nikhil@example.com",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_keeps_explicit_company_id_when_domain_matches_another_account() -> (
+    None
+):
+    org_id = uuid4()
+    integration_id = uuid4()
+    explicit_company_id = uuid4()
+    domain_company_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        full_name="Buyer Contact",
+        company_id=explicit_company_id,
+        company_name="Explicit Account",
+    )
+    domain_company = CRMCompany(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        company_id=domain_company_id,
+        name="Domain Matched Account",
+        domain="example.com",
+    )
+    session = _SequencedSession(
+        [
+            _FakeResult(scalar=1),
+            _FakeResult(rows=[SimpleNamespace(CRMContact=contact, deal_count=0)]),
+            _FakeResult(rows=[(integration_id, IntegrationType.INTERNAL_CRM.value)]),
+            _FakeResult(rows=[domain_company]),
+        ]
+    )
+    service = ContactsAccessService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
+
+    rows, _ = await service.list_contacts()
+
+    assert rows[0]["company"] == {
+        "id": explicit_company_id,
+        "name": "Explicit Account",
+        "domain": "example.com",
+    }
 
 
 @pytest.mark.asyncio

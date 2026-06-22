@@ -73,7 +73,7 @@ class ContactReadService:
         q: str | None = None,
         company_id: UUID | None = None,
     ) -> tuple[list[dict], int]:
-        """Paginated contacts with deal_count, source, and company_id annotations."""
+        """Paginated contacts with deal_count, source, company, and owner annotations."""
         if page < 1:
             raise ContactReadServiceError("Page must be >= 1", status_code=400)
 
@@ -153,39 +153,83 @@ class ContactReadService:
                 integration_map[int_id] = int_type
 
         domains = {
-            self._extract_domain(row.CRMContact.email) for row in rows if row.CRMContact.email
+            domain
+            for row in rows
+            if row.CRMContact.email
+            for domain in [self._extract_domain(row.CRMContact.email)]
+            if domain
         }
-        domain_to_company_id: dict[str, UUID] = {}
-        if domains:
-            co_stmt = select(col(CRMCompany.domain), col(CRMCompany.company_id)).where(
+        company_ids = {row.CRMContact.company_id for row in rows if row.CRMContact.company_id}
+        company_by_id: dict[UUID, CRMCompany] = {}
+        company_by_domain: dict[str, CRMCompany] = {}
+        if company_ids or domains:
+            co_stmt = select(CRMCompany).where(
                 col(CRMCompany.organisation_id) == self.organisation_id,
                 col(CRMCompany.is_deleted).is_(False),
-                col(CRMCompany.domain).in_([d for d in domains if d]),
+                or_(
+                    col(CRMCompany.company_id).in_(list(company_ids)),
+                    col(CRMCompany.domain).in_([d for d in domains if d]),
+                ),
             )
             co_res = await self.org_session.execute(co_stmt)
-            for domain, cid in co_res.all():
-                if domain:
-                    domain_to_company_id[domain.lower()] = cid
+            for company in co_res.scalars().all():
+                company_by_id[company.company_id] = company
+                if company.domain:
+                    company_by_domain[company.domain.lower()] = company
 
         result: list[dict] = []
         for row in rows:
             contact: CRMContact = row.CRMContact
             email_domain = self._extract_domain(contact.email) if contact.email else None
-            resolved_company_id = contact.company_id or (
-                domain_to_company_id.get(email_domain) if email_domain else None
-            )
+            company = None
+            if contact.company_id:
+                company = company_by_id.get(contact.company_id)
+            elif email_domain:
+                company = company_by_domain.get(email_domain)
 
             result.append(
                 {
                     "contact": contact,
                     "deal_count": row.deal_count or 0,
                     "source": self._map_source(integration_map.get(contact.integration_id)),
-                    "company_id": resolved_company_id,
+                    "company": self._contact_company_payload(
+                        contact=contact,
+                        company=company,
+                        email_domain=email_domain,
+                    ),
+                    "owner": self._contact_owner_payload(contact),
+                    "company_id": company.company_id if company else contact.company_id,
                     "company_domain": email_domain,
                 }
             )
 
         return result, total_count
+
+    @staticmethod
+    def _contact_company_payload(
+        *,
+        contact: CRMContact,
+        company: CRMCompany | None,
+        email_domain: str | None,
+    ) -> dict | None:
+        """Build the nested company object used by list responses."""
+        company_id = company.company_id if company else contact.company_id
+        name = company.name if company else contact.company_name
+        domain = company.domain if company else email_domain
+        if not any((company_id, name, domain)):
+            return None
+        return {"id": company_id, "name": name, "domain": domain}
+
+    @staticmethod
+    def _contact_owner_payload(contact: CRMContact) -> dict | None:
+        """Build the nested owner object used by list responses."""
+        if not any((contact.owner_id, contact.owner_name, contact.owner_email)):
+            return None
+        return {
+            "id": contact.owner_id,
+            "name": contact.owner_name,
+            "email": contact.owner_email,
+        }
 
     async def get_contact_detail(self, contact_id: UUID) -> dict:
         """Full contact + deal involvement via contact participants."""

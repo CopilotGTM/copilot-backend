@@ -139,10 +139,10 @@ Contact (company_id: null, email: "john@acme.com")
 
 This means:
 
-- `company_id` in the list response is either the **stored FK** (when set) or **resolved at query time** from email domain matching
-- `company_domain` is **extracted from the contact's email address** (not from the matched company)
-- If `company_id` is not explicitly set and no account with a matching domain exists, `company_id` is `null` but `company_domain` still shows the email domain
-- When `company_id` is explicitly set, `company_name` is auto-resolved from the linked account
+- `company.id` in the list response is either the **stored FK** (when set) or **resolved at query time** from email domain matching.
+- `company.domain` comes from the matched account when available, otherwise the contact email domain is used as display context.
+- If no account is linked or matched, the list may still return a `company` object with the contact's company string/domain context; otherwise `company` is `null`.
+- When `company_id` is explicitly set during create/update, `company_name` is auto-resolved from the linked account for legacy create/update/detail responses.
 
 ### Contact → Deals (via Deal Participant)
 
@@ -165,18 +165,6 @@ The `source` field is derived from the `integration_type` of the `KnowledgeInteg
 ---
 
 ## Enums & Field Reference
-
-### research_status
-
-Status of the AI research/enrichment for this contact.
-
-| Value | Description | Frontend Display |
-|-------|-------------|-----------------|
-| `null` | Never researched | Show "Not researched" or enrichment CTA |
-| `"pending"` | Research queued | Show spinner or "Pending..." |
-| `"in_progress"` | Research actively running | Show spinner or progress indicator |
-| `"completed"` | Research finished successfully | Show research content |
-| `"failed"` | Research encountered an error | Show retry CTA |
 
 ### lifecycle_stage
 
@@ -208,26 +196,38 @@ Free-form string from the CRM provider. Common values:
 
 | Field | Can Be Null | When Null |
 |-------|------------|-----------|
-| `first_name` | Yes | Not provided or name splitting yielded no first name |
-| `last_name` | Yes | Single-word name (e.g., "Madonna") |
 | `full_name` | Yes | Rare — no name on contact record |
 | `email` | Yes | Rare — CRM record had no email |
+| `additional_emails` | No | Empty array when none are provided |
 | `job_title` | Yes | Not provided |
 | `phone` | Yes | Not provided |
-| `company_name` | Yes | Not provided and no auto-resolution from domain |
-| `company_id` | Yes | No explicit FK set and no account with matching email domain exists |
-| `company_domain` | Yes | Contact has no email, or email has no valid domain |
-| `lifecycle_stage` | Yes | Not set in CRM |
-| `owner_name` | Yes | No owner assigned |
-| `research_status` | Yes | Never researched |
-| `last_researched_at` | Yes | Never researched |
+| `mobile_phone` | Yes | Not provided |
+| `linkedin_url` | Yes | Not provided |
+| `company` | Yes | No explicit account, no matching email-domain account, and no company string/domain |
+| `company.id` | Yes | Company context exists but no linked/resolved account ID is available |
+| `company.name` | Yes | Company context exists but no name is available |
+| `company.domain` | Yes | Company context exists but no domain is available |
+| `owner` | Yes | No owner metadata is available |
+| `owner.id` | Yes | Owner context exists but no internal owner ID is resolved |
+| `owner.name` | Yes | Owner context exists but no owner display name is available |
+| `owner.email` | Yes | Owner context exists but no owner email is available |
+| `last_contacted_at` | Yes | No logged contact touch |
+| `last_activity_at` | Yes | No activity recorded |
+| `profile_enriched_at` | Yes | Structured enrichment has not run |
 
 **Additional fields in ContactDetail:**
 
 | Field | Can Be Null | When Null |
 |-------|------------|-----------|
+| `first_name` | Yes | Not provided or name splitting yielded no first name |
+| `last_name` | Yes | Single-word name (e.g., "Madonna") |
+| `company_name` | Yes | Not provided |
+| `company_id` | Yes | No explicit/resolved account |
+| `company_domain` | Yes | Contact has no email, or email has no valid domain |
+| `lifecycle_stage` | Yes | Not set in CRM |
+| `owner_name` | Yes | No owner assigned |
 | `mobile_phone` | Yes | Not provided |
-| `linkedin_url` | Yes | Not stored in `properties.linkedin_url` |
+| `linkedin_url` | Yes | Not provided |
 | `address` | Yes | Not provided |
 | `city` | Yes | Not provided |
 | `state` | Yes | Not provided |
@@ -245,61 +245,78 @@ type UUID = string;
 type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:30:00Z")
 
 /**
- * Contact item returned in list views (GET /contacts).
- * Use for table rows, cards, and search results.
- *
- * deal_count is computed from approved contact participant records.
- * company_id is the stored FK when explicitly set, with email domain matching as fallback.
- * company_domain is extracted from the contact's email address.
- * source is derived from the integration type.
+ * Contact item returned by GET /contacts.
+ * This list-only contract is optimized for table rows, cards, and search results.
  */
 export interface ContactListItem {
   contact_id: UUID;
 
-  // Name fields
+  full_name: string | null;           // Display name (may differ from first + last concatenation)
+  email: string | null;               // Primary email (lowercased, trimmed)
+  additional_emails: string[];
+  job_title: string | null;
+  phone: string | null;
+  mobile_phone: string | null;
+  linkedin_url: string | null;
+  company: ContactListCompany | null;
+  owner: ContactListOwner | null;
+  deal_count: number;                 // Deals where contact is an approved stakeholder (excludes removed/rejected/pending)
+  last_contacted_at: ISODate | null;
+  last_activity_at: ISODate | null;
+  source: string;                     // "manual" | "hubspot" | "salesforce" | "google_calendar" | "microsoft_calendar" | "gmail" | "outlook" | ...
+  is_profile_enriched: boolean;
+  profile_enriched_at: ISODate | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+export interface ContactListCompany {
+  id: UUID | null;
+  name: string | null;
+  domain: string | null;
+}
+
+export interface ContactListOwner {
+  id: UUID | null;
+  name: string | null;
+  email: string | null;
+}
+
+/**
+ * Legacy flat contact shape returned by create/update/detail responses.
+ * GET /contacts uses ContactListItem above instead.
+ */
+export interface ContactMutationItem {
+  contact_id: UUID;
   first_name: string | null;
   last_name: string | null;
-  full_name: string | null;           // Display name (may differ from first + last concatenation)
-
-  // Communication
-  email: string | null;               // Primary email (lowercased, trimmed)
+  full_name: string | null;
+  email: string | null;
   job_title: string | null;
-  phone: string | null;               // Primary phone number as stored
-
-  // Company association (stored FK when set, email domain matching as fallback)
-  company_name: string | null;        // Company name string from CRM, explicit FK, or auto-resolved from domain
-  company_id: UUID | null;            // Stored FK when explicitly set; otherwise resolved from email domain matching
-  company_domain: string | null;      // Extracted from email address (e.g., "acme.com")
-
-  // Segmentation
-  lifecycle_stage: string | null;     // Free-form CRM value
-  owner_name: string | null;          // Contact owner display name
-
-  // Computed
-  deal_count: number;                 // Deals where contact is an approved stakeholder (excludes removed/rejected/pending)
-  source: string;                     // "manual" | "hubspot" | "salesforce" | "google_calendar" | "microsoft_calendar" | "gmail" | "outlook" | ...
-
-  // Research/enrichment
-  research_status: string | null;     // null | "pending" | "in_progress" | "completed" | "failed"
-  last_researched_at: ISODate | null;
-
-  // Timestamps
+  phone: string | null;
+  company_name: string | null;
+  company_id: UUID | null;
+  company_domain: string | null;
+  lifecycle_stage: string | null;
+  owner_name: string | null;
+  deal_count: number;
+  source: string;
   created_at: ISODate;
   updated_at: ISODate;
 }
 
 /**
  * Full contact detail returned by GET /contacts/{contact_id}.
- * Extends ContactListItem with extended profile, research content,
+ * Extends ContactMutationItem with extended profile, enrichment content,
  * and deal involvement array.
  */
-export interface ContactDetail extends ContactListItem {
+export interface ContactDetail extends ContactMutationItem {
   // Extended communication
   additional_emails: string[];        // Secondary email addresses (may be empty array)
   mobile_phone: string | null;
 
   // Social
-  linkedin_url: string | null;        // Stored in properties.linkedin_url JSONB
+  linkedin_url: string | null;
 
   // Location
   address: string | null;
@@ -352,7 +369,7 @@ export interface CreateContactRequest {
   name: string;                       // Required. Full name (auto-split into first/last)
   job_title?: string | null;
   phone?: string | null;
-  linkedin_url?: string | null;       // Stored in properties.linkedin_url
+  linkedin_url?: string | null;
   company_id?: UUID | null;           // Explicit account link. Validates account exists. Auto-resolves company_name.
 }
 
@@ -371,7 +388,7 @@ export interface UpdateContactRequest {
   job_title?: string | null;
   phone?: string | null;
   mobile_phone?: string | null;
-  linkedin_url?: string | null;       // Stored in properties JSONB
+  linkedin_url?: string | null;
   company_name?: string | null;
   company_id?: UUID | null;           // Set to link account (validates exists), set to null to unlink
 }
@@ -401,9 +418,6 @@ export interface EnrichContactResponse {
  */
 function getContactDisplayName(contact: ContactListItem): string {
   if (contact.full_name) return contact.full_name;
-  if (contact.first_name || contact.last_name) {
-    return [contact.first_name, contact.last_name].filter(Boolean).join(' ');
-  }
   if (contact.email) return contact.email;
   return 'Unknown Contact';
 }
@@ -432,7 +446,7 @@ function isEnrichable(contact: ContactListItem): boolean {
 GET /users/crm/contacts
 ```
 
-Paginated contact list with computed `deal_count`, `source`, `company_id`, and `company_domain` annotations. Results are sorted by `created_at` descending (newest first), then by `contact_id` descending for stable pagination.
+Paginated contact list with computed `deal_count`, `source`, nested `company`, and nested `owner` annotations. Results are sorted by `created_at` descending (newest first), then by `contact_id` descending for stable pagination.
 
 #### Query Parameters
 
@@ -465,21 +479,29 @@ Paginated contact list with computed `deal_count`, `source`, `company_id`, and `
     "items": [
       {
         "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-        "first_name": "John",
-        "last_name": "Doe",
         "full_name": "John Doe",
         "email": "john@acme.com",
+        "additional_emails": ["john.doe@acme.com"],
         "job_title": "VP Engineering",
         "phone": "+1-555-0101",
-        "company_name": "Acme Corp",
-        "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
-        "company_domain": "acme.com",
-        "lifecycle_stage": "customer",
-        "owner_name": "Jane Smith",
+        "mobile_phone": "+1-555-0102",
+        "linkedin_url": "https://linkedin.com/in/johndoe",
+        "company": {
+          "id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+          "name": "Acme Corp",
+          "domain": "acme.com"
+        },
+        "owner": {
+          "id": "c7d8e9f0-a1b2-3456-cdef-789abcdef012",
+          "name": "Jane Smith",
+          "email": "jane.smith@example.com"
+        },
         "deal_count": 2,
+        "last_contacted_at": "2026-03-18T09:00:00Z",
+        "last_activity_at": "2026-03-20T14:00:00Z",
         "source": "hubspot",
-        "research_status": "completed",
-        "last_researched_at": "2026-03-15T10:30:00Z",
+        "is_profile_enriched": true,
+        "profile_enriched_at": "2026-03-15T10:30:00Z",
         "created_at": "2026-01-10T08:00:00Z",
         "updated_at": "2026-03-20T14:00:00Z"
       }
@@ -530,7 +552,7 @@ Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalis
 | `name` | string | **Yes** | Non-empty | Full name (auto-split into first/last) |
 | `job_title` | string | No | — | Job title |
 | `phone` | string | No | — | Phone number |
-| `linkedin_url` | string | No | — | LinkedIn profile URL (stored in `properties.linkedin_url`) |
+| `linkedin_url` | string | No | — | LinkedIn profile URL |
 | `company_id` | UUID | No | Must reference an existing account | Explicit account link. When provided, validates the account exists and auto-resolves `company_name` from the linked account. |
 
 #### Auto-Resolution Behaviours
@@ -597,8 +619,6 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
     "owner_name": null,
     "deal_count": 0,
     "source": "manual",
-    "research_status": null,
-    "last_researched_at": null,
     "created_at": "2026-04-06T10:00:00Z",
     "updated_at": "2026-04-06T10:00:00Z"
   }
@@ -625,7 +645,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 GET /users/crm/contacts/{contact_id}
 ```
 
-Full contact detail including extended profile fields, research content, and deal involvement array.
+Full contact detail including extended profile fields, enrichment content, and deal involvement array.
 
 #### Path Parameters
 
@@ -654,19 +674,21 @@ Full contact detail including extended profile fields, research content, and dea
     "owner_name": "Jane Smith",
     "deal_count": 2,
     "source": "manual",
-    "research_status": "completed",
-    "last_researched_at": "2026-03-15T10:30:00Z",
     "created_at": "2026-01-10T08:00:00Z",
     "updated_at": "2026-03-20T14:00:00Z",
 
     "additional_emails": ["john.doe@acme.com", "jdoe@personal.com"],
     "mobile_phone": "+1-555-0102",
     "linkedin_url": "https://linkedin.com/in/johndoe",
+    "profile_enrichment": {
+      "headline": "Engineering executive"
+    },
+    "profile_enrichment_source": "apollo",
+    "profile_enriched_at": "2026-03-15T10:30:00Z",
     "address": "123 Tech Blvd",
     "city": "San Francisco",
     "state": "CA",
     "country": "US",
-    "contact_research": "## Professional Background\nJohn Doe is a seasoned engineering leader...",
     "last_contacted_at": "2026-03-18T09:00:00Z",
     "last_activity_at": "2026-03-20T14:00:00Z",
 
@@ -701,8 +723,8 @@ Full contact detail including extended profile fields, research content, and dea
 - `deal_count` equals the length of `deal_involvement` array
 - `stance` and `decision_power` are reserved for future AI-inferred values (currently always `null`)
 - `relationship_role` comes from the contact participant's `relationship_role`
-- `company_id` and `company_domain` are `null` in the detail response (not computed in this endpoint — use the list endpoint for resolved company association)
-- `linkedin_url` is extracted from `properties.linkedin_url` JSONB — it is `null` if not set
+- `company_id` and `company_domain` are resolved in the detail response using explicit account linkage first, then email-domain matching.
+- `linkedin_url` is returned from the top-level contact profile field, with a legacy `properties.linkedin_url` fallback.
 
 #### Error Responses
 
@@ -772,7 +794,7 @@ All fields optional. Only include fields to update.
 const canEditEmail = contact.email === null;
 ```
 
-**Note on `linkedin_url`:** This field is stored in the `properties` JSONB column as `properties.linkedin_url`, not as a top-level database column. The API abstracts this — send it as a top-level field in the request body.
+**Note on `linkedin_url`:** Send this as a top-level field. The contact profile stores it as a first-class contact URL, with legacy property fallback still handled in reads.
 
 #### Example Request
 
@@ -786,7 +808,7 @@ const canEditEmail = contact.email === null;
 
 #### Success Response (200)
 
-Returns the updated `ContactListItem`. `deal_count` is `0`, `company_id` and `company_domain` are `null` (not re-computed in update response).
+Returns the updated legacy `ContactMutationItem`. `deal_count` is `0`, `company_id` and `company_domain` are not re-computed in the update response.
 
 ```json
 {
@@ -801,12 +823,12 @@ Returns the updated `ContactListItem`. `deal_count` is `0`, `company_id` and `co
     "company_id": null,
     "company_domain": null,
     "source": "manual",
-    "...": "other ContactListItem fields"
+    "...": "other ContactMutationItem fields"
   }
 }
 ```
 
-**Frontend note:** After a successful update, either refetch the contact detail or merge the response into local state. `deal_count`, `company_id`, and `company_domain` will be `0`/`null` in the PATCH response — use previously cached values or refetch if needed.
+**Frontend note:** After a successful update, either refetch the contact detail/list row or merge the response into local state. `deal_count` and resolved company display fields are not recomputed in the PATCH response — use previously cached values or refetch if needed.
 
 #### Error Responses
 
@@ -1160,17 +1182,18 @@ Consolidated reference of all error responses across all endpoints.
 
 ### Service Layer
 
-**Class:** `ContactsAccessService` (`src/service/crm/access/contacts_access_service.py`)
+**Classes:** `ContactReadService`, `ContactWriteService`, and `ContactDealLinkService` under `src/service/crm/contacts/`. `ContactsAccessService` remains as a compatibility facade for older callers.
 
 - Receives `org_session` and `organisation_id` at construction
 - All queries filter by `organisation_id` and `is_deleted = False`
 - `list_contacts()` uses:
   - Correlated subquery for `deal_count` (count of approved contact participant records)
   - Batch-resolved `integration_type` for `source` annotation
-  - `company_id` resolved from stored FK (when set) with email domain matching as fallback
+  - Nested `company` resolved from stored FK first, with email domain matching as display fallback
+  - Nested `owner` built from contact owner metadata
 - `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; accepts optional `company_id` to set explicit account link
 - `update_contact()` accepts `company_id` to link/unlink accounts; validates account exists when non-null
-- `update_contact()` handles `linkedin_url` specially — stored in `properties` JSONB, not a top-level column
+- `update_contact()` handles `linkedin_url` as a top-level contact profile field
 - `add_contact_to_deal()` delegates to `DealParticipantService` for centralized participant creation and duplicate detection
 
 ### Email Domain Extraction

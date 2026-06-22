@@ -27,6 +27,7 @@ from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import USER_TIMEZONE_HEADER, validate_timezone_name
 from src.service.orgnisation.organisation_preferences import normalize_organisation_preferences
+from src.service.users.user_preferences import normalize_user_preferences
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -72,8 +73,10 @@ async def user_login(
                 user_created_at = user.created_at
                 user_id = user.user_id
                 user_organisation_id = user.organisation_id
+                user_preferences = normalize_user_preferences(user.preferences)
             else:
                 user_email = None
+                user_preferences = None
 
         if not user_email:
             logger.warning(f"User not found for email: {login_request.email}")
@@ -148,6 +151,7 @@ async def user_login(
                     timezone=effective_timezone,
                     organisation_id=user_organisation_id,
                     organisation_preferences=user_organisation_preferences,
+                    user_preferences=user_preferences,
                     password_reset_link=password_reset_link,
                 )
                 return Response.success_response(
@@ -187,6 +191,7 @@ async def user_login(
                 timezone=effective_timezone,
                 organisation_id=user_organisation_id,
                 organisation_preferences=user_organisation_preferences,
+                user_preferences=user_preferences,
                 tokens={
                     "access_token": access_token,
                     "refresh_token": refresh_token,
@@ -498,6 +503,7 @@ async def get_current_user_profile(
                 timezone=current_user.timezone,
                 organisation_id=current_user.organisation_id,
                 organisation_preferences=organisation_preferences,
+                user_preferences=normalize_user_preferences(current_user.preferences),
             ),
         )
     except Exception as e:

@@ -8,6 +8,11 @@ Focuses on:
 - Logout endpoint (single and global)
 """
 
+from contextlib import asynccontextmanager
+
+import pytest
+from fastapi import Response as FastAPIResponse
+from starlette.requests import Request
 from tests.api.routers.users.conftest import create_user
 
 # =============================================================================
@@ -31,6 +36,53 @@ def test_login_success(client_with_user_auth):
     assert body["data"]["tokens"] is not None
     assert "access_token" in body["data"]["tokens"]
     assert "refresh_token" in body["data"]["tokens"]
+
+
+@pytest.mark.asyncio
+async def test_login_success_returns_default_contact_list_columns(user_auth_test_data, mocker):
+    """Test login bootstraps ordered contact list columns for the frontend."""
+    import src.api.routers.users.auth_handler as auth_handler
+    from src.domain.models.user_models import UserLoginRequest
+
+    @asynccontextmanager
+    async def fake_master_async_session_scope():
+        yield user_auth_test_data["master_session"]
+
+    mocker.patch.object(
+        auth_handler,
+        "master_async_session_scope",
+        fake_master_async_session_scope,
+    )
+    mocker.patch.object(
+        auth_handler,
+        "supabase_user_client",
+        user_auth_test_data["supabase_client"],
+    )
+    mocker.patch.object(auth_handler, "_load_organisation_preferences", return_value={})
+    result = await auth_handler.user_login(
+        request=Request({"type": "http", "headers": []}),
+        login_request=UserLoginRequest(
+            email="testuser@example.com",
+            password="correctpassword",
+        ),
+        response=FastAPIResponse(),
+        _rl_login=None,
+    )
+
+    assert result.data is not None
+    assert result.data.user_preferences is not None
+    assert result.data.user_preferences["crm"]["contacts"]["list"]["columns"] == [
+        "full_name",
+        "job_title",
+        "company.name",
+        "email",
+        "phone",
+        "linkedin_url",
+        "owner.name",
+        "deal_count",
+        "last_contacted_at",
+        "last_activity_at",
+    ]
 
 
 def test_login_success_updates_last_login_at(client_with_user_auth):
