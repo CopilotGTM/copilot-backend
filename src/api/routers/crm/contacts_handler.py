@@ -21,6 +21,7 @@ from src.api.schemas.crm_contact_models import (
     ContactDealInvolvement,
     ContactDetail,
     ContactListItem,
+    ContactMutationItem,
     ContactsPage,
     CreateContactRequest,
     UpdateContactRequest,
@@ -116,19 +117,24 @@ async def list_contacts(
         items = [
             ContactListItem(
                 contact_id=row["contact"].contact_id,
-                first_name=row["contact"].first_name,
-                last_name=row["contact"].last_name,
                 full_name=row["contact"].full_name,
                 email=row["contact"].email,
+                additional_emails=row["contact"].additional_emails or [],
                 job_title=row["contact"].job_title,
                 phone=row["contact"].phone,
-                company_name=row["contact"].company_name,
-                company_id=row.get("company_id"),
-                company_domain=row.get("company_domain"),
-                lifecycle_stage=row["contact"].lifecycle_stage,
-                owner_name=row["contact"].owner_name,
+                mobile_phone=row["contact"].mobile_phone,
+                linkedin_url=row["contact"].linkedin_url
+                or (row["contact"].properties or {}).get("linkedin_url"),
+                company=row.get("company"),
+                owner=row.get("owner"),
                 deal_count=row["deal_count"],
+                last_contacted_at=row["contact"].last_contacted_at,
+                last_activity_at=row["contact"].last_activity_at,
                 source=row["source"],
+                is_profile_enriched=bool(
+                    row["contact"].profile_enriched_at or row["contact"].profile_enrichment
+                ),
+                profile_enriched_at=row["contact"].profile_enriched_at,
                 created_at=row["contact"].created_at,
                 updated_at=row["contact"].updated_at,
             )
@@ -158,7 +164,7 @@ async def list_contacts(
 
 @contacts_router.post(
     "/contacts",
-    response_model=GenericResponse[ContactListItem],
+    response_model=GenericResponse[ContactMutationItem],
     summary="Create a new CRM contact",
 )
 async def create_contact(
@@ -168,7 +174,7 @@ async def create_contact(
     user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[ContactListItem]:
+) -> GenericResponse[ContactMutationItem]:
     """Create a new contact in the internal CRM."""
     try:
         extra: dict = {}
@@ -194,7 +200,7 @@ async def create_contact(
         await service.org_session.commit()
         contact = result.contact
 
-        data = ContactListItem(
+        data = ContactMutationItem(
             contact_id=contact.contact_id,
             first_name=contact.first_name,
             last_name=contact.last_name,
@@ -306,7 +312,7 @@ async def get_contact_detail(
 
 @contacts_router.patch(
     "/contacts/{contact_id}",
-    response_model=GenericResponse[ContactListItem],
+    response_model=GenericResponse[ContactMutationItem],
     summary="Update a contact",
 )
 async def update_contact(
@@ -317,7 +323,7 @@ async def update_contact(
     user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[ContactListItem]:
+) -> GenericResponse[ContactMutationItem]:
     """Update allowed fields on a contact."""
     try:
         updates = body.model_dump(exclude_unset=True)
@@ -337,7 +343,7 @@ async def update_contact(
             service.org_session, service.organisation_id
         ).resolve_source_for_contact(contact.integration_id)
 
-        data = ContactListItem(
+        data = ContactMutationItem(
             contact_id=contact.contact_id,
             first_name=contact.first_name,
             last_name=contact.last_name,

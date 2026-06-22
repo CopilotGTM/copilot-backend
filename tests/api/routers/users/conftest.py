@@ -37,6 +37,7 @@ class FakeUser:
         created_at: datetime | None = None,
         organisation_id: UUID | None = None,
         timezone: str | None = None,
+        preferences: dict[str, Any] | None = None,
     ):
         self.user_id = user_id or uuid4()
         self.email = email
@@ -50,6 +51,7 @@ class FakeUser:
         self.created_at = created_at or datetime.now(UTC)
         self.organisation_id = organisation_id or uuid4()
         self.timezone = timezone
+        self.preferences = preferences or {}
 
 
 # =============================================================================

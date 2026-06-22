@@ -35,6 +35,7 @@ class UserLoginResponse(BaseModel):
     timezone: str | None = None
     organisation_id: UUID | None = None
     organisation_preferences: dict[str, Any] | None = None
+    user_preferences: dict[str, Any] | None = None
     tokens: dict[str, Any] | None = None
     password_reset_link: str | None = None
 

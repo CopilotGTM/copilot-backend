@@ -20,8 +20,49 @@ class ContactDealInvolvement(BaseModel):
     relationship_role: str | None
 
 
+class ContactListCompany(BaseModel):
+    """Account context returned by the contacts list endpoint."""
+
+    id: UUID | None
+    name: str | None
+    domain: str | None
+
+
+class ContactListOwner(BaseModel):
+    """Owner context returned by the contacts list endpoint."""
+
+    id: UUID | None
+    name: str | None
+    email: str | None
+
+
 class ContactListItem(BaseModel):
     """Single contact in a list response."""
+
+    contact_id: UUID
+    full_name: str | None
+    email: str | None
+    additional_emails: list[str] = Field(default_factory=list)
+    job_title: str | None
+    phone: str | None
+    mobile_phone: str | None
+    linkedin_url: str | None
+    company: ContactListCompany | None
+    owner: ContactListOwner | None
+    deal_count: int = Field(0)
+    last_contacted_at: datetime | None
+    last_activity_at: datetime | None
+    source: str = Field("crm_sync")
+    is_profile_enriched: bool = Field(False)
+    profile_enriched_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ContactMutationItem(BaseModel):
+    """Legacy contact shape returned by create and update endpoints."""
 
     contact_id: UUID
     first_name: str | None
@@ -43,7 +84,7 @@ class ContactListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ContactDetail(ContactListItem):
+class ContactDetail(ContactMutationItem):
     """Extended contact detail including deal involvement."""
 
     additional_emails: list[str] = Field(default_factory=list)

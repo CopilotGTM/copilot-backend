@@ -77,6 +77,26 @@ Not required
     "email_verified": true,
     "last_login_at": "2025-10-06T08:12:00Z",
     "timezone": "Asia/Kolkata",
+    "user_preferences": {
+      "crm": {
+        "contacts": {
+          "list": {
+            "columns": [
+              "full_name",
+              "job_title",
+              "company.name",
+              "email",
+              "phone",
+              "linkedin_url",
+              "owner.name",
+              "deal_count",
+              "last_contacted_at",
+              "last_activity_at"
+            ]
+          }
+        }
+      }
+    },
     "tokens": {
       "access_token": "<JWT>",
       "refresh_token": "<REFRESH_TOKEN>"
@@ -93,10 +113,32 @@ Not required
   "message": "Login successful, password change required",
   "data": {
     "state": "PASSWORD_CHANGE_REQUIRED",
+    "user_preferences": {
+      "crm": {
+        "contacts": {
+          "list": {
+            "columns": [
+              "full_name",
+              "job_title",
+              "company.name",
+              "email",
+              "phone",
+              "linkedin_url",
+              "owner.name",
+              "deal_count",
+              "last_contacted_at",
+              "last_activity_at"
+            ]
+          }
+        }
+      }
+    },
     "password_reset_link": "https://.../reset?token=..."
   }
 }
 ```
+
+`user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
 
 ### Error Responses
 
