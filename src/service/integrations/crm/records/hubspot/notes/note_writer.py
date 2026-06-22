@@ -148,7 +148,6 @@ class HubSpotNoteWriter:
                 continue
 
             if _is_stale_note(existing, note):
-                existing.last_seen_at = now
                 result.notes_skipped_stale += 1
                 continue
 
@@ -300,8 +299,9 @@ class HubSpotNoteWriter:
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
             deal_id=deal_hit.internal_id if deal_hit is not None else None,
-            title=note.subject,
+            title=note.title,
             body=note.body or "",
+            body_format=note.body_format,
             author_user_id=owner_hit.internal_id if owner_hit is not None else None,
             author_name=owner_hit.name if owner_hit is not None else None,
             author_email=owner_hit.email if owner_hit is not None else None,
@@ -333,8 +333,9 @@ class HubSpotNoteWriter:
         now: datetime,
     ) -> None:
         row.deal_id = deal_hit.internal_id if deal_hit is not None else None
-        row.title = note.subject
+        row.title = note.title
         row.body = note.body or ""
+        row.body_format = note.body_format
         row.author_user_id = owner_hit.internal_id if owner_hit is not None else None
         row.author_name = owner_hit.name if owner_hit is not None else None
         row.author_email = owner_hit.email if owner_hit is not None else None
@@ -367,6 +368,7 @@ def _note_metadata(
             "source": "CRM_SYNC",
             "provider": "hubspot",
             "activity_subtype": note.activity_subtype,
+            "hs_attachment_ids": note.attachment_ids,
             "related_object_type": note.related_object_type,
             "related_external_id": note.related_external_id,
             "related_local_id": str(related_local_id) if related_local_id else None,

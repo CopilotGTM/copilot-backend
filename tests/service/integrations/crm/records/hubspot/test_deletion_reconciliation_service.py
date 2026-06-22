@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
+from src.domain.models.organisation_tables.sync.crm import CRMNote, CRMSourceObjectType, CRMTask
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.service.integrations.crm.records.hubspot.deletion_reconciliation_service import (
     HubSpotDeletionReconciliationService,
@@ -254,6 +254,76 @@ async def test_load_active_external_ids_uses_source_mappings_and_live_local_rows
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("object_key", "object_type", "local_row_id", "expected_column"),
+    [
+        ("tasks", CRMSourceObjectType.TASK, "task_id", "crm_tasks.task_id"),
+        ("notes", CRMSourceObjectType.NOTE, "note_id", "crm_notes.note_id"),
+    ],
+)
+async def test_load_active_external_ids_uses_task_note_source_tables(
+    monkeypatch,
+    object_key: str,
+    object_type: CRMSourceObjectType,
+    local_row_id: str,
+    expected_column: str,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    live_id = uuid4()
+    stale_id = uuid4()
+    calls: list[dict[str, object]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs):  # noqa: ANN003
+            pass
+
+        async def load_local_id_map(self, *, object_type, **_kwargs):  # noqa: ANN001
+            calls.append({"object_type": object_type})
+            return {"101": live_id, "102": stale_id}
+
+    class FakeResult:
+        def all(self):
+            return [(live_id,)]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.statement = None
+
+        async def execute(self, statement):  # noqa: ANN001
+            self.statement = statement
+            return FakeResult()
+
+    session = FakeSession()
+
+    async def acquire_session(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.hubspot.deletion_reconciliation_service.CRMSourceMappingHelper",
+        FakeMappingHelper,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.hubspot.deletion_reconciliation_service.acquire_org_async_session",
+        acquire_session,
+    )
+
+    result = await HubSpotDeletionReconciliationService()._load_active_external_ids(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        object_key=object_key,
+    )
+
+    sql_text = str(session.statement)
+    where_clause = sql_text.partition("WHERE")[2]
+    assert result == ["101"]
+    assert calls == [{"object_type": object_type}]
+    assert expected_column in where_clause
+    assert "crm_activities" not in sql_text
+    assert local_row_id in expected_column
+
+
+@pytest.mark.asyncio
 async def test_soft_delete_external_ids_marks_mappings_then_deletes_local_rows(
     monkeypatch,
 ) -> None:
@@ -326,4 +396,120 @@ async def test_soft_delete_external_ids_marks_mappings_then_deletes_local_rows(
     assert "crm_deals.deal_id" in where_clause
     assert ".external_id" not in where_clause
     assert deal.is_deleted is True
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("object_key", "object_type", "row_factory", "expected_column"),
+    [
+        (
+            "tasks",
+            CRMSourceObjectType.TASK,
+            lambda org_id, int_id, local_id: CRMTask(
+                organisation_id=org_id,
+                integration_id=int_id,
+                task_id=local_id,
+                title="Provider task",
+            ),
+            "crm_tasks.task_id",
+        ),
+        (
+            "notes",
+            CRMSourceObjectType.NOTE,
+            lambda org_id, int_id, local_id: CRMNote(
+                organisation_id=org_id,
+                integration_id=int_id,
+                note_id=local_id,
+                body="Provider note",
+            ),
+            "crm_notes.note_id",
+        ),
+    ],
+)
+async def test_soft_delete_external_ids_deletes_task_note_source_tables_and_projection(
+    monkeypatch,
+    object_key: str,
+    object_type: CRMSourceObjectType,
+    row_factory,
+    expected_column: str,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    local_id = uuid4()
+    row = row_factory(organisation_id, integration_id, local_id)
+    calls: list[dict[str, object]] = []
+    projection_deletes: list[object] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **_kwargs):  # noqa: ANN003
+            pass
+
+        async def mark_external_ids_deleted(self, *, object_type, external_ids):  # noqa: ANN001
+            calls.append({"object_type": object_type, "external_ids": list(external_ids)})
+            return {"101": local_id}
+
+    class FakeProjectionService:
+        def __init__(self, _session, _organisation_id):  # noqa: ANN001
+            pass
+
+        async def soft_delete_activity_projection(self, activity_id):  # noqa: ANN001
+            projection_deletes.append(activity_id)
+
+    class FakeScalars:
+        def all(self):
+            return [row]
+
+    class FakeResult:
+        def scalars(self):
+            return FakeScalars()
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.statement = None
+            self.committed = False
+
+        async def execute(self, statement):  # noqa: ANN001
+            self.statement = statement
+            return FakeResult()
+
+        def add(self, _row) -> None:  # noqa: ANN001
+            return None
+
+        async def commit(self) -> None:
+            self.committed = True
+
+    session = FakeSession()
+
+    async def acquire_session(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.hubspot.deletion_reconciliation_service.CRMSourceMappingHelper",
+        FakeMappingHelper,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.hubspot.deletion_reconciliation_service.ActivityFeedProjectionService",
+        FakeProjectionService,
+    )
+    monkeypatch.setattr(
+        "src.service.integrations.crm.records.hubspot.deletion_reconciliation_service.acquire_org_async_session",
+        acquire_session,
+    )
+
+    deleted = await HubSpotDeletionReconciliationService()._soft_delete_external_ids(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        object_key=object_key,
+        external_ids=["101"],
+    )
+
+    sql_text = str(session.statement)
+    where_clause = sql_text.partition("WHERE")[2]
+    assert deleted == 1
+    assert calls == [{"object_type": object_type, "external_ids": ["101"]}]
+    assert expected_column in where_clause
+    assert "crm_activities" not in sql_text
+    assert row.is_deleted is True
+    assert projection_deletes == [local_id]
     assert session.committed is True

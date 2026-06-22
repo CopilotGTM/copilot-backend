@@ -6,6 +6,7 @@ from typing import Any
 
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityObjectType,
+    CRMActivityPriority,
     CRMActivityStatus,
 )
 from src.infra.utils.logger import get_logger
@@ -72,8 +73,9 @@ def _normalize_one(raw: object) -> NormalizedHubSpotTask | None:
         subject=_coerce_str(properties.get("hs_task_subject")),
         body=_coerce_str(properties.get("hs_task_body")),
         status=status,
-        priority=None,
+        priority=_normalize_priority(properties.get("hs_task_priority")),
         activity_subtype="HUBSPOT_TASK",
+        task_type=_coerce_str(properties.get("hs_task_type")),
         owner_external_id=_coerce_id(properties.get("hubspot_owner_id")),
         due_date=due_date,
         completed_date=completed_date,
@@ -114,6 +116,21 @@ def _normalize_status(value: Any) -> str | None:
     if canonical == "NOT_STARTED":
         return CRMActivityStatus.NOT_STARTED.value
     return CRMActivityStatus.NOT_STARTED.value
+
+
+def _normalize_priority(value: Any) -> str:
+    raw = _coerce_str(value)
+    if raw is None:
+        return CRMActivityPriority.NONE.value
+    canonical = raw.upper()
+    if canonical in {
+        CRMActivityPriority.LOW.value,
+        CRMActivityPriority.MEDIUM.value,
+        CRMActivityPriority.HIGH.value,
+        CRMActivityPriority.URGENT.value,
+    }:
+        return canonical
+    return CRMActivityPriority.NONE.value
 
 
 def _first_association_id(raw: dict[str, Any], key: str) -> str | None:

@@ -162,7 +162,6 @@ class HubSpotTaskWriter:
                 continue
 
             if _is_stale_task(existing, task):
-                existing.last_seen_at = now
                 result.tasks_skipped_stale += 1
                 continue
 
@@ -403,6 +402,7 @@ def _task_metadata(
             "source": "CRM_SYNC",
             "provider": "hubspot",
             "task_type": "TASK",
+            "hs_task_type": task.task_type,
             "activity_subtype": task.activity_subtype,
             "related_object_type": task.related_object_type,
             "related_external_id": task.related_external_id,

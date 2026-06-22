@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityType,
+    CRMNote,
     CRMSourceObjectType,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.notes.note_sync_service import (
     HubSpotNoteRecordSyncService,
@@ -119,26 +118,26 @@ class HubSpotNoteWebhookHandler:
                 object_type=CRMSourceObjectType.NOTE,
                 external_ids=[external_id],
             )
-            activity_id = local_ids.get(external_id.strip())
-            if activity_id is None:
+            note_id = local_ids.get(external_id.strip())
+            if note_id is None:
                 return False
 
-            statement = select(CRMActivity).where(
-                # Notes share external ids with other activity families, so the
-                # activity type is part of the tenant-safe tombstone boundary.
-                col(CRMActivity.organisation_id) == organisation_id,
-                col(CRMActivity.integration_id) == integration_id,
-                col(CRMActivity.activity_id) == activity_id,
-                col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
-                col(CRMActivity.is_deleted).is_(False),
+            statement = select(CRMNote).where(
+                col(CRMNote.organisation_id) == organisation_id,
+                col(CRMNote.integration_id) == integration_id,
+                col(CRMNote.note_id) == note_id,
+                col(CRMNote.is_deleted).is_(False),
             )
             note = (await session.execute(statement)).scalars().first()
             if note is None:
                 return False
 
             note.is_deleted = True
-            note.synced_at = datetime.now(UTC)
             session.add(note)
+            await ActivityFeedProjectionService(
+                session,
+                organisation_id,
+            ).soft_delete_activity_projection(note.note_id)
             await session.commit()
             return True
         return False

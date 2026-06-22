@@ -33,6 +33,7 @@ class NormalizedHubSpotTask:
     status: str | None
     priority: str | None
     activity_subtype: str | None
+    task_type: str | None
     owner_external_id: str | None
     due_date: datetime | None
     completed_date: datetime | None

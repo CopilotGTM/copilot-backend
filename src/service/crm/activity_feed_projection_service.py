@@ -51,12 +51,13 @@ class ActivityFeedProjectionService:
             task.due_at or due_date_at or task.source_created_at or task.created_at or _now_utc()
         )
         metadata = task.task_metadata or {}
-        actor_name = (
+        metadata_actor_name = (
             metadata.get("actor_name") if isinstance(metadata.get("actor_name"), str) else None
         )
-        actor_email = (
+        metadata_actor_email = (
             metadata.get("actor_email") if isinstance(metadata.get("actor_email"), str) else None
         )
+        provider = metadata.get("provider") if isinstance(metadata.get("provider"), str) else None
         await self._upsert_activity(
             activity_id=task.task_id,
             integration_id=task.integration_id,
@@ -67,8 +68,16 @@ class ActivityFeedProjectionService:
             occurred_at=occurred_at,
             source_type="TASK",
             source_record_id=str(task.task_id),
-            actor_name=actor_name,
-            actor_email=actor_email,
+            source_provider=provider,
+            actor_name=metadata_actor_name,
+            actor_email=metadata_actor_email,
+            display_payload={
+                "status": task.status,
+                "priority": task.priority,
+                "task_type": metadata.get("hs_task_type") or metadata.get("task_type"),
+                "assignee_name": task.assigned_to_name,
+                "assignee_email": task.assigned_to_email or task.owner_email,
+            },
         )
         await self._sync_primary_deal_link(
             activity_id=task.task_id,
@@ -78,6 +87,8 @@ class ActivityFeedProjectionService:
 
     async def upsert_note(self, note: CRMNote) -> None:
         occurred_at = note.source_created_at or note.created_at or _now_utc()
+        metadata = note.note_metadata or {}
+        provider = metadata.get("provider") if isinstance(metadata.get("provider"), str) else None
         await self._upsert_activity(
             activity_id=note.note_id,
             integration_id=note.integration_id,
@@ -88,8 +99,14 @@ class ActivityFeedProjectionService:
             occurred_at=occurred_at,
             source_type="NOTE",
             source_record_id=str(note.note_id),
+            source_provider=provider,
             actor_name=note.author_name,
             actor_email=note.author_email,
+            display_payload={
+                "body_format": note.body_format,
+                "visibility": note.visibility,
+                "has_attachments": bool(metadata.get("hs_attachment_ids")),
+            },
         )
         await self._sync_primary_deal_link(
             activity_id=note.note_id,
@@ -127,8 +144,10 @@ class ActivityFeedProjectionService:
         occurred_at: datetime,
         source_type: str,
         source_record_id: str,
+        source_provider: str | None,
         actor_name: str | None,
         actor_email: str | None,
+        display_payload: dict[str, Any] | None = None,
     ) -> None:
         now = _now_utc()
         values: dict[str, Any] = {
@@ -142,10 +161,11 @@ class ActivityFeedProjectionService:
             "occurred_at": occurred_at,
             "source_type": source_type,
             "source_record_id": source_record_id,
+            "source_provider": source_provider,
             "source_integration_id": integration_id,
             "actor_name": actor_name,
             "actor_email": actor_email,
-            "display_payload": {},
+            "display_payload": display_payload or {},
             "is_deleted": False,
             "updated_at": now,
         }
@@ -163,9 +183,11 @@ class ActivityFeedProjectionService:
                     "occurred_at": occurred_at,
                     "source_type": source_type,
                     "source_record_id": source_record_id,
+                    "source_provider": source_provider,
                     "source_integration_id": integration_id,
                     "actor_name": actor_name,
                     "actor_email": actor_email,
+                    "display_payload": display_payload or {},
                     "is_deleted": False,
                     "updated_at": now,
                 },

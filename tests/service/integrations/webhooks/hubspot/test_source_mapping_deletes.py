@@ -57,6 +57,16 @@ class _FakeMappingHelper:
         return {external_id: self.local_id}
 
 
+class _FakeProjectionService:
+    deleted_activity_ids: list[UUID] = []
+
+    def __init__(self, _session: _FakeSession, _organisation_id: UUID) -> None:
+        pass
+
+    async def soft_delete_activity_projection(self, activity_id: UUID) -> None:
+        self.deleted_activity_ids.append(activity_id)
+
+
 async def _acquire_session(session: _FakeSession):
     yield session
 
@@ -103,28 +113,26 @@ async def _acquire_session(session: _FakeSession):
         (
             task_handler,
             "_soft_delete_task",
-            lambda org_id, int_id, local_id: task_handler.CRMActivity(
+            lambda org_id, int_id, local_id: task_handler.CRMTask(
                 organisation_id=org_id,
                 integration_id=int_id,
-                activity_id=local_id,
-                external_id="provider-id",
-                activity_type=task_handler.CRMActivityType.TASK.value,
+                task_id=local_id,
+                title="Provider task",
             ),
             CRMSourceObjectType.TASK,
-            "crm_activities.activity_id",
+            "crm_tasks.task_id",
         ),
         (
             note_handler,
             "_soft_delete_note",
-            lambda org_id, int_id, local_id: note_handler.CRMActivity(
+            lambda org_id, int_id, local_id: note_handler.CRMNote(
                 organisation_id=org_id,
                 integration_id=int_id,
-                activity_id=local_id,
-                external_id="provider-id",
-                activity_type=note_handler.CRMActivityType.NOTE.value,
+                note_id=local_id,
+                body="Provider note",
             ),
             CRMSourceObjectType.NOTE,
-            "crm_activities.activity_id",
+            "crm_notes.note_id",
         ),
     ],
 )
@@ -142,10 +150,17 @@ async def test_hubspot_delete_helpers_resolve_mapping_before_local_soft_delete(
     local_id = uuid4()
     _FakeMappingHelper.calls = []
     _FakeMappingHelper.local_id = local_id
+    _FakeProjectionService.deleted_activity_ids = []
     row = row_factory(organisation_id, integration_id, local_id)
     session = _FakeSession(row)
 
     monkeypatch.setattr(module, "CRMSourceMappingHelper", _FakeMappingHelper)
+    monkeypatch.setattr(
+        module,
+        "ActivityFeedProjectionService",
+        _FakeProjectionService,
+        raising=False,
+    )
     monkeypatch.setattr(
         module, "acquire_org_async_session", lambda _org_id: _acquire_session(session)
     )
@@ -186,4 +201,6 @@ async def test_hubspot_delete_helpers_resolve_mapping_before_local_soft_delete(
     assert expected_column in sql_text
     assert ".external_id" not in where_clause
     assert row.is_deleted is True
+    if module in {task_handler, note_handler}:
+        assert _FakeProjectionService.deleted_activity_ids == [local_id]
     assert session.committed is True
