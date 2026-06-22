@@ -814,6 +814,84 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
     )
 
+    @property
+    def activity_id(self) -> UUID:
+        """Backwards-compatible alias while task APIs move off crm_activities."""
+        return self.task_id
+
+    @property
+    def subject(self) -> str | None:
+        return self.title
+
+    @property
+    def body(self) -> str | None:
+        return self.description
+
+    @property
+    def activity_type(self) -> str:
+        metadata = self.task_metadata or {}
+        task_type = metadata.get("task_type")
+        return task_type if task_type in {"TASK", "TODO"} else "TASK"
+
+    @property
+    def task_type(self) -> str:
+        return self.activity_type
+
+    @property
+    def reminder_date(self) -> datetime | None:
+        return self.reminder_at
+
+    @property
+    def completed_date(self) -> datetime | None:
+        return self.completed_at
+
+    @property
+    def owner_id(self) -> UUID | None:
+        return self.assigned_to_user_id
+
+    @property
+    def owner_name(self) -> str | None:
+        if (self.task_metadata or {}).get("assignee_kind") == "external":
+            return None
+        return self.assigned_to_name
+
+    @property
+    def external_assignee_email(self) -> str | None:
+        if (self.task_metadata or {}).get("assignee_kind") == "external":
+            return self.assigned_to_email
+        return None
+
+    @property
+    def external_assignee_name(self) -> str | None:
+        if (self.task_metadata or {}).get("assignee_kind") == "external":
+            return self.assigned_to_name
+        return None
+
+    @property
+    def properties(self) -> dict[str, Any]:
+        return self.task_metadata or {}
+
+    @property
+    def metrics(self) -> None:
+        return None
+
+    @property
+    def source(self) -> str | None:
+        value = (self.task_metadata or {}).get("source")
+        return value if isinstance(value, str) else None
+
+    @property
+    def synced_at(self) -> datetime:
+        return self.source_modified_at or self.updated_at
+
+    @property
+    def last_seen_at(self) -> datetime | None:
+        return self.source_modified_at
+
+    @property
+    def is_deleted_remote(self) -> bool:
+        return bool(self.is_deleted)
+
 
 class CRMNote(FlexibleSyncedRecordMixin, table=True):
     """Canonical note source record used by the feed activity projection."""
@@ -873,6 +951,39 @@ class CRMNote(FlexibleSyncedRecordMixin, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
     )
+
+    @property
+    def activity_id(self) -> UUID:
+        """Backwards-compatible alias while note APIs move off crm_activities."""
+        return self.note_id
+
+    @property
+    def subject(self) -> str | None:
+        return self.title
+
+    @property
+    def owner_name(self) -> str | None:
+        return self.author_name
+
+    @property
+    def owner_email(self) -> str | None:
+        return self.author_email
+
+    @property
+    def owner_id(self) -> UUID | None:
+        return self.author_user_id
+
+    @property
+    def properties(self) -> dict[str, Any]:
+        return self.note_metadata or {}
+
+    @property
+    def synced_at(self) -> datetime:
+        return self.source_modified_at or self.updated_at
+
+    @property
+    def last_seen_at(self) -> datetime | None:
+        return self.source_modified_at
 
 
 # Backwards compatibility alias for existing code

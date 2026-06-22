@@ -9,11 +9,12 @@ from sqlalchemy.dialects.postgresql import dialect as pg_dialect
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.query_chunks import (
     LOCAL_ID_QUERY_CHUNK_SIZE,
     iter_chunks,
@@ -35,7 +36,7 @@ _BULK_UPSERT_PARAMETER_BUDGET = 24_000
 
 
 class SalesforceTaskWriter:
-    """Active-snapshot writer for Salesforce tasks into crm_activities."""
+    """Active-snapshot writer for Salesforce tasks into crm_tasks."""
 
     def __init__(
         self,
@@ -53,7 +54,8 @@ class SalesforceTaskWriter:
             integration_id=integration_id,
             provider="salesforce",
         )
-        self._activity_ids_by_external: dict[str, UUID] = {}
+        self._task_ids_by_external: dict[str, UUID] = {}
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
@@ -104,10 +106,10 @@ class SalesforceTaskWriter:
             else:
                 result.tasks_updated += 1
 
-            activity_id = (
-                existing.activity_id
+            task_id = (
+                existing.task_id
                 if existing is not None
-                else self._activity_ids_by_external.get(task.external_id, uuid4())
+                else self._task_ids_by_external.get(task.external_id, uuid4())
             )
             if existing is not None:
                 self._apply_updates(
@@ -125,7 +127,7 @@ class SalesforceTaskWriter:
 
             rows.append(
                 self._row_values(
-                    activity_id=activity_id,
+                    task_id=task_id,
                     task=task,
                     owner_hit=owner_hit,
                     deal_hit=deal_hit,
@@ -133,15 +135,14 @@ class SalesforceTaskWriter:
                     company_hit=company_hit,
                     related_local_id=related_local_id,
                     related_name=related_name,
-                    now=now,
                     last_seen_at=snapshot_time,
                 )
             )
-            self._activity_ids_by_external[task.external_id] = activity_id
+            self._task_ids_by_external[task.external_id] = task_id
             mapping_rows.append(
                 self._source_mapping_row(
                     task=task,
-                    local_activity_id=activity_id,
+                    local_task_id=task_id,
                     now=now,
                 )
             )
@@ -149,6 +150,8 @@ class SalesforceTaskWriter:
         if rows:
             await self._bulk_upsert(rows)
             await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
+            for row in rows:
+                await self._projection.upsert_task(CRMTask.model_validate(row))
 
         if deactivate_missing:
             result.tasks_deactivated += await self._deactivate_missing(
@@ -183,16 +186,16 @@ class SalesforceTaskWriter:
             await self._bulk_upsert_chunk(rows[offset : offset + max_rows_per_statement])
 
     async def _bulk_upsert_chunk(self, rows: list[dict]) -> None:
-        insert_stmt = pg_insert(CRMActivity).values(rows)
+        insert_stmt = pg_insert(CRMTask).values(rows)
         excluded = insert_stmt.excluded
         update_columns = {
             column_name: getattr(excluded, column_name)
             for column_name in rows[0]
-            if column_name not in {"activity_id", "created_at"}
+            if column_name not in {"task_id", "created_at"}
         }
         update_columns["updated_at"] = datetime.now(UTC)
         stmt = insert_stmt.on_conflict_do_update(
-            index_elements=["activity_id"],
+            index_elements=["task_id"],
             set_=update_columns,
         )
         await self.session.execute(stmt)
@@ -206,30 +209,39 @@ class SalesforceTaskWriter:
         if deal_ids is not None and not deal_ids:
             return 0
 
-        base_stmt = update(CRMActivity).where(
-            col(CRMActivity.organisation_id) == self.organisation_id,
-            col(CRMActivity.integration_id) == self.integration_id,
-            col(CRMActivity.activity_type).in_(
-                [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-            ),
-            col(CRMActivity.is_deleted) == False,  # noqa: E712
+        c = CRMTask.__table__.c
+        base_conditions = [
+            c.organisation_id == self.organisation_id,
+            c.integration_id == self.integration_id,
+            c.is_deleted == False,  # noqa: E712
             or_(
-                col(CRMActivity.last_seen_at).is_(None),
-                col(CRMActivity.last_seen_at) < snapshot_started_at,
+                c.task_metadata["last_seen_at"].as_string().is_(None),
+                c.task_metadata["last_seen_at"].as_string() < snapshot_started_at.isoformat(),
             ),
-        )
+        ]
         total = 0
         deal_id_batches = (
             [None] if deal_ids is None else iter_chunks(deal_ids, LOCAL_ID_QUERY_CHUNK_SIZE)
         )
         for deal_id_batch in deal_id_batches:
-            stmt = base_stmt
+            conditions = list(base_conditions)
             if deal_id_batch is not None:
-                stmt = stmt.where(col(CRMActivity.deal_id).in_(deal_id_batch))
-            stmt = stmt.values(is_deleted=True, updated_at=datetime.now(UTC))
+                conditions.append(c.deal_id.in_(deal_id_batch))
+            task_ids = (
+                (await self.session.execute(select(c.task_id).where(*conditions))).scalars().all()
+            )
+            if not task_ids:
+                continue
+            stmt = (
+                update(CRMTask)
+                .where(c.task_id.in_(task_ids))
+                .values(is_deleted=True, updated_at=datetime.now(UTC))
+            )
             result = await self.session.execute(stmt)
             rowcount = getattr(result, "rowcount", 0)
             total += rowcount if isinstance(rowcount, int) else 0
+            for task_id in task_ids:
+                await self._projection.soft_delete_activity_projection(task_id)
         return total
 
     def _pg_dialect(self):
@@ -278,50 +290,44 @@ class SalesforceTaskWriter:
         self,
         *,
         external_ids: Set[str] | None = None,
-    ) -> dict[str, CRMActivity]:
-        self._activity_ids_by_external = await self.source_mappings.load_local_id_map(
+    ) -> dict[str, CRMTask]:
+        self._task_ids_by_external = await self.source_mappings.load_local_id_map(
             object_type=CRMSourceObjectType.TASK,
             external_ids=external_ids,
             include_deleted=True,
         )
-        if not self._activity_ids_by_external:
+        if not self._task_ids_by_external:
             return {}
-        rows: list[CRMActivity] = []
-        for activity_ids in iter_chunks(
-            set(self._activity_ids_by_external.values()),
+        rows: list[CRMTask] = []
+        for task_ids in iter_chunks(
+            set(self._task_ids_by_external.values()),
             LOCAL_ID_QUERY_CHUNK_SIZE,
         ):
-            stmt = select(CRMActivity).where(
-                col(CRMActivity.organisation_id) == self.organisation_id,
-                col(CRMActivity.integration_id) == self.integration_id,
-                col(CRMActivity.activity_type).in_(
-                    [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-                ),
-                col(CRMActivity.activity_id).in_(activity_ids),
+            stmt = select(CRMTask).where(
+                col(CRMTask.organisation_id) == self.organisation_id,
+                col(CRMTask.integration_id) == self.integration_id,
+                col(CRMTask.task_id).in_(task_ids),
             )
             rows.extend((await self.session.execute(stmt)).scalars().all())
         local_to_external = {
-            local_id: external_id
-            for external_id, local_id in self._activity_ids_by_external.items()
+            local_id: external_id for external_id, local_id in self._task_ids_by_external.items()
         }
         return {
-            local_to_external[row.activity_id]: row
-            for row in rows
-            if row.activity_id in local_to_external
+            local_to_external[row.task_id]: row for row in rows if row.task_id in local_to_external
         }
 
     def _source_mapping_row(
         self,
         *,
         task: NormalizedSalesforceTask,
-        local_activity_id: UUID,
+        local_task_id: UUID,
         now: datetime,
     ) -> IntegrationMappingUpsert:
         return IntegrationMappingUpsert(
             external_object_type=CRMSourceObjectType.TASK,
             external_id=task.external_id,
-            local_object_type=CRMSourceObjectType.ACTIVITY,
-            local_object_id=local_activity_id,
+            local_object_type=CRMSourceObjectType.TASK,
+            local_object_id=local_task_id,
             data_payload=task.data_payload,
             source_created_at=task.source_created_at,
             source_modified_at=task.source_modified_at,
@@ -339,41 +345,41 @@ class SalesforceTaskWriter:
         related_local_id: UUID | None,
         related_name: str | None,
         now: datetime,
-    ) -> CRMActivity:
-        return CRMActivity(
+    ) -> CRMTask:
+        return CRMTask(
             organisation_id=self.organisation_id,
             integration_id=self.integration_id,
-            related_object_type=task.related_object_type,
-            related_local_id=related_local_id,
-            related_name=related_name,
             deal_id=deal_hit.internal_id if deal_hit is not None else None,
-            contact_id=contact_hit.internal_id if contact_hit is not None else None,
-            company_id=company_hit.internal_id if company_hit is not None else None,
-            subject=task.subject,
-            body=task.body,
-            status=task.status,
-            activity_type=CRMActivityType.TASK.value,
-            activity_subtype=task.activity_subtype,
-            priority=task.priority,
-            owner_name=owner_hit.name if owner_hit is not None else None,
+            title=_task_title(task),
+            description=task.body,
+            status=task.status or "NOT_STARTED",
+            priority=task.priority or "NONE",
+            due_date=task.due_date.date() if task.due_date is not None else None,
+            due_at=task.due_date,
+            is_all_day=False,
+            completed_at=task.completed_date,
+            assigned_to_user_id=owner_hit.internal_id if owner_hit is not None else None,
+            assigned_to_name=owner_hit.name if owner_hit is not None else None,
+            assigned_to_email=owner_hit.email if owner_hit is not None else None,
+            owner_user_id=owner_hit.internal_id if owner_hit is not None else None,
             owner_email=owner_hit.email if owner_hit is not None else None,
-            owner_id=owner_hit.internal_id if owner_hit is not None else None,
-            source="CRM_SYNC",
-            due_date=task.due_date,
-            completed_date=task.completed_date,
             source_created_at=task.source_created_at,
             source_modified_at=task.source_modified_at,
-            synced_at=now,
-            last_seen_at=now,
             is_deleted=False,
-            properties=task.properties,
-            metrics={},
+            task_metadata=_task_metadata(
+                task=task,
+                contact_hit=contact_hit,
+                company_hit=company_hit,
+                related_local_id=related_local_id,
+                related_name=related_name,
+                last_seen_at=now,
+            ),
         )
 
     def _row_values(
         self,
         *,
-        activity_id: UUID | None = None,
+        task_id: UUID | None = None,
         task: NormalizedSalesforceTask,
         owner_hit: ActivityDimensionHit | None,
         deal_hit: ActivityDimensionHit | None,
@@ -381,43 +387,42 @@ class SalesforceTaskWriter:
         company_hit: ActivityDimensionHit | None,
         related_local_id: UUID | None,
         related_name: str | None,
-        now: datetime,
         last_seen_at: datetime,
     ) -> dict:
         return {
             "organisation_id": self.organisation_id,
             "integration_id": self.integration_id,
-            "activity_id": activity_id or uuid4(),
-            "related_object_type": task.related_object_type,
-            "related_local_id": related_local_id,
-            "related_name": related_name,
+            "task_id": task_id or uuid4(),
             "deal_id": deal_hit.internal_id if deal_hit is not None else None,
-            "contact_id": contact_hit.internal_id if contact_hit is not None else None,
-            "company_id": company_hit.internal_id if company_hit is not None else None,
-            "subject": task.subject,
-            "body": task.body,
-            "status": task.status,
-            "activity_type": CRMActivityType.TASK.value,
-            "activity_subtype": task.activity_subtype,
-            "priority": task.priority,
-            "owner_name": owner_hit.name if owner_hit is not None else None,
+            "title": _task_title(task),
+            "description": task.body,
+            "status": task.status or "NOT_STARTED",
+            "priority": task.priority or "NONE",
+            "due_date": task.due_date.date() if task.due_date is not None else None,
+            "due_at": task.due_date,
+            "is_all_day": False,
+            "completed_at": task.completed_date,
+            "assigned_to_user_id": owner_hit.internal_id if owner_hit is not None else None,
+            "assigned_to_name": owner_hit.name if owner_hit is not None else None,
+            "assigned_to_email": owner_hit.email if owner_hit is not None else None,
+            "owner_user_id": owner_hit.internal_id if owner_hit is not None else None,
             "owner_email": owner_hit.email if owner_hit is not None else None,
-            "owner_id": owner_hit.internal_id if owner_hit is not None else None,
-            "source": "CRM_SYNC",
-            "due_date": task.due_date,
-            "completed_date": task.completed_date,
             "source_created_at": task.source_created_at,
             "source_modified_at": task.source_modified_at,
-            "synced_at": now,
-            "last_seen_at": last_seen_at,
             "is_deleted": False,
-            "properties": task.properties,
-            "metrics": {},
+            "task_metadata": _task_metadata(
+                task=task,
+                contact_hit=contact_hit,
+                company_hit=company_hit,
+                related_local_id=related_local_id,
+                related_name=related_name,
+                last_seen_at=last_seen_at,
+            ),
         }
 
     def _apply_updates(
         self,
-        row: CRMActivity,
+        row: CRMTask,
         *,
         task: NormalizedSalesforceTask,
         owner_hit: ActivityDimensionHit | None,
@@ -429,28 +434,64 @@ class SalesforceTaskWriter:
         now: datetime,
         last_seen_at: datetime | None = None,
     ) -> None:
-        row.related_object_type = task.related_object_type
-        row.related_local_id = related_local_id
-        row.related_name = related_name
         row.deal_id = deal_hit.internal_id if deal_hit is not None else None
-        row.contact_id = contact_hit.internal_id if contact_hit is not None else None
-        row.company_id = company_hit.internal_id if company_hit is not None else None
-        row.subject = task.subject
-        row.body = task.body
-        row.status = task.status
-        row.activity_type = CRMActivityType.TASK.value
-        row.activity_subtype = task.activity_subtype
-        row.priority = task.priority
-        row.owner_name = owner_hit.name if owner_hit is not None else None
+        row.title = _task_title(task)
+        row.description = task.body
+        row.status = task.status or "NOT_STARTED"
+        row.priority = task.priority or "NONE"
+        row.due_date = task.due_date.date() if task.due_date is not None else None
+        row.due_at = task.due_date
+        row.is_all_day = False
+        row.completed_at = task.completed_date
+        row.assigned_to_user_id = owner_hit.internal_id if owner_hit is not None else None
+        row.assigned_to_name = owner_hit.name if owner_hit is not None else None
+        row.assigned_to_email = owner_hit.email if owner_hit is not None else None
+        row.owner_user_id = owner_hit.internal_id if owner_hit is not None else None
         row.owner_email = owner_hit.email if owner_hit is not None else None
-        row.owner_id = owner_hit.internal_id if owner_hit is not None else None
-        row.source = "CRM_SYNC"
-        row.due_date = task.due_date
-        row.completed_date = task.completed_date
         row.source_created_at = task.source_created_at
         row.source_modified_at = task.source_modified_at
-        row.synced_at = now
-        row.last_seen_at = last_seen_at or now
         row.is_deleted = False
-        row.properties = task.properties
-        row.metrics = {}
+        row.task_metadata = _task_metadata(
+            task=task,
+            contact_hit=contact_hit,
+            company_hit=company_hit,
+            related_local_id=related_local_id,
+            related_name=related_name,
+            last_seen_at=last_seen_at or now,
+        )
+
+
+def _task_title(task: NormalizedSalesforceTask) -> str:
+    subject = task.subject.strip() if task.subject else ""
+    if subject:
+        return subject
+    body = " ".join(task.body.split()) if task.body else ""
+    return body[:80].rstrip() if body else "Untitled task"
+
+
+def _task_metadata(
+    *,
+    task: NormalizedSalesforceTask,
+    contact_hit: ActivityDimensionHit | None,
+    company_hit: ActivityDimensionHit | None,
+    related_local_id: UUID | None,
+    related_name: str | None,
+    last_seen_at: datetime,
+) -> dict:
+    metadata = dict(task.properties)
+    metadata.update(
+        {
+            "source": "CRM_SYNC",
+            "provider": "salesforce",
+            "task_type": "TASK",
+            "activity_subtype": task.activity_subtype,
+            "related_object_type": task.related_object_type,
+            "related_external_id": task.related_external_id,
+            "related_local_id": str(related_local_id) if related_local_id else None,
+            "related_name": related_name,
+            "contact_id": str(contact_hit.internal_id) if contact_hit is not None else None,
+            "company_id": str(company_hit.internal_id) if company_hit is not None else None,
+            "last_seen_at": last_seen_at.isoformat(),
+        }
+    )
+    return metadata

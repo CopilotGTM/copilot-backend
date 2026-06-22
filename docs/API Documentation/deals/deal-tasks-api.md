@@ -19,6 +19,24 @@ This API manages tasks associated with CRM deals and standalone tasks. Tasks can
 
 CRM-synced tasks (`integration_id IS NOT NULL`) are read-only — update/delete returns `409 Conflict`.
 
+### Storage Contract
+
+Tasks are read from and written to `crm_tasks`. The unified activity feed uses
+`crm_activities` only as a feed-card projection and `crm_activity_links` for
+deal/contact/company timeline visibility.
+
+Task due values are enforced at the service layer:
+
+- Timed task: `crm_tasks.due_at` stores the exact UTC date/time and `crm_tasks.due_date`
+  stores the derived local calendar date for filtering/display.
+- All-day/date-only task: `crm_tasks.is_all_day = true`, `crm_tasks.due_date` is set,
+  and `crm_tasks.due_at` is `null`.
+- No-due task: both `crm_tasks.due_at` and `crm_tasks.due_date` are `null`.
+
+`due_timezone` is not a `crm_tasks` column and is not accepted as a create/update
+request field. When returned, it is server-derived display metadata, normally from
+the authenticated user's timezone context.
+
 ### Task Scope
 
 Tasks can be:
@@ -74,14 +92,17 @@ export interface TaskAssignee {
 
 export interface TaskListItem {
   task_id: UUID;
-  subject: string | null;
-  body: string | null;
+  subject: string | null;         // crm_tasks.title
+  body: string | null;            // crm_tasks.description
   status: string | null;
   task_type: string | null;       // TASK | TODO
   priority: string | null;        // NONE | LOW | MEDIUM | HIGH | URGENT
-  due_date: string | null;        // ISO8601
-  completed_date: string | null;
-  reminder_date: string | null;
+  due_date: string | null;        // crm_tasks.due_at, or crm_tasks.due_date at midnight UTC
+  due_local_date: string | null;  // Local YYYY-MM-DD for all-day/date-only tasks
+  due_timezone: string | null;    // Server-derived display timezone metadata
+  is_all_day: boolean;
+  completed_date: string | null;  // crm_tasks.completed_at
+  reminder_date: string | null;   // crm_tasks.reminder_at
   owner_id: UUID | null;
   owner_name: string | null;
   owner_email: string | null;
@@ -120,7 +141,9 @@ export interface TaskDetail extends TaskListItem {
 export interface ReminderConfig {
   enabled: boolean;
   trigger_time?: string;          // ISO8601 — required when enabled=true
-  recurrence?: string;            // NONE | DAILY | WEEKLY | MONTHLY (default: NONE)
+  recurrence?: string;            // NONE | DAILY | WEEKDAYS | WEEKLY | BIWEEKLY | MONTHLY
+  delivery_channel?: string;      // teams | slack
+  timezone?: string;              // IANA timezone, e.g. Asia/Kolkata
 }
 ```
 
@@ -135,8 +158,6 @@ export interface ReminderConfig {
 | `NOT_STARTED` | Default for new tasks |
 | `IN_PROGRESS` | Work has begun |
 | `COMPLETED` | Task finished |
-| `WAITING` | Blocked/waiting on external input |
-| `DEFERRED` | Postponed |
 | `CANCELLED` | Abandoned |
 
 ### Priority
@@ -166,6 +187,8 @@ export interface ReminderConfig {
 | `DAILY` | Repeats daily |
 | `WEEKLY` | Repeats weekly |
 | `MONTHLY` | Repeats monthly |
+| `WEEKDAYS` | Repeats Monday-Friday |
+| `BIWEEKLY` | Repeats every two weeks |
 
 ---
 
@@ -210,9 +233,25 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
       {
         "task_id": "e7c4c3b1-...",
         "subject": "Follow up with client",
+        "body": "Send revised security questionnaire and pricing notes.",
         "status": "NOT_STARTED",
+        "task_type": "TASK",
         "priority": "HIGH",
         "due_date": "2026-03-15T10:00:00Z",
+        "due_local_date": "2026-03-15",
+        "due_timezone": "Asia/Kolkata",
+        "is_all_day": false,
+        "completed_date": null,
+        "reminder_date": "2026-03-15T09:00:00Z",
+        "owner_id": "b1a7f9c0-...",
+        "assigned_to": {
+          "kind": "internal_user",
+          "filter_key": "email:jordan@example.com",
+          "name": "Jordan Lee",
+          "email": "jordan@example.com",
+          "public_user_id": "b1a7f9c0-...",
+          "crm_user_id": "b1a7f9c0-..."
+        },
         "deal_id": "a8a3b1db-...",
         "deal_name": "Acme Corp Enterprise",
         "source": "MANUAL",
@@ -223,7 +262,8 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
         "owner_name": "Jordan Lee",
         "owner_email": "jordan@example.com",
         "created_at": "2026-03-10T09:00:00Z",
-        "updated_at": "2026-03-10T09:00:00Z"
+        "updated_at": "2026-03-10T09:00:00Z",
+        "synced_at": "2026-03-10T09:00:00Z"
       }
     ],
     "page": 1,
@@ -251,6 +291,47 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
 ## 1a. Resolve Current User Task Assignees
 
 ```http
+GET /tasks/assignees
+```
+
+Returns distinct assignee filter options for task list filters.
+
+### Query Parameters
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `q` | string | No | — | Search assignee name or email |
+| `limit` | number | No | 200 | Max options, 1-500 |
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Task assignees retrieved successfully",
+  "data": {
+    "assignees": [
+      {
+        "assigned_to": {
+          "kind": "internal_user",
+          "filter_key": "email:jordan@example.com",
+          "name": "Jordan Lee",
+          "email": "jordan@example.com",
+          "public_user_id": "b1a7f9c0-...",
+          "crm_user_id": "b1a7f9c0-..."
+        },
+        "task_count": 12
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 1b. Resolve Current User Task Assignees
+
+```http
 GET /tasks/assignees/me
 ```
 
@@ -276,6 +357,54 @@ Returns assignee filter options that represent the authenticated app user. Front
         "task_count": 12
       }
     ]
+  }
+}
+```
+
+---
+
+## 1c. Get Task Options
+
+```http
+GET /tasks/options
+```
+
+Returns backend-defined task statuses, priorities, task types, sources, and defaults. Frontend should use this endpoint for labels and option lists instead of hardcoding display text.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Task options retrieved successfully",
+  "data": {
+    "statuses": [
+      { "value": "NOT_STARTED", "label": "To Do", "description": null },
+      { "value": "IN_PROGRESS", "label": "In Progress", "description": null },
+      { "value": "COMPLETED", "label": "Done", "description": null },
+      { "value": "CANCELLED", "label": "Cancelled", "description": null }
+    ],
+    "priorities": [
+      { "value": "NONE", "label": "None", "description": null },
+      { "value": "LOW", "label": "Low", "description": null },
+      { "value": "MEDIUM", "label": "Medium", "description": null },
+      { "value": "HIGH", "label": "High", "description": null },
+      { "value": "URGENT", "label": "Urgent", "description": null }
+    ],
+    "task_types": [
+      { "value": "TASK", "label": "Task", "description": null },
+      { "value": "TODO", "label": "To-do", "description": null }
+    ],
+    "sources": [
+      { "value": "MANUAL", "label": "Manual", "description": null },
+      { "value": "CRM_SYNC", "label": "CRM", "description": null },
+      { "value": "AI_MEETING", "label": "AI Meeting", "description": null },
+      { "value": "AI_INSIGHT", "label": "AI Insight", "description": null }
+    ],
+    "default_status": "NOT_STARTED",
+    "default_priority": "NONE",
+    "default_task_type": "TASK",
+    "default_source": "MANUAL"
   }
 }
 ```
@@ -404,7 +533,8 @@ Creates a task not linked to any deal (standalone). Optionally link to a deal by
 | `status` | string | No | Default: `NOT_STARTED` |
 | `task_type` | string | No | `TASK` or `TODO` (default: `TASK`) |
 | `priority` | string | No | Default: `NONE` |
-| `due_date` | string | No | ISO8601 datetime |
+| `due_date` | string | No | ISO8601 datetime. If `is_all_day=true`, only the local date is stored in `crm_tasks.due_date`; otherwise exact time is stored in `crm_tasks.due_at` and the local date is derived into `crm_tasks.due_date`. |
+| `is_all_day` | boolean | No | When `true`, create a date-only task with `due_at=null` |
 | `reminder_date` | string | No | ISO8601 datetime |
 | `completed_date` | string | No | ISO8601 datetime |
 | `owner_user_id` | UUID | No | Assign to an org user |
@@ -419,13 +549,17 @@ Creates a task not linked to any deal (standalone). Optionally link to a deal by
 {
   "enabled": true,
   "trigger_time": "2026-03-24T09:00:00Z",
-  "recurrence": "NONE"
+  "recurrence": "NONE",
+  "delivery_channel": "teams",
+  "timezone": "Asia/Kolkata"
 }
 ```
 
 - `enabled` (required): `true` to create a reminder, `false` to skip
 - `trigger_time` (required when enabled): ISO8601 datetime for the reminder
-- `recurrence` (optional): `NONE` (default), `DAILY`, `WEEKLY`, `MONTHLY`
+- `recurrence` (optional): `NONE` (default), `DAILY`, `WEEKDAYS`, `WEEKLY`, `BIWEEKLY`, `MONTHLY`
+- `delivery_channel` (optional): `teams` or `slack`
+- `timezone` (optional): IANA timezone used by the reminder schedule
 
 ### Success Response (201)
 
@@ -437,6 +571,8 @@ Returns `TaskDetail`.
 - `created_by_user_id` is set to the authenticated user
 - If `status` is `COMPLETED` and `completed_date` is omitted, it is set to now
 - If `status` is not `COMPLETED`, `completed_date` is cleared
+- `due_timezone` is not accepted in the request body. Date-only interpretation uses the authenticated user's timezone context.
+- `title` is not a task API field. Tasks use `subject` for the task title and `body` for the task description.
 
 ---
 

@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivityObjectType,
     CRMActivityStatus,
 )
 from src.service.crm.notes.contracts import NoteWriteContext
@@ -19,6 +18,7 @@ class _FakeSession:
     def __init__(self) -> None:
         self.added: list[object] = []
         self.refreshed: list[object] = []
+        self.executed: list[object] = []
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
@@ -28,6 +28,9 @@ class _FakeSession:
 
     async def refresh(self, obj: object) -> None:
         self.refreshed.append(obj)
+
+    async def execute(self, stmt: object) -> None:
+        self.executed.append(stmt)
 
 
 @pytest.mark.asyncio
@@ -58,9 +61,9 @@ async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> N
 
     assert not hasattr(task, "external_id")
     assert task.deal_id == deal.deal_id
-    assert task.related_object_type == CRMActivityObjectType.DEAL.value
-    assert task.related_local_id == deal.deal_id
-    assert task.owner_id == owner_crm_user_id
+    assert task.title == "Follow up"
+    assert task.assigned_to_user_id == owner_crm_user_id
+    assert task.owner_user_id == owner_crm_user_id
     assert not hasattr(task, "owner_external_id")
 
 
@@ -96,8 +99,8 @@ async def test_user_created_note_uses_local_ids_without_fake_external_ids() -> N
     assert result.created_new is True
     assert not hasattr(note, "external_id")
     assert note.deal_id == deal_id
-    assert note.owner_id is None
+    assert note.author_user_id is None
     assert not hasattr(note, "owner_external_id")
-    assert note.created_by_user_id == user_id
+    assert note.note_metadata["created_by_public_user_id"] == str(user_id)
     assert note.source_created_at is not None
     assert note.source_created_at.tzinfo == UTC

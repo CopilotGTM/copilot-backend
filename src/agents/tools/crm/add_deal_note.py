@@ -74,12 +74,12 @@ def _note_result_timestamp(note: Any) -> str | None:
 def _build_teams_success_payload(
     *,
     deal_name: str,
-    subject: str | None,
-    content: str,
+    title: str | None,
+    body: str,
 ) -> dict[str, Any]:
     facts = [{"title": "Deal", "value": deal_name}]
-    if subject:
-        facts.append({"title": "Subject", "value": subject})
+    if title:
+        facts.append({"title": "Title", "value": title})
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
@@ -96,7 +96,7 @@ def _build_teams_success_payload(
             {"type": "FactSet", "facts": facts},
             {
                 "type": "TextBlock",
-                "text": content,
+                "text": body,
                 "wrap": True,
                 "spacing": "Small",
             },
@@ -122,8 +122,8 @@ def _build_teams_success_payload(
 def _build_slack_success_payload(
     *,
     deal_name: str,
-    subject: str | None,
-    content: str,
+    title: str | None,
+    body: str,
 ) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = [
         {
@@ -137,17 +137,17 @@ def _build_slack_success_payload(
             ],
         },
     ]
-    if subject:
+    if title:
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{_escape_slack_mrkdwn(subject)}*"},
+                "text": {"type": "mrkdwn", "text": f"*{_escape_slack_mrkdwn(title)}*"},
             }
         )
     blocks.append(
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": _slack_quote(content)},
+            "text": {"type": "mrkdwn", "text": _slack_quote(body)},
         }
     )
     return {
@@ -166,21 +166,21 @@ def _build_note_added_channel_payload(
     *,
     context: AgentContext,
     deal_name: str,
-    subject: str | None,
-    content: str,
+    title: str | None,
+    body: str,
 ) -> dict[str, Any] | None:
     channel = (context.channel or "").lower()
     if channel == "teams":
         return _build_teams_success_payload(
             deal_name=deal_name,
-            subject=subject,
-            content=content,
+            title=title,
+            body=body,
         )
     if channel == "slack":
         return _build_slack_success_payload(
             deal_name=deal_name,
-            subject=subject,
-            content=content,
+            title=title,
+            body=body,
         )
     return None
 
@@ -195,15 +195,17 @@ def _note_result(
     insight_job_id: UUID | None = None,
 ) -> dict[str, Any]:
     status = "created" if created_new else "exists"
-    content = note.body or ""
-    subject = note.subject
+    body = note.body or ""
+    title = getattr(note, "title", None) or getattr(note, "subject", None)
+    display_title = title or (" ".join(body.split())[:30].rstrip() if body else None)
     result: dict[str, Any] = {
         "status": status,
         "note_id": str(note.activity_id),
         "deal_id": str(deal_id),
         "deal_name": deal_name,
-        "subject": subject,
-        "content": content,
+        "title": title,
+        "body": body,
+        "display_title": display_title,
         "created_at": _note_result_timestamp(note),
         "message": (
             f"Added note to **{deal_name}**."
@@ -217,8 +219,8 @@ def _note_result(
     channel_payload = _build_note_added_channel_payload(
         context=context,
         deal_name=deal_name,
-        subject=subject,
-        content=content,
+        title=title,
+        body=body,
     )
     if channel_payload:
         result[_BOT_CHANNEL_PAYLOAD_KEY] = channel_payload
@@ -230,6 +232,8 @@ async def add_deal_note_direct(
     context: AgentContext,
     deal_id: str,
     deal_name: str,
+    body: str | None = None,
+    title: str | None = None,
     note_content: str | None = None,
     subject: str | None = None,
 ) -> dict[str, Any]:
@@ -237,8 +241,8 @@ async def add_deal_note_direct(
     organisation_id = context.organisation_id
     user_id = context.user_id
     clean_deal_name = _clean_optional(deal_name)
-    clean_content = _clean_optional(note_content)
-    clean_subject = _clean_optional(subject)
+    clean_body = _clean_optional(body) or _clean_optional(note_content)
+    clean_title = _clean_optional(title) or _clean_optional(subject)
 
     if not organisation_id:
         logger.warning("add_deal_note_direct: missing organisation_id in context")
@@ -248,15 +252,15 @@ async def add_deal_note_direct(
         return {"status": "error", "message": "Could not identify your account. Please sign in."}
     if not clean_deal_name:
         return {"status": "error", "message": "Deal name is required before adding a note."}
-    if not clean_content:
+    if not clean_body:
         return {
             "status": "error",
-            "message": "Note content is required. Please ask the user what the note should say.",
+            "message": "Note body is required. Please ask the user what the note should say.",
         }
-    if len(clean_content) > 10000:
-        return {"status": "error", "message": "Note content must be 10,000 characters or less."}
-    if clean_subject and len(clean_subject) > 500:
-        return {"status": "error", "message": "Note subject must be 500 characters or less."}
+    if len(clean_body) > 10000:
+        return {"status": "error", "message": "Note body must be 10,000 characters or less."}
+    if clean_title and len(clean_title) > 500:
+        return {"status": "error", "message": "Note title must be 500 characters or less."}
 
     try:
         deal_uuid = UUID(deal_id)
@@ -276,8 +280,8 @@ async def add_deal_note_direct(
         try:
             create_result = await notes_write.create_user_note(
                 deal_id=deal_uuid,
-                content=clean_content,
-                subject=clean_subject,
+                content=clean_body,
+                subject=clean_title,
                 context=NoteWriteContext(
                     source="agent",
                     actor_user_id=user_id,
@@ -559,28 +563,28 @@ def create_add_deal_note(
     async def add_deal_note_tool(
         deal_id: str,
         deal_name: str,
-        note_content: str,
-        subject: str | None = None,
+        body: str,
+        title: str | None = None,
     ) -> dict[str, Any] | None:
         """Create a note directly on an existing deal.
 
         IMPORTANT: Before calling this tool, you MUST first use search_deals to
         find the deal. Do NOT call this tool without a resolved deal_id.
 
-        note_content is REQUIRED. If the user says "add a note" without providing
+        body is REQUIRED. If the user says "add a note" without providing
         note text, ask them what they'd like the note to say before calling this tool.
 
         Workflow:
         1. User asks to add a note to a deal
         2. You call search_deals to find matching deals
         3. If multiple matches, ask user which deal they mean
-        4. Once confirmed, call this tool with the deal_id, deal_name, and note_content
+        4. Once confirmed, call this tool with the deal_id, deal_name, and body
 
         Args:
             deal_id: UUID of the deal (from search_deals result)
             deal_name: Name of the deal (from search_deals result)
-            note_content: The note text (REQUIRED)
-            subject: Optional note subject/title
+            body: The note text (REQUIRED)
+            title: Optional note title
 
         Returns:
             Structured status dict with created note details or an error message.
@@ -589,7 +593,7 @@ def create_add_deal_note(
             "[TOOL CALLED] add_deal_note - deal_id='%s', deal_name='%s', has_content=%s",
             deal_id,
             deal_name,
-            note_content is not None,
+            body is not None,
         )
 
         if not context.organisation_id:
@@ -604,8 +608,8 @@ def create_add_deal_note(
                 "context": context,
                 "deal_id": deal_id,
                 "deal_name": deal_name,
-                "note_content": note_content,
-                "subject": subject,
+                "body": body,
+                "title": title,
             },
             description="Adding deal note",
             fallback_value=None,

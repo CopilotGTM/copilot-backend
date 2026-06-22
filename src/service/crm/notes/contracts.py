@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMNote
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,15 @@ class ParticipantInfo:
 class CreateUserNoteResult:
     """User note creation result with exact-duplicate idempotency semantics."""
 
-    note: CRMActivity
+    note: CRMNote
     created_new: bool
+
+
+@dataclass(frozen=True)
+class NoteReadRecord:
+    """Note source row plus API display fields resolved outside crm_notes."""
+
+    note: CRMNote
 
 
 @dataclass(frozen=True)

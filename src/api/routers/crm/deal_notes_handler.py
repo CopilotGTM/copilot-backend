@@ -13,18 +13,15 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.note_presenter import present_note_item, present_notes_page
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_note_models import (
     CreateNoteRequest,
     DealNoteItem,
     DealNotesPage,
-    DealParticipant,
-    NoteAuthor,
-    NoteMetadata,
     UpdateNoteRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
 from src.infra.utils.logger import get_logger
 from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
 from src.service.crm.notes.insight_dispatch_service import NotesInsightDispatchService
@@ -52,6 +49,16 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 deal_notes_router = APIRouter()
 
 
+def _note_update_payload(request: UpdateNoteRequest) -> dict[str, str | None]:
+    updates = request.model_dump(exclude_unset=True)
+    payload: dict[str, str | None] = {}
+    if "body" in updates:
+        payload["content"] = updates["body"]
+    if "title" in updates:
+        payload["subject"] = updates["title"]
+    return payload
+
+
 async def get_deal_notes_services(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
@@ -71,42 +78,6 @@ async def get_deal_notes_services(
 
 
 get_deal_notes_service = get_deal_notes_services
-
-
-def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
-    """Map CRMActivity to DealNoteItem schema.
-
-    Args:
-        note: CRMActivity record (must have deal_id set)
-        source: Determined source (user, hubspot, salesforce)
-
-    Returns:
-        DealNoteItem schema object
-
-    Raises:
-        AssertionError: If note.deal_id is None (should never happen for deal notes)
-    """
-    assert note.deal_id is not None, "Note must have deal_id when mapping to DealNoteItem"
-    is_user_created = note.integration_id is None
-
-    return DealNoteItem(
-        note_id=note.activity_id,
-        deal_id=note.deal_id,
-        content=note.body or "",
-        subject=note.subject,
-        created_at=note.source_created_at or note.created_at,
-        updated_at=note.synced_at,
-        source=source,
-        is_user_created=is_user_created,
-        author=NoteAuthor(
-            id=str(note.owner_id) if getattr(note, "owner_id", None) else None,
-            name=note.owner_name,
-            email=note.owner_email,
-        ),
-        metadata=NoteMetadata(
-            synced_at=note.synced_at if not is_user_created else None,
-        ),
-    )
 
 
 @deal_notes_router.get(
@@ -142,27 +113,13 @@ async def get_deal_notes(
             sort_order=sort,
         )
 
-        # Map to response schema
-        items = [
-            _map_note_to_schema(note, service.read.determine_note_source(note)) for note in notes
-        ]
-
-        # Map participants to schema
-        participant_list = [
-            DealParticipant(
-                email=p.email,
-                name=p.name,
-            )
-            for p in participants
-        ]
-
         return Response.success_response(
             message="Notes retrieved successfully",
-            data=DealNotesPage(
-                items=items,
+            data=present_notes_page(
+                notes=notes,
                 cursor=next_cursor,
                 total_count=total_count,
-                participants=participant_list,
+                participants=participants,
             ),
         )
 
@@ -202,8 +159,8 @@ async def create_deal_note(
     try:
         create_result = await service.write.create_user_note(
             deal_id=deal_id,
-            content=request.content,
-            subject=request.subject,
+            content=request.body,
+            subject=request.title,
             context=NoteWriteContext(
                 source="api",
                 actor_user_id=user_ids.user_id,
@@ -216,11 +173,7 @@ async def create_deal_note(
         # Commit the transaction
         await service.session.commit()
 
-        # Map to response schema
-        note_schema = _map_note_to_schema(
-            create_result.note,
-            service.read.determine_note_source(create_result.note),
-        )
+        note_schema = present_note_item(create_result.note)
 
         if create_result.created_new:
             # Trigger deal memory update after note creation
@@ -228,7 +181,7 @@ async def create_deal_note(
                 deal_id=deal_id,
                 user_id=user_ids.user_id,
                 trigger_source="note_creation",
-                trigger_source_id=create_result.note.activity_id,
+                trigger_source_id=create_result.note.note_id,
             )
 
             return Response.created_response(
@@ -281,10 +234,10 @@ async def update_deal_note(
         note = await service.write.update_user_note(
             deal_id=deal_id,
             note_id=note_id,
-            payload=request.model_dump(exclude_unset=True),
+            payload=_note_update_payload(request),
         )
         await service.session.commit()
-        note_schema = _map_note_to_schema(note, service.read.determine_note_source(note))
+        note_schema = present_note_item(note)
         return Response.success_response(message="Note updated successfully", data=note_schema)
     except NotesServiceError as exc:
         await service.session.rollback()
@@ -323,7 +276,7 @@ async def delete_deal_note(
     try:
         note = await service.write.delete_user_note(deal_id=deal_id, note_id=note_id)
         await service.session.commit()
-        note_schema = _map_note_to_schema(note, service.read.determine_note_source(note))
+        note_schema = present_note_item(note)
         return Response.success_response(message="Note deleted successfully", data=note_schema)
     except NotesServiceError as exc:
         await service.session.rollback()

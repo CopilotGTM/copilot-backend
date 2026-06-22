@@ -23,16 +23,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.master_tables import User
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityObjectType,
     CRMActivityPriority,
     CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
+    CRMTask,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import master_async_session_scope
 from src.service.crm.access.crm_user_service import build_user_display_name
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 
 _TASK_ACTIVITY_TYPES = {CRMActivityType.TASK.value, CRMActivityType.TODO.value}
 _ALLOWED_PRIORITIES = {priority.value for priority in CRMActivityPriority}
@@ -51,7 +51,7 @@ class DealTaskAutomationError(Exception):
 class TaskWriteResult:
     """Result of an automated task create attempt."""
 
-    task: CRMActivity
+    task: CRMTask
     created: bool
     reason: str | None = None
 
@@ -66,8 +66,9 @@ class DealTaskAutomationService:
     def __init__(self, session: AsyncSession, organisation_id: UUID):
         self.session = session
         self.organisation_id = organisation_id
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
-    async def list_deal_tasks(self, deal_id: UUID) -> list[CRMActivity]:
+    async def list_deal_tasks(self, deal_id: UUID) -> list[CRMTask]:
         """List non-deleted task-style rows for one deal in the current org.
 
         This is read-heavy and intentionally filters by `organisation_id` before
@@ -76,16 +77,16 @@ class DealTaskAutomationService:
         """
         # Read path filters first by org and then by deal; this preserves tenant
         # isolation even if the caller sends a guessed UUID from another org.
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
         stmt = (
-            select(CRMActivity)
+            select(CRMTask)
             .where(
                 c.organisation_id == self.organisation_id,
                 c.deal_id == deal_id,
-                c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
+                c.task_metadata["task_type"].as_string().in_(list(_TASK_ACTIVITY_TYPES)),
                 or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
             )
-            .order_by(c.created_at.desc(), c.activity_id.desc())
+            .order_by(c.created_at.desc(), c.task_id.desc())
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -146,31 +147,33 @@ class DealTaskAutomationService:
         # while `created_by_user_id=None` intentionally records that no user made
         # this write in-band.
         task_data: dict[str, Any] = {
-            "activity_id": activity_id,
+            "task_id": activity_id,
             "organisation_id": self.organisation_id,
             "integration_id": None,
-            "activity_type": CRMActivityType.TASK.value,
-            "subject": cleaned_subject,
-            "body": body.strip() if body and body.strip() else None,
+            "title": cleaned_subject,
+            "description": body.strip() if body and body.strip() else None,
             "status": CRMActivityStatus.NOT_STARTED.value,
             "priority": priority,
-            "due_date": due_date,
+            "due_date": due_date.date() if due_date else None,
+            "due_at": due_date,
+            "is_all_day": False,
             "deal_id": deal.deal_id,
-            "related_object_type": CRMActivityObjectType.DEAL.value,
-            "related_local_id": deal.deal_id,
-            "related_name": deal.name,
-            "owner_id": owner_user_id,
-            "owner_name": owner_name,
+            "assigned_to_user_id": owner_user_id,
+            "assigned_to_name": owner_name,
+            "assigned_to_email": owner_email,
+            "owner_user_id": owner_user_id,
             "owner_email": owner_email,
-            "source": CRMActivitySource.AI_MEETING.value,
             "created_by_user_id": None,
             "source_created_at": now,
             "source_modified_at": now,
-            "synced_at": now,
-            "last_seen_at": now,
-            "properties": {
+            "task_metadata": {
                 "is_user_created": False,
                 "created_via": "deal_task_agent",
+                "source": CRMActivitySource.AI_MEETING.value,
+                "task_type": CRMActivityType.TASK.value,
+                "related_object_type": "DEAL",
+                "related_local_id": str(deal.deal_id),
+                "related_name": deal.name,
                 "source_event_id": str(source_event_id) if source_event_id else None,
                 "source_association_id": str(source_association_id)
                 if source_association_id
@@ -182,10 +185,11 @@ class DealTaskAutomationService:
                 "assignee_resolution": assignee_resolution,
             },
         }
-        task = CRMActivity.model_validate(task_data)
+        task = CRMTask.model_validate(task_data)
         self.session.add(task)
         await self.session.flush()
         await self.session.refresh(task)
+        await self._projection.upsert_task(task)
         return TaskWriteResult(task, True)
 
     async def complete_task(
@@ -194,7 +198,7 @@ class DealTaskAutomationService:
         *,
         deal_id: UUID,
         completion_reason: str,
-    ) -> CRMActivity:
+    ) -> CRMTask:
         """Mark a same-org, same-deal internal task as completed.
 
         The method intentionally refuses:
@@ -207,7 +211,7 @@ class DealTaskAutomationService:
         tenant data or external read-only task records.
         """
         # --- Step 1: read and validate tenant-bound ownership and type ---
-        task = await self.session.get(CRMActivity, task_id)
+        task = await self.session.get(CRMTask, task_id)
         if not task or task.organisation_id != self.organisation_id:
             raise DealTaskAutomationError("Task not found", 404)
         if task.is_deleted:
@@ -222,16 +226,15 @@ class DealTaskAutomationService:
         # --- Step 2: transition internal state and stamp audit-like task metadata ---
         now = datetime.now(UTC)
         task.status = CRMActivityStatus.COMPLETED.value
-        task.completed_date = now
+        task.completed_at = now
         task.source_modified_at = now
-        task.synced_at = now
-        task.last_seen_at = now
-        properties = task.properties or {}
-        properties["completed_via"] = "deal_task_agent"
-        properties["completion_reason"] = completion_reason
-        task.properties = properties
+        task_metadata = task.task_metadata or {}
+        task_metadata["completed_via"] = "deal_task_agent"
+        task_metadata["completion_reason"] = completion_reason
+        task.task_metadata = task_metadata
         await self.session.flush()
         await self.session.refresh(task)
+        await self._projection.upsert_task(task)
         return task
 
     async def _load_deal(self, deal_id: UUID) -> CRMDeal:
@@ -243,15 +246,15 @@ class DealTaskAutomationService:
             raise DealTaskAutomationError("Deal is deleted", 404)
         return deal
 
-    async def _find_existing_task(self, idempotency_key: str) -> CRMActivity | None:
+    async def _find_existing_task(self, idempotency_key: str) -> CRMTask | None:
         """Return an existing task by idempotency key for this organisation."""
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
 
         # Idempotency only lives inside the target org; external key fragments are
         # useful for dedupe but never trusted as the only tenancy boundary.
-        stmt = select(CRMActivity).where(
+        stmt = select(CRMTask).where(
             c.organisation_id == self.organisation_id,
-            c.properties["idempotency_key"].as_string() == idempotency_key,
+            c.task_metadata["idempotency_key"].as_string() == idempotency_key,
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
         result = await self.session.execute(stmt)

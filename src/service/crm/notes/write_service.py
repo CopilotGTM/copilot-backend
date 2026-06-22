@@ -8,13 +8,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivitySource,
-    CRMActivityType,
-)
+from src.domain.models.organisation_tables.sync.crm import CRMNote
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.notes.contracts import (
     CreateUserNoteResult,
     NotesServiceError,
@@ -30,6 +27,7 @@ class NotesWriteService:
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._projection = ActivityFeedProjectionService(org_session, organisation_id)
 
     async def close(self) -> None:
         try:
@@ -61,39 +59,41 @@ class NotesWriteService:
                 "Duplicate user note ignored for deal %s by user %s; existing note %s reused",
                 deal_id,
                 context.actor_user_id,
-                existing_note.activity_id,
+                existing_note.note_id,
             )
             return CreateUserNoteResult(note=existing_note, created_new=False)
 
         now = datetime.now(UTC)
-        note = CRMActivity(
-            activity_id=uuid4(),
+        note = CRMNote(
+            note_id=uuid4(),
             organisation_id=self.organisation_id,
             integration_id=None,
-            activity_type=CRMActivityType.NOTE.value,
-            subject=subject,
-            body=content,
             deal_id=deal_id,
-            owner_name=context.actor_name,
-            owner_email=context.actor_email,
-            source=CRMActivitySource.MANUAL.value,
-            created_by_user_id=context.actor_user_id,
+            title=subject,
+            body=content,
+            body_format="plain_text",
+            author_user_id=None,
+            author_name=context.actor_name,
+            author_email=context.actor_email,
+            visibility="TEAM",
             source_created_at=now,
-            synced_at=now,
-            last_seen_at=now,
-            properties={
+            source_modified_at=now,
+            note_metadata={
+                "source": "user",
                 "is_user_created": True,
                 "created_via": context.created_via,
+                "created_by_public_user_id": str(context.actor_user_id),
             },
         )
 
         self.org_session.add(note)
         await self.org_session.flush()
         await self.org_session.refresh(note)
+        await self._projection.upsert_note(note)
 
         logger.info(
             "Created user note %s for deal %s by user %s",
-            note.activity_id,
+            note.note_id,
             deal_id,
             context.actor_user_id,
         )
@@ -105,7 +105,7 @@ class NotesWriteService:
         deal_id: UUID,
         note_id: UUID,
         payload: dict[str, Any],
-    ) -> CRMActivity:
+    ) -> CRMNote:
         """Update mutable fields on a user-created note."""
         if not payload:
             raise NotesServiceError("No fields to update", status_code=400)
@@ -119,7 +119,7 @@ class NotesWriteService:
             note.body = payload["content"]
             updated = True
         if "subject" in payload:
-            note.subject = payload["subject"]
+            note.title = payload["subject"]
             updated = True
 
         if not updated:
@@ -127,32 +127,30 @@ class NotesWriteService:
 
         now = datetime.now(UTC)
         note.source_modified_at = now
-        note.synced_at = now
-        note.last_seen_at = now
-        properties = note.properties or {}
-        properties["updated_via"] = "api"
-        note.properties = properties
+        metadata = dict(note.note_metadata or {})
+        metadata["updated_via"] = "api"
+        note.note_metadata = metadata
 
         await self.org_session.flush()
         await self.org_session.refresh(note)
+        await self._projection.upsert_note(note)
 
         return note
 
-    async def delete_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
+    async def delete_user_note(self, deal_id: UUID, note_id: UUID) -> CRMNote:
         """Soft-delete a user-created note without touching provider-owned rows."""
         note = await self._load_user_note(deal_id, note_id)
 
         now = datetime.now(UTC)
         note.is_deleted = True
         note.source_modified_at = now
-        note.synced_at = now
-        note.last_seen_at = now
-        properties = note.properties or {}
-        properties["deleted_via"] = "api"
-        note.properties = properties
+        metadata = dict(note.note_metadata or {})
+        metadata["deleted_via"] = "api"
+        note.note_metadata = metadata
 
         await self.org_session.flush()
         await self.org_session.refresh(note)
+        await self._projection.soft_delete_activity_projection(note.note_id)
 
         return note
 
@@ -168,15 +166,13 @@ class NotesWriteService:
             raise NotesServiceError(f"Deal {deal_id} not found or access denied", status_code=404)
         return deal
 
-    async def _load_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
-        note = await self.org_session.get(CRMActivity, note_id)
+    async def _load_user_note(self, deal_id: UUID, note_id: UUID) -> CRMNote:
+        note = await self.org_session.get(CRMNote, note_id)
         if not note or note.organisation_id != self.organisation_id:
             raise NotesServiceError("Note not found", status_code=404)
         if note.deal_id != deal_id:
             raise NotesServiceError("Note not found", status_code=404)
         if note.is_deleted:
-            raise NotesServiceError("Note not found", status_code=404)
-        if note.activity_type != CRMActivityType.NOTE.value:
             raise NotesServiceError("Note not found", status_code=404)
         if note.integration_id is not None:
             raise NotesServiceError("External CRM notes are read-only", status_code=409)
@@ -187,21 +183,20 @@ class NotesWriteService:
         deal_id: UUID,
         content: str,
         subject: str | None,
-    ) -> CRMActivity | None:
+    ) -> CRMNote | None:
         """Find an active internal note with identical deal/content/subject."""
-        c = cast(Any, CRMActivity).__table__.c
-        stmt = select(CRMActivity).where(
+        c = cast(Any, CRMNote).__table__.c
+        stmt = select(CRMNote).where(
             c.organisation_id == self.organisation_id,
             c.deal_id == deal_id,
-            c.activity_type == CRMActivityType.NOTE.value,
             c.integration_id.is_(None),
             c.body == content,
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
-        stmt = stmt.where(c.subject.is_(None) if subject is None else c.subject == subject)
+        stmt = stmt.where(c.title.is_(None) if subject is None else c.title == subject)
 
         sort_ts = func.coalesce(c.source_created_at, c.created_at)
         result = await self.org_session.execute(
-            stmt.order_by(sort_ts.desc(), c.activity_id.desc()).limit(1)
+            stmt.order_by(sort_ts.desc(), c.note_id.desc()).limit(1)
         )
         return result.scalars().first()

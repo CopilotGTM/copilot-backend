@@ -41,6 +41,7 @@ def _note(*, note_id: UUID | None = None, deal_id: UUID | None = None):
         deal_id=deal_id or uuid4(),
         body="Budget approval is expected Friday.",
         subject="Budget approval",
+        title="Budget approval",
         source_created_at=now,
         created_at=now,
         synced_at=now,
@@ -52,16 +53,16 @@ def _note(*, note_id: UUID | None = None, deal_id: UUID | None = None):
 
 
 @pytest.mark.asyncio
-async def test_add_deal_note_direct_requires_note_content() -> None:
+async def test_add_deal_note_direct_requires_body() -> None:
     result = await add_deal_note_direct(
         context=_context(),
         deal_id=str(uuid4()),
         deal_name="Acme Expansion",
-        note_content=" ",
+        body=" ",
     )
 
     assert result["status"] == "error"
-    assert "note content" in result["message"].lower()
+    assert "note body" in result["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -70,7 +71,7 @@ async def test_add_deal_note_direct_rejects_invalid_deal_id() -> None:
         context=_context(),
         deal_id="not-a-uuid",
         deal_name="Acme Expansion",
-        note_content="Budget approval is expected Friday.",
+        body="Budget approval is expected Friday.",
     )
 
     assert result["status"] == "error"
@@ -78,31 +79,31 @@ async def test_add_deal_note_direct_rejects_invalid_deal_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_deal_note_direct_validates_content_and_subject_lengths() -> None:
-    long_content = "x" * 10001
-    content_result = await add_deal_note_direct(
+async def test_add_deal_note_direct_validates_body_and_title_lengths() -> None:
+    long_body = "x" * 10001
+    body_result = await add_deal_note_direct(
         context=_context(),
         deal_id=str(uuid4()),
         deal_name="Acme Expansion",
-        note_content=long_content,
+        body=long_body,
     )
 
-    long_subject = "x" * 501
-    subject_result = await add_deal_note_direct(
+    long_title = "x" * 501
+    title_result = await add_deal_note_direct(
         context=_context(),
         deal_id=str(uuid4()),
         deal_name="Acme Expansion",
-        note_content="Valid content",
-        subject=long_subject,
+        body="Valid body",
+        title=long_title,
     )
 
-    assert content_result == {
+    assert body_result == {
         "status": "error",
-        "message": "Note content must be 10,000 characters or less.",
+        "message": "Note body must be 10,000 characters or less.",
     }
-    assert subject_result == {
+    assert title_result == {
         "status": "error",
-        "message": "Note subject must be 500 characters or less.",
+        "message": "Note title must be 500 characters or less.",
     }
 
 
@@ -134,8 +135,8 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
             context=context,
             deal_id=str(deal_id),
             deal_name=" Acme Expansion ",
-            note_content=" Budget approval is expected Friday. ",
-            subject=" Budget approval ",
+            body=" Budget approval is expected Friday. ",
+            title=" Budget approval ",
         )
 
     write_cls.assert_called_once_with(org_session, context.organisation_id)
@@ -163,6 +164,9 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
     assert result["note_id"] == str(note_id)
     assert result["deal_id"] == str(deal_id)
     assert result["deal_name"] == "Acme Expansion"
+    assert result["title"] == "Budget approval"
+    assert result["body"] == "Budget approval is expected Friday."
+    assert result["display_title"] == "Budget approval"
     assert result["insight_job_id"] == str(insight_job_id)
     assert result["_bot_channel_payload"]["type"] == "message"
 
@@ -195,8 +199,8 @@ async def test_add_deal_note_direct_returns_success_when_insight_dispatch_fails(
             context=context,
             deal_id=str(deal_id),
             deal_name="Acme Expansion",
-            note_content=note.body,
-            subject=note.subject,
+            body=note.body,
+            title=note.title,
         )
 
     org_session.commit.assert_awaited_once()
@@ -230,8 +234,8 @@ async def test_add_deal_note_direct_existing_note_skips_insight_pipeline() -> No
             context=context,
             deal_id=str(note.deal_id),
             deal_name="Acme Expansion",
-            note_content=note.body,
-            subject=note.subject,
+            body=note.body,
+            title=note.title,
         )
 
     org_session.commit.assert_awaited_once()
@@ -258,7 +262,7 @@ async def test_add_deal_note_direct_returns_structured_service_error() -> None:
             context=context,
             deal_id=str(uuid4()),
             deal_name="Acme Expansion",
-            note_content="Budget approval is expected Friday.",
+            body="Budget approval is expected Friday.",
         )
 
     org_session.rollback.assert_awaited_once()
@@ -283,7 +287,7 @@ async def test_add_deal_note_tool_hides_channel_payload_from_public_result() -> 
         result = await tool(
             deal_id=str(uuid4()),
             deal_name="Acme Expansion",
-            note_content="Budget approval is expected Friday.",
+            body="Budget approval is expected Friday.",
         )
 
     assert result is not None
@@ -316,8 +320,8 @@ async def test_add_deal_note_direct_builds_slack_success_payload() -> None:
             context=context,
             deal_id=str(note.deal_id),
             deal_name="Acme Expansion",
-            note_content=note.body,
-            subject=note.subject,
+            body=note.body,
+            title=note.title,
         )
 
     payload = result["_bot_channel_payload"]

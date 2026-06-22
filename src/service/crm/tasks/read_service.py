@@ -1,22 +1,31 @@
-"""Task read service for CRM task activities."""
+"""Task read service for CRM task source rows."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import DateTime, and_, func, or_, select
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityStatus, CRMUser
+from sqlmodel import col
+from src.domain.models.organisation_tables.reminder_models import ReminderStatus, UserReminder
+from src.domain.models.organisation_tables.sync.crm import CRMTask, CRMUser
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
-from src.service.crm.tasks.contracts import TaskReadServiceError
+from src.service.crm.tasks.contracts import (
+    TaskReadRecord,
+    TaskReadServiceError,
+    TaskReminderSummary,
+)
 
 logger = get_logger("task_read_service")
 
 _TASK_ACTIVITY_TYPES: set[str] = {"TASK", "TODO"}
+_TERMINAL_STATUSES = {"COMPLETED", "CANCELLED"}
 
 
 def _normalize_email(value: str | None) -> str | None:
@@ -26,33 +35,87 @@ def _normalize_email(value: str | None) -> str | None:
     return normalized or None
 
 
+def _task_type(task: Any) -> str:
+    metadata = getattr(task, "task_metadata", None) or {}
+    task_type = metadata.get("task_type")
+    return task_type if task_type in _TASK_ACTIVITY_TYPES else "TASK"
+
+
 def _task_assignee_filter_key(task: Any) -> str | None:
-    external_email = _normalize_email(getattr(task, "external_assignee_email", None))
-    external_name = getattr(task, "external_assignee_name", None)
-    if external_email:
-        return f"email:{external_email}"
-    if external_name:
-        return f"external_name:{str(external_name).strip().lower()}"
+    metadata = getattr(task, "task_metadata", None) or {}
+    email = _normalize_email(getattr(task, "assigned_to_email", None))
+    name = getattr(task, "assigned_to_name", None)
+    public_user_id = metadata.get("assigned_to_public_user_id")
+    crm_user_id = getattr(task, "assigned_to_user_id", None)
 
-    owner_email = _normalize_email(getattr(task, "owner_email", None))
-    owner_id = getattr(task, "owner_id", None)
-    properties = getattr(task, "properties", None) or {}
-    public_user_id = properties.get("assigned_to_public_user_id")
+    if metadata.get("assignee_kind") == "external":
+        if email:
+            return f"email:{email}"
+        if name:
+            return f"external_name:{str(name).strip().lower()}"
+        return None
 
-    if owner_email:
-        return f"email:{owner_email}"
+    if email:
+        return f"email:{email}"
     if public_user_id:
         return f"public_user:{public_user_id}"
-    if owner_id:
-        return f"crm_user:{owner_id}"
-    owner_name = getattr(task, "owner_name", None)
-    if owner_name:
-        return f"name:{str(owner_name).strip().lower()}"
+    if crm_user_id:
+        return f"crm_user:{crm_user_id}"
+    if name:
+        return f"name:{str(name).strip().lower()}"
     return None
 
 
+def _assignee_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    task = row["task"]
+    return (
+        str(getattr(task, "assigned_to_name", "") or "").lower(),
+        str(getattr(task, "assigned_to_email", "") or "").lower(),
+        _task_assignee_filter_key(task) or "",
+    )
+
+
+def _prefer_assignee_display_task(current: Any, candidate: Any) -> Any:
+    current_score = (
+        bool(getattr(current, "assigned_to_name", None)),
+        bool(getattr(current, "assigned_to_email", None)),
+        bool(getattr(current, "assigned_to_user_id", None)),
+    )
+    candidate_score = (
+        bool(getattr(candidate, "assigned_to_name", None)),
+        bool(getattr(candidate, "assigned_to_email", None)),
+        bool(getattr(candidate, "assigned_to_user_id", None)),
+    )
+    return candidate if candidate_score > current_score else current
+
+
+def _merge_assignee_rows(rows: Sequence[Any], *, limit: int) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        task = SimpleNamespace(
+            assigned_to_user_id=row.assigned_to_user_id,
+            assigned_to_name=row.assigned_to_name,
+            assigned_to_email=row.assigned_to_email,
+            task_metadata={"assignee_kind": row.assignee_kind} if row.assignee_kind else {},
+        )
+        filter_key = _task_assignee_filter_key(task)
+        if not filter_key:
+            continue
+
+        task_count = int(row.task_count or 0)
+        existing = merged.get(filter_key)
+        if existing is None:
+            merged[filter_key] = {"task": task, "task_count": task_count}
+            continue
+
+        existing["task_count"] += task_count
+        existing["task"] = _prefer_assignee_display_task(existing["task"], task)
+
+    return sorted(merged.values(), key=_assignee_sort_key)[:limit]
+
+
 class TaskReadService:
-    """Service for retrieving CRM deal tasks with filtering and pagination."""
+    """Service for retrieving CRM tasks with filtering and pagination."""
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         self.org_session = org_session
@@ -77,27 +140,24 @@ class TaskReadService:
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
         task_types: Iterable[str] | None = None,
-    ) -> tuple[list[CRMActivity], int]:
-        """Return paginated activities for a specific deal."""
+    ) -> tuple[list[TaskReadRecord], int]:
+        """Return paginated source tasks for a specific deal."""
+        if page < 1:
+            raise TaskReadServiceError("Page must be >= 1", status_code=400)
 
-        c = cast(Any, CRMActivity).__table__.c
-        stmt = select(CRMActivity).where(
+        c = cast(Any, CRMTask).__table__.c
+        stmt = self._select_tasks_with_deal_name().where(
             c.organisation_id == self.organisation_id,
             c.deal_id == deal_id,
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
 
-        # This service powers the "Tasks" API; restrict to task-like activity types.
         if task_types:
             requested = {t for t in task_types if t}
             allowed = requested & _TASK_ACTIVITY_TYPES
-            # If client provided only non-task types, return an empty page rather than
-            # accidentally returning non-task activities.
             if not allowed:
                 return [], 0
-            stmt = stmt.where(c.activity_type.in_(list(allowed)))
-        else:
-            stmt = stmt.where(c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)))
+            stmt = stmt.where(c.task_metadata["task_type"].as_string().in_(list(allowed)))
 
         if statuses:
             stmt = stmt.where(c.status.in_(list(statuses)))
@@ -105,19 +165,14 @@ class TaskReadService:
         if priorities:
             stmt = stmt.where(c.priority.in_(list(priorities)))
 
-        if page < 1:
-            raise TaskReadServiceError("Page must be >= 1", status_code=400)
-
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_count = await self.org_session.scalar(count_stmt) or 0
 
         offset = (page - 1) * limit
-        stmt = stmt.order_by(c.created_at.desc(), c.activity_id.desc()).offset(offset).limit(limit)
-
-        res = await self.org_session.execute(stmt)
-        rows: list[CRMActivity] = list(res.scalars().all())
-
-        return rows, total_count
+        stmt = stmt.order_by(c.created_at.desc(), c.task_id.desc()).offset(offset).limit(limit)
+        result = await self.org_session.execute(stmt)
+        records = self._read_records(result.all())
+        return await self._attach_reminder_summaries(records), total_count
 
     async def list_tasks(
         self,
@@ -141,13 +196,14 @@ class TaskReadService:
         sort_order: str = "asc",
         page: int = 1,
         limit: int = 50,
-    ) -> tuple[list[CRMActivity], int]:
+    ) -> tuple[list[TaskReadRecord], int]:
         """Global task listing with rich filtering for the Tasks page."""
+        if page < 1:
+            raise TaskReadServiceError("Page must be >= 1", status_code=400)
 
-        c = cast(Any, CRMActivity).__table__.c
-        stmt = select(CRMActivity).where(
+        c = cast(Any, CRMTask).__table__.c
+        stmt = self._select_tasks_with_deal_name().where(
             c.organisation_id == self.organisation_id,
-            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
 
@@ -157,32 +213,23 @@ class TaskReadService:
         if statuses:
             stmt = stmt.where(c.status.in_(list(statuses)))
         elif not include_completed:
-            # Exclude both terminal states by default
-            stmt = stmt.where(
-                c.status.notin_(
-                    [
-                        CRMActivityStatus.COMPLETED.value,
-                        CRMActivityStatus.CANCELLED.value,
-                    ]
-                )
-            )
+            stmt = stmt.where(c.status.notin_(list(_TERMINAL_STATUSES)))
 
         if priorities:
             stmt = stmt.where(c.priority.in_(list(priorities)))
 
         if source:
-            stmt = stmt.where(c.source.in_(list(source)))
+            stmt = stmt.where(c.task_metadata["source"].as_string().in_(list(source)))
 
         if owner_user_id is not None:
-            owner_value = str(owner_user_id)
+            assignee_keys = await self.resolve_current_user_task_assignees(
+                user_id=owner_user_id,
+                user_email=None,
+            )
+            if not assignee_keys:
+                return [], 0
             stmt = stmt.where(
-                and_(
-                    self._has_no_external_assignee_condition(),
-                    or_(
-                        c.owner_id == owner_user_id,
-                        c.properties["assigned_to_public_user_id"].as_string() == owner_value,
-                    ),
-                )
+                or_(*[self._assigned_to_key_condition(row["filter_key"]) for row in assignee_keys])
             )
 
         if assigned_to_key:
@@ -212,43 +259,36 @@ class TaskReadService:
         if created_by_user_id is not None:
             stmt = stmt.where(c.created_by_user_id == created_by_user_id)
 
+        due_expr = func.coalesce(c.due_at, sql_cast(c.due_date, DateTime(timezone=True)))
         if due_from is not None:
-            stmt = stmt.where(c.due_date >= due_from)
+            stmt = stmt.where(due_expr >= due_from)
 
         if due_to is not None:
-            stmt = stmt.where(c.due_date <= due_to)
+            stmt = stmt.where(due_expr <= due_to)
 
         if has_due_date is True:
-            stmt = stmt.where(c.due_date.isnot(None))
+            stmt = stmt.where(or_(c.due_at.isnot(None), c.due_date.isnot(None)))
         elif has_due_date is False:
-            stmt = stmt.where(c.due_date.is_(None))
+            stmt = stmt.where(c.due_at.is_(None), c.due_date.is_(None))
 
         now = datetime.now(UTC)
         if is_overdue is True:
-            stmt = stmt.where(
-                c.due_date < now,
-                c.status != CRMActivityStatus.COMPLETED.value,
-            )
+            stmt = stmt.where(due_expr < now, c.status != "COMPLETED")
         elif is_overdue is False:
-            stmt = stmt.where(or_(c.due_date.is_(None), c.due_date >= now))
-
-        if page < 1:
-            raise TaskReadServiceError("Page must be >= 1", status_code=400)
+            stmt = stmt.where(or_(due_expr.is_(None), due_expr >= now))
 
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_count = await self.org_session.scalar(count_stmt) or 0
 
-        # Sorting
         sort_col_map = {
-            "due_date": c.due_date,
+            "due_date": due_expr,
             "created_at": c.created_at,
             "updated_at": c.updated_at,
             "priority": c.priority,
             "status": c.status,
-            "subject": c.subject,
+            "subject": c.title,
         }
-        sort_col = sort_col_map.get(sort_by, c.due_date)
-        # Nulls last for due_date ascending (tasks without due dates go to end)
+        sort_col = sort_col_map.get(sort_by, due_expr)
         if sort_by == "due_date" and sort_order == "asc":
             stmt = stmt.order_by(sort_col.asc().nullslast(), c.created_at.desc())
         elif sort_order == "desc":
@@ -259,71 +299,74 @@ class TaskReadService:
         offset = (page - 1) * limit
         stmt = stmt.offset(offset).limit(limit)
 
-        res = await self.org_session.execute(stmt)
-        rows: list[CRMActivity] = list(res.scalars().all())
-
-        return rows, total_count
+        result = await self.org_session.execute(stmt)
+        records = self._read_records(result.all())
+        return await self._attach_reminder_summaries(records), total_count
 
     def _assigned_to_key_condition(self, assigned_to_key: str):
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
         prefix, _, raw_value = assigned_to_key.partition(":")
         value = raw_value.strip()
         lowered = value.lower()
 
         if not prefix or not value:
-            return c.activity_id.is_(None)
+            return c.task_id.is_(None)
 
         if prefix == "email":
-            return or_(
-                func.lower(c.external_assignee_email) == lowered,
-                and_(
-                    self._has_no_external_assignee_condition(),
-                    func.lower(c.owner_email) == lowered,
-                ),
-            )
+            return func.lower(c.assigned_to_email) == lowered
 
         if prefix == "public_user":
             return and_(
                 self._has_no_external_assignee_condition(),
-                c.properties["assigned_to_public_user_id"].as_string() == value,
+                c.task_metadata["assigned_to_public_user_id"].as_string() == value,
             )
 
         if prefix == "crm_user":
             try:
-                return and_(self._has_no_external_assignee_condition(), c.owner_id == UUID(value))
+                return and_(
+                    self._has_no_external_assignee_condition(),
+                    c.assigned_to_user_id == UUID(value),
+                )
             except ValueError:
-                return c.activity_id.is_(None)
+                return c.task_id.is_(None)
 
         if prefix in {"name", "external_name"}:
-            if prefix == "external_name":
-                return func.lower(c.external_assignee_name) == lowered
             return and_(
-                self._has_no_external_assignee_condition(), func.lower(c.owner_name) == lowered
+                self._external_assignee_condition()
+                if prefix == "external_name"
+                else self._has_no_external_assignee_condition(),
+                func.lower(c.assigned_to_name) == lowered,
             )
 
-        return c.activity_id.is_(None)
+        return c.task_id.is_(None)
 
     def _has_no_external_assignee_condition(self):
-        c = cast(Any, CRMActivity).__table__.c
-        return and_(c.external_assignee_email.is_(None), c.external_assignee_name.is_(None))
+        c = cast(Any, CRMTask).__table__.c
+        return or_(
+            c.task_metadata["assignee_kind"].as_string().is_(None),
+            c.task_metadata["assignee_kind"].as_string() != "external",
+        )
+
+    def _external_assignee_condition(self):
+        c = cast(Any, CRMTask).__table__.c
+        return c.task_metadata["assignee_kind"].as_string() == "external"
 
     def _current_user_assignee_condition(self, *, user_id: UUID, user_email: str | None):
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
         crm_user_columns = cast(Any, CRMUser).__table__.c
 
         internal_conditions = [
-            c.owner_id == user_id,
-            c.properties["assigned_to_public_user_id"].as_string() == str(user_id),
+            c.task_metadata["assigned_to_public_user_id"].as_string() == str(user_id),
         ]
         if user_email:
             email_lower = user_email.lower()
-            internal_conditions.append(func.lower(c.owner_email) == email_lower)
+            internal_conditions.append(func.lower(c.assigned_to_email) == email_lower)
             crm_user_conditions = or_(
                 crm_user_columns.user_id == user_id,
                 func.lower(crm_user_columns.email) == email_lower,
             )
             internal_conditions.append(
-                c.owner_id.in_(
+                c.assigned_to_user_id.in_(
                     select(crm_user_columns.user_id).where(
                         crm_user_columns.organisation_id == self.organisation_id,
                         crm_user_columns.is_deleted.is_(False),
@@ -332,16 +375,10 @@ class TaskReadService:
                 )
             )
 
-        conditions = [
-            and_(
-                self._has_no_external_assignee_condition(),
-                or_(*internal_conditions),
-            )
-        ]
-        if user_email:
-            conditions.append(func.lower(c.external_assignee_email) == user_email.lower())
-
-        return or_(*conditions)
+        return and_(
+            self._has_no_external_assignee_condition(),
+            or_(*internal_conditions),
+        )
 
     async def resolve_current_user_task_assignees(
         self,
@@ -349,10 +386,9 @@ class TaskReadService:
         user_id: UUID,
         user_email: str | None,
     ) -> list[dict[str, Any]]:
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,
-            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         ]
         options: list[dict[str, Any]] = []
@@ -444,7 +480,7 @@ class TaskReadService:
 
     async def _count_tasks_for_condition(self, *conditions) -> int:
         count = await self.org_session.scalar(
-            select(func.count()).select_from(CRMActivity).where(*conditions)
+            select(func.count()).select_from(CRMTask).where(*conditions)
         )
         return int(count or 0)
 
@@ -454,157 +490,136 @@ class TaskReadService:
         q: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        c = cast(Any, CRMActivity).__table__.c
+        c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,
-            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         ]
 
-        search_filter = None
         if q:
             like_expr = f"%{q.lower()}%"
-            search_filter = or_(
-                c.owner_name.ilike(like_expr),
-                c.owner_email.ilike(like_expr),
-                c.external_assignee_name.ilike(like_expr),
-                c.external_assignee_email.ilike(like_expr),
+            base_conditions.append(
+                or_(c.assigned_to_name.ilike(like_expr), c.assigned_to_email.ilike(like_expr))
             )
 
-        owner_stmt = (
+        stmt = (
             select(
-                c.owner_id,
-                func.max(c.owner_name).label("owner_name"),
-                func.max(c.owner_email).label("owner_email"),
+                c.assigned_to_user_id,
+                c.assigned_to_name,
+                c.assigned_to_email,
+                c.task_metadata["assignee_kind"].as_string().label("assignee_kind"),
                 func.count().label("task_count"),
             )
-            .where(
-                *base_conditions,
-                self._has_no_external_assignee_condition(),
-                c.owner_id.is_not(None),
+            .where(*base_conditions)
+            .group_by(
+                c.assigned_to_user_id,
+                c.assigned_to_name,
+                c.assigned_to_email,
+                c.task_metadata["assignee_kind"].as_string(),
             )
-            .group_by(c.owner_id)
-            .order_by(func.max(c.owner_name).asc().nulls_last(), c.owner_id.asc())
-            .limit(limit)
+            .order_by(c.assigned_to_name.asc().nulls_last(), c.assigned_to_email.asc())
         )
-        owner_email_stmt = (
-            select(
-                c.owner_email,
-                func.max(c.owner_name).label("owner_name"),
-                func.count().label("task_count"),
-            )
-            .where(
-                *base_conditions,
-                self._has_no_external_assignee_condition(),
-                c.owner_id.is_(None),
-                c.owner_email.is_not(None),
-            )
-            .group_by(c.owner_email)
-            .order_by(func.max(c.owner_name).asc().nulls_last(), c.owner_email.asc())
-            .limit(limit)
-        )
-        external_stmt = (
-            select(
-                c.external_assignee_email,
-                func.max(c.external_assignee_name).label("external_assignee_name"),
-                func.count().label("task_count"),
-            )
-            .where(
-                *base_conditions,
-                or_(
-                    c.external_assignee_email.is_not(None),
-                    c.external_assignee_name.is_not(None),
-                ),
-            )
-            .group_by(c.external_assignee_email, c.external_assignee_name)
-            .order_by(
-                func.max(c.external_assignee_name).asc().nulls_last(),
-                c.external_assignee_email.asc().nulls_last(),
-            )
-            .limit(limit)
-        )
+        result = await self.org_session.execute(stmt)
+        return _merge_assignee_rows(result.all(), limit=limit)
 
-        if search_filter is not None:
-            owner_stmt = owner_stmt.where(search_filter)
-            owner_email_stmt = owner_email_stmt.where(search_filter)
-            external_stmt = external_stmt.where(search_filter)
-
-        grouped: dict[str, dict[str, Any]] = {}
-        owner_result = await self.org_session.execute(owner_stmt)
-        for row in owner_result.all():
-            task = SimpleNamespace(
-                owner_id=row.owner_id,
-                owner_name=row.owner_name,
-                owner_email=row.owner_email,
-                external_assignee_email=None,
-                external_assignee_name=None,
-                properties={},
-            )
-            filter_key = _task_assignee_filter_key(task)
-            if not filter_key:
-                continue
-            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
-            grouped[filter_key]["task_count"] += row.task_count
-
-        owner_email_result = await self.org_session.execute(owner_email_stmt)
-        for row in owner_email_result.all():
-            task = SimpleNamespace(
-                owner_id=None,
-                owner_name=row.owner_name,
-                owner_email=row.owner_email,
-                external_assignee_email=None,
-                external_assignee_name=None,
-                properties={},
-            )
-            filter_key = _task_assignee_filter_key(task)
-            if not filter_key:
-                continue
-            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
-            grouped[filter_key]["task_count"] += row.task_count
-
-        external_result = await self.org_session.execute(external_stmt)
-        for row in external_result.all():
-            task = SimpleNamespace(
-                owner_id=None,
-                owner_name=None,
-                owner_email=None,
-                external_assignee_email=row.external_assignee_email,
-                external_assignee_name=row.external_assignee_name,
-                properties={},
-            )
-            filter_key = _task_assignee_filter_key(task)
-            if not filter_key:
-                continue
-            grouped.setdefault(filter_key, {"task": task, "task_count": 0})
-            grouped[filter_key]["task_count"] += row.task_count
-
-        return sorted(
-            grouped.values(),
-            key=lambda item: (
-                (
-                    getattr(item["task"], "external_assignee_name", None)
-                    or getattr(item["task"], "owner_name", None)
-                    or getattr(item["task"], "external_assignee_email", None)
-                    or getattr(item["task"], "owner_email", None)
-                    or ""
-                ).lower(),
-                _task_assignee_filter_key(item["task"]) or "",
-            ),
-        )[:limit]
-
-    async def get_task_by_id(self, task_id: UUID) -> CRMActivity | None:
-        """Fetch a single activity by ID (backwards compatible with task_id param name)."""
-
+    async def get_task_by_id(self, task_id: UUID) -> TaskReadRecord | None:
+        """Fetch a single task by ID."""
         try:
-            c = cast(Any, CRMActivity).__table__.c
-            stmt = select(CRMActivity).where(
-                c.activity_id == task_id,
+            c = cast(Any, CRMTask).__table__.c
+            stmt = self._select_tasks_with_deal_name().where(
+                c.task_id == task_id,
                 c.organisation_id == self.organisation_id,
                 or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
-                c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             )
-            res = await self.org_session.execute(stmt)
-            return res.scalar_one_or_none()
+            result = await self.org_session.execute(stmt)
+            rows = self._read_records(result.all())
+            records = await self._attach_reminder_summaries(rows)
+            return records[0] if records else None
         except Exception as exc:
             logger.error("Failed to get task %s: %s", task_id, exc, exc_info=True)
             raise TaskReadServiceError("Failed to retrieve task") from exc
+
+    def _select_tasks_with_deal_name(self):
+        deal_c = cast(Any, CRMDeal).__table__.c
+        task_c = cast(Any, CRMTask).__table__.c
+        return (
+            select(CRMTask)
+            .add_columns(deal_c.name)
+            .outerjoin(
+                CRMDeal,
+                and_(
+                    deal_c.organisation_id == self.organisation_id,
+                    deal_c.deal_id == task_c.deal_id,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _read_records(rows: Sequence[Any]) -> list[TaskReadRecord]:
+        return [TaskReadRecord(task=row[0], deal_name=row[1]) for row in rows]
+
+    async def _attach_reminder_summaries(
+        self, records: Sequence[TaskReadRecord]
+    ) -> list[TaskReadRecord]:
+        if not records:
+            return []
+
+        task_ids = [record.task.task_id for record in records]
+        summaries = await self._load_reminder_summaries(task_ids)
+        return [
+            TaskReadRecord(
+                task=record.task,
+                deal_name=record.deal_name,
+                has_active_reminder=summaries.get(record.task.task_id, (False, None))[0],
+                reminder=summaries.get(record.task.task_id, (False, None))[1],
+            )
+            for record in records
+        ]
+
+    async def _load_reminder_summaries(
+        self, task_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[bool, TaskReminderSummary | None]]:
+        if not task_ids:
+            return {}
+
+        stmt = (
+            select(UserReminder)
+            .where(
+                col(UserReminder.organisation_id) == self.organisation_id,
+                col(UserReminder.activity_id).in_(list(task_ids)),
+                col(UserReminder.status).in_(
+                    [
+                        ReminderStatus.ACTIVE.value,
+                        ReminderStatus.PAUSED.value,
+                    ]
+                ),
+            )
+            .order_by(
+                col(UserReminder.status).asc(),
+                col(UserReminder.next_trigger_at).asc(),
+                col(UserReminder.reminder_id).asc(),
+            )
+        )
+        result = await self.org_session.execute(stmt)
+        summaries: dict[UUID, tuple[bool, TaskReminderSummary | None]] = {}
+        for reminder in result.scalars().all():
+            activity_id = reminder.activity_id
+            if activity_id is None or activity_id in summaries:
+                continue
+            status_value = (
+                reminder.status.value
+                if isinstance(reminder.status, ReminderStatus)
+                else str(reminder.status)
+            )
+            recurrence_value = getattr(reminder.recurrence, "value", reminder.recurrence)
+            summaries[activity_id] = (
+                status_value == ReminderStatus.ACTIVE.value,
+                TaskReminderSummary(
+                    reminder_id=reminder.reminder_id,
+                    status=status_value,
+                    trigger_time=reminder.next_trigger_at,
+                    recurrence=str(recurrence_value) if recurrence_value is not None else None,
+                    delivery_channel=reminder.delivery_channel,
+                ),
+            )
+        return summaries
