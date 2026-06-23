@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
@@ -16,7 +17,7 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_recall_webhook_accepts_verified_request(monkeypatch) -> None:
+def test_recall_webhook_accepts_verified_request(monkeypatch, caplog) -> None:
     from src.api.routers.meeting_bot import recall_webhook_handler
 
     monkeypatch.setattr(
@@ -37,26 +38,41 @@ def test_recall_webhook_accepts_verified_request(monkeypatch) -> None:
     monkeypatch.setattr(recall_webhook_handler, "get_redis_client", lambda: fakeredis.FakeRedis())
 
     client = _client()
-    response = client.post(
-        "/users/meeting-bot/recall/webhook",
-        json={
-            "event": "bot.done",
-            "data": {
-                "bot": {
-                    "id": "bot_123",
-                    "metadata": {"organisation_id": "13d9c636-6a8a-4b8c-b610-a8812c8bda1c"},
-                }
-            },
+    payload = {
+        "event": "bot.done",
+        "data": {
+            "bot": {
+                "id": "bot_123",
+                "metadata": {"organisation_id": "13d9c636-6a8a-4b8c-b610-a8812c8bda1c"},
+            }
         },
-        headers={
-            "webhook-id": "msg_123",
-            "webhook-timestamp": "1710000000",
-            "webhook-signature": "v1,test",
-        },
-    )
+    }
+    headers = {
+        "webhook-id": "msg_123",
+        "webhook-timestamp": "1710000000",
+        "webhook-signature": "v1,test",
+    }
+
+    with caplog.at_level(logging.INFO, logger=recall_webhook_handler.logger.name):
+        response = client.post(
+            "/users/meeting-bot/recall/webhook",
+            json=payload,
+            headers=headers,
+        )
 
     assert response.status_code == 200
     recall_webhook_handler.send_deal_task_async.assert_awaited_once()
+    queued_logs = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "recall_webhook_task_queued"
+    ]
+    assert len(queued_logs) == 1
+    assert queued_logs[0].webhook_id == "msg_123"
+    assert queued_logs[0].recall_event == "bot.done"
+    assert queued_logs[0].provider_session_id == "bot_123"
+    assert queued_logs[0].organisation_id == "13d9c636-6a8a-4b8c-b610-a8812c8bda1c"
+    assert queued_logs[0].celery_task_id == "task-123"
 
 
 def test_recall_webhook_rejects_invalid_signature(monkeypatch) -> None:

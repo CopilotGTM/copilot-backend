@@ -59,6 +59,14 @@ async def handle_recall_webhook(request: Request) -> Response:
             detail="Recall webhook verification is not configured",
         )
 
+    event_name = str(payload.get("event") or "")
+    bot = ((payload.get("data") or {}).get("bot") or {}) if isinstance(payload, dict) else {}
+    bot_id = bot.get("id") if isinstance(bot, dict) else None
+    bot_metadata = bot.get("metadata") if isinstance(bot, dict) else None
+    organisation_id = (
+        bot_metadata.get("organisation_id") if isinstance(bot_metadata, dict) else None
+    )
+
     try:
         # Recall signs the exact raw request body, so verification must happen
         # before any normalization beyond UTF-8 decoding for JSON parsing.
@@ -111,17 +119,36 @@ async def handle_recall_webhook(request: Request) -> Response:
     # Background processing owns the org lookup, session mutation, and any
     # provider follow-up fetches so the HTTP handler remains cheap and idempotent.
     try:
-        await send_deal_task_async(
+        task_id = await send_deal_task_async(
             "deal.process_meeting_recording_webhook",
             kwargs={
                 "payload": payload,
                 "webhook_id": webhook_id,
             },
         )
+        logger.info(
+            "Queued Recall webhook for worker processing",
+            extra={
+                "event": "recall_webhook_task_queued",
+                "webhook_id": webhook_id,
+                "recall_event": event_name,
+                "provider_session_id": bot_id if isinstance(bot_id, str) else None,
+                "organisation_id": organisation_id if isinstance(organisation_id, str) else None,
+                "celery_task_id": task_id,
+                "celery_task_name": "deal.process_meeting_recording_webhook",
+                "celery_queue": "deal",
+            },
+        )
     except Exception as exc:
         logger.warning(
             "Failed to queue meeting recording webhook task",
-            extra={"webhook_id": webhook_id},
+            extra={
+                "event": "recall_webhook_task_queue_failed",
+                "webhook_id": webhook_id,
+                "recall_event": event_name,
+                "provider_session_id": bot_id if isinstance(bot_id, str) else None,
+                "organisation_id": organisation_id if isinstance(organisation_id, str) else None,
+            },
             exc_info=True,
         )
         raise HTTPException(
