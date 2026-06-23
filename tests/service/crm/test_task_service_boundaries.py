@@ -121,7 +121,11 @@ def test_legacy_task_services_are_facades_after_migration() -> None:
     write_source = Path("src/service/crm/internal/tasks_write_service.py").read_text()
 
     assert "TaskReadService" in access_source
+    assert "TaskReadRecord" in access_source
+    assert "CRMActivity" not in access_source
     assert "TaskWriteService" in write_source
+    assert "CRMTask" in write_source
+    assert "CRMActivity" not in write_source
 
 
 def test_task_due_payload_enforces_due_shape_at_service_level() -> None:

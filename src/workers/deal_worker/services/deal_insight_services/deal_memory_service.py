@@ -21,7 +21,7 @@ from src.domain.models.organisation_tables.job_models import (
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
 )
-from src.domain.models.organisation_tables.sync.crm.activities import CRMActivity
+from src.domain.models.organisation_tables.sync.crm.activities import CRMNote
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 from src.domain.models.organisation_tables.sync.email_models import Email
@@ -300,7 +300,7 @@ class DealMemoryService:
         """Return the subset of deal_ids that have at least one data source.
 
         Uses a single UNION query across CalendarEventDealAssociation, Email,
-        and CRMActivity (notes) to find deals with data in one round-trip.
+        and CRMNote to find deals with data in one round-trip.
 
         Args:
             deal_ids: Candidate deal IDs to check
@@ -316,9 +316,9 @@ class DealMemoryService:
 
             deals_with_emails = select(col(Email.deal_id)).where(col(Email.deal_id).in_(deal_ids))
 
-            deals_with_notes = select(col(CRMActivity.deal_id)).where(
-                col(CRMActivity.deal_id).in_(deal_ids),
-                col(CRMActivity.activity_type) == "NOTE",
+            deals_with_notes = select(col(CRMNote.deal_id)).where(
+                col(CRMNote.deal_id).in_(deal_ids),
+                col(CRMNote.is_deleted).is_(False),
             )
 
             combined = deals_with_meetings.union(deals_with_emails, deals_with_notes)

@@ -2,7 +2,7 @@
 
 When create_task sends a preview card with Confirm/Cancel buttons, the Confirm
 button carries the full task payload as a JSON string in its value field. This
-handler deserializes the payload and creates the CRMActivity via TaskWriteService.
+handler deserializes the payload and creates the CRMTask via TaskWriteService.
 
 The Cancel button is handled by a simple CancelFormHandler (no DB cleanup needed
 since no row exists until confirmation).

@@ -8,8 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
-from src.service.crm.tasks.contracts import TaskReadServiceError
+from src.service.crm.tasks.contracts import TaskReadRecord, TaskReadServiceError
 from src.service.crm.tasks.read_service import (
     TaskReadService,
 )
@@ -38,7 +37,7 @@ class TasksAccessService:
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
         task_types: Iterable[str] | None = None,
-    ) -> tuple[list[CRMActivity], int]:
+    ) -> tuple[list[TaskReadRecord], int]:
         return await self._service.list_tasks_by_deal(
             deal_id=deal_id,
             limit=limit,
@@ -70,7 +69,7 @@ class TasksAccessService:
         sort_order: str = "asc",
         page: int = 1,
         limit: int = 50,
-    ) -> tuple[list[CRMActivity], int]:
+    ) -> tuple[list[TaskReadRecord], int]:
         return await self._service.list_tasks(
             scope=scope,
             current_user_id=current_user_id,
@@ -112,5 +111,5 @@ class TasksAccessService:
     ) -> list[dict[str, Any]]:
         return await self._service.list_task_assignees(q=q, limit=limit)
 
-    async def get_task_by_id(self, task_id: UUID) -> CRMActivity | None:
+    async def get_task_by_id(self, task_id: UUID) -> TaskReadRecord | None:
         return await self._service.get_task_by_id(task_id)

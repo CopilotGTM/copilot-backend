@@ -16,10 +16,10 @@ from src.service.crm.internal.deal_task_automation_service import DealTaskAutoma
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
-    from src.domain.models.organisation_tables.sync.crm import CRMActivity
+    from src.domain.models.organisation_tables.sync.crm import CRMTask
 
 
-def _format_task(task: CRMActivity) -> dict[str, Any]:
+def _format_task(task: CRMTask) -> dict[str, Any]:
     """Build a compact API-safe task shape for tool consumers.
 
     The returned payload is immutable-friendly: all fields are serializable and

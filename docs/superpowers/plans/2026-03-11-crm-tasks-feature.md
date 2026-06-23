@@ -1,5 +1,9 @@
 # CRM Tasks Feature Implementation Plan
 
+> Historical note: this plan predates the task/note source-table migration.
+> Current runtime code should use `crm_tasks` / `CRMTask` for task source rows
+> and treat `crm_activities` / `CRMActivity` as the feed projection only.
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend the existing CRM tasks API to support global task management with optional deal association, user assignment, reminder integration, and source tracking.

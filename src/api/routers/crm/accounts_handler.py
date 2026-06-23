@@ -15,6 +15,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.activity_feed_presenter import present_activity_feed_page
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_account_models import (
     AccountContactItem,
@@ -29,7 +30,12 @@ from src.api.schemas.crm_account_models import (
     CreateAccountRequest,
     UpdateAccountRequest,
 )
+from src.api.schemas.crm_activity_feed_models import (
+    ActivityFeedPage,
+    ActivityFeedQueryParams,
+)
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.contracts import (
     AccountReadServiceError,
@@ -38,6 +44,10 @@ from src.service.crm.accounts.contracts import (
 )
 from src.service.crm.accounts.read_service import AccountReadService
 from src.service.crm.accounts.write_service import AccountWriteService
+from src.service.crm.activity_feed_read_service import (
+    ActivityFeedReadService,
+    ActivityFeedReadServiceError,
+)
 
 logger = get_logger("accounts_handler")
 
@@ -74,6 +84,21 @@ async def get_account_write_service(
             await service.session.close()
         except Exception:
             logger.debug("AccountWriteService close failed", exc_info=True)
+
+
+async def get_account_activity_feed_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Yield an account activity-feed service bound to the authenticated organisation."""
+    service = ActivityFeedReadService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Account activity-feed service close failed", exc_info=True)
 
 
 @accounts_router.get(
@@ -279,6 +304,58 @@ async def get_account_detail(
     except Exception:
         logger.exception("Unexpected error retrieving account detail")
         return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
+
+
+@accounts_router.get(
+    "/accounts/{company_id}/activity-feed",
+    response_model=GenericResponse[ActivityFeedPage],
+    tags=["crm", "accounts"],
+    summary="Get account activity feed",
+)
+async def get_account_activity_feed(
+    company_id: UUID,
+    response: FastAPIResponse,
+    service: ActivityFeedReadService = Depends(get_account_activity_feed_service),
+    query: ActivityFeedQueryParams = Depends(),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[ActivityFeedPage]:
+    """Get activity-feed cards linked to an account/company through crm_activity_links."""
+    try:
+        records, next_cursor, total_count = await service.list_object_activities(
+            object_type=CRMActivityObjectType.COMPANY.value,
+            object_id=company_id,
+            limit=query.limit,
+            cursor=query.cursor,
+            activity_types=query.activity_types,
+            source_types=query.source_types,
+            start_date=query.start_date,
+            end_date=query.end_date,
+            sort_order=query.sort,
+        )
+        return Response.success_response(
+            message="Activity feed retrieved successfully",
+            data=present_activity_feed_page(
+                object_type=CRMActivityObjectType.COMPANY.value,
+                object_id=company_id,
+                records=records,
+                total_count=total_count,
+                cursor=next_cursor,
+            ),
+        )
+    except ActivityFeedReadServiceError as exc:
+        logger.warning("Account activity feed access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except Exception:
+        logger.exception("Unexpected error getting activity feed for account %s", company_id)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
 
 
 @accounts_router.patch(

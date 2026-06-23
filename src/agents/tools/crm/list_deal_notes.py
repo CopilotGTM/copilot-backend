@@ -1,9 +1,9 @@
 """List deal notes tool for agents.
 
-Tool for listing CRM notes (activity_type=NOTE) associated with a specific deal.
+Tool for listing CRM notes associated with a specific deal.
 
-Notes are stored in the organisation DB in the canonical CRM activities table
-(`crm_activities`) as `CRMActivity` records.
+Notes are stored in the canonical CRM notes source table (`crm_notes`). The
+activity feed keeps a separate projection for timeline display.
 
 SECURITY BOUNDARIES:
 - organisation_id: Always from context (immutable). Prevents cross-org data access.
@@ -17,10 +17,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.activities import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import CRMNote
+from src.service.crm.activity_feed_projection_service import note_title_or_preview
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -40,7 +41,7 @@ async def list_deal_notes(
 ) -> list[dict[str, Any]]:
     """List CRM notes associated with a deal.
 
-    Notes are represented as CRM activities with `activity_type == NOTE`.
+    Notes are read from the canonical `crm_notes` source table.
 
     SECURITY BOUNDARIES (from context, immutable):
     - organisation_id: Prevents cross-org data access
@@ -71,18 +72,17 @@ async def list_deal_notes(
 
     effective_limit = max(1, min(limit, 100))
 
-    c = cast(Any, CRMActivity).__table__.c
+    c = cast(Any, CRMNote).__table__.c
 
     # SECURITY: Both organisation_id and deal_id from context (immutable)
     stmt = (
-        select(CRMActivity)
+        select(CRMNote)
         .where(
             c.organisation_id == organisation_id,
             c.deal_id == actual_deal_id,
-            c.activity_type == CRMActivityType.NOTE.value,
-            c.is_deleted.is_(False),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
-        .order_by(c.source_created_at.desc(), c.synced_at.desc())
+        .order_by(c.source_created_at.desc().nullslast(), c.updated_at.desc())
         .limit(effective_limit)
     )
 
@@ -106,7 +106,7 @@ async def list_deal_notes(
 
             item: dict[str, Any] = {
                 "activity_id": str(n.activity_id),
-                "subject": n.subject,
+                "subject": note_title_or_preview(n),
                 "body": note_body,
                 "owner": {
                     "name": n.owner_name,
@@ -151,7 +151,7 @@ def create_list_deal_notes(
     ) -> list[dict[str, Any]]:
         """List CRM notes associated with a deal.
 
-        Use this tool to fetch notes linked to a deal from synced CRM activity data.
+        Use this tool to fetch notes linked to a deal from canonical CRM note data.
 
         Args:
             deal_id: Optional deal ID to query. Falls back to context deal_id if omitted.

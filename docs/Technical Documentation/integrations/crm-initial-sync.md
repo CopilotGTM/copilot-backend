@@ -61,7 +61,9 @@ HubSpot currently writes:
 - `crm_deal_stage_history`
 - `crm_deal_participants`
 - `crm_object_associations`
-- `crm_activities` for tasks and notes
+- `crm_tasks`
+- `crm_notes`
+- `crm_activities` and `crm_activity_links` as feed projections for tasks and notes
 
 Salesforce currently writes:
 
@@ -75,14 +77,17 @@ Salesforce currently writes:
 - `crm_deal_stage_history`
 - `crm_deal_participants`
 - `crm_object_associations`
-- `crm_activities` for tasks and notes
+- `crm_tasks`
+- `crm_notes`
+- `crm_activities` and `crm_activity_links` as feed projections for tasks and notes
 
 Rows are provider-isolated by `integration_id`.
 
 For both providers:
 
-- tasks are stored as `crm_activities.activity_type = TASK`
-- notes are stored as `crm_activities.activity_type = NOTE`
+- tasks are stored in `crm_tasks`
+- notes are stored in `crm_notes`
+- task/note feed cards are projected into `crm_activities` and linked to deals, contacts, and accounts through `crm_activity_links`
 
 ## How a Phase Runs
 
@@ -102,7 +107,7 @@ This keeps DB sessions out of long external API calls.
 
 - HubSpot is live through `notes`
 - Salesforce is live through `notes`
-- both providers write the core dimension/fact CRM slice plus CRM activities
+- both providers write the core dimension/fact CRM slice plus CRM task/note source tables and feed projections
 - broader secondary relationship modeling is still deferred
   - example: `AccountContactRelation`
   - example: quotes, products, and line items beyond the current deal slice

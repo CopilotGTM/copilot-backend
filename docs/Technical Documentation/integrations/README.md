@@ -24,5 +24,5 @@ Use this folder as the concise source of truth for runtime behavior. The worker 
 
 - HubSpot CRM initial sync is live through `notes`
 - Salesforce CRM initial sync is live through `notes`
-- both providers write tasks and notes into `crm_activities`
+- both providers write tasks into `crm_tasks`, notes into `crm_notes`, and feed projections into `crm_activities`
 - scheduled CRM refresh today is schema-only fan-out; record sync is post-connect/manual

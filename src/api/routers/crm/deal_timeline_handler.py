@@ -13,18 +13,28 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read
+from src.api.presenters.crm.activity_feed_presenter import present_activity_feed_page
 from src.api.schemas.base_models import GenericResponse
+from src.api.schemas.crm_activity_feed_models import (
+    ActivityFeedPage,
+    ActivityFeedQueryParams,
+)
 from src.api.schemas.deal_timeline_models import (
     DealTimelineQueryParams,
     TimelineEvent,
     TimelinePage,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventType,
 )
 from src.infra.config.timeline_event_metadata import get_timeline_event_source_metadata
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_read_service import (
+    ActivityFeedReadService,
+    ActivityFeedReadServiceError,
+)
 from src.service.crm.timeline.deal_timeline_service import (
     DealTimelineService,
     DealTimelineServiceError,
@@ -50,6 +60,21 @@ async def get_deal_timeline_service(
             await service.close()
         except Exception:
             logger.debug("DealTimelineService close failed", exc_info=True)
+
+
+async def get_activity_feed_service(
+    user: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields an activity-feed service for the current org."""
+    service = ActivityFeedReadService(session, user.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("ActivityFeedReadService close failed", exc_info=True)
 
 
 @deal_timeline_router.get(
@@ -150,6 +175,63 @@ async def get_deal_timeline(
         logger.exception("Failed to get deal timeline")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deal_timeline_router.get(
+    "/{deal_id}/activity-feed",
+    response_model=GenericResponse[ActivityFeedPage],
+    summary="Get deal activity feed",
+    description="Get paginated CRM activity-feed cards for a deal.",
+    dependencies=[Depends(rate_limit_user_read)],
+)
+async def get_deal_activity_feed(
+    deal_id: UUID,
+    response: FastAPIResponse,
+    service: ActivityFeedReadService = Depends(get_activity_feed_service),
+    query: ActivityFeedQueryParams = Depends(),
+) -> GenericResponse[ActivityFeedPage]:
+    """Get activity-feed cards linked to a deal through crm_activity_links."""
+    try:
+        records, next_cursor, total_count = await service.list_object_activities(
+            object_type=CRMActivityObjectType.DEAL.value,
+            object_id=deal_id,
+            limit=query.limit,
+            cursor=query.cursor,
+            activity_types=query.activity_types,
+            source_types=query.source_types,
+            start_date=query.start_date,
+            end_date=query.end_date,
+            sort_order=query.sort,
+        )
+        return Response.success_response(
+            message="Activity feed retrieved successfully",
+            data=present_activity_feed_page(
+                object_type=CRMActivityObjectType.DEAL.value,
+                object_id=deal_id,
+                records=records,
+                total_count=total_count,
+                cursor=next_cursor,
+            ),
+        )
+    except ActivityFeedReadServiceError as exc:
+        logger.warning("Deal activity feed access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error getting activity feed for deal %s: %s",
+            deal_id,
+            exc,
+            exc_info=True,
+        )
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
         )
 
 

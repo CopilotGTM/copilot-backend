@@ -85,6 +85,9 @@ def test_deal_notes_service_is_compatibility_facade_after_migration() -> None:
     assert "NotesReadService" in source
     assert "NotesWriteService" in source
     assert "NotesInsightDispatchService" in source
+    assert "NoteReadRecord" in source
+    assert "CRMNote" in source
+    assert "CRMActivity" not in source
     assert "CRMActivity(" not in source
 
 

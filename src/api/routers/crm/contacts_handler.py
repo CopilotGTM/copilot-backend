@@ -15,7 +15,12 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.activity_feed_presenter import present_activity_feed_page
 from src.api.schemas.base_models import GenericResponse
+from src.api.schemas.crm_activity_feed_models import (
+    ActivityFeedPage,
+    ActivityFeedQueryParams,
+)
 from src.api.schemas.crm_contact_models import (
     AddContactToDealRequest,
     ContactDealInvolvement,
@@ -29,7 +34,12 @@ from src.api.schemas.crm_contact_models import (
     UpdateContactRequest,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_read_service import (
+    ActivityFeedReadService,
+    ActivityFeedReadServiceError,
+)
 from src.service.crm.contacts.contracts import (
     ContactDealLinkServiceError,
     ContactReadServiceError,
@@ -91,6 +101,21 @@ async def get_contact_deal_link_service(
             await service.close()
         except Exception:
             logger.debug("Contact deal-link service close failed", exc_info=True)
+
+
+async def get_contact_activity_feed_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a contact activity-feed service for the current org."""
+    service = ActivityFeedReadService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Contact activity-feed service close failed", exc_info=True)
 
 
 @contacts_router.get(
@@ -323,6 +348,57 @@ async def get_contact_detail(
         )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@contacts_router.get(
+    "/contacts/{contact_id}/activity-feed",
+    response_model=GenericResponse[ActivityFeedPage],
+    summary="Get contact activity feed",
+)
+async def get_contact_activity_feed(
+    contact_id: UUID,
+    response: FastAPIResponse,
+    service: ActivityFeedReadService = Depends(get_contact_activity_feed_service),
+    query: ActivityFeedQueryParams = Depends(),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[ActivityFeedPage]:
+    """Get activity-feed cards linked to a contact through crm_activity_links."""
+    try:
+        records, next_cursor, total_count = await service.list_object_activities(
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_id=contact_id,
+            limit=query.limit,
+            cursor=query.cursor,
+            activity_types=query.activity_types,
+            source_types=query.source_types,
+            start_date=query.start_date,
+            end_date=query.end_date,
+            sort_order=query.sort,
+        )
+        return Response.success_response(
+            message="Activity feed retrieved successfully",
+            data=present_activity_feed_page(
+                object_type=CRMActivityObjectType.CONTACT.value,
+                object_id=contact_id,
+                records=records,
+                total_count=total_count,
+                cursor=next_cursor,
+            ),
+        )
+    except ActivityFeedReadServiceError as exc:
+        logger.warning("Contact activity feed access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except Exception:
+        logger.exception("Unexpected error getting activity feed for contact %s", contact_id)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
         )
 
 

@@ -2,11 +2,11 @@
 
 ## Purpose
 
-- Represent CRM-side activities (tasks, calls, meetings, emails, notes) in a single canonical table.
-- Support linking activities to deals (and other CRM objects) by local IDs.
-- Replace the legacy deal task storage (`crm_deal_tasks`) with the generalized activities table (`crm_activities`).
+- Represent the product activity feed projection for CRM-side events.
+- Support linking projected activities to deals, contacts, and accounts by local IDs.
+- Keep source-of-truth tasks and notes in their canonical tables while projecting feed rows into `crm_activities`.
 
-## Canonical Model
+## Projection Model
 
 **Model:** `CRMActivity`
 
@@ -19,26 +19,27 @@
 | Concept | Column(s) | Notes |
 | :--- | :--- | :--- |
 | Identity | `activity_id` | Internal UUID used by API and services |
-| Deal linkage | `deal_id` | Local deal FK |
-| Generic linkage | `related_object_type`, `related_local_id` | Polymorphic link to DEAL/CONTACT/COMPANY/etc |
+| Source | `source_type`, `source_record_id` | Points back to canonical source records such as `crm_tasks` and `crm_notes` |
 | Type | `activity_type`, `activity_subtype` | Canonical type plus provider subtype |
-| Status/Priority | `status`, `priority` | Canonicalized across CRMs |
-| Owner | `owner_id`, `owner_name`, `owner_email` | Assignment/ownership |
-| Scheduling | `due_date`, `end_date`, `completed_date`, `reminder_date` | Time fields are timezone-aware |
+| Display | `title`, `summary`, `preview`, `display_payload` | Feed-ready presentation fields |
+| Actor | `actor_user_id`, `actor_name`, `actor_email` | Who performed or owns the activity when known |
+| Timing | `occurred_at` | Feed ordering timestamp |
 | Soft delete | `is_deleted` | Reflects provider deletion state |
-| Metadata | `properties`, `metrics` | Flattened and derived metadata; provider payloads live in source mappings |
+| Metadata | `properties` | Flattened and derived metadata; provider payloads live in source mappings |
 
-### Backwards-Compatible Aliases
+### Link Table
 
-For existing code that still uses task-oriented names, `CRMActivity` exposes aliases:
+Object membership lives in `crm_activity_links`. Read APIs query
+`crm_activity_links -> crm_activities` so the same activity can appear on a
+deal, contact, and account without duplicating source data.
 
-- `task_id` → `activity_id`
-- `task_type` → `activity_type`
-- `is_deleted_remote` → `is_deleted`
+Supported object types include `DEAL`, `CONTACT`, and `COMPANY`.
 
 ## Tasks API (Tasks-Only View)
 
-The Tasks API remains task-shaped but is backed by `crm_activities`.
+The Tasks API remains task-shaped and is backed by `crm_tasks`. Task rows can be
+projected into `crm_activities` for timeline/feed display, but task readers and
+agent tools should use task services or `CRMTask`.
 
 **Handler:** `src/api/routers/crm/tasks_handler.py`
 
@@ -47,12 +48,12 @@ The Tasks API remains task-shaped but is backed by `crm_activities`.
 ### Endpoints
 
 - `GET /deals/{deal_id}/tasks`
-  - Returns only task-like activities: `activity_type in {TASK, TODO}`
+  - Returns canonical task rows linked to the deal.
   - Optional filters: `statuses`, `priorities`
-  - `task_types` is accepted for backwards compatibility, but non-task activity types will not be returned.
+  - `task_types` is accepted for backwards compatibility, but non-task rows will not be returned.
 
 - `GET /tasks/{task_id}`
-  - Returns a single task-like activity by `activity_id`
+  - Returns a single task by `task_id`
   - Does not return calls/meetings/emails/notes
 
 ### Overdue Flag
@@ -63,5 +64,6 @@ API responses compute `is_overdue` as:
 
 ## Notes
 
-- `integration_id` on `CRMActivity` can be `null` (user-created activities). API schemas should treat it as optional.
-- If you need non-task activities, use an Activities-focused endpoint/service (not the Tasks API).
+- Notes are stored in `crm_notes` and can be projected into `crm_activities` for feed display.
+- Activity-feed APIs are available for deals, contacts, and accounts at `/{object_id}/activity-feed` on their existing routers.
+- `integration_id` on projected `CRMActivity` rows can be `null` for internally created records.

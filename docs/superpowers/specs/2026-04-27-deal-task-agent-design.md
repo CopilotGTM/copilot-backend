@@ -1,5 +1,9 @@
 # Deal Task Agent Design
 
+> Historical note: this design predates the task/note source-table migration.
+> Current runtime code should use `crm_tasks` / `CRMTask` for task source rows
+> and treat `crm_activities` / `CRMActivity` as the feed projection only.
+
 ## Goal
 
 Create a post-meeting deal task agent that runs after the existing meeting summary and deal

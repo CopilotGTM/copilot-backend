@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -35,6 +36,7 @@ def _make_note(
 ) -> MagicMock:
     n = MagicMock()
     n.activity_id = UUID(activity_id)
+    n.title = subject
     n.subject = subject
     n.body = body
     n.owner_name = "Jane Doe"
@@ -44,6 +46,16 @@ def _make_note(
     n.synced_at = datetime(2026, 2, 15, 10, 30, 0)
     n.properties = {"key": "value"}
     return n
+
+
+def test_list_deal_notes_reads_crm_notes_not_activity_projection() -> None:
+    source = Path("src/agents/tools/crm/list_deal_notes.py").read_text()
+
+    assert "CRMNote" in source
+    assert "select(CRMNote)" in source
+    assert "CRMActivity" not in source
+    assert "CRMActivityType" not in source
+    assert "activity_type" not in source
 
 
 class TestListDealNotes:

@@ -452,6 +452,36 @@ export interface EnrichContactResponse {
   job_id: string | null;              // UUID string of the dispatched job, or null
   message: string;                    // Human-readable status message
 }
+
+export interface ActivityFeedItem {
+  activity_id: UUID;
+  activity_type: string;
+  source_type: string;
+  source_record_id: UUID | null;
+  source_provider: string | null;
+  source_integration_id: UUID | null;
+  source_url: string | null;
+  title: string | null;
+  summary: string | null;
+  preview: string | null;
+  occurred_at: ISODate;
+  actor_name: string | null;
+  actor_email: string | null;
+  display_payload: Record<string, unknown>;
+  link_role: string | null;
+  link_source: string | null;
+  confidence_score: number | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+export interface ContactActivityFeedPage {
+  object_type: "CONTACT";
+  object_id: UUID;
+  items: ActivityFeedItem[];
+  total_count: number;
+  cursor: string | null;
+}
 ```
 
 ### Frontend Utility: Format Contact Display Name
@@ -813,7 +843,47 @@ Page-ready contact detail for the contact overview page. The response includes f
 
 ---
 
-### 4. Update Contact
+### 4. Get Contact Activity Feed
+
+```http
+GET /users/crm/contacts/{contact_id}/activity-feed
+```
+
+Cursor-paginated CRM activity projection for a contact. This reads
+`crm_activity_links -> crm_activities` for rows linked with `object_type =
+CONTACT`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `limit` | integer | `20` | `1-100` | Maximum feed items per page |
+| `cursor` | string | - | Opaque | Cursor returned by the previous response |
+| `activity_types` | string | - | Comma-separated | Filter by projected activity type |
+| `source_types` | string | - | Comma-separated | Filter by projected source type |
+| `start_date` | datetime | - | ISO 8601 | Include activities at/after this time |
+| `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
+| `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Activity feed retrieved successfully",
+  "data": {
+    "object_type": "CONTACT",
+    "object_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "items": [],
+    "total_count": 0,
+    "cursor": null
+  }
+}
+```
+
+---
+
+### 5. Update Contact
 
 ```http
 PATCH /users/crm/contacts/{contact_id}
@@ -924,7 +994,7 @@ Returns the updated legacy `ContactMutationItem`. `deal_count` is `0`, `company_
 
 ---
 
-### 5. Enrich Contact
+### 6. Enrich Contact
 
 ```http
 POST /users/crm/contacts/{contact_id}/enrich
@@ -1013,7 +1083,7 @@ Is deal_count > 0?
 
 ---
 
-### 6. Add Contact to Deal
+### 7. Add Contact to Deal
 
 ```http
 POST /users/crm/contacts/{contact_id}/add-to-deal

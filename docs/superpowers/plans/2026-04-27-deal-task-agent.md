@@ -1,5 +1,9 @@
 # Deal Task Agent Implementation Plan
 
+> Historical note: this plan predates the task/note source-table migration.
+> Current runtime code should use `crm_tasks` / `CRMTask` for task source rows
+> and treat `crm_activities` / `CRMActivity` as the feed projection only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a post-meeting `DealTaskAgent` that creates and completes deal-scoped CRM tasks from meeting summaries after the existing deal insight pipeline.

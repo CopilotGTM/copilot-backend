@@ -10,13 +10,18 @@ import pytest
 from src.domain.models.organisation_tables.sync.crm import (
     ApprovalStatus,
     CRMActivity,
+    CRMActivityLink,
+    CRMActivityObjectType,
     CRMContact,
     CRMDeal,
     CRMDealParticipant,
+    CRMNote,
     CRMParticipantType,
+    CRMTask,
 )
 from src.service.integrations.webhooks.hubspot.contacts.privacy_deletion import (
     HubSpotContactPrivacyDeletionHandler,
+    _activity_ids_by_contact,
 )
 
 
@@ -46,12 +51,36 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         profile_enrichment_source="apollo",
         profile_enriched_at=datetime.now(UTC),
     )
-    activity = CRMActivity(
+    task = CRMTask(
         organisation_id=organisation_id,
         integration_id=integration_id,
-        contact_id=contact.contact_id,
+        title="Call Ada",
+        description="Ask Ada about budget",
+        assigned_to_email="ada@example.com",
+        assigned_to_name="Ada Lovelace",
+        owner_email="owner@example.com",
+        task_metadata={"contact_id": str(contact.contact_id), "body": "Ask Ada"},
+    )
+    note = CRMNote(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        body="Ada wants a security review",
+        title="Ada note",
+        author_name="Ada Lovelace",
+        author_email="ada@example.com",
+        note_metadata={"contact_id": str(contact.contact_id), "body": "Ada wants review"},
+    )
+    activity_projection = CRMActivity(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        activity_id=task.task_id,
         subject="Call Ada",
         body="Ask about budget",
+        title="Call Ada",
+        summary="Ask Ada about budget",
+        preview="Ask Ada",
+        actor_name="Ada Lovelace",
+        actor_email="ada@example.com",
         related_name="Ada Lovelace",
         owner_email="owner@example.com",
         external_assignee_email="ada@example.com",
@@ -90,7 +119,9 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
 
     HubSpotContactPrivacyDeletionHandler.scrub_records_for_contact_privacy_deletion(
         contact=contact,
-        activities=[activity],
+        tasks=[task],
+        notes=[note],
+        activity_projections=[activity_projection],
         deal_participants=[participant],
         deals=[deal],
     )
@@ -108,14 +139,35 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert contact.profile_enriched_at is None
     assert not hasattr(contact, "data_payload")
 
-    assert activity.is_deleted is True
-    assert not hasattr(activity, "contact_external_id")
-    assert activity.subject is None
-    assert activity.body is None
-    assert activity.attendees == []
-    assert activity.properties == {"privacy_deleted": True}
-    assert activity.metrics == {"privacy_deleted": True}
-    assert not hasattr(activity, "data_payload")
+    assert task.is_deleted is True
+    assert task.title == "Privacy deleted task"
+    assert task.description is None
+    assert task.assigned_to_email is None
+    assert task.assigned_to_name is None
+    assert task.owner_email is None
+    assert task.task_metadata == {"privacy_deleted": True}
+
+    assert note.is_deleted is True
+    assert note.title is None
+    assert note.body == ""
+    assert note.author_name is None
+    assert note.author_email is None
+    assert note.note_metadata == {"privacy_deleted": True}
+
+    assert activity_projection.is_deleted is True
+    assert not hasattr(activity_projection, "contact_external_id")
+    assert activity_projection.subject is None
+    assert activity_projection.body is None
+    assert activity_projection.title is None
+    assert activity_projection.summary is None
+    assert activity_projection.preview is None
+    assert activity_projection.actor_name is None
+    assert activity_projection.actor_email is None
+    assert activity_projection.attendees == []
+    assert activity_projection.display_payload == {"privacy_deleted": True}
+    assert activity_projection.properties == {"privacy_deleted": True}
+    assert activity_projection.metrics == {"privacy_deleted": True}
+    assert not hasattr(activity_projection, "data_payload")
 
     assert participant.is_deleted is True
     assert participant.related_local_id is None
@@ -206,7 +258,7 @@ async def test_privacy_deletion_dependent_queries_use_local_contact_ids_only() -
 
     session = FakeSession()
 
-    await HubSpotContactPrivacyDeletionHandler._activities_for_contacts(
+    await HubSpotContactPrivacyDeletionHandler._activity_source_records_for_contacts(
         org_session=session,
         organisation_id=organisation_id,
         integration_id=integration_id,
@@ -226,9 +278,26 @@ async def test_privacy_deletion_dependent_queries_use_local_contact_ids_only() -
     )
 
     where_clauses = [str(statement).partition("WHERE")[2] for statement in statements]
-    assert "crm_activities.contact_id" in where_clauses[0]
+    assert "crm_activity_links.object_type" in where_clauses[0]
+    assert "crm_activity_links.object_id" in where_clauses[0]
+    assert "crm_activities.contact_id" not in where_clauses[0]
     assert "crm_activities.contact_external_id" not in where_clauses[0]
     assert "crm_deal_participants.related_local_id" in where_clauses[1]
     assert "crm_deal_participants.related_external_id" not in where_clauses[1]
     assert "crm_deals.primary_contact_id" in where_clauses[2]
     assert "crm_deals.primary_contact_external_id" not in where_clauses[2]
+
+
+def test_activity_ids_group_by_contact() -> None:
+    contact_id = uuid4()
+    activity_id = uuid4()
+    link = CRMActivityLink(
+        organisation_id=uuid4(),
+        activity_id=activity_id,
+        object_type=CRMActivityObjectType.CONTACT.value,
+        object_id=contact_id,
+        occurred_at=datetime.now(UTC),
+    )
+
+    grouped = _activity_ids_by_contact([link])
+    assert grouped == {contact_id: {activity_id}}
