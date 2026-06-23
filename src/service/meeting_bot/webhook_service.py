@@ -158,6 +158,23 @@ class RecallMeetingRecordingWebhookService:
                     record.calendar_event_id
                 )
             )
+        logger.info(
+            "Processed Recall webhook",
+            extra={
+                "event": "recall_webhook_processed",
+                "recall_event": event_name,
+                "provider_session_id": bot_id,
+                "session_id": str(record.session_id),
+                "organisation_id": str(self.organisation_id),
+                "calendar_event_id": str(record.calendar_event_id),
+                "normalized_status": _enum_value(record.status),
+                "transcript_status": _enum_value(record.transcript_status),
+                "transcript_materialized": result.get("transcript_materialized"),
+                "summary_jobs_created": result.get("summary_jobs_created"),
+                "summary_jobs_skipped": result.get("summary_jobs_skipped"),
+                "transcript_materialization_error": result.get("transcript_materialization_error"),
+            },
+        )
         return result
 
     async def _materialize_recall_transcript_and_enqueue_summaries(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -138,7 +139,7 @@ async def test_webhook_response_accepts_string_backed_status_columns(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
+async def test_transcript_done_fetches_transcript_artifact(monkeypatch, caplog) -> None:
     organisation_id = uuid4()
     existing = MeetingRecordingSession(
         organisation_id=organisation_id,
@@ -200,7 +201,8 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
         },
     }
 
-    result = await service.process_recall_webhook(payload)
+    with caplog.at_level(logging.INFO, logger="src.service.meeting_bot.webhook_service"):
+        result = await service.process_recall_webhook(payload)
 
     assert result["status"] == "processed"
     kwargs = service.session_service.apply_webhook_update.await_args.kwargs
@@ -211,6 +213,21 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch) -> None:
     assert result["transcript_materialized"] is True
     assert result["summary_jobs_created"] == 1
     assert result["summary_jobs_skipped"] == 0
+    processed_logs = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "recall_webhook_processed"
+    ]
+    assert len(processed_logs) == 1
+    assert processed_logs[0].recall_event == "transcript.done"
+    assert processed_logs[0].provider_session_id == "bot_123"
+    assert processed_logs[0].organisation_id == str(organisation_id)
+    assert processed_logs[0].calendar_event_id == str(updated.calendar_event_id)
+    assert processed_logs[0].normalized_status == "COMPLETED"
+    assert processed_logs[0].transcript_status == "READY"
+    assert processed_logs[0].transcript_materialized is True
+    assert processed_logs[0].summary_jobs_created == 1
+    assert processed_logs[0].summary_jobs_skipped == 0
 
 
 @pytest.mark.asyncio
