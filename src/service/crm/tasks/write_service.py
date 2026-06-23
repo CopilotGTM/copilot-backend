@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
@@ -37,6 +38,13 @@ _ALLOWED_STATUSES = {"NOT_STARTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
 _ALLOWED_PRIORITIES = {priority.value for priority in CRMActivityPriority}
 
 
+@dataclass(frozen=True)
+class _PendingAssignmentNotification:
+    task: CRMTask
+    deal: CRMDeal | None
+    is_update: bool
+
+
 class TaskWriteService:
     """Write operations for user-created tasks."""
 
@@ -55,14 +63,17 @@ class TaskWriteService:
         self._reminders = TaskReminderService(session, organisation_id, actor_user_id)
         self._notifications = TaskNotificationService(session, organisation_id, actor_user_id)
         self._projection = ActivityFeedProjectionService(session, organisation_id)
+        self._pending_assignment_notifications: list[_PendingAssignmentNotification] = []
 
     async def close(self) -> None:
+        """Close the owned session when dependency cleanup calls the service."""
         try:
             await self.session.close()
         except Exception:
             logger.debug("TaskWriteService close exception", exc_info=True)
 
     async def create_task(self, payload: dict[str, Any], *, deal_id: UUID | None = None) -> CRMTask:
+        """Create one user-owned task row and queue post-commit assignee notification."""
         deal = await self._load_deal(deal_id) if deal_id else None
 
         task_type = self._normalize_enum(payload.get("task_type")) or CRMActivityType.TASK.value
@@ -145,17 +156,19 @@ class TaskWriteService:
         if reminder_cfg and reminder_cfg.get("enabled"):
             await self._reminders.create_task_reminder(task, reminder_cfg)
 
-        if external_assignee_email:
-            await self._notifications.send_external_assignment_email(task, deal, is_update=False)
+        if task.assigned_to_email:
+            self._queue_assignment_notification(task, deal, is_update=False)
 
         return task
 
     async def update_task(self, task_id: UUID, payload: dict[str, Any]) -> CRMTask:
+        """Update one editable task row and queue assignment/update notification after commit."""
         if not payload:
             raise TaskWriteServiceError("No fields to update", 400)
 
         task = await self._load_user_task(task_id)
         updated = False
+        assignment_changed = False
 
         if "subject" in payload:
             task.title = self._task_title_from_payload(
@@ -231,8 +244,8 @@ class TaskWriteService:
             else:
                 metadata.pop("assigned_to_public_user_id", None)
             updated = True
+            assignment_changed = True
 
-        external_assignee_changed = False
         if "external_assignee_email" in payload:
             new_ext_email = payload.get("external_assignee_email")
             if new_ext_email:
@@ -242,7 +255,7 @@ class TaskWriteService:
             else:
                 metadata.pop("assignee_kind", None)
             task.assigned_to_email = new_ext_email
-            external_assignee_changed = True
+            assignment_changed = True
             updated = True
         if "external_assignee_name" in payload:
             task.assigned_to_name = payload.get("external_assignee_name")
@@ -252,7 +265,7 @@ class TaskWriteService:
                     task.assigned_to_user_id = None
                     task.assigned_to_email = None
                     metadata.pop("assigned_to_public_user_id", None)
-                    external_assignee_changed = True
+                    assignment_changed = True
             updated = True
 
         if "deal_id" in payload:
@@ -320,21 +333,18 @@ class TaskWriteService:
             else:
                 await self._reminders.cancel_task_reminders(task.task_id)
 
-        if task.external_assignee_email:
-            if external_assignee_changed:
+        if task.assigned_to_email:
+            if assignment_changed:
                 assignment_deal = await self._load_deal(task.deal_id) if task.deal_id else None
-                await self._notifications.send_external_assignment_email(
-                    task, assignment_deal, is_update=False
-                )
+                self._queue_assignment_notification(task, assignment_deal, is_update=False)
             elif updated:
                 update_deal = await self._load_deal(task.deal_id) if task.deal_id else None
-                await self._notifications.send_external_assignment_email(
-                    task, update_deal, is_update=True
-                )
+                self._queue_assignment_notification(task, update_deal, is_update=True)
 
         return task
 
     async def delete_task(self, task_id: UUID) -> CRMTask:
+        """Soft-delete one editable task and cancel active reminders."""
         task = await self._load_user_task(task_id)
 
         await self._reminders.cancel_task_reminders(task.task_id)
@@ -353,10 +363,29 @@ class TaskWriteService:
         return task
 
     async def read_task_record(self, task_id: UUID) -> TaskReadRecord:
+        """Reload a task through the read service so API presenters get enriched fields."""
         record = await TaskReadService(self.session, self.organisation_id).get_task_by_id(task_id)
         if record is None:
             raise TaskWriteServiceError("Task not found", 404)
         return record
+
+    async def send_pending_assignment_notifications(self) -> None:
+        """Send queued assignment emails after the caller commits the task write."""
+        pending = self._pending_assignment_notifications
+        self._pending_assignment_notifications = []
+        for notification in pending:
+            await self._notifications.send_assignment_email(
+                notification.task,
+                notification.deal,
+                is_update=notification.is_update,
+            )
+
+    def _queue_assignment_notification(
+        self, task: CRMTask, deal: CRMDeal | None, *, is_update: bool
+    ) -> None:
+        self._pending_assignment_notifications.append(
+            _PendingAssignmentNotification(task=task, deal=deal, is_update=is_update)
+        )
 
     async def _load_deal(self, deal_id: UUID) -> CRMDeal:
         deal = await self.session.get(CRMDeal, deal_id)

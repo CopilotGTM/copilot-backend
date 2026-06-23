@@ -234,7 +234,7 @@ class EmailService:
         cc_email: str | None = None,
         is_update: bool = False,
     ) -> bool:
-        """Send task assignment or update notification to an external person."""
+        """Send task assignment or update notification to a task assignee."""
         action = "Updated" if is_update else "Assigned"
         subject = f"{self.app_name} - Task {action}: {task_subject}"
         preheader = f"{assigner_name} {'updated a task assigned to you' if is_update else 'assigned you a task'}"

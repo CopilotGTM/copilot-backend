@@ -1,4 +1,4 @@
-"""External task-assignment notification service."""
+"""Task-assignment notification service for user-created CRM tasks."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ logger = get_logger("task_notification_service")
 
 
 class TaskNotificationService:
-    """Validate external assignees and send best-effort assignment emails."""
+    """Validate assignees and send best-effort assignment emails."""
 
     def __init__(self, session: AsyncSession, organisation_id: UUID, actor_user_id: UUID):
         self.session = session
@@ -42,11 +42,13 @@ class TaskNotificationService:
                 400,
             )
 
-    async def send_external_assignment_email(
+    async def send_assignment_email(
         self, task: CRMTask, deal: CRMDeal | None, *, is_update: bool = False
     ) -> None:
-        """Send task assignment or update email to external assignee, CC the assigner."""
-        if not task.external_assignee_email:
+        """Send task assignment or update email to the task assignee, CC the assigner."""
+        recipient_email = task.external_assignee_email or task.assigned_to_email
+        recipient_name = task.external_assignee_name or task.assigned_to_name
+        if not recipient_email:
             return
 
         assigner_name = "Someone"
@@ -59,6 +61,8 @@ class TaskNotificationService:
                 assigner_email = str(actor.email)
         except Exception:
             logger.debug("Could not resolve assigner details", exc_info=True)
+        if assigner_email and assigner_email.lower() == recipient_email.lower():
+            assigner_email = None
 
         due_date_str = None
         if task.due_at:
@@ -70,8 +74,8 @@ class TaskNotificationService:
             from src.infra.auth.email_service import email_service
 
             await email_service.send_task_assignment_email(
-                to_email=task.external_assignee_email,
-                assignee_name=task.external_assignee_name,
+                to_email=recipient_email,
+                assignee_name=recipient_name,
                 assigner_name=assigner_name,
                 task_subject=task.title or "(no subject)",
                 task_body=task.description,
@@ -84,9 +88,9 @@ class TaskNotificationService:
             )
         except Exception:
             logger.warning(
-                "Failed to send external %s email for task %s to %s",
+                "Failed to send task %s email for task %s to %s",
                 "update" if is_update else "assignment",
                 task.task_id,
-                task.external_assignee_email,
+                recipient_email,
                 exc_info=True,
             )

@@ -445,6 +445,7 @@ async def create_task(
         deal_id = payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
+        await service.send_pending_assignment_notifications()
         record = await service.read_task_record(task.task_id)
         detail = present_task_detail(record)
         return Response.created_response(
@@ -489,6 +490,7 @@ async def create_deal_task(
         payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
+        await service.send_pending_assignment_notifications()
         record = await service.read_task_record(task.task_id)
         detail = present_task_detail(record)
         return Response.created_response(
@@ -530,6 +532,7 @@ async def update_task(
     try:
         task = await service.update_task(task_id, request.model_dump(exclude_unset=True))
         await service.session.commit()
+        await service.send_pending_assignment_notifications()
         record = await service.read_task_record(task.task_id)
         detail = present_task_detail(record)
         return Response.success_response(message="Task updated successfully", data=detail)

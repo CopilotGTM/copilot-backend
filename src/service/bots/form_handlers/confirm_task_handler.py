@@ -194,6 +194,7 @@ class ConfirmTaskFormHandler(BaseFormHandler):
                 service = TaskWriteService(session, org_id, user_id)
                 task = await service.create_task(write_payload, deal_id=deal_id)
                 await session.commit()
+                await service.send_pending_assignment_notifications()
 
                 task_title = task.subject or title
         except Exception:
