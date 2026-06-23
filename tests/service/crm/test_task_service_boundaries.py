@@ -79,6 +79,19 @@ def test_provider_task_writers_target_crm_tasks_not_activity_rows() -> None:
         assert "local_object_type=CRMSourceObjectType.ACTIVITY" not in source
 
 
+def test_salesforce_cdc_task_deletes_target_crm_tasks_not_activity_rows() -> None:
+    source = Path(
+        "src/workers/integrations_worker/tasks/crm/salesforce/salesforce_cdc_subscriber_task.py"
+    ).read_text()
+    task_delete_source = source.split("async def _soft_delete_task", 1)[1].split(
+        "async def _deactivate_user", 1
+    )[0]
+
+    assert "CRMTask" in task_delete_source
+    assert "select(CRMActivity)" not in task_delete_source
+    assert "CRMActivityType.TASK" not in task_delete_source
+
+
 def test_task_write_service_does_not_import_router_or_agent_layers() -> None:
     source = Path("src/service/crm/tasks/write_service.py").read_text()
 

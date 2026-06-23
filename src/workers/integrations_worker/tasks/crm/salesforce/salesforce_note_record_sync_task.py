@@ -25,6 +25,7 @@ from src.service.integrations.sync_history_manager import (
     SyncHistoryManager,
     datetime_now_naive,
 )
+from src.service.integrations.webhooks.salesforce.metadata import CONTENT_DOCUMENT_CDC_CHANNEL
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.client import send_integrations_task_async
 from src.workers.integrations_worker.config import TASK_LIMITS
@@ -50,7 +51,7 @@ def sync_salesforce_notes_task(
     organisation_id: str,
     integration_id: str,
     start_cdc_after_success: bool = False,
-    cdc_channel: str = "/data/ContentNoteChangeEvent",
+    cdc_channel: str = CONTENT_DOCUMENT_CDC_CHANNEL,
 ) -> dict[str, Any]:
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)

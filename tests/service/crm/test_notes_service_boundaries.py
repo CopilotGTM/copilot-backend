@@ -53,6 +53,25 @@ def test_provider_note_writers_target_crm_notes_not_activity_rows() -> None:
         assert "local_object_type=CRMSourceObjectType.ACTIVITY" not in source
 
 
+def test_salesforce_cdc_note_deletes_target_crm_notes_not_activity_rows() -> None:
+    source = Path(
+        "src/workers/integrations_worker/tasks/crm/salesforce/salesforce_cdc_subscriber_task.py"
+    ).read_text()
+    note_delete_source = source.split("async def _soft_delete_note", 1)[1].split(
+        "async def _soft_delete_note_by_content_document_link_id", 1
+    )[0]
+    link_delete_source = source.split("async def _soft_delete_note_by_content_document_link_id", 1)[
+        1
+    ].split("async def _mark_source_mapping_deleted", 1)[0]
+
+    assert "CRMNote" in note_delete_source
+    assert "CRMNote" in link_delete_source
+    assert "select(CRMActivity)" not in note_delete_source
+    assert "select(CRMActivity)" not in link_delete_source
+    assert "CRMActivityType.NOTE" not in note_delete_source
+    assert "CRMActivityType.NOTE" not in link_delete_source
+
+
 def test_notes_write_service_does_not_dispatch_insights() -> None:
     source = Path("src/service/crm/notes/write_service.py").read_text()
 

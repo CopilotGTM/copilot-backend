@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -38,7 +40,7 @@ def normalize_notes(
             external_id,
             {
                 "subject": _coerce_str(raw.get("Title")),
-                "body": _coerce_str(raw.get("Content")),
+                "body": _coerce_note_content(raw.get("Content")),
                 "owner_external_id": _coerce_str(raw.get("OwnerId")),
                 "source_created_at": _parse_salesforce_datetime(raw.get("CreatedDate")),
                 "source_modified_at": _parse_salesforce_datetime(raw.get("LastModifiedDate")),
@@ -124,6 +126,20 @@ def _coerce_str(value: Any) -> str | None:
         cleaned = value.strip()
         return cleaned or None
     return None
+
+
+def _coerce_note_content(value: Any) -> str | None:
+    cleaned = _coerce_str(value)
+    if cleaned is None:
+        return None
+
+    try:
+        decoded = base64.b64decode(cleaned, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return cleaned
+
+    stripped = decoded.strip()
+    return stripped or None
 
 
 def _parse_salesforce_datetime(value: Any) -> datetime | None:

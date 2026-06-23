@@ -10,8 +10,9 @@ ACCOUNT_CDC_CHANNEL = "/data/AccountChangeEvent"
 CONTACT_CDC_CHANNEL = "/data/ContactChangeEvent"
 USER_CDC_CHANNEL = "/data/UserChangeEvent"
 TASK_CDC_CHANNEL = "/data/TaskChangeEvent"
-CONTENT_NOTE_CDC_CHANNEL = "/data/ContentNoteChangeEvent"
+CONTENT_DOCUMENT_CDC_CHANNEL = "/data/ContentDocumentChangeEvent"
 CONTENT_DOCUMENT_LINK_CDC_CHANNEL = "/data/ContentDocumentLinkChangeEvent"
+_LEGACY_CONTENT_NOTE_CDC_CHANNEL = "/data/ContentNoteChangeEvent"
 _DEFAULT_PUBSUB_ENDPOINT = "api.pubsub.salesforce.com:443"
 
 SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
@@ -29,9 +30,9 @@ SALESFORCE_CDC_OBJECTS: dict[str, dict[str, str]] = {
         "default_enabled": "false",
     },
     "task": {"channel": TASK_CDC_CHANNEL, "object_name": "Task", "id_prefix": "00T"},
-    "content_note": {
-        "channel": CONTENT_NOTE_CDC_CHANNEL,
-        "object_name": "ContentNote",
+    "content_document": {
+        "channel": CONTENT_DOCUMENT_CDC_CHANNEL,
+        "object_name": "ContentDocument",
         "id_prefix": "069",
         "default_enabled": "false",
     },
@@ -149,7 +150,14 @@ def _object_metadata(
 ) -> dict[str, object]:
     metadata = dict(integration.connection_metadata or {})
     cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
-    return dict(cdc_metadata.get(object_key) or {})
+    object_metadata = dict(cdc_metadata.get(object_key) or {})
+    if object_metadata or object_key != "content_document":
+        return object_metadata
+
+    legacy_metadata = dict(cdc_metadata.get("content_note") or {})
+    if legacy_metadata.get("channel") == _LEGACY_CONTENT_NOTE_CDC_CHANNEL:
+        legacy_metadata["channel"] = CONTENT_DOCUMENT_CDC_CHANNEL
+    return legacy_metadata
 
 
 def _validate_pubsub_endpoint(pubsub_endpoint: str) -> str:

@@ -17,6 +17,7 @@ from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import is_task_locked
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.service.integrations.webhooks.salesforce.metadata import (
+    CONTENT_DOCUMENT_CDC_CHANNEL,
     SALESFORCE_CDC_OBJECTS,
 )
 from src.workers.integrations_worker.celery_app import app
@@ -121,9 +122,18 @@ def _enabled_salesforce_cdc_channels(metadata: dict[str, Any]) -> list[str]:
     channels: list[str] = []
     for object_key, config in SALESFORCE_CDC_OBJECTS.items():
         object_metadata = dict(cdc_metadata.get(object_key) or {})
+        if object_key == "content_document" and not object_metadata:
+            object_metadata = _legacy_content_note_metadata(cdc_metadata)
         if object_metadata.get("enabled") is True:
             channels.append(str(object_metadata.get("channel") or config["channel"]))
     return channels
+
+
+def _legacy_content_note_metadata(cdc_metadata: dict[str, Any]) -> dict[str, Any]:
+    object_metadata = dict(cdc_metadata.get("content_note") or {})
+    if object_metadata.get("channel") == "/data/ContentNoteChangeEvent":
+        object_metadata["channel"] = CONTENT_DOCUMENT_CDC_CHANNEL
+    return object_metadata
 
 
 def _has_salesforce_cdc_identity(

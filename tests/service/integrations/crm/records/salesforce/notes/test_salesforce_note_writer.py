@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import CRMNote
 from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.notes import note_writer
 from src.service.integrations.crm.records.salesforce.notes.note_types import (
@@ -17,6 +17,10 @@ from src.service.integrations.crm.records.salesforce.notes.note_writer import (
     _ASYNC_PG_BIND_PARAMETER_LIMIT,
     SalesforceNoteWriter,
 )
+
+
+def _scalar_result(rows: list[object]) -> SimpleNamespace:
+    return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
 
 
 def _normalized_note(*, external_id: str, deal_external_id: str | None) -> NormalizedSalesforceNote:
@@ -61,26 +65,28 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     company_id = uuid4()
     owner_id = uuid4()
 
-    reactivated = CRMActivity(
-        activity_id=uuid4(),
+    reactivated = CRMNote(
+        note_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="069NOTE",
-        activity_type=CRMActivityType.NOTE.value,
+        title="Old note",
+        body="Old body",
         is_deleted=True,
     )
-    stale = CRMActivity(
-        activity_id=uuid4(),
+    stale = CRMNote(
+        note_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="069OLD",
-        activity_type=CRMActivityType.NOTE.value,
+        title="Old stale note",
+        body="Old stale body",
         is_deleted=False,
     )
 
     session = AsyncMock()
     session.add = MagicMock()
-    session.execute = AsyncMock(side_effect=[MagicMock(rowcount=1), MagicMock(rowcount=1)])
+    session.execute = AsyncMock(
+        side_effect=[MagicMock(rowcount=1), _scalar_result([stale.note_id]), MagicMock(rowcount=1)]
+    )
     session.flush = AsyncMock()
 
     writer = SalesforceNoteWriter(
@@ -92,6 +98,8 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     mapping_helper.upsert_integration_mapping = AsyncMock()
     mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
     writer.source_mappings = mapping_helper
+    writer._projection.upsert_note = AsyncMock()  # type: ignore[method-assign]
+    writer._projection.soft_delete_activity_projection = AsyncMock()  # type: ignore[method-assign]
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"069NOTE": reactivated, "069OLD": stale}
     )
@@ -120,27 +128,29 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert result.notes_reactivated == 1
     assert result.notes_deactivated == 1
     assert reactivated.is_deleted is False
-    assert reactivated.owner_id == owner_id
+    assert reactivated.author_user_id == owner_id
+    assert reactivated.author_name == "Alex Morgan"
+    assert reactivated.author_email == "alex@example.com"
     assert reactivated.deal_id == deal_id
-    assert reactivated.contact_id == contact_id
-    assert reactivated.company_id == company_id
-    assert reactivated.related_local_id == deal_id
-    assert reactivated.related_name == "Big Deal"
+    assert reactivated.note_metadata["contact_id"] == str(contact_id)
+    assert reactivated.note_metadata["company_id"] == str(company_id)
+    assert reactivated.note_metadata["related_local_id"] == str(deal_id)
+    assert reactivated.note_metadata["related_name"] == "Big Deal"
     assert stale.is_deleted is False
     mapping_helper.upsert_integration_mapping.assert_not_awaited()
     mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
     assert [row.external_id for row in mapped_rows] == ["069NOTE"]
     assert mapped_rows[0].external_object_type == CRMSourceObjectType.NOTE
-    assert mapped_rows[0].local_object_type == CRMSourceObjectType.ACTIVITY
-    assert mapped_rows[0].local_object_id == reactivated.activity_id
+    assert mapped_rows[0].local_object_type == CRMSourceObjectType.NOTE
+    assert mapped_rows[0].local_object_id == reactivated.note_id
 
 
 @pytest.mark.asyncio
 async def test_writer_upserts_note_link_source_mapping_for_content_document_link() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
-    activity_id = uuid4()
+    note_id = uuid4()
 
     session = AsyncMock()
     session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
@@ -156,7 +166,7 @@ async def test_writer_upserts_note_link_source_mapping_for_content_document_link
     mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
-    writer._activity_ids_by_external = {"069NOTE": activity_id}
+    writer._note_ids_by_external = {"069NOTE": note_id}
 
     await writer.apply(
         normalized=[
@@ -182,19 +192,19 @@ async def test_writer_upserts_note_link_source_mapping_for_content_document_link
         CRMSourceObjectType.NOTE_LINK,
     ]
     assert mapped_rows[1].external_id == "06ALINK"
-    assert mapped_rows[1].local_object_type == CRMSourceObjectType.ACTIVITY
+    assert mapped_rows[1].local_object_type == CRMSourceObjectType.NOTE
 
 
 @pytest.mark.asyncio
 async def test_writer_single_record_mode_does_not_soft_delete_unrelated_rows() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
-    active = CRMActivity(
-        activity_id=uuid4(),
+    active = CRMNote(
+        note_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="069OLD",
-        activity_type=CRMActivityType.NOTE.value,
+        title="Active note",
+        body="Active body",
         is_deleted=False,
     )
 
@@ -289,7 +299,7 @@ async def test_writer_uses_partial_index_bulk_upsert_for_current_batch() -> None
 
     sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
     assert "ON CONFLICT" in sql
-    assert "ON CONFLICT (activity_id)" in sql
+    assert "ON CONFLICT (note_id)" in sql
     assert "ON CONSTRAINT" not in sql
     assert result.notes_created == 1
 
@@ -317,10 +327,9 @@ async def test_writer_splits_bulk_upsert_before_asyncpg_bind_parameter_limit() -
             company_hit=None,
             related_local_id=None,
             related_name=None,
-            now=now,
             last_seen_at=now,
         )
-        for i in range(1000)
+        for i in range(2000)
     ]
 
     await writer._bulk_upsert(rows)
@@ -359,9 +368,8 @@ async def test_writer_upsert_does_not_clear_columns_outside_salesforce_note_mapp
 
     sql = str(session.execute.await_args_list[0].args[0].compile(dialect=writer._pg_dialect()))
     assert "created_by_user_id = excluded.created_by_user_id" not in sql
-    assert "attendees = excluded.attendees" not in sql
-    assert "is_all_day = excluded.is_all_day" not in sql
-    assert "direction = excluded.direction" not in sql
+    assert "body_format = excluded.body_format" not in sql
+    assert "visibility = excluded.visibility" in sql
 
 
 @pytest.mark.asyncio
@@ -371,7 +379,8 @@ async def test_writer_deactivates_rows_older_than_snapshot() -> None:
     snapshot_started_at = datetime.now(UTC)
 
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=MagicMock(rowcount=2))
+    note_ids = [uuid4(), uuid4()]
+    session.execute = AsyncMock(side_effect=[_scalar_result(note_ids), MagicMock(rowcount=2)])
     session.flush = AsyncMock()
 
     writer = SalesforceNoteWriter(
@@ -379,6 +388,7 @@ async def test_writer_deactivates_rows_older_than_snapshot() -> None:
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    writer._projection.soft_delete_activity_projection = AsyncMock()  # type: ignore[method-assign]
     writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
 
     result = await writer.apply(
@@ -394,8 +404,9 @@ async def test_writer_deactivates_rows_older_than_snapshot() -> None:
     assert result.notes_deactivated == 2
     statement = session.execute.await_args_list[0].args[0]
     sql = str(statement.compile(dialect=writer._pg_dialect()))
-    assert "last_seen_at <" in sql
-    assert "last_seen_at IS NULL" in sql
+    assert "note_metadata" in sql
+    assert "<" in sql
+    assert "IS NULL" in sql
     assert "is_deleted = false" in sql
 
 
@@ -431,7 +442,7 @@ async def test_writer_deactivates_missing_rows_only_for_scoped_deals() -> None:
     assert result.notes_deactivated == 1
     statement = session.execute.await_args_list[0].args[0]
     sql = str(statement.compile(dialect=writer._pg_dialect()))
-    assert "crm_activities.deal_id IN" in sql
+    assert "crm_notes.deal_id IN" in sql
 
 
 @pytest.mark.asyncio
@@ -473,12 +484,12 @@ async def test_load_existing_rows_chunks_local_id_lookup(
     organisation_id = uuid4()
     integration_id = uuid4()
     rows = [
-        CRMActivity(
-            activity_id=uuid4(),
+        CRMNote(
+            note_id=uuid4(),
             organisation_id=organisation_id,
             integration_id=integration_id,
-            external_id=f"069NOTE{index}",
-            activity_type=CRMActivityType.NOTE.value,
+            title=f"Note {index}",
+            body=f"Body {index}",
             is_deleted=False,
         )
         for index in range(3)
@@ -499,7 +510,7 @@ async def test_load_existing_rows_chunks_local_id_lookup(
     )
     writer.source_mappings = MagicMock()
     writer.source_mappings.load_local_id_map = AsyncMock(
-        return_value={f"069NOTE{index}": row.activity_id for index, row in enumerate(rows)}
+        return_value={f"069NOTE{index}": row.note_id for index, row in enumerate(rows)}
     )
     monkeypatch.setattr(note_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
 
@@ -517,12 +528,21 @@ async def test_deactivate_missing_chunks_scoped_deal_ids(
     integration_id = uuid4()
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[MagicMock(rowcount=2), MagicMock(rowcount=1)])
+    note_ids = [uuid4(), uuid4(), uuid4()]
+    session.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(note_ids[:2]),
+            MagicMock(rowcount=2),
+            _scalar_result(note_ids[2:]),
+            MagicMock(rowcount=1),
+        ]
+    )
     writer = SalesforceNoteWriter(
         session=session,
         organisation_id=organisation_id,
         integration_id=integration_id,
     )
+    writer._projection.soft_delete_activity_projection = AsyncMock()  # type: ignore[method-assign]
     monkeypatch.setattr(note_writer, "LOCAL_ID_QUERY_CHUNK_SIZE", 2)
 
     deactivated = await writer._deactivate_missing(
@@ -531,4 +551,4 @@ async def test_deactivate_missing_chunks_scoped_deal_ids(
     )
 
     assert deactivated == 3
-    assert session.execute.await_count == 2
+    assert session.execute.await_count == 4

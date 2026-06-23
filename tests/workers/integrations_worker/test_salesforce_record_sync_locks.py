@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from src.service.integrations.crm.records.salesforce.tasks.task_types import TaskSyncResult
+from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.tasks.crm.salesforce import (
     salesforce_note_record_sync_task,
     salesforce_task_record_sync_task,
@@ -41,7 +42,7 @@ def test_salesforce_task_sync_skips_when_same_integration_lock_is_held(monkeypat
     assert result == {"status": "skipped", "reason": "already_running"}
     assert captured == {
         "lock_key": f"salesforce_record_sync:task:{org_id}:{integration_id}",
-        "ttl": 3960,
+        "ttl": TASK_LIMITS["integrations.sync_salesforce_tasks"]["hard"] + 300,
     }
 
 

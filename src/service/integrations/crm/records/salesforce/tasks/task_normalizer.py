@@ -112,12 +112,8 @@ def _normalize_status(value: Any) -> str | None:
     canonical = raw.strip().lower()
     if canonical in {"completed", "closed"}:
         return CRMActivityStatus.COMPLETED.value
-    if canonical in {"in progress", "started"}:
+    if canonical in {"in progress", "started", "waiting on someone else"}:
         return CRMActivityStatus.IN_PROGRESS.value
-    if canonical in {"waiting on someone else"}:
-        return CRMActivityStatus.WAITING.value
-    if canonical in {"deferred"}:
-        return CRMActivityStatus.DEFERRED.value
     if canonical in {"cancelled", "canceled"}:
         return CRMActivityStatus.CANCELLED.value
     return CRMActivityStatus.NOT_STARTED.value
