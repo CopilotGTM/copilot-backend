@@ -7,12 +7,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityType,
     CRMCompany,
     CRMContact,
     CRMDeal,
+    CRMNote,
     CRMSourceObjectType,
+    CRMTask,
     CRMUser,
 )
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_client import (
@@ -290,15 +290,14 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
         (
             "_soft_delete_task",
             "external_id",
-            lambda org_id, int_id, local_id: CRMActivity(
+            lambda org_id, int_id, local_id: CRMTask(
                 organisation_id=org_id,
                 integration_id=int_id,
-                activity_id=local_id,
-                external_id="provider-id",
-                activity_type=CRMActivityType.TASK.value,
+                task_id=local_id,
+                title="Follow up",
             ),
             CRMSourceObjectType.TASK,
-            "crm_activities.activity_id",
+            "crm_tasks.task_id",
             ("is_deleted", True),
         ),
         (
@@ -318,29 +317,29 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
         (
             "_soft_delete_note",
             "external_id",
-            lambda org_id, int_id, local_id: CRMActivity(
+            lambda org_id, int_id, local_id: CRMNote(
                 organisation_id=org_id,
                 integration_id=int_id,
-                activity_id=local_id,
-                external_id="provider-id",
-                activity_type=CRMActivityType.NOTE.value,
+                note_id=local_id,
+                title="QBR note",
+                body="Discussed renewal.",
             ),
             CRMSourceObjectType.NOTE,
-            "crm_activities.activity_id",
+            "crm_notes.note_id",
             ("is_deleted", True),
         ),
         (
             "_soft_delete_note_by_content_document_link_id",
             "content_document_link_id",
-            lambda org_id, int_id, local_id: CRMActivity(
+            lambda org_id, int_id, local_id: CRMNote(
                 organisation_id=org_id,
                 integration_id=int_id,
-                activity_id=local_id,
-                external_id="provider-id",
-                activity_type=CRMActivityType.NOTE.value,
+                note_id=local_id,
+                title="QBR note",
+                body="Discussed renewal.",
             ),
             CRMSourceObjectType.NOTE_LINK,
-            "crm_activities.activity_id",
+            "crm_notes.note_id",
             ("is_deleted", True),
         ),
     ],
@@ -396,6 +395,146 @@ async def test_salesforce_cdc_delete_helpers_resolve_source_mapping_before_local
 
 
 @pytest.mark.asyncio
+async def test_deleted_source_id_resolution_falls_back_to_already_deleted_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    local_id = uuid4()
+    calls: list[dict[str, object]] = []
+
+    class FakeMappingHelper:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.kwargs = kwargs
+
+        async def mark_external_ids_deleted(self, *, object_type, external_ids):  # noqa: ANN001
+            calls.append(
+                {
+                    "method": "mark",
+                    "object_type": object_type,
+                    "external_ids": list(external_ids),
+                    "provider": self.kwargs["provider"],
+                }
+            )
+            return {}
+
+        async def load_local_id_map(
+            self,
+            *,
+            object_type,
+            external_ids,
+            include_deleted,
+        ):  # noqa: ANN001
+            calls.append(
+                {
+                    "method": "load",
+                    "object_type": object_type,
+                    "external_ids": list(external_ids),
+                    "include_deleted": include_deleted,
+                    "provider": self.kwargs["provider"],
+                }
+            )
+            return {"provider-id": local_id}
+
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "CRMSourceMappingHelper",
+        FakeMappingHelper,
+    )
+
+    resolved = await salesforce_cdc_subscriber_task._resolve_deleted_source_id(
+        session=AsyncMock(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        object_type=CRMSourceObjectType.TASK,
+        external_id="provider-id",
+    )
+
+    assert resolved == local_id
+    assert calls == [
+        {
+            "method": "mark",
+            "object_type": CRMSourceObjectType.TASK,
+            "external_ids": ["provider-id"],
+            "provider": "salesforce",
+        },
+        {
+            "method": "load",
+            "object_type": CRMSourceObjectType.TASK,
+            "external_ids": ["provider-id"],
+            "include_deleted": True,
+            "provider": "salesforce",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("function_name", "id_kwarg", "object_type", "projection_column"),
+    [
+        (
+            "_soft_delete_task",
+            "external_id",
+            CRMSourceObjectType.TASK,
+            "crm_activities.activity_id",
+        ),
+        (
+            "_soft_delete_note",
+            "external_id",
+            CRMSourceObjectType.NOTE,
+            "crm_activities.activity_id",
+        ),
+        (
+            "_soft_delete_note_by_content_document_link_id",
+            "content_document_link_id",
+            CRMSourceObjectType.NOTE_LINK,
+            "crm_activities.activity_id",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_salesforce_cdc_delete_helpers_tombstone_projection_when_source_row_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    function_name: str,
+    id_kwarg: str,
+    object_type: CRMSourceObjectType,
+    projection_column: str,
+) -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    local_id = uuid4()
+    session = _FakeDeleteSession(None)
+    _FakeDeleteMappingHelper.calls = []
+    _FakeDeleteMappingHelper.local_id = local_id
+
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "CRMSourceMappingHelper",
+        _FakeDeleteMappingHelper,
+    )
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "acquire_org_async_session",
+        lambda _org_id: _acquire_delete_session(session),
+    )
+
+    await getattr(salesforce_cdc_subscriber_task, function_name)(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        **{id_kwarg: "provider-id"},
+    )
+
+    assert _FakeDeleteMappingHelper.calls == [
+        {
+            "provider": "salesforce",
+            "object_type": object_type,
+            "external_id": "provider-id",
+        }
+    ]
+    assert any(projection_column in str(statement) for statement in session.statements)
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
 async def test_content_document_link_delete_soft_deletes_note_by_document_id_when_no_links_remain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,6 +558,11 @@ async def test_content_document_link_delete_soft_deletes_note_by_document_id_whe
                 "ContentDocumentId": "069xx0000000001AAA",
                 "LinkedEntityId": "006xx0000000001AAA",
             }
+
+        async def fetch_one_by_note_id(self, note_id: str, *, linked_entity_ids):
+            assert note_id == "069xx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA"]
+            return []
 
     class FakeNoteService:
         async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
@@ -456,6 +600,88 @@ async def test_content_document_link_delete_soft_deletes_note_by_document_id_whe
     )
 
     assert deleted == ["069xx0000000001AAA"]
+
+
+@pytest.mark.asyncio
+async def test_content_document_link_delete_persists_note_when_another_scoped_link_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    persisted: list[list[dict[str, str]]] = []
+
+    class FakeNotesFetcher:
+        def __init__(self, *, token_info, instance_url):  # noqa: ANN001
+            pass
+
+        async def fetch_one_by_link_id(self, link_id: str, *, linked_entity_ids):
+            assert link_id == "06Axx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA", "003xx0000000001AAA"]
+            return []
+
+        async def fetch_link_by_id(self, link_id: str):
+            assert link_id == "06Axx0000000001AAA"
+            return {
+                "Id": link_id,
+                "ContentDocumentId": "069xx0000000001AAA",
+                "LinkedEntityId": "006xx0000000001AAA",
+            }
+
+        async def fetch_one_by_note_id(self, note_id: str, *, linked_entity_ids):
+            assert note_id == "069xx0000000001AAA"
+            assert linked_entity_ids == ["006xx0000000001AAA", "003xx0000000001AAA"]
+            return [
+                {
+                    "Id": "06Axx0000000002AAA",
+                    "ContentDocumentId": note_id,
+                    "LinkedEntityId": "003xx0000000001AAA",
+                }
+            ]
+
+    class FakeNoteService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def _load_linked_entity_ids(self, organisation_id, integration_id):  # noqa: ANN001
+            return ["006xx0000000001AAA", "003xx0000000001AAA"]
+
+        async def persist_single_note(self, **kwargs):
+            persisted.append(kwargs["raw_notes"])
+
+    async def fail_delete(**_kwargs):
+        raise AssertionError("remaining scoped links must keep the note active")
+
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforceNotesFetcher", FakeNotesFetcher)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceNoteRecordSyncService",
+        FakeNoteService,
+    )
+    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_soft_delete_note", fail_delete)
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "_soft_delete_note_by_content_document_link_id",
+        fail_delete,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="06Axx0000000001AAA",
+        change_type="DELETE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/ContentDocumentLinkChangeEvent",
+    )
+
+    assert persisted == [
+        [
+            {
+                "Id": "06Axx0000000002AAA",
+                "ContentDocumentId": "069xx0000000001AAA",
+                "LinkedEntityId": "003xx0000000001AAA",
+            }
+        ]
+    ]
 
 
 @pytest.mark.asyncio
@@ -683,7 +909,7 @@ async def test_process_user_delete_deactivates_crm_user_without_fetch(
 
 
 @pytest.mark.asyncio
-async def test_process_content_note_record_change_fetches_and_persists_note(
+async def test_process_content_document_record_change_fetches_and_persists_note(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     org_id = uuid4()
@@ -722,7 +948,7 @@ async def test_process_content_note_record_change_fetches_and_persists_note(
         record_id="069xx0000000001AAA",
         change_type="UPDATE",
         instance_url="https://acme.my.salesforce.com",
-        channel="/data/ContentNoteChangeEvent",
+        channel="/data/ContentDocumentChangeEvent",
     )
 
     assert calls[-1]["persist"]["raw_notes"][0]["Id"] == "069xx0000000001AAA"
@@ -743,7 +969,7 @@ async def test_replay_repair_routes_task_and_note_channels_to_matching_full_sync
 
     for channel in (
         "/data/TaskChangeEvent",
-        "/data/ContentNoteChangeEvent",
+        "/data/ContentDocumentChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ):
         await salesforce_cdc_subscriber_task._enqueue_repair_sync(
@@ -759,7 +985,7 @@ async def test_replay_repair_routes_task_and_note_channels_to_matching_full_sync
     ]
     assert [entry["kwargs"]["cdc_channel"] for entry in queued] == [
         "/data/TaskChangeEvent",
-        "/data/ContentNoteChangeEvent",
+        "/data/ContentDocumentChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ]
 

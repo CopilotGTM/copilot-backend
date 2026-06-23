@@ -59,3 +59,19 @@ def test_normalize_notes_skips_rows_without_document_id() -> None:
 
     assert normalized == []
     assert skipped == 1
+
+
+def test_normalize_notes_decodes_salesforce_content_body() -> None:
+    normalized, skipped = normalize_notes(
+        [
+            {
+                "ContentDocumentId": "069NOTE",
+                "LinkedEntityId": "006OPPTY",
+                "Title": "QBR summary",
+                "Content": "VGFsa2VkIGFib3V0IHJlbmV3YWwgYW5kIHByaWNpbmcu",
+            }
+        ]
+    )
+
+    assert skipped == 0
+    assert normalized[0].body == "Talked about renewal and pricing."

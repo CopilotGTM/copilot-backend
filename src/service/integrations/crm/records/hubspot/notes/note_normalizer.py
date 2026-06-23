@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -57,10 +58,16 @@ def _normalize_one(raw: object) -> NormalizedHubSpotNote | None:
     normalized_properties["associated_contact_ids"] = _all_association_ids(raw, "contacts")
     normalized_properties["associated_company_ids"] = _all_association_ids(raw, "companies")
 
+    body = _coerce_str(properties.get("hs_note_body"))
+    title = _derive_note_title(body)
+
     return NormalizedHubSpotNote(
         external_id=external_id,
-        subject=None,
-        body=_coerce_str(properties.get("hs_note_body")),
+        subject=title,
+        body=body,
+        title=title,
+        body_format="html" if body else "plain_text",
+        attachment_ids=_split_hubspot_ids(properties.get("hs_attachment_ids")),
         activity_subtype="HUBSPOT_NOTE",
         owner_external_id=_coerce_id(properties.get("hubspot_owner_id")),
         deal_external_id=deal_external_id,
@@ -121,6 +128,31 @@ def _all_association_ids(raw: dict[str, Any], key: str) -> list[str]:
             continue
         seen.add(candidate)
         ids.append(candidate)
+    return ids
+
+
+def _derive_note_title(body: str | None) -> str | None:
+    if body is None:
+        return None
+    without_tags = re.sub(r"<[^>]+>", " ", body)
+    compact = " ".join(without_tags.split())
+    if not compact:
+        return None
+    return compact[:80].rstrip()
+
+
+def _split_hubspot_ids(value: Any) -> list[str]:
+    raw = _coerce_str(value)
+    if raw is None:
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace(";", ",").split(","):
+        cleaned = part.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        ids.append(cleaned)
     return ids
 
 

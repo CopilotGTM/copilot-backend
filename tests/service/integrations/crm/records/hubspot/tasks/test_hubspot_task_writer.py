@@ -6,11 +6,12 @@ rows, and single-record incremental refreshes, which must only upsert one task.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
@@ -27,8 +28,9 @@ def _normalized_task(*, external_id: str, deal_external_id: str | None) -> Norma
         subject="Follow up",
         body="Call customer",
         status="NOT_STARTED",
-        priority=None,
+        priority="HIGH",
         activity_subtype="HUBSPOT_TASK",
+        task_type="TODO",
         owner_external_id="owner-1",
         due_date=None,
         completed_date=None,
@@ -53,25 +55,66 @@ def _mock_source_mappings(writer: HubSpotTaskWriter) -> MagicMock:
 
 
 @pytest.mark.asyncio
+async def test_stale_task_snapshot_skips_without_writing_read_only_aliases() -> None:
+    """Older provider snapshots should not crash by assigning CRMTask alias properties."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMTask(
+        task_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        title="Existing task",
+        source_modified_at=datetime(2026, 6, 20, 10, tzinfo=UTC),
+        is_deleted=False,
+    )
+    incoming = _normalized_task(external_id="task-1", deal_external_id=None)
+    object.__setattr__(
+        incoming,
+        "source_modified_at",
+        datetime(2026, 6, 20, 9, tzinfo=UTC),
+    )
+
+    session = AsyncMock()
+    session.flush = AsyncMock()
+    writer = HubSpotTaskWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"task-1": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
+    writer._projection.upsert_task = AsyncMock()
+
+    result = await writer.apply_single(
+        task=incoming,
+        user_map={},
+        deal_map={},
+        contact_map={},
+        company_map={},
+    )
+
+    assert result.tasks_skipped_stale == 1
+    writer._projection.upsert_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_single_record_apply_does_not_soft_delete_unrelated_rows() -> None:
     """Single-record incremental refresh must not tombstone unrelated tasks."""
     organisation_id = uuid4()
     integration_id = uuid4()
 
-    updated = CRMActivity(
-        activity_id=uuid4(),
+    updated = CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="task-1",
-        activity_type=CRMActivityType.TASK.value,
+        title="Existing task",
         is_deleted=False,
     )
-    unrelated = CRMActivity(
-        activity_id=uuid4(),
+    unrelated = CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="task-2",
-        activity_type=CRMActivityType.TASK.value,
+        title="Unrelated task",
         is_deleted=False,
     )
 
@@ -88,6 +131,8 @@ async def test_single_record_apply_does_not_soft_delete_unrelated_rows() -> None
         return_value={"task-1": updated, "task-2": unrelated}
     )
     _mock_source_mappings(writer)
+    writer._projection.upsert_task = AsyncMock()
+    writer._projection.soft_delete_activity_projection = AsyncMock()
 
     result = await writer.apply_single(
         task=_normalized_task(external_id="task-1", deal_external_id=None),
@@ -110,20 +155,18 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     deal_id = uuid4()
     owner_id = uuid4()
 
-    reactivated = CRMActivity(
-        activity_id=uuid4(),
+    reactivated = CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="task-1",
-        activity_type=CRMActivityType.TASK.value,
+        title="Existing task",
         is_deleted=True,
     )
-    stale = CRMActivity(
-        activity_id=uuid4(),
+    stale = CRMTask(
+        task_id=uuid4(),
         organisation_id=organisation_id,
         integration_id=integration_id,
-        external_id="task-2",
-        activity_type=CRMActivityType.TASK.value,
+        title="Missing task",
         is_deleted=False,
     )
 
@@ -140,6 +183,8 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
         return_value={"task-1": reactivated, "task-2": stale}
     )
     mapping_helper = _mock_source_mappings(writer)
+    writer._projection.upsert_task = AsyncMock()
+    writer._projection.soft_delete_activity_projection = AsyncMock()
 
     result = await writer.apply(
         normalized=[_normalized_task(external_id="task-1", deal_external_id="deal-1")],
@@ -159,17 +204,22 @@ async def test_writer_reactivates_existing_rows_and_soft_deletes_missing_rows() 
     assert result.tasks_reactivated == 1
     assert result.tasks_deactivated == 1
     assert reactivated.is_deleted is False
-    assert reactivated.owner_id == owner_id
+    assert reactivated.owner_user_id == owner_id
+    assert reactivated.assigned_to_user_id == owner_id
     assert reactivated.deal_id == deal_id
-    assert reactivated.related_local_id == deal_id
-    assert reactivated.related_name == "Big Deal"
+    assert reactivated.priority == "HIGH"
+    assert reactivated.task_metadata["hs_task_type"] == "TODO"
+    assert reactivated.task_metadata["related_local_id"] == str(deal_id)
+    assert reactivated.task_metadata["related_name"] == "Big Deal"
     assert stale.is_deleted is True
+    writer._projection.upsert_task.assert_awaited_once_with(reactivated)
+    writer._projection.soft_delete_activity_projection.assert_awaited_once_with(stale.task_id)
     mapping_helper.upsert_integration_mapping.assert_awaited_once()
     assert mapping_helper.upsert_integration_mapping.call_args.kwargs["external_object_type"] == (
         CRMSourceObjectType.TASK
     )
     assert mapping_helper.upsert_integration_mapping.call_args.kwargs["local_object_type"] == (
-        CRMSourceObjectType.ACTIVITY
+        CRMSourceObjectType.TASK
     )
     mapping_helper.mark_missing_deleted.assert_awaited_once_with(
         object_type=CRMSourceObjectType.TASK,

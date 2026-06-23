@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityType,
     CRMSourceObjectType,
+    CRMTask,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.tasks.task_sync_service import (
     HubSpotTaskRecordSyncService,
@@ -119,28 +118,26 @@ class HubSpotTaskWebhookHandler:
                 object_type=CRMSourceObjectType.TASK,
                 external_ids=[external_id],
             )
-            activity_id = local_ids.get(external_id.strip())
-            if activity_id is None:
+            task_id = local_ids.get(external_id.strip())
+            if task_id is None:
                 return False
 
-            statement = select(CRMActivity).where(
-                # Tasks share crm_activities with notes and other activity
-                # families, so type filtering prevents cross-family tombstones.
-                col(CRMActivity.organisation_id) == organisation_id,
-                col(CRMActivity.integration_id) == integration_id,
-                col(CRMActivity.activity_id) == activity_id,
-                col(CRMActivity.activity_type).in_(
-                    [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-                ),
-                col(CRMActivity.is_deleted).is_(False),
+            statement = select(CRMTask).where(
+                col(CRMTask.organisation_id) == organisation_id,
+                col(CRMTask.integration_id) == integration_id,
+                col(CRMTask.task_id) == task_id,
+                col(CRMTask.is_deleted).is_(False),
             )
             task = (await session.execute(statement)).scalars().first()
             if task is None:
                 return False
 
             task.is_deleted = True
-            task.synced_at = datetime.now(UTC)
             session.add(task)
+            await ActivityFeedProjectionService(
+                session,
+                organisation_id,
+            ).soft_delete_activity_projection(task.task_id)
             await session.commit()
             return True
         return False

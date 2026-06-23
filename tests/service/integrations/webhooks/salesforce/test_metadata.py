@@ -52,7 +52,10 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
                 "contact": {"enabled": True, "channel": "/data/ContactChangeEvent"},
                 "user": {"enabled": True, "channel": "/data/UserChangeEvent"},
                 "task": {"enabled": True, "channel": "/data/TaskChangeEvent"},
-                "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
+                "content_document": {
+                    "enabled": True,
+                    "channel": "/data/ContentDocumentChangeEvent",
+                },
                 "content_document_link": {
                     "enabled": True,
                     "channel": "/data/ContentDocumentLinkChangeEvent",
@@ -69,7 +72,7 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
         "contact",
         "user",
         "task",
-        "content_note",
+        "content_document",
         "content_document_link",
     ]
     assert [entry.channel for entry in metadata] == [
@@ -78,7 +81,7 @@ def test_salesforce_cdc_metadata_reads_all_enabled_channels() -> None:
         "/data/ContactChangeEvent",
         "/data/UserChangeEvent",
         "/data/TaskChangeEvent",
-        "/data/ContentNoteChangeEvent",
+        "/data/ContentDocumentChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ]
 
@@ -94,7 +97,10 @@ def test_salesforce_cdc_metadata_resolves_task_and_note_channels() -> None:
             "salesforce_organization_id": "00Dxx0000000001",
             "salesforce_cdc": {
                 "task": {"enabled": True, "channel": "/data/TaskChangeEvent"},
-                "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
+                "content_document": {
+                    "enabled": True,
+                    "channel": "/data/ContentDocumentChangeEvent",
+                },
                 "content_document_link": {
                     "enabled": True,
                     "channel": "/data/ContentDocumentLinkChangeEvent",
@@ -107,9 +113,9 @@ def test_salesforce_cdc_metadata_resolves_task_and_note_channels() -> None:
         integration,
         channel="/data/TaskChangeEvent",
     )
-    note_metadata = get_salesforce_cdc_metadata_for_channel(
+    document_metadata = get_salesforce_cdc_metadata_for_channel(
         integration,
-        channel="/data/ContentNoteChangeEvent",
+        channel="/data/ContentDocumentChangeEvent",
     )
     link_metadata = get_salesforce_cdc_metadata_for_channel(
         integration,
@@ -121,9 +127,13 @@ def test_salesforce_cdc_metadata_resolves_task_and_note_channels() -> None:
         "Task",
         "00T",
     )
-    assert (note_metadata.object_key, note_metadata.object_name, note_metadata.id_prefix) == (
-        "content_note",
-        "ContentNote",
+    assert (
+        document_metadata.object_key,
+        document_metadata.object_name,
+        document_metadata.id_prefix,
+    ) == (
+        "content_document",
+        "ContentDocument",
         "069",
     )
     assert (link_metadata.object_key, link_metadata.object_name, link_metadata.id_prefix) == (
@@ -131,6 +141,55 @@ def test_salesforce_cdc_metadata_resolves_task_and_note_channels() -> None:
         "ContentDocumentLink",
         "06A",
     )
+
+
+def test_salesforce_cdc_metadata_maps_legacy_content_note_metadata_to_document_channel() -> None:
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_type=IntegrationType.SALESFORCE,
+        name="Salesforce",
+        credentials={"instance_url": "https://acme.my.salesforce.com"},
+        connection_metadata={
+            "salesforce_organization_id": "00Dxx0000000001",
+            "salesforce_cdc": {
+                "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
+            },
+        },
+    )
+
+    metadata = get_salesforce_cdc_metadata_for_channel(
+        integration,
+        channel="/data/ContentDocumentChangeEvent",
+    )
+
+    assert (metadata.object_key, metadata.object_name, metadata.channel) == (
+        "content_document",
+        "ContentDocument",
+        "/data/ContentDocumentChangeEvent",
+    )
+
+
+def test_salesforce_cdc_metadata_enumerates_legacy_content_note_as_document_channel() -> None:
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_type=IntegrationType.SALESFORCE,
+        name="Salesforce",
+        credentials={"instance_url": "https://acme.my.salesforce.com"},
+        connection_metadata={
+            "salesforce_organization_id": "00Dxx0000000001",
+            "salesforce_cdc": {
+                "content_note": {"enabled": True, "channel": "/data/ContentNoteChangeEvent"},
+            },
+        },
+    )
+
+    metadata = get_enabled_salesforce_cdc_metadata(integration)
+
+    assert [(entry.object_key, entry.channel) for entry in metadata] == [
+        ("content_document", "/data/ContentDocumentChangeEvent"),
+    ]
 
 
 def test_salesforce_cdc_metadata_resolves_user_channel() -> None:

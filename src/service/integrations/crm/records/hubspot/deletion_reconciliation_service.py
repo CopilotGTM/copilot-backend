@@ -15,12 +15,13 @@ from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
-from src.domain.models.organisation_tables.sync.crm.activities import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm.activities import CRMNote, CRMTask
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_history_manager import datetime_now_naive
@@ -35,8 +36,8 @@ _MODEL_BY_OBJECT: dict[str, Any] = {
     "deals": CRMDeal,
     "companies": CRMCompany,
     "contacts": CRMContact,
-    "tasks": CRMActivity,
-    "notes": CRMActivity,
+    "tasks": CRMTask,
+    "notes": CRMNote,
 }
 _SOURCE_OBJECT_BY_OBJECT: dict[str, CRMSourceObjectType] = {
     "deals": CRMSourceObjectType.DEAL,
@@ -49,8 +50,8 @@ _ID_COLUMN_BY_OBJECT: dict[str, Any] = {
     "deals": CRMDeal.deal_id,
     "companies": CRMCompany.company_id,
     "contacts": CRMContact.contact_id,
-    "tasks": CRMActivity.activity_id,
-    "notes": CRMActivity.activity_id,
+    "tasks": CRMTask.task_id,
+    "notes": CRMNote.note_id,
 }
 _DEFAULT_OBJECT_KEYS = ("deals", "companies", "contacts", "tasks", "notes")
 
@@ -219,14 +220,6 @@ class HubSpotDeletionReconciliationService:
             )
             if object_key == "companies":
                 stmt = stmt.where(col(CRMCompany.is_active).is_(True))
-            elif object_key == "tasks":
-                stmt = stmt.where(
-                    col(CRMActivity.activity_type).in_(
-                        [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-                    )
-                )
-            elif object_key == "notes":
-                stmt = stmt.where(col(CRMActivity.activity_type) == CRMActivityType.NOTE.value)
             result = await session.execute(stmt)
             live_local_ids = {row[0] for row in result.all() if row[0] is not None}
             return [
@@ -270,22 +263,20 @@ class HubSpotDeletionReconciliationService:
                 col(model.is_deleted).is_(False),
                 col(id_column).in_(set(external_to_local.values())),
             )
-            if object_key == "tasks":
-                stmt = stmt.where(
-                    col(CRMActivity.activity_type).in_(
-                        [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-                    )
-                )
-            elif object_key == "notes":
-                stmt = stmt.where(col(CRMActivity.activity_type) == CRMActivityType.NOTE.value)
             rows = (await session.execute(stmt)).scalars().all()
             soft_deleted_count = 0
+            projection = ActivityFeedProjectionService(session, organisation_id)
             for row in rows:
                 row.is_deleted = True
-                row.synced_at = now
+                if object_key not in {"tasks", "notes"}:
+                    row.synced_at = now
                 if isinstance(row, CRMCompany):
                     row.is_active = False
                 session.add(row)
+                if isinstance(row, CRMTask):
+                    await projection.soft_delete_activity_projection(row.task_id)
+                elif isinstance(row, CRMNote):
+                    await projection.soft_delete_activity_projection(row.note_id)
                 soft_deleted_count += 1
             await session.commit()
             return soft_deleted_count

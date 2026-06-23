@@ -1,7 +1,7 @@
 """Typed payloads for HubSpot note sync and incremental upserts.
 
-Notes share the `crm_activities` table with tasks, but keep separate result
-types so sync metadata and writer counters stay explicit per object family.
+Notes write to `crm_notes` and project into `crm_activities`, with separate
+result types so sync metadata and writer counters stay explicit per object family.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ class NormalizedHubSpotNote:
     external_id: str
     subject: str | None
     body: str | None
+    title: str | None
+    body_format: str
+    attachment_ids: list[str]
     activity_subtype: str | None
     owner_external_id: str | None
     deal_external_id: str | None

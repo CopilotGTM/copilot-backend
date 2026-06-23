@@ -12,9 +12,9 @@ from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.crm import (
-    CRMActivity,
-    CRMActivityType,
+    CRMNote,
     CRMSourceObjectType,
+    CRMTask,
 )
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -25,6 +25,7 @@ from src.infra.database.sessions import (
     acquire_org_async_session,
 )
 from src.infra.utils.async_runner import run_async
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.salesforce.companies.company_sync_service import (
     SalesforceCompanyRecordSyncService,
@@ -53,8 +54,8 @@ from src.service.integrations.webhooks.salesforce.decoder import decode_salesfor
 from src.service.integrations.webhooks.salesforce.metadata import (
     ACCOUNT_CDC_CHANNEL,
     CONTACT_CDC_CHANNEL,
+    CONTENT_DOCUMENT_CDC_CHANNEL,
     CONTENT_DOCUMENT_LINK_CDC_CHANNEL,
-    CONTENT_NOTE_CDC_CHANNEL,
     OPPORTUNITY_CDC_CHANNEL,
     TASK_CDC_CHANNEL,
     USER_CDC_CHANNEL,
@@ -105,7 +106,7 @@ _REPAIR_TASK_BY_CHANNEL = {
     CONTACT_CDC_CHANNEL: "integrations.sync_salesforce_contacts",
     USER_CDC_CHANNEL: "integrations.sync_salesforce_users",
     TASK_CDC_CHANNEL: "integrations.sync_salesforce_tasks",
-    CONTENT_NOTE_CDC_CHANNEL: "integrations.sync_salesforce_notes",
+    CONTENT_DOCUMENT_CDC_CHANNEL: "integrations.sync_salesforce_notes",
     CONTENT_DOCUMENT_LINK_CDC_CHANNEL: "integrations.sync_salesforce_notes",
 }
 
@@ -435,8 +436,8 @@ async def _process_record_change(
             instance_url=instance_url,
         )
         return
-    if channel == CONTENT_NOTE_CDC_CHANNEL:
-        await _process_content_note_record_change(
+    if channel == CONTENT_DOCUMENT_CDC_CHANNEL:
+        await _process_content_document_record_change(
             organisation_id=organisation_id,
             integration_id=integration_id,
             record_id=record_id,
@@ -638,7 +639,7 @@ async def _process_user_record_change(
     )
 
 
-async def _process_content_note_record_change(
+async def _process_content_document_record_change(
     *,
     organisation_id: UUID,
     integration_id: UUID,
@@ -706,6 +707,17 @@ async def _process_content_document_link_record_change(
             and isinstance(linked_entity_id, str)
             and linked_entity_id in linked_entity_ids
         ):
+            remaining_records = await fetcher.fetch_one_by_note_id(
+                content_document_id,
+                linked_entity_ids=linked_entity_ids,
+            )
+            if remaining_records:
+                await service.persist_single_note(
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    raw_notes=remaining_records,
+                )
+                return
             await _soft_delete_note(
                 organisation_id=organisation_id,
                 integration_id=integration_id,
@@ -833,31 +845,29 @@ async def _soft_delete_task(
     external_id: str,
 ) -> None:
     async for session in acquire_org_async_session(organisation_id):
-        activity_id = await _mark_source_mapping_deleted(
+        task_id = await _resolve_deleted_source_id(
             session=session,
             organisation_id=organisation_id,
             integration_id=integration_id,
             object_type=CRMSourceObjectType.TASK,
             external_id=external_id,
         )
-        if activity_id is None:
+        if task_id is None:
             return
 
-        stmt = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == organisation_id,
-            col(CRMActivity.integration_id) == integration_id,
-            col(CRMActivity.activity_id) == activity_id,
-            col(CRMActivity.activity_type).in_(
-                [CRMActivityType.TASK.value, CRMActivityType.TODO.value]
-            ),
-            col(CRMActivity.is_deleted) == False,  # noqa: E712
+        stmt = select(CRMTask).where(
+            col(CRMTask.organisation_id) == organisation_id,
+            col(CRMTask.integration_id) == integration_id,
+            col(CRMTask.task_id) == task_id,
         )
-        activity = (await session.execute(stmt)).scalar_one_or_none()
-        if activity is None:
-            return
-        activity.is_deleted = True
-        activity.last_seen_at = datetime.now(UTC)
-        session.add(activity)
+        task = (await session.execute(stmt)).scalar_one_or_none()
+        if task is not None:
+            task.is_deleted = True
+            task.updated_at = datetime.now(UTC)
+            session.add(task)
+        await ActivityFeedProjectionService(
+            session, organisation_id
+        ).soft_delete_activity_projection(task_id)
         await session.commit()
         return
 
@@ -902,29 +912,29 @@ async def _soft_delete_note(
     external_id: str,
 ) -> None:
     async for session in acquire_org_async_session(organisation_id):
-        activity_id = await _mark_source_mapping_deleted(
+        note_id = await _resolve_deleted_source_id(
             session=session,
             organisation_id=organisation_id,
             integration_id=integration_id,
             object_type=CRMSourceObjectType.NOTE,
             external_id=external_id,
         )
-        if activity_id is None:
+        if note_id is None:
             return
 
-        stmt = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == organisation_id,
-            col(CRMActivity.integration_id) == integration_id,
-            col(CRMActivity.activity_id) == activity_id,
-            col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
-            col(CRMActivity.is_deleted) == False,  # noqa: E712
+        stmt = select(CRMNote).where(
+            col(CRMNote.organisation_id) == organisation_id,
+            col(CRMNote.integration_id) == integration_id,
+            col(CRMNote.note_id) == note_id,
         )
-        activity = (await session.execute(stmt)).scalar_one_or_none()
-        if activity is None:
-            return
-        activity.is_deleted = True
-        activity.last_seen_at = datetime.now(UTC)
-        session.add(activity)
+        note = (await session.execute(stmt)).scalar_one_or_none()
+        if note is not None:
+            note.is_deleted = True
+            note.updated_at = datetime.now(UTC)
+            session.add(note)
+        await ActivityFeedProjectionService(
+            session, organisation_id
+        ).soft_delete_activity_projection(note_id)
         await session.commit()
         return
 
@@ -936,29 +946,29 @@ async def _soft_delete_note_by_content_document_link_id(
     content_document_link_id: str,
 ) -> None:
     async for session in acquire_org_async_session(organisation_id):
-        activity_id = await _mark_source_mapping_deleted(
+        note_id = await _resolve_deleted_source_id(
             session=session,
             organisation_id=organisation_id,
             integration_id=integration_id,
             object_type=CRMSourceObjectType.NOTE_LINK,
             external_id=content_document_link_id,
         )
-        if activity_id is None:
+        if note_id is None:
             return
 
-        stmt = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == organisation_id,
-            col(CRMActivity.integration_id) == integration_id,
-            col(CRMActivity.activity_type) == CRMActivityType.NOTE.value,
-            col(CRMActivity.activity_id) == activity_id,
-            col(CRMActivity.is_deleted) == False,  # noqa: E712
+        stmt = select(CRMNote).where(
+            col(CRMNote.organisation_id) == organisation_id,
+            col(CRMNote.integration_id) == integration_id,
+            col(CRMNote.note_id) == note_id,
         )
-        activity = (await session.execute(stmt)).scalar_one_or_none()
-        if activity is None:
-            return
-        activity.is_deleted = True
-        activity.last_seen_at = datetime.now(UTC)
-        session.add(activity)
+        note = (await session.execute(stmt)).scalar_one_or_none()
+        if note is not None:
+            note.is_deleted = True
+            note.updated_at = datetime.now(UTC)
+            session.add(note)
+        await ActivityFeedProjectionService(
+            session, organisation_id
+        ).soft_delete_activity_projection(note_id)
         await session.commit()
         return
 
@@ -979,6 +989,37 @@ async def _mark_source_mapping_deleted(
     ).mark_external_ids_deleted(
         object_type=object_type,
         external_ids=[external_id],
+    )
+    return local_ids.get(external_id.strip())
+
+
+async def _resolve_deleted_source_id(
+    *,
+    session,
+    organisation_id: UUID,
+    integration_id: UUID,
+    object_type: CRMSourceObjectType,
+    external_id: str,
+) -> UUID | None:
+    local_id = await _mark_source_mapping_deleted(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        object_type=object_type,
+        external_id=external_id,
+    )
+    if local_id is not None:
+        return local_id
+
+    local_ids = await CRMSourceMappingHelper(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider="salesforce",
+    ).load_local_id_map(
+        object_type=object_type,
+        external_ids=[external_id],
+        include_deleted=True,
     )
     return local_ids.get(external_id.strip())
 

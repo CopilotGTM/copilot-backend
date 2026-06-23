@@ -102,6 +102,20 @@ def test_ai_native_activity_migration_revision_is_not_duplicated() -> None:
     ]
 
 
+def test_source_mapping_migration_allows_note_link() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "org_migrations"
+        / "versions"
+        / "3c7f79637743_056_add_crm_source_object_mappings.py"
+    ).read_text(encoding="utf-8")
+
+    assert "'note_link'" in source
+    assert "ck_crm_source_mapping_external_type" in source
+    assert "ck_crm_source_mapping_local_type" in source
+
+
 def test_ai_native_activity_docs_match_source_record_contract() -> None:
     specs_dir = Path(__file__).resolve().parents[2] / "docs" / "superpowers" / "specs"
     design_doc = (

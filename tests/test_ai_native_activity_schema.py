@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityLink,
     CRMActivityMeetingDisplayPayload,
     CRMNote,
+    CRMSourceObjectMapping,
     CRMTask,
     validate_crm_activity_display_payload,
 )
@@ -104,6 +105,38 @@ def test_task_state_fields_have_database_guards() -> None:
     assert {"ck_crm_task_status", "ck_crm_task_priority"}.issubset(_check_constraint_names(CRMTask))
     assert CRMTask.__table__.c.status.nullable is False
     assert CRMTask.__table__.c.priority.nullable is False
+
+
+def test_source_mapping_allows_note_link_for_salesforce_content_document_links() -> None:
+    external_sql = _check_constraint_sql(
+        CRMSourceObjectMapping,
+        "ck_crm_source_mapping_external_type",
+    )
+    local_sql = _check_constraint_sql(
+        CRMSourceObjectMapping,
+        "ck_crm_source_mapping_local_type",
+    )
+
+    assert "'note_link'" in external_sql
+    assert "'note_link'" in local_sql
+
+
+def test_task_and_note_source_tables_have_required_defaults_for_provider_writes() -> None:
+    assert CRMTask.__table__.c.title.nullable is False
+    assert CRMTask.__table__.c.status.nullable is False
+    assert CRMTask.__table__.c.status.server_default is not None
+    assert CRMTask.__table__.c.priority.nullable is False
+    assert CRMTask.__table__.c.priority.server_default is not None
+    assert CRMTask.__table__.c.task_metadata.nullable is False
+    assert CRMTask.__table__.c.task_metadata.server_default is not None
+
+    assert CRMNote.__table__.c.body.nullable is False
+    assert CRMNote.__table__.c.body_format.nullable is False
+    assert CRMNote.__table__.c.body_format.server_default is not None
+    assert CRMNote.__table__.c.visibility.nullable is False
+    assert CRMNote.__table__.c.visibility.server_default is not None
+    assert CRMNote.__table__.c.note_metadata.nullable is False
+    assert CRMNote.__table__.c.note_metadata.server_default is not None
 
 
 def test_task_people_and_due_date_fields_are_explicit_without_premature_ai_provenance() -> None:

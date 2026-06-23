@@ -9,7 +9,7 @@ API single-entity topics:
 - `/data/ContactChangeEvent`
 - `/data/UserChangeEvent`
 - `/data/TaskChangeEvent`
-- `/data/ContentNoteChangeEvent`
+- `/data/ContentDocumentChangeEvent`
 - `/data/ContentDocumentLinkChangeEvent`
 
 Each event is decoded from Avro, fanned out across every
@@ -20,9 +20,10 @@ through the same normalizers and writers used by full Salesforce sync.
 
 This v1 covers standard Opportunity, Account, Contact, User, Task, and current
 Salesforce Lightning Notes CDC channels. Lightning Notes require both
-`ContentNote` and `ContentDocumentLink`: `ContentNote` carries note content
-updates, while `ContentDocumentLink` carries relationship changes to Account,
-Contact, and Opportunity.
+`ContentDocument` and `ContentDocumentLink`: `ContentDocument` carries note
+document/content changes, while `ContentDocumentLink` carries relationship changes
+to Account, Contact, and Opportunity. The sync hydrates enhanced-note bodies from
+`ContentNote` after receiving the `ContentDocument` ID.
 
 - In scope: per-object replay cursor storage, subscriber leasing, keepalive replay
   advancement, single-record fetch, record upsert, Account/User deactivation,
@@ -51,8 +52,8 @@ for each recordId in ChangeEventHeader.recordIds:
     Account DELETE     -> CRMCompany.is_active = false
     Contact DELETE     -> CRMContact.is_deleted = true
     User DELETE        -> CRMUser.is_active = false
-    Task DELETE        -> CRMActivity task/todo is_deleted = true
-    ContentNote DELETE -> CRMActivity note is_deleted = true
+    Task DELETE        -> CRMTask.is_deleted = true and feed projection is tombstoned
+    ContentDocument DELETE -> CRMNote.is_deleted = true and feed projection is tombstoned
     ContentDocumentLink DELETE -> rehydrate remaining note links or soft-delete note
     other              -> fetch one record -> persist_single_*()
         |
@@ -84,7 +85,7 @@ cursor and queues the matching full repair sync:
 - Contact -> `integrations.sync_salesforce_contacts`
 - User -> `integrations.sync_salesforce_users`
 - Task -> `integrations.sync_salesforce_tasks`
-- ContentNote -> `integrations.sync_salesforce_notes`
+- ContentDocument -> `integrations.sync_salesforce_notes`
 - ContentDocumentLink -> `integrations.sync_salesforce_notes`
 
 The repair sync restarts the same CDC channel after it completes successfully.
@@ -94,7 +95,7 @@ The repair sync restarts the same CDC channel after it completes successfully.
 Each Salesforce integration stores its CDC checkpoint and lease state in
 `knowledge_integrations.connection_metadata.salesforce_cdc.<object>`, where
 `<object>` is `opportunity`, `account`, `contact`, `user`, `task`,
-`content_note`, or `content_document_link`.
+`content_document`, or `content_document_link`.
 
 Each channel has an independent replay cursor and lease. No separate CDC
 subscription table or CDC event table exists in v1.
@@ -151,9 +152,9 @@ CDC discovery expects:
       "channel": "/data/TaskChangeEvent",
       "last_replay_id": "opaque-base64-replay-id"
     },
-    "content_note": {
+    "content_document": {
       "enabled": true,
-      "channel": "/data/ContentNoteChangeEvent",
+      "channel": "/data/ContentDocumentChangeEvent",
       "last_replay_id": "opaque-base64-replay-id"
     },
     "content_document_link": {
@@ -166,8 +167,8 @@ CDC discovery expects:
 ```
 
 Existing integrations with only the `opportunity` entry remain Opportunity-only.
-New reconnects receive Account, Contact, Opportunity, User, Task, ContentNote, and
-ContentDocumentLink entries by default.
+New reconnects receive Account, Contact, Opportunity, User, Task, ContentDocument,
+and ContentDocumentLink entries by default.
 
 The default Pub/Sub endpoint is `api.pubsub.salesforce.com:443`; the global
 Salesforce Pub/Sub host is accepted on ports `443` and `7443`.

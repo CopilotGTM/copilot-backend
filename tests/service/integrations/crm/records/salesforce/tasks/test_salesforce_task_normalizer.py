@@ -51,3 +51,28 @@ def test_normalize_tasks_skips_rows_without_id() -> None:
 
     assert normalized == []
     assert skipped == 1
+
+
+def test_normalize_tasks_emits_only_crm_task_status_values() -> None:
+    raw_rows = [
+        {"Id": "00T_WAITING", "Status": "Waiting on someone else"},
+        {"Id": "00T_DEFERRED", "Status": "Deferred"},
+        {"Id": "00T_CANCELLED", "Status": "Canceled"},
+        {"Id": "00T_PROGRESS", "Status": "In Progress"},
+    ]
+
+    normalized, skipped = normalize_tasks(raw_rows)
+
+    assert skipped == 0
+    assert [task.status for task in normalized] == [
+        "IN_PROGRESS",
+        "NOT_STARTED",
+        "CANCELLED",
+        "IN_PROGRESS",
+    ]
+    assert [task.properties["raw_status"] for task in normalized] == [
+        "Waiting on someone else",
+        "Deferred",
+        "Canceled",
+        "In Progress",
+    ]
