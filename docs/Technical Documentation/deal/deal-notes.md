@@ -4,8 +4,8 @@ This document describes how we fetch **CRM notes** that are attached to **deals*
 
 ## Overview
 
-- Notes are treated as **CRM activities** in our canonical sync model.
-- Notes are fetched from the provider APIs, normalized into the existing “activity/task” payload shape, and persisted into the organisation DB.
+- Notes are canonical CRM records in `crm_notes`.
+- Notes are fetched from provider APIs, normalized into note-shaped payloads, and projected into `crm_activities` only for feed display.
 
 ## What We Fetch
 
@@ -59,23 +59,23 @@ Implementation:
 
 Notes are stored in the organisation database in:
 
-- Table: `crm_activities`
-- Model: `CRMActivity` (backwards-compat alias: `CRMDealTask = CRMActivity`)
+- Table: `crm_notes`
+- Model: `CRMNote`
 
 Key columns used:
 
-- `activity_type` (set to `NOTE` via normalization)
-- `subject` (best-effort mapping, e.g., HubSpot notes may have no subject)
-- `body` (note content)
+- `title` (best-effort mapping, e.g., HubSpot notes may have no subject)
+- `body_plain`, `body_html`, `body_markdown` (note content)
 - `deal_id` (if linked to a deal/opportunity)
 - `contact_id`, `company_id` (if available)
-- `owner_id`, `owner_name`, `owner_email`
+- `owner_user_id`, `owner_name`, `owner_email`
 - `properties` (provider properties, includes raw/unmapped values)
 - Provider identity and raw payloads are stored in `crm_source_object_mappings`.
 
 Persistence path:
 
-- Sync service: `src/service/integrations/crm/entities/deal_task_sync_service.py` (stores activities into `crm_activities`)
+- Sync service: `src/service/integrations/crm/entities/notes_sync_service.py` (stores notes into `crm_notes`)
+- Projection service: `src/service/crm/activity_feed_projection_service.py` (writes feed rows into `crm_activities` and `crm_activity_links`)
 
 ## How Notes Link to Deals / Opportunities
 
@@ -87,7 +87,7 @@ Persistence path:
 ### Salesforce
 
 - Salesforce notes have `ParentId`.
-- We map `ParentId` into the activity linkage field `what_id`.
+- We map `ParentId` into note linkage/source metadata.
 - During sync, opportunity `ParentId` values are resolved through `crm_source_object_mappings`
   before setting local `deal_id`.
 

@@ -302,7 +302,8 @@ Members are batch-loaded per channel (one SELECT per channel, not per member) to
   - deal stage history
   - deal participants
   - object associations
-  - `crm_activities` for tasks and notes
+  - `crm_tasks` and `crm_notes` as canonical source tables
+  - `crm_activities` and `crm_activity_links` as activity-feed projections
 - **Direction**: strictly HubSpot -> CopilotGTM.
 - **Reference**: see [crm-initial-sync.md](crm-initial-sync.md) for metadata and captured tables.
 

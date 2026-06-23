@@ -153,5 +153,6 @@ Per-integration tracking is done via state tables
 
 **ON CONFLICT DO UPDATE**: All sync services use PostgreSQL atomic upserts to handle concurrent writes and idempotent re-syncs without N+1 queries.
 
-**CRM activities are shared storage**: HubSpot and Salesforce tasks/notes both land in
-`crm_activities`; the provider stays isolated by `integration_id`.
+**CRM activities are feed projections**: HubSpot and Salesforce tasks/notes land in
+`crm_tasks` and `crm_notes`, then feed cards are projected into `crm_activities`
+and linked through `crm_activity_links`. Providers stay isolated by `integration_id`.

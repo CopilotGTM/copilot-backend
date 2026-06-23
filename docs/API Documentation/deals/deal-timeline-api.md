@@ -354,6 +354,36 @@ export interface TimelinePage {
   total_count: number;
   cursor: string | null;               // opaque pagination cursor
 }
+
+export interface ActivityFeedItem {
+  activity_id: UUID;
+  activity_type: string;
+  source_type: string;
+  source_record_id: UUID | null;
+  source_provider: string | null;
+  source_integration_id: UUID | null;
+  source_url: string | null;
+  title: string | null;
+  summary: string | null;
+  preview: string | null;
+  occurred_at: string;
+  actor_name: string | null;
+  actor_email: string | null;
+  display_payload: Record<string, unknown>;
+  link_role: string | null;
+  link_source: string | null;
+  confidence_score: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActivityFeedPage {
+  object_type: "DEAL";
+  object_id: UUID;
+  items: ActivityFeedItem[];
+  total_count: number;
+  cursor: string | null;
+}
 ```
 
 ---
@@ -445,7 +475,76 @@ Authorization: Bearer <token>
 
 ---
 
-## 2) Get Timeline Event Detail
+## 2) List Deal Activity Feed
+
+- **Endpoint**: `GET /{deal_id}/activity-feed`
+- **Purpose**: Retrieve the CRM activity projection linked to a deal.
+- **Tags**: `timeline`
+
+This endpoint is mounted on the existing deal timeline router. It reads
+`crm_activity_links -> crm_activities`, not the legacy `DealTimelineEvent`
+table used by `GET /{deal_id}/timeline`.
+
+### Query Parameters
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| `limit` | int (1-100, default 20) | Page size |
+| `cursor` | string | Opaque pagination cursor from previous page |
+| `activity_types` | string | Comma-separated activity type filter |
+| `source_types` | string | Comma-separated source type filter |
+| `start_date` | datetime | Include linked activities after this timestamp |
+| `end_date` | datetime | Include linked activities before this timestamp |
+| `sort` | `asc` \| `desc` (default `desc`) | Sort order |
+
+### Sample Request
+
+```http
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/activity-feed?limit=20&sort=desc
+Authorization: Bearer <token>
+```
+
+### Sample Response
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Activity feed retrieved successfully",
+  "data": {
+    "object_type": "DEAL",
+    "object_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "items": [
+      {
+        "activity_id": "f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1",
+        "activity_type": "NOTE",
+        "source_type": "CRM_NOTE",
+        "source_record_id": "d5e6f7a8-1234-5678-9abc-def012345678",
+        "source_provider": "hubspot",
+        "source_integration_id": "c7d8e9f0-a1b2-3456-cdef-789abcdef012",
+        "source_url": null,
+        "title": "Discovery notes",
+        "summary": null,
+        "preview": "Customer asked for security review next week.",
+        "occurred_at": "2026-06-20T10:00:00Z",
+        "actor_name": "Jane Smith",
+        "actor_email": "jane@example.com",
+        "display_payload": {},
+        "link_role": "PRIMARY",
+        "link_source": "CRM_ASSOCIATION",
+        "confidence_score": null,
+        "created_at": "2026-06-20T10:05:00Z",
+        "updated_at": "2026-06-20T10:05:00Z"
+      }
+    ],
+    "total_count": 1,
+    "cursor": null
+  }
+}
+```
+
+---
+
+## 3) Get Timeline Event Detail
 
 - **Endpoint**: `GET /timeline/{timeline_event_id}`
 - **Purpose**: Fetch the same `TimelineEvent` shape with enriched `event_data`.

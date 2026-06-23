@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.service.crm.tasks.contracts import TaskWriteServiceError
 from src.service.crm.tasks.write_service import TaskWriteService
 
@@ -43,11 +43,11 @@ class TasksWriteService:
         payload: dict[str, Any],
         *,
         deal_id: UUID | None = None,
-    ) -> CRMActivity:
+    ) -> CRMTask:
         return await self._service.create_task(payload, deal_id=deal_id)
 
-    async def update_task(self, task_id: UUID, payload: dict[str, Any]) -> CRMActivity:
+    async def update_task(self, task_id: UUID, payload: dict[str, Any]) -> CRMTask:
         return await self._service.update_task(task_id, payload)
 
-    async def delete_task(self, task_id: UUID) -> CRMActivity:
+    async def delete_task(self, task_id: UUID) -> CRMTask:
         return await self._service.delete_task(task_id)

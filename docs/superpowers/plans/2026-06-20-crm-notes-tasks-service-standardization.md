@@ -1,5 +1,9 @@
 # CRM Notes And Tasks Service Standardization Implementation Plan
 
+> Historical note: this plan was written before the final task/note source-table
+> migration. Current runtime code should use `crm_tasks` / `CRMTask` and
+> `crm_notes` / `CRMNote` as source rows, with `crm_activities` as projection.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Standardize CRM notes and tasks into canonical vertical service modules while preserving current API, agent, bot-form, reminder, provider-sync, and deal-insight behavior.

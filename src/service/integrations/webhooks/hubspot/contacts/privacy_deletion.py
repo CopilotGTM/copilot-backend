@@ -17,11 +17,15 @@ from src.domain.models.organisation_tables.sync import IntegrationType, Knowledg
 from src.domain.models.organisation_tables.sync.crm import (
     ApprovalStatus,
     CRMActivity,
+    CRMActivityLink,
+    CRMActivityObjectType,
     CRMContact,
     CRMDeal,
     CRMDealParticipant,
+    CRMNote,
     CRMParticipantType,
     CRMSourceObjectType,
+    CRMTask,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
@@ -33,6 +37,14 @@ logger = get_logger(__name__)
 _PRIVACY_DELETED_PAYLOAD = {"privacy_deleted": True}
 
 
+def _activity_ids_by_contact(links: list[CRMActivityLink]) -> dict[UUID, set[UUID]]:
+    """Group linked feed activity IDs by local contact ID."""
+    grouped: dict[UUID, set[UUID]] = {}
+    for link in links:
+        grouped.setdefault(link.object_id, set()).add(link.activity_id)
+    return grouped
+
+
 class HubSpotContactPrivacyDeletionHandler:
     """Handle HubSpot contact privacy deletion events across tenant schemas."""
 
@@ -40,7 +52,9 @@ class HubSpotContactPrivacyDeletionHandler:
     def scrub_records_for_contact_privacy_deletion(
         *,
         contact: CRMContact,
-        activities: list[CRMActivity],
+        activity_projections: list[CRMActivity] | None = None,
+        tasks: list[CRMTask] | None = None,
+        notes: list[CRMNote] | None = None,
         deal_participants: list[CRMDealParticipant] | None = None,
         deals: list[CRMDeal] | None = None,
     ) -> None:
@@ -48,7 +62,7 @@ class HubSpotContactPrivacyDeletionHandler:
 
         The handler keeps historical rows as tombstones for audit and FK
         stability, but removes person-identifying fields from the contact and
-        directly linked activity/deal participant records.
+        directly linked task/note/projection/deal participant records.
         """
         contact.is_deleted = True
         contact.first_name = None
@@ -79,10 +93,36 @@ class HubSpotContactPrivacyDeletionHandler:
         contact.profile_enrichment_source = None
         contact.profile_enriched_at = None
 
-        for activity in activities:
+        for task in tasks or []:
+            task.is_deleted = True
+            task.title = "Privacy deleted task"
+            task.description = None
+            task.assigned_to_user_id = None
+            task.assigned_to_email = None
+            task.assigned_to_name = None
+            task.owner_user_id = None
+            task.owner_email = None
+            task.completed_by_user_id = None
+            task.task_metadata = dict(_PRIVACY_DELETED_PAYLOAD)
+
+        for note in notes or []:
+            note.is_deleted = True
+            note.title = None
+            note.body = ""
+            note.author_user_id = None
+            note.author_name = None
+            note.author_email = None
+            note.note_metadata = dict(_PRIVACY_DELETED_PAYLOAD)
+
+        for activity in activity_projections or []:
             activity.is_deleted = True
             activity.related_name = None
             activity.contact_id = None
+            activity.title = None
+            activity.summary = None
+            activity.preview = None
+            activity.actor_name = None
+            activity.actor_email = None
             activity.subject = None
             activity.body = None
             activity.owner_name = None
@@ -90,6 +130,7 @@ class HubSpotContactPrivacyDeletionHandler:
             activity.external_assignee_email = None
             activity.external_assignee_name = None
             activity.attendees = []
+            activity.display_payload = dict(_PRIVACY_DELETED_PAYLOAD)
             activity.properties = dict(_PRIVACY_DELETED_PAYLOAD)
             activity.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
 
@@ -182,12 +223,19 @@ class HubSpotContactPrivacyDeletionHandler:
                     continue
 
                 contact_ids = [contact.contact_id for contact in contacts]
-                activities = await cls._activities_for_contacts(
+                (
+                    activity_links,
+                    tasks,
+                    notes,
+                    activity_projections,
+                ) = await cls._activity_source_records_for_contacts(
                     org_session=org_session,
                     organisation_id=organisation_id,
                     integration_id=integration.integration_id,
                     contact_ids=contact_ids,
                 )
+                activity_ids_by_contact = _activity_ids_by_contact(activity_links)
+
                 deal_participants = await cls._deal_participants_for_contacts(
                     org_session=org_session,
                     organisation_id=organisation_id,
@@ -202,13 +250,16 @@ class HubSpotContactPrivacyDeletionHandler:
                 )
 
                 for contact in contacts:
+                    linked_activity_ids = activity_ids_by_contact.get(contact.contact_id, set())
                     cls.scrub_records_for_contact_privacy_deletion(
                         contact=contact,
-                        activities=[
+                        activity_projections=[
                             activity
-                            for activity in activities
-                            if activity.contact_id == contact.contact_id
+                            for activity in activity_projections
+                            if activity.activity_id in linked_activity_ids
                         ],
+                        tasks=[task for task in tasks if task.task_id in linked_activity_ids],
+                        notes=[note for note in notes if note.note_id in linked_activity_ids],
                         deal_participants=[
                             participant
                             for participant in deal_participants
@@ -221,7 +272,11 @@ class HubSpotContactPrivacyDeletionHandler:
                     org_session.add(contact)
                     touched_contacts += 1
 
-                for activity in activities:
+                for task in tasks:
+                    org_session.add(task)
+                for note in notes:
+                    org_session.add(note)
+                for activity in activity_projections:
                     org_session.add(activity)
                 for participant in deal_participants:
                     org_session.add(participant)
@@ -288,21 +343,52 @@ class HubSpotContactPrivacyDeletionHandler:
         return list(result.scalars().all())
 
     @staticmethod
-    async def _activities_for_contacts(
+    async def _activity_source_records_for_contacts(
         *,
         org_session,
         organisation_id: UUID,
         integration_id: UUID,
         contact_ids: list[UUID],
-    ) -> list[CRMActivity]:
-        """Load activities that reference the deleted contact locally or externally."""
-        statement = select(CRMActivity).where(
-            col(CRMActivity.organisation_id) == organisation_id,
-            col(CRMActivity.integration_id) == integration_id,
-            col(CRMActivity.contact_id).in_(contact_ids),
+    ) -> tuple[list[CRMActivityLink], list[CRMTask], list[CRMNote], list[CRMActivity]]:
+        """Load source rows linked to deleted contacts through crm_activity_links."""
+        link_statement = select(CRMActivityLink).where(
+            col(CRMActivityLink.organisation_id) == organisation_id,
+            col(CRMActivityLink.object_type) == CRMActivityObjectType.CONTACT.value,
+            col(CRMActivityLink.object_id).in_(contact_ids),
         )
-        result = await org_session.execute(statement)
-        return list(result.scalars().all())
+        link_result = await org_session.execute(link_statement)
+        links = list(link_result.scalars().all())
+        activity_ids = [link.activity_id for link in links]
+        if not activity_ids:
+            return [], [], [], []
+
+        task_result = await org_session.execute(
+            select(CRMTask).where(
+                col(CRMTask.organisation_id) == organisation_id,
+                col(CRMTask.integration_id) == integration_id,
+                col(CRMTask.task_id).in_(activity_ids),
+            )
+        )
+        note_result = await org_session.execute(
+            select(CRMNote).where(
+                col(CRMNote.organisation_id) == organisation_id,
+                col(CRMNote.integration_id) == integration_id,
+                col(CRMNote.note_id).in_(activity_ids),
+            )
+        )
+        projection_result = await org_session.execute(
+            select(CRMActivity).where(
+                col(CRMActivity.organisation_id) == organisation_id,
+                col(CRMActivity.integration_id) == integration_id,
+                col(CRMActivity.activity_id).in_(activity_ids),
+            )
+        )
+        return (
+            links,
+            list(task_result.scalars().all()),
+            list(note_result.scalars().all()),
+            list(projection_result.scalars().all()),
+        )
 
     @staticmethod
     async def _deal_participants_for_contacts(

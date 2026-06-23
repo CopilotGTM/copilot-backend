@@ -385,6 +385,36 @@ export interface EnrichAccountResponse {
   job_id: string | null;              // null until enrichment pipeline is implemented
   message: string;                    // Human-readable status message
 }
+
+export interface ActivityFeedItem {
+  activity_id: UUID;
+  activity_type: string;
+  source_type: string;
+  source_record_id: UUID | null;
+  source_provider: string | null;
+  source_integration_id: UUID | null;
+  source_url: string | null;
+  title: string | null;
+  summary: string | null;
+  preview: string | null;
+  occurred_at: ISODate;
+  actor_name: string | null;
+  actor_email: string | null;
+  display_payload: Record<string, unknown>;
+  link_role: string | null;
+  link_source: string | null;
+  confidence_score: number | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+export interface AccountActivityFeedPage {
+  object_type: "COMPANY";
+  object_id: UUID;
+  items: ActivityFeedItem[];
+  total_count: number;
+  cursor: string | null;
+}
 ```
 
 ## Endpoints
@@ -813,7 +843,47 @@ Full account detail including account fields, a stable account research placehol
 
 ---
 
-### 6. Update Account
+### 6. Get Account Activity Feed
+
+```http
+GET /users/crm/accounts/{company_id}/activity-feed
+```
+
+Cursor-paginated CRM activity projection for an account/company. This reads
+`crm_activity_links -> crm_activities` for rows linked with `object_type =
+COMPANY`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `limit` | integer | `20` | `1-100` | Maximum feed items per page |
+| `cursor` | string | - | Opaque | Cursor returned by the previous response |
+| `activity_types` | string | - | Comma-separated | Filter by projected activity type |
+| `source_types` | string | - | Comma-separated | Filter by projected source type |
+| `start_date` | datetime | - | ISO 8601 | Include activities at/after this time |
+| `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
+| `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Activity feed retrieved successfully",
+  "data": {
+    "object_type": "COMPANY",
+    "object_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+    "items": [],
+    "total_count": 0,
+    "cursor": null
+  }
+}
+```
+
+---
+
+### 7. Update Account
 
 ```http
 PATCH /users/crm/accounts/{company_id}
@@ -889,7 +959,7 @@ Returns the updated `AccountListItem`. `contact_count`, `deal_count`, and `pipel
 
 ---
 
-### 7. Get Account Contacts
+### 8. Get Account Contacts
 
 ```http
 GET /users/crm/accounts/{company_id}/contacts
@@ -938,7 +1008,7 @@ Returns contacts whose email domain matches the account's `domain`. If the accou
 
 ---
 
-### 8. Get Account Deals
+### 9. Get Account Deals
 
 ```http
 GET /users/crm/accounts/{company_id}/deals
@@ -988,7 +1058,7 @@ Returns deals linked to the account via local `company_id`.
 
 ---
 
-### 9. Enrich Account
+### 10. Enrich Account
 
 ```http
 POST /users/crm/accounts/{company_id}/enrich

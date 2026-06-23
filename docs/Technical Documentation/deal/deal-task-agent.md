@@ -37,7 +37,7 @@ step when enabled.
 
 This service is the deterministic write boundary. It owns:
 
-- listing task-like `CRMActivity` rows for one org/deal,
+- listing `CRMTask` rows for one org/deal,
 - creating internal `AI_MEETING` tasks,
 - resolving assignee hints against org users,
 - creating tasks even when no assignee is known,
@@ -76,7 +76,7 @@ complete or failed.
 
 ## Idempotency
 
-Created tasks store an `idempotency_key` in `CRMActivity.properties`. The key is
+Created tasks store an `idempotency_key` in `CRMTask.properties`. The key is
 built from:
 
 - organisation id,

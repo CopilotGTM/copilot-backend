@@ -1,5 +1,9 @@
 # HubSpot Notes Webhooks Implementation Plan
 
+> Historical note: this plan predates the task/note source-table migration.
+> Current HubSpot note writes should target `crm_notes` / `CRMNote` and update
+> `crm_activities` only through feed projection.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add HubSpot note webhook support by routing generic HubSpot `object.*` note events into the existing single-note fetch and `crm_activities` persistence path.
