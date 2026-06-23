@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -15,7 +17,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityLink,
     CRMActivityObjectType,
 )
-from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.infra.utils.cursor import decode_cursor
 
 
 class ActivityFeedReadServiceError(Exception):
@@ -46,6 +48,40 @@ def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [part.strip().upper() for part in value.split(",") if part.strip()]
+
+
+def _encode_activity_feed_cursor(
+    *,
+    occurred_at: datetime,
+    activity_id: UUID,
+    activity_link_id: UUID,
+) -> str:
+    blob = json.dumps(
+        {
+            "ts": occurred_at.isoformat(),
+            "activity_id": str(activity_id),
+            "activity_link_id": str(activity_link_id),
+        }
+    ).encode()
+    return base64.urlsafe_b64encode(blob).decode()
+
+
+def _decode_activity_feed_cursor(cursor: str) -> tuple[datetime, UUID, UUID | None]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+    except Exception:
+        ts, activity_id = decode_cursor(cursor)
+        return ts, activity_id, None
+
+    if "activity_id" not in data or "activity_link_id" not in data:
+        ts, activity_id = decode_cursor(cursor)
+        return ts, activity_id, None
+
+    return (
+        datetime.fromisoformat(data["ts"]),
+        UUID(data["activity_id"]),
+        UUID(data["activity_link_id"]),
+    )
 
 
 class ActivityFeedReadService:
@@ -96,29 +132,45 @@ class ActivityFeedReadService:
 
         if cursor:
             try:
-                ts, activity_id = decode_cursor(cursor)
+                ts, activity_id, activity_link_id = _decode_activity_feed_cursor(cursor)
             except Exception as exc:
                 raise ActivityFeedReadServiceError("Invalid cursor", 400) from exc
             if sort_order == "desc":
-                where.append(
-                    or_(
-                        link_t.c.occurred_at < ts,
+                cursor_predicate = or_(
+                    link_t.c.occurred_at < ts,
+                    and_(
+                        link_t.c.occurred_at == ts,
+                        link_t.c.activity_id < activity_id,
+                    ),
+                )
+                if activity_link_id is not None:
+                    cursor_predicate = or_(
+                        cursor_predicate,
                         and_(
                             link_t.c.occurred_at == ts,
-                            link_t.c.activity_id < activity_id,
+                            link_t.c.activity_id == activity_id,
+                            link_t.c.activity_link_id < activity_link_id,
                         ),
                     )
-                )
+                where.append(cursor_predicate)
             else:
-                where.append(
-                    or_(
-                        link_t.c.occurred_at > ts,
+                cursor_predicate = or_(
+                    link_t.c.occurred_at > ts,
+                    and_(
+                        link_t.c.occurred_at == ts,
+                        link_t.c.activity_id > activity_id,
+                    ),
+                )
+                if activity_link_id is not None:
+                    cursor_predicate = or_(
+                        cursor_predicate,
                         and_(
                             link_t.c.occurred_at == ts,
-                            link_t.c.activity_id > activity_id,
+                            link_t.c.activity_id == activity_id,
+                            link_t.c.activity_link_id > activity_link_id,
                         ),
                     )
-                )
+                where.append(cursor_predicate)
 
         base_join = link_t.join(
             activity_t,
@@ -130,9 +182,17 @@ class ActivityFeedReadService:
 
         stmt = select(CRMActivity, CRMActivityLink).select_from(base_join).where(*where)
         if sort_order == "desc":
-            stmt = stmt.order_by(link_t.c.occurred_at.desc(), link_t.c.activity_id.desc())
+            stmt = stmt.order_by(
+                link_t.c.occurred_at.desc(),
+                link_t.c.activity_id.desc(),
+                link_t.c.activity_link_id.desc(),
+            )
         else:
-            stmt = stmt.order_by(link_t.c.occurred_at.asc(), link_t.c.activity_id.asc())
+            stmt = stmt.order_by(
+                link_t.c.occurred_at.asc(),
+                link_t.c.activity_id.asc(),
+                link_t.c.activity_link_id.asc(),
+            )
         stmt = stmt.limit(limit + 1)
 
         result = await self.session.execute(stmt)
@@ -142,7 +202,11 @@ class ActivityFeedReadService:
         if len(records) > limit:
             records = records[:limit]
             last = records[-1].link
-            next_cursor = encode_cursor(last.occurred_at, last.activity_id)
+            next_cursor = _encode_activity_feed_cursor(
+                occurred_at=last.occurred_at,
+                activity_id=last.activity_id,
+                activity_link_id=last.activity_link_id,
+            )
 
         return records, next_cursor, total_count
 

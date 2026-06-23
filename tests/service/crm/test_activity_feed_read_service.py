@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -57,6 +59,10 @@ def _activity_link_pair(*, occurred_at: datetime, object_type: str = "DEAL"):
         occurred_at=occurred_at,
     )
     return organisation_id, object_id, activity, link
+
+
+def _decode_cursor_payload(cursor: str) -> dict[str, str]:
+    return json.loads(base64.urlsafe_b64decode(cursor.encode()))
 
 
 @pytest.mark.parametrize(
@@ -121,6 +127,37 @@ async def test_list_deal_activities_uses_cursor_only_for_page_rows_not_total_cou
     page_sql = str(session.execute.await_args_list[1].args[0])
     assert "crm_activity_links.occurred_at <" not in count_sql
     assert "crm_activity_links.occurred_at <" in page_sql
+
+
+@pytest.mark.asyncio
+async def test_list_deal_activities_cursor_keeps_tied_activity_links_pageable() -> None:
+    occurred_at = datetime(2026, 6, 23, 9, 30, tzinfo=UTC)
+    organisation_id, deal_id, activity, primary_link = _activity_link_pair(
+        occurred_at=occurred_at,
+    )
+    related_link = primary_link.model_copy(deep=True)
+    related_link.activity_link_id = uuid4()
+    related_link.link_role = "RELATED"
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _CountResult(),
+            _RowsResult([(activity, primary_link), (activity, related_link)]),
+        ]
+    )
+
+    _records, next_cursor, _total_count = await ActivityFeedReadService(
+        session,
+        organisation_id,
+    ).list_deal_activities(deal_id=deal_id, limit=1)
+
+    assert next_cursor is not None
+    cursor_payload = _decode_cursor_payload(next_cursor)
+    assert cursor_payload["activity_id"] == str(activity.activity_id)
+    assert cursor_payload["activity_link_id"] == str(primary_link.activity_link_id)
+
+    page_sql = str(session.execute.await_args_list[1].args[0])
+    assert "crm_activity_links.activity_link_id" in page_sql
 
 
 @pytest.mark.asyncio
