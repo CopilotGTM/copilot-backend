@@ -569,6 +569,9 @@ Returns `TaskDetail`.
 
 - `source` is automatically set to `MANUAL`
 - `created_by_user_id` is set to the authenticated user
+- If the task has an assignee email after create, CopilotGTM sends a best-effort
+  assignment email after the task write commits. This applies to internal org
+  users and external assignees.
 - If `status` is `COMPLETED` and `completed_date` is omitted, it is set to now
 - If `status` is not `COMPLETED`, `completed_date` is cleared
 - `due_timezone` is not accepted in the request body. Date-only interpretation uses the authenticated user's timezone context.
@@ -618,6 +621,9 @@ Any subset of the create fields. Additional update-only capabilities:
 - `task_type`, `status`, and `priority` cannot be set to null
 - If `completed_date` is provided, the task status is set to `COMPLETED`
 - If `status` is not `COMPLETED`, `completed_date` is cleared
+- Reassigning a task sends a best-effort assignment email to the new assignee
+  after the update commits. Other updates to an assigned task send a best-effort
+  task-update email to the current assignee.
 - CRM-synced tasks are read-only — returns `409 Conflict`
 - Cancelling a reminder unschedules it from Redis and marks it as `CANCELLED`
 

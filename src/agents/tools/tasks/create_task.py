@@ -884,6 +884,7 @@ async def create_task(
         try:
             task = await service.create_task(write_payload, deal_id=resolved_deal_id)
             await session.commit()
+            await service.send_pending_assignment_notifications()
             result = _created_task_result(task, assignee_name=assignee_name)
             channel_payload = _build_task_created_channel_payload(context, task)
             if channel_payload:
