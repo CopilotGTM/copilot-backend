@@ -39,8 +39,20 @@ from src.domain.models.organisation_tables.sync import (
 )
 from src.infra.auth.email_service import email_service
 from src.infra.config.configs import app_config
-from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.infra.database.sessions import (
+    acquire_master_async_session,
+    acquire_org_async_session,
+    master_async_session_scope,
+)
 from src.infra.utils.logger import get_logger
+from src.service.channels import (
+    DEFAULT_TEMPLATE_LANGUAGE,
+    MEETING_SUMMARY_TEMPLATE_NAME,
+    OutboundChannelService,
+    OutboundChatContextService,
+    OutboundDeliveryTarget,
+    WhatsAppOutboundProvider,
+)
 
 logger = get_logger(__name__)
 
@@ -48,6 +60,7 @@ MEETING_SUMMARY_READY_NOTIFICATION = "meeting_summary_ready"
 CALENDAR_EVENT_DEAL_ASSOCIATION_SOURCE = "calendar_event_deal_association"
 MEETING_SOURCE = "meeting"
 NOTIFICATION_DELIVERY_STALE_AFTER = timedelta(minutes=15)
+WHATSAPP_CUSTOMER_SERVICE_WINDOW = timedelta(hours=23, minutes=45)
 
 
 @dataclass(frozen=True)
@@ -106,6 +119,19 @@ def _delivery_status_value(status: NotificationDeliveryStatus | str | None) -> s
     if status is None:
         return None
     return status.value if hasattr(status, "value") else str(status)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class MeetingSummaryNotificationService:
@@ -182,6 +208,33 @@ class MeetingSummaryNotificationService:
             f"Meeting time: {meeting_time}\n"
             f"Open summary: {url}"
         )
+
+    def render_whatsapp_summary_text(self, context: MeetingSummaryNotificationContext) -> str:
+        """Render the compact summary snapshot stored in WhatsApp chat history."""
+        title = context.meeting_title or "Untitled meeting"
+        meeting_time = self._format_meeting_time(context.meeting_start_at)
+        snapshot = self._summary_snapshot(context.summary_data)
+        url = self.build_summary_url(event_id=context.event_id)
+        lines = [
+            f"Meeting summary is ready: {title}",
+            f"Meeting time: {meeting_time}",
+        ]
+        if snapshot:
+            lines.append(f"Snapshot: {snapshot}")
+        lines.append(f"Open summary: {url}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summary_snapshot(summary_data: dict[str, Any]) -> str:
+        data = summary_data.get("data") if isinstance(summary_data, dict) else None
+        source = data if isinstance(data, dict) else summary_data
+        if not isinstance(source, dict):
+            return ""
+        for key in ("executive_summary", "summary", "meeting_summary", "overview"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:500]
+        return ""
 
     async def _fetch_org_users(self) -> list[User]:
         async for session in acquire_master_async_session():
@@ -260,6 +313,28 @@ class MeetingSummaryNotificationService:
                 )
             )
         return recipients
+
+    async def resolve_whatsapp_targets(
+        self,
+        recipients: list[NotificationRecipient],
+    ) -> list[tuple[NotificationRecipient, OutboundDeliveryTarget]]:
+        """Resolve send-ready WhatsApp targets for internal summary recipients."""
+        if not recipients:
+            return []
+
+        targets: list[tuple[NotificationRecipient, OutboundDeliveryTarget]] = []
+        channel_service = OutboundChannelService()
+        async with master_async_session_scope() as master_session:
+            for recipient in recipients:
+                target = await channel_service.resolve_user_channel(
+                    master_session,
+                    self.organisation_id,
+                    recipient.user_id,
+                    "whatsapp",
+                )
+                if target:
+                    targets.append((recipient, target))
+        return targets
 
     async def _fetch_deal_linked_channel_rows(self, deal_id: UUID) -> list[Any]:
         async for session in acquire_org_async_session(self.organisation_id):
@@ -519,6 +594,81 @@ class MeetingSummaryNotificationService:
 
         return False
 
+    async def send_whatsapp_summary(
+        self,
+        context: MeetingSummaryNotificationContext,
+        recipient: NotificationRecipient,
+        target: OutboundDeliveryTarget,
+    ) -> bool:
+        """Send a summary snapshot through an approved WhatsApp template."""
+        title = context.meeting_title or "Untitled meeting"
+        meeting_time = self._format_meeting_time(context.meeting_start_at)
+        snapshot = self._summary_snapshot(context.summary_data) or "Summary is ready."
+        url = self.build_summary_url(event_id=context.event_id)
+        text = self.render_whatsapp_summary_text(context)
+
+        provider = WhatsAppOutboundProvider()
+        phone_number_id = str(target.delivery_context.get("phone_number_id", ""))
+        recipient_wa_id = str(target.delivery_context.get("recipient_wa_id", ""))
+        delivery_mode = "freeform" if self._is_whatsapp_service_window_open(target) else "template"
+        if delivery_mode == "freeform":
+            message_id = await provider.send_text_message_with_id(
+                phone_number_id=phone_number_id,
+                recipient_wa_id=recipient_wa_id,
+                text=text,
+            )
+        else:
+            message_id = await provider.send_template_message_with_id(
+                phone_number_id=phone_number_id,
+                recipient_wa_id=recipient_wa_id,
+                template_name=MEETING_SUMMARY_TEMPLATE_NAME,
+                language_code=DEFAULT_TEMPLATE_LANGUAGE,
+                body_parameters=[title, meeting_time, snapshot, url],
+            )
+        if not message_id:
+            return False
+
+        try:
+            from src.domain.models.organisation_tables.chat_session_models import ChatType
+
+            await OutboundChatContextService().persist_outbound_notification_context(
+                organisation_id=self.organisation_id,
+                user_id=recipient.user_id,
+                chat_type=ChatType.WHATSAPP_CHAT,
+                text=text,
+                metadata={
+                    "notification_type": MEETING_SUMMARY_READY_NOTIFICATION,
+                    "source_type": context.source_type,
+                    "source_id": str(
+                        context.source_id or context.association_id or context.event_id
+                    ),
+                    "template_name": MEETING_SUMMARY_TEMPLATE_NAME,
+                    "delivery_mode": delivery_mode,
+                    "whatsapp_message_id": message_id,
+                    "deep_link": url,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist outbound WhatsApp meeting summary chat context",
+                extra={
+                    "event": "meeting_summary_whatsapp_context_persist_failed",
+                    "organisation_id": str(self.organisation_id),
+                    "event_id": str(context.event_id),
+                    "recipient_user_id": str(recipient.user_id),
+                    "whatsapp_message_id": message_id,
+                },
+                exc_info=True,
+            )
+        return True
+
+    @staticmethod
+    def _is_whatsapp_service_window_open(target: OutboundDeliveryTarget) -> bool:
+        last_inbound_at = _parse_datetime(target.delivery_context.get("last_inbound_at"))
+        if not last_inbound_at:
+            return False
+        return datetime.now(UTC) - last_inbound_at < WHATSAPP_CUSTOMER_SERVICE_WINDOW
+
     async def _claim_delivery(
         self,
         *,
@@ -629,12 +779,17 @@ class MeetingSummaryNotificationService:
 
     async def notify(self, *, deal_id: UUID | None, event_id: UUID) -> dict[str, int | str]:
         """Notify internal users and active deal channels for one completed summary."""
-        context = await self.load_context(deal_id=deal_id, event_id=event_id)
+        context = await _maybe_await(self.load_context(deal_id=deal_id, event_id=event_id))
         if not context:
             return {"status": "skipped", "reason": "summary_not_ready"}
 
-        recipients = await self.resolve_email_recipients(event_id=event_id)
-        channels = await self.resolve_channel_targets(context.deal_id) if context.deal_id else []
+        recipients = await _maybe_await(self.resolve_email_recipients(event_id=event_id))
+        whatsapp_targets = await _maybe_await(self.resolve_whatsapp_targets(recipients))
+        channels = (
+            await _maybe_await(self.resolve_channel_targets(context.deal_id))
+            if context.deal_id
+            else []
+        )
 
         sent = 0
         skipped = 0
@@ -655,7 +810,7 @@ class MeetingSummaryNotificationService:
                 continue
 
             try:
-                delivered = await self.send_email(context, recipient)
+                delivered = await _maybe_await(self.send_email(context, recipient))
                 if delivered:
                     await self._mark_delivery_sent(delivery_id)
                     sent += 1
@@ -667,6 +822,45 @@ class MeetingSummaryNotificationService:
                     "Meeting summary email notification failed",
                     extra={
                         "event": "meeting_summary_email_notification_failed",
+                        "organisation_id": str(self.organisation_id),
+                        "event_id": str(event_id),
+                        "deal_id": str(deal_id),
+                        "recipient_user_id": str(recipient.user_id),
+                    },
+                )
+                await self._mark_delivery_failed(delivery_id, str(exc))
+                failed += 1
+
+        for recipient, target in whatsapp_targets:
+            delivery_id = await self._claim_delivery(
+                context=context,
+                channel=NotificationDeliveryChannel.WHATSAPP,
+                target_key=str(target.mapping_id or recipient.user_id),
+                target_label=recipient.email,
+                metadata={
+                    "recipient_user_id": str(recipient.user_id),
+                    "delivery_context": target.delivery_context,
+                },
+            )
+            if not delivery_id:
+                skipped += 1
+                continue
+
+            try:
+                delivered = await _maybe_await(
+                    self.send_whatsapp_summary(context, recipient, target)
+                )
+                if delivered:
+                    await self._mark_delivery_sent(delivery_id)
+                    sent += 1
+                else:
+                    await self._mark_delivery_failed(delivery_id, "whatsapp_send_failed")
+                    failed += 1
+            except Exception as exc:
+                logger.exception(
+                    "Meeting summary WhatsApp notification failed",
+                    extra={
+                        "event": "meeting_summary_whatsapp_notification_failed",
                         "organisation_id": str(self.organisation_id),
                         "event_id": str(event_id),
                         "deal_id": str(deal_id),
@@ -701,7 +895,7 @@ class MeetingSummaryNotificationService:
                 continue
 
             try:
-                delivered = await self.send_channel(context, target)
+                delivered = await _maybe_await(self.send_channel(context, target))
                 if delivered:
                     await self._mark_delivery_sent(delivery_id)
                     sent += 1
@@ -725,7 +919,7 @@ class MeetingSummaryNotificationService:
 
         return {
             "status": "failed" if failed else "completed",
-            "targets_found": len(recipients) + len(channels),
+            "targets_found": len(recipients) + len(whatsapp_targets) + len(channels),
             "sent": sent,
             "skipped": skipped,
             "failed": failed,

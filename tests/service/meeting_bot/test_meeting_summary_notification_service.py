@@ -671,6 +671,7 @@ async def test_notify_reports_failed_when_email_provider_fails(monkeypatch):
 
     monkeypatch.setattr(service, "load_context", _load_context)
     monkeypatch.setattr(service, "resolve_email_recipients", _resolve_email_recipients)
+    monkeypatch.setattr(service, "resolve_whatsapp_targets", lambda _recipients: [])
     monkeypatch.setattr(service, "resolve_channel_targets", _resolve_channel_targets)
     monkeypatch.setattr(service, "_claim_delivery", _claim_delivery)
     monkeypatch.setattr(service, "send_email", _send_email)
@@ -765,3 +766,214 @@ async def test_notify_non_deal_summary_emails_internal_attendees_without_channel
         "failed": 0,
     }
     assert sent_deliveries == [claimed_delivery_id]
+
+
+@pytest.mark.asyncio
+async def test_notify_sends_whatsapp_summary_to_linked_internal_attendee(monkeypatch):
+    """Meeting summary notifications should also reach linked attendee WhatsApp chats."""
+    from src.domain.models.organisation_tables.sync import NotificationDeliveryChannel
+    from src.service.channels import OutboundDeliveryTarget
+    from src.service.meeting_bot.summary_notification_service import (
+        MeetingSummaryNotificationContext,
+        MeetingSummaryNotificationService,
+        NotificationRecipient,
+    )
+
+    org_id = uuid4()
+    user_id = uuid4()
+    event_id = uuid4()
+    service = MeetingSummaryNotificationService(org_id)
+    context = MeetingSummaryNotificationContext(
+        organisation_id=org_id,
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=event_id,
+        meeting_title="Pricing Review",
+        meeting_start_at=datetime(2026, 6, 23, 11, 30, tzinfo=UTC),
+        summary_data={
+            "data": {"executive_summary": "Buyer asked for security review before signing."}
+        },
+        source_type="meeting",
+        source_id=uuid4(),
+    )
+    recipient = NotificationRecipient(
+        user_id=user_id,
+        email="seller@example.com",
+        first_name="Seller",
+    )
+    target = OutboundDeliveryTarget(
+        channel="whatsapp",
+        mapping_id=uuid4(),
+        delivery_context={"phone_number_id": "phone-1", "recipient_wa_id": "wa-1"},
+    )
+    claimed_delivery_id = uuid4()
+    claimed_channels: list[NotificationDeliveryChannel] = []
+    sent_payloads: list[tuple[NotificationRecipient, OutboundDeliveryTarget, str]] = []
+    marked_sent: list[object] = []
+
+    monkeypatch.setattr(service, "load_context", lambda **_kwargs: context)
+    monkeypatch.setattr(service, "resolve_email_recipients", lambda **_kwargs: [recipient])
+    monkeypatch.setattr(service, "resolve_channel_targets", lambda _deal_id: [])
+    monkeypatch.setattr(service, "send_email", lambda _context, _recipient: True)
+
+    async def _resolve_whatsapp_targets(recipients):
+        assert recipients == [recipient]
+        return [(recipient, target)]
+
+    async def _send_whatsapp_summary(_context, _recipient, _target):
+        sent_payloads.append(
+            (_recipient, _target, _context.summary_data["data"]["executive_summary"])
+        )
+        return True
+
+    async def _claim_delivery(**kwargs):
+        claimed_channels.append(kwargs["channel"])
+        return claimed_delivery_id
+
+    async def _mark_sent(delivery_id):
+        marked_sent.append(delivery_id)
+
+    monkeypatch.setattr(service, "resolve_whatsapp_targets", _resolve_whatsapp_targets)
+    monkeypatch.setattr(service, "send_whatsapp_summary", _send_whatsapp_summary)
+    monkeypatch.setattr(service, "_claim_delivery", _claim_delivery)
+    monkeypatch.setattr(service, "_mark_delivery_sent", _mark_sent)
+
+    result = await service.notify(deal_id=None, event_id=event_id)
+
+    assert result["status"] == "completed"
+    assert result["targets_found"] == 2
+    assert result["sent"] == 2
+    assert claimed_channels == [
+        NotificationDeliveryChannel.EMAIL,
+        NotificationDeliveryChannel.WHATSAPP,
+    ]
+    assert sent_payloads == [(recipient, target, "Buyer asked for security review before signing.")]
+    assert marked_sent == [claimed_delivery_id, claimed_delivery_id]
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_summary_still_succeeds_when_chat_context_persist_fails(
+    monkeypatch,
+):
+    """Provider acceptance is delivery success; chat context persistence is secondary."""
+    from src.service.channels import OutboundDeliveryTarget
+    from src.service.meeting_bot.summary_notification_service import (
+        MeetingSummaryNotificationContext,
+        MeetingSummaryNotificationService,
+        NotificationRecipient,
+    )
+
+    class _FakeWhatsAppOutboundProvider:
+        async def send_template_message_with_id(self, **_kwargs):
+            return "wamid.accepted"
+
+    class _FakeOutboundChatContextService:
+        async def persist_outbound_notification_context(self, **_kwargs):
+            raise RuntimeError("org db temporarily unavailable")
+
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_notification_service.WhatsAppOutboundProvider",
+        _FakeWhatsAppOutboundProvider,
+    )
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_notification_service.OutboundChatContextService",
+        _FakeOutboundChatContextService,
+    )
+
+    org_id = uuid4()
+    event_id = uuid4()
+    service = MeetingSummaryNotificationService(org_id)
+    context = MeetingSummaryNotificationContext(
+        organisation_id=org_id,
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=event_id,
+        meeting_title="Pricing Review",
+        meeting_start_at=datetime(2026, 6, 23, 11, 30, tzinfo=UTC),
+        summary_data={"data": {"executive_summary": "Pricing approval is next."}},
+        source_type="meeting",
+        source_id=uuid4(),
+    )
+    recipient = NotificationRecipient(
+        user_id=uuid4(),
+        email="seller@example.com",
+        first_name="Seller",
+    )
+    target = OutboundDeliveryTarget(
+        channel="whatsapp",
+        mapping_id=uuid4(),
+        delivery_context={"phone_number_id": "phone-1", "recipient_wa_id": "wa-1"},
+    )
+
+    assert await service.send_whatsapp_summary(context, recipient, target) is True
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_summary_uses_freeform_text_inside_customer_service_window(
+    monkeypatch,
+):
+    """Inside WhatsApp's service window we send the same body as freeform text."""
+    from src.service.channels import OutboundDeliveryTarget
+    from src.service.meeting_bot.summary_notification_service import (
+        MeetingSummaryNotificationContext,
+        MeetingSummaryNotificationService,
+        NotificationRecipient,
+    )
+
+    sent_texts: list[str] = []
+
+    class _FakeWhatsAppOutboundProvider:
+        async def send_text_message_with_id(self, **kwargs):
+            sent_texts.append(kwargs["text"])
+            return "wamid.freeform"
+
+        async def send_template_message_with_id(self, **_kwargs):
+            raise AssertionError("template should not be used inside the service window")
+
+    class _FakeOutboundChatContextService:
+        async def persist_outbound_notification_context(self, **_kwargs):
+            return uuid4()
+
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_notification_service.WhatsAppOutboundProvider",
+        _FakeWhatsAppOutboundProvider,
+    )
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_notification_service.OutboundChatContextService",
+        _FakeOutboundChatContextService,
+    )
+
+    org_id = uuid4()
+    event_id = uuid4()
+    service = MeetingSummaryNotificationService(org_id)
+    context = MeetingSummaryNotificationContext(
+        organisation_id=org_id,
+        organisation_name="Acme",
+        deal_id=None,
+        deal_name=None,
+        event_id=event_id,
+        meeting_title="Pricing Review",
+        meeting_start_at=datetime(2026, 6, 23, 11, 30, tzinfo=UTC),
+        summary_data={"data": {"executive_summary": "Pricing approval is next."}},
+        source_type="meeting",
+        source_id=uuid4(),
+    )
+    recipient = NotificationRecipient(
+        user_id=uuid4(),
+        email="seller@example.com",
+        first_name="Seller",
+    )
+    target = OutboundDeliveryTarget(
+        channel="whatsapp",
+        mapping_id=uuid4(),
+        delivery_context={
+            "phone_number_id": "phone-1",
+            "recipient_wa_id": "wa-1",
+            "last_inbound_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    assert await service.send_whatsapp_summary(context, recipient, target) is True
+    assert sent_texts == [service.render_whatsapp_summary_text(context)]

@@ -120,6 +120,52 @@ async def test_linked_user_enqueues_chat_processing(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_get_linked_user_records_whatsapp_customer_service_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WhatsAppBotService()
+    user = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    mapping = SimpleNamespace(
+        conversation_context={"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
+        last_used_at=None,
+    )
+    commits = 0
+
+    class _Session:
+        async def commit(self):
+            nonlocal commits
+            commits += 1
+
+    async def _sessions():
+        yield _Session()
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.acquire_master_async_session",
+        _sessions,
+    )
+    monkeypatch.setattr(
+        service._identity_service,
+        "get_user_for_external_identity",
+        AsyncMock(return_value=(user, mapping)),
+    )
+
+    resolved_user, context = await service._get_linked_user(
+        "15551234567",
+        "phone-123",
+        inbound_message_id="wamid.1",
+    )
+
+    assert resolved_user is user
+    assert context["phone_number_id"] == "phone-123"
+    assert context["recipient_wa_id"] == "15551234567"
+    assert context["last_inbound_message_id"] == "wamid.1"
+    assert context["last_inbound_at"].endswith("+00:00")
+    assert mapping.conversation_context == context
+    assert mapping.last_used_at is not None
+    assert commits == 1
+
+
+@pytest.mark.asyncio
 async def test_linked_user_sends_typing_indicator_before_enqueue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
