@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -80,6 +81,21 @@ def test_account_search_cursor_rejects_invalid_payload() -> None:
     assert exc_info.value.message == "Invalid cursor"
 
 
+def test_account_owner_payload_uses_id_name_and_email() -> None:
+    owner_id = uuid4()
+    company = SimpleNamespace(
+        owner_id=owner_id,
+        owner_name="Jane Smith",
+        owner_email="jane@example.com",
+    )
+
+    assert AccountReadService._account_owner_payload(company) == {
+        "id": owner_id,
+        "name": "Jane Smith",
+        "email": "jane@example.com",
+    }
+
+
 @pytest.mark.asyncio
 async def test_get_account_detail_maps_row_like_count_results() -> None:
     organisation_id = uuid4()
@@ -141,19 +157,22 @@ async def test_get_account_detail_maps_row_like_count_results() -> None:
     assert detail["contact_count"] == 2
     assert detail["deal_count"] == 2
     assert detail["pipeline_value"] == 1250.0
+    assert detail["account_research"] == {
+        "status": "not_available",
+        "content": None,
+        "last_researched_at": None,
+    }
     assert detail["contacts"] == [
         {
             "contact_id": contact_with_count_id,
             "full_name": "Alice",
             "email": "alice@acme.com",
             "job_title": "VP",
-            "deal_count": 3,
         },
         {
             "contact_id": contact_without_count_id,
             "full_name": "Bob",
             "email": "bob@acme.com",
             "job_title": "Director",
-            "deal_count": 0,
         },
     ]

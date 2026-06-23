@@ -20,6 +20,7 @@ from src.api.schemas.crm_account_models import (
     AccountContactItem,
     AccountDealItem,
     AccountDetail,
+    AccountDetailContactItem,
     AccountListItem,
     AccountSearchItem,
     AccountSearchPage,
@@ -240,12 +241,11 @@ async def get_account_detail(
         data = await service.get_account_detail(company_id)
 
         contact_items = [
-            AccountContactItem(
+            AccountDetailContactItem(
                 contact_id=ct["contact_id"],
                 full_name=ct.get("full_name"),
                 email=ct.get("email"),
                 job_title=ct.get("job_title"),
-                deal_count=ct.get("deal_count", 0),
             )
             for ct in data["contacts"]
         ]

@@ -5,8 +5,14 @@ from uuid import uuid4
 
 import pytest
 from fastapi import Response as FastAPIResponse
-from src.api.routers.crm.contacts_handler import list_contacts
+from src.api.routers.crm.contacts_handler import get_contact_detail, list_contacts
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStatus,
+    CRMParticipantType,
+)
 
 
 class _FakeContactReadService:
@@ -17,6 +23,15 @@ class _FakeContactReadService:
     async def list_contacts(self, **kwargs):
         self.request = kwargs
         return self.rows, self.total_count
+
+
+class _FakeContactDetailService:
+    def __init__(self, result: dict):
+        self.result = result
+
+    async def get_contact_detail(self, contact_id):
+        self.contact_id = contact_id
+        return self.result
 
 
 @pytest.mark.asyncio
@@ -115,3 +130,135 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
     assert "owner_name" not in dumped
     assert "lifecycle_stage" not in dumped
     assert "profile_enrichment_source" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_get_contact_detail_returns_page_ready_contract() -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    contact_id = uuid4()
+    company_id = uuid4()
+    owner_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    now = datetime(2026, 6, 20, 15, 45, tzinfo=UTC)
+    researched_at = datetime(2026, 6, 19, 8, 15, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=contact_id,
+        first_name="Vickesh",
+        last_name="Shah",
+        full_name="Vickesh Shah",
+        email="vickesh@lemonedge.com",
+        additional_emails=[],
+        job_title="Head of Sales",
+        phone="+1 415 555 0100",
+        mobile_phone="+1 415 555 0101",
+        linkedin_url="https://linkedin.com/in/vickesh",
+        website="https://lemonedge.com",
+        company_id=company_id,
+        company_name="LemonEdge",
+        owner_id=owner_id,
+        owner_name="Nikhil Singhal",
+        owner_email="nikhil@example.com",
+        contact_research="Vickesh leads regional sales at LemonEdge.",
+        last_researched_at=researched_at,
+        profile_enrichment={"headline": "Sales leader"},
+        profile_enrichment_source="apollo",
+        profile_enriched_at=researched_at,
+        created_at=now,
+        updated_at=now,
+        synced_at=now,
+    )
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="Vickesh-LemonEdge",
+        deal_status=CRMDealStatus.OPEN,
+        stage_name="Appointment Scheduled",
+        last_activity_at=now,
+    )
+    participant = CRMDealParticipant(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        participant_id=participant_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        relationship_role="buyer",
+    )
+    service = _FakeContactDetailService(
+        {
+            "contact": contact,
+            "source": "hubspot",
+            "company": {
+                "id": company_id,
+                "name": "LemonEdge",
+                "domain": "lemonedge.com",
+                "website": "https://lemonedge.com",
+                "industry": "Financial Services",
+                "linkedin_url": None,
+                "country": None,
+            },
+            "owner": {
+                "id": owner_id,
+                "name": "Nikhil Singhal",
+                "email": "nikhil@example.com",
+            },
+            "deals": [
+                {
+                    "deal": deal,
+                    "participant": participant,
+                }
+            ],
+        }
+    )
+
+    result = await get_contact_detail(
+        contact_id=contact_id,
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        _rl_read=None,
+    )
+
+    dumped = result.data.model_dump()  # type: ignore[union-attr]
+    assert dumped["company"] == {
+        "id": company_id,
+        "name": "LemonEdge",
+        "domain": "lemonedge.com",
+        "website": "https://lemonedge.com",
+        "industry": "Financial Services",
+        "linkedin_url": None,
+        "country": None,
+    }
+    assert dumped["owner"] == {
+        "id": owner_id,
+        "name": "Nikhil Singhal",
+        "email": "nikhil@example.com",
+    }
+    assert dumped["research_summary"] == {
+        "summary": "Vickesh leads regional sales at LemonEdge.",
+        "last_researched_at": researched_at,
+    }
+    assert dumped["profile_enrichment"] == {
+        "is_enriched": True,
+        "source": "apollo",
+        "enriched_at": researched_at,
+        "data": {"headline": "Sales leader"},
+    }
+    assert dumped["deal_involvement"] == [
+        {
+            "deal_id": deal_id,
+            "deal_name": "Vickesh-LemonEdge",
+            "deal_status": "open",
+            "stage_name": "Appointment Scheduled",
+            "last_activity_at": now,
+            "participant_id": participant_id,
+            "relationship_role": "buyer",
+        }
+    ]
+    assert "stakeholder_summary" not in dumped
+    assert "stance" not in dumped["deal_involvement"][0]
+    assert "decision_power" not in dumped["deal_involvement"][0]

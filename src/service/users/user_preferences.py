@@ -17,6 +17,21 @@ DEFAULT_CONTACT_LIST_COLUMNS = [
     "last_activity_at",
 ]
 
+DEFAULT_ACCOUNT_LIST_COLUMNS = [
+    "name",
+    "domain",
+    "industry",
+    "lifecycle_stage",
+    "owner.name",
+    "contact_count",
+    "deal_count",
+    "pipeline_value",
+    "number_of_employees",
+    "annual_revenue",
+    "country",
+    "linkedin_url",
+]
+
 
 def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Return user UI preferences with backend-owned defaults filled in."""
@@ -31,5 +46,17 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
 
     contacts["list"] = contact_list
     crm["contacts"] = contacts
+
+    accounts = dict(crm.get("accounts") or {})
+    account_list = dict(accounts.get("list") or {})
+    account_columns = account_list.get("columns")
+
+    if not isinstance(account_columns, list) or not all(
+        isinstance(column, str) for column in account_columns
+    ):
+        account_list["columns"] = list(DEFAULT_ACCOUNT_LIST_COLUMNS)
+
+    accounts["list"] = account_list
+    crm["accounts"] = accounts
     root["crm"] = crm
     return root

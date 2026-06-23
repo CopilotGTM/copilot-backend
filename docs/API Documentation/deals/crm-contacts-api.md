@@ -142,7 +142,7 @@ This means:
 - `company.id` in the list response is either the **stored FK** (when set) or **resolved at query time** from email domain matching.
 - `company.domain` comes from the matched account when available, otherwise the contact email domain is used as display context.
 - If no account is linked or matched, the list may still return a `company` object with the contact's company string/domain context; otherwise `company` is `null`.
-- When `company_id` is explicitly set during create/update, `company_name` is auto-resolved from the linked account for legacy create/update/detail responses.
+- When `company_id` is explicitly set during create/update, `company_name` is auto-resolved from the linked account for legacy create/update responses. Detail responses expose the account through nested `company`.
 
 ### Contact → Deals (via Deal Participant)
 
@@ -221,18 +221,24 @@ Free-form string from the CRM provider. Common values:
 |-------|------------|-----------|
 | `first_name` | Yes | Not provided or name splitting yielded no first name |
 | `last_name` | Yes | Single-word name (e.g., "Madonna") |
-| `company_name` | Yes | Not provided |
-| `company_id` | Yes | No explicit/resolved account |
-| `company_domain` | Yes | Contact has no email, or email has no valid domain |
+| `website` | Yes | Not provided |
 | `lifecycle_stage` | Yes | Not set in CRM |
-| `owner_name` | Yes | No owner assigned |
+| `lead_status` | Yes | Not set in CRM |
+| `marketing_status` | Yes | Not set in CRM |
+| `company` | Yes | No explicit account, no matching email-domain account, and no company string/domain |
+| `owner` | Yes | No owner assigned |
 | `mobile_phone` | Yes | Not provided |
 | `linkedin_url` | Yes | Not provided |
 | `address` | Yes | Not provided |
 | `city` | Yes | Not provided |
 | `state` | Yes | Not provided |
+| `postal_code` | Yes | Not provided |
 | `country` | Yes | Not provided |
-| `contact_research` | Yes | Not yet researched |
+| `timezone` | Yes | Not provided |
+| `research_summary` | Yes | Contact has no research text and no research timestamp |
+| `research_summary.summary` | Yes | Not yet researched |
+| `profile_enrichment.source` | Yes | Structured enrichment has not run |
+| `profile_enrichment.enriched_at` | Yes | Structured enrichment has not run |
 | `last_contacted_at` | Yes | No logged contact touch |
 | `last_activity_at` | Yes | No activity recorded |
 
@@ -283,8 +289,8 @@ export interface ContactListOwner {
 }
 
 /**
- * Legacy flat contact shape returned by create/update/detail responses.
- * GET /contacts uses ContactListItem above instead.
+ * Legacy flat contact shape returned by create/update responses.
+ * GET /contacts uses ContactListItem and GET /contacts/{contact_id} uses ContactDetail.
  */
 export interface ContactMutationItem {
   contact_id: UUID;
@@ -306,32 +312,71 @@ export interface ContactMutationItem {
 }
 
 /**
- * Full contact detail returned by GET /contacts/{contact_id}.
- * Extends ContactMutationItem with extended profile, enrichment content,
- * and deal involvement array.
+ * Account context returned by GET /contacts/{contact_id}.
  */
-export interface ContactDetail extends ContactMutationItem {
-  // Extended communication
-  additional_emails: string[];        // Secondary email addresses (may be empty array)
-  mobile_phone: string | null;
-
-  // Social
+export interface ContactDetailCompany extends ContactListCompany {
+  website: string | null;
+  industry: string | null;
   linkedin_url: string | null;
+  country: string | null;
+}
 
-  // Location
+export interface ContactResearchSummary {
+  summary: string | null;             // AI/contact research text
+  last_researched_at: ISODate | null;
+}
+
+export interface ContactProfileEnrichment {
+  is_enriched: boolean;
+  source: string | null;
+  enriched_at: ISODate | null;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Page-ready contact detail returned by GET /contacts/{contact_id}.
+ * The response is flat for contact fields and nests only real related objects.
+ */
+export interface ContactDetail {
+  contact_id: UUID;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null;
+  job_title: string | null;
+
+  email: string | null;
+  additional_emails: string[];
+  phone: string | null;
+  mobile_phone: string | null;
+  linkedin_url: string | null;
+  website: string | null;
+
+  source: string;
+  lifecycle_stage: string | null;
+  lead_status: string | null;
+  marketing_status: string | null;
+
+  company: ContactDetailCompany | null;
+  owner: ContactListOwner | null;
+
   address: string | null;
   city: string | null;
   state: string | null;
+  postal_code: string | null;
   country: string | null;
+  timezone: string | null;
 
-  // Research
-  contact_research: string | null;    // AI-generated research summary (markdown)
+  last_contacted_at: ISODate | null;
+  last_activity_at: ISODate | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+  source_created_at: ISODate | null;
+  source_modified_at: ISODate | null;
+  synced_at: ISODate;
 
-  // Activity timestamps
-  last_contacted_at: ISODate | null;  // Last logged contact touch
-  last_activity_at: ISODate | null;   // Latest recorded activity
-
-  /** Deals this contact participates in as a stakeholder */
+  research_summary: ContactResearchSummary | null;
+  profile_enrichment: ContactProfileEnrichment;
+  deal_count: number;
   deal_involvement: ContactDealInvolvement[];
 }
 
@@ -344,9 +389,8 @@ export interface ContactDealInvolvement {
   deal_name: string | null;
   deal_status: string | null;         // "open" | "won" | "lost" | "closed"
   stage_name: string | null;          // Pipeline stage display name
+  last_activity_at: ISODate | null;
   participant_id: UUID;               // The participant row ID used by stakeholder APIs
-  stance: string | null;              // Reserved for future: AI-inferred stakeholder stance
-  decision_power: string | null;      // Reserved for future: AI-inferred decision power
   relationship_role: string | null;   // Role label (e.g., "decision_maker", "evaluator")
 }
 
@@ -572,7 +616,7 @@ Account linking is **explicit only** — there is no silent auto-linking from th
 - If `company_id` is provided → service validates the account exists in the organisation and auto-resolves `company_name` from the linked account. Returns `404` if the account does not exist.
 - If `company_id` is **not** provided → contact is created with `company_id = null` and `company_name = null`. The contact is unlinked.
 
-**Domain matching as runtime fallback:** When `company_id` is `null`, list/detail endpoints fall back to email domain matching for **display purposes only** (returning a `company_id` in the response). This is a read-time fallback — it never writes to the FK column.
+**Domain matching as runtime fallback:** When `company_id` is `null`, list/detail endpoints fall back to email domain matching for **display purposes only**. List/detail responses expose this as nested `company.id`; it is a read-time fallback and never writes to the FK column.
 
 **Integration auto-creation:**
 If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is automatically created on first contact creation. This is idempotent.
@@ -625,7 +669,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 }
 ```
 
-**Note:** `company_id` and `company_domain` are `null` in the create response when they are not resolved during the write. These are resolved at query time in list/detail endpoints. `company_name` may be populated via auto-resolution.
+**Note:** `company_id` and `company_domain` are `null` in the create response when they are not resolved during the write. List/detail endpoints resolve account display context at query time through nested `company`. `company_name` may be populated via auto-resolution.
 
 #### Error Responses
 
@@ -645,7 +689,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 GET /users/crm/contacts/{contact_id}
 ```
 
-Full contact detail including extended profile fields, enrichment content, and deal involvement array.
+Page-ready contact detail for the contact overview page. The response includes flat contact fields, nested account/owner context, contact research, profile enrichment metadata, and a compact deal involvement array for the right panel.
 
 #### Path Parameters
 
@@ -664,33 +708,66 @@ Full contact detail including extended profile fields, enrichment content, and d
     "first_name": "John",
     "last_name": "Doe",
     "full_name": "John Doe",
-    "email": "john@acme.com",
     "job_title": "VP Engineering",
-    "phone": "+1-555-0101",
-    "company_name": "Acme Corp",
-    "company_id": null,
-    "company_domain": null,
-    "lifecycle_stage": "customer",
-    "owner_name": "Jane Smith",
-    "deal_count": 2,
-    "source": "manual",
-    "created_at": "2026-01-10T08:00:00Z",
-    "updated_at": "2026-03-20T14:00:00Z",
 
+    "email": "john@acme.com",
     "additional_emails": ["john.doe@acme.com", "jdoe@personal.com"],
+    "phone": "+1-555-0101",
     "mobile_phone": "+1-555-0102",
     "linkedin_url": "https://linkedin.com/in/johndoe",
-    "profile_enrichment": {
-      "headline": "Engineering executive"
+    "website": null,
+
+    "source": "manual",
+    "lifecycle_stage": "customer",
+    "lead_status": null,
+    "marketing_status": null,
+
+    "company": {
+      "id": "d3b07384-d9a0-4c8f-9f64-ef1234567890",
+      "name": "Acme Corp",
+      "domain": "acme.com",
+      "website": "https://acme.com",
+      "industry": "Software",
+      "linkedin_url": null,
+      "country": "US"
     },
-    "profile_enrichment_source": "apollo",
-    "profile_enriched_at": "2026-03-15T10:30:00Z",
+
+    "owner": {
+      "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+      "name": "Jane Smith",
+      "email": "jane@example.com"
+    },
+
     "address": "123 Tech Blvd",
     "city": "San Francisco",
     "state": "CA",
+    "postal_code": "94105",
     "country": "US",
+    "timezone": "America/Los_Angeles",
+
     "last_contacted_at": "2026-03-18T09:00:00Z",
     "last_activity_at": "2026-03-20T14:00:00Z",
+    "created_at": "2026-01-10T08:00:00Z",
+    "updated_at": "2026-03-20T14:00:00Z",
+    "source_created_at": "2026-01-10T08:00:00Z",
+    "source_modified_at": "2026-03-20T14:00:00Z",
+    "synced_at": "2026-03-20T14:05:00Z",
+
+    "research_summary": {
+      "summary": "John Doe leads engineering at Acme Corp and is likely involved in technical evaluation for CRM and GTM workflow changes.",
+      "last_researched_at": "2026-03-15T10:30:00Z"
+    },
+
+    "profile_enrichment": {
+      "is_enriched": true,
+      "source": "apollo",
+      "enriched_at": "2026-03-15T10:30:00Z",
+      "data": {
+        "headline": "Engineering executive"
+      }
+    },
+
+    "deal_count": 2,
 
     "deal_involvement": [
       {
@@ -698,9 +775,8 @@ Full contact detail including extended profile fields, enrichment content, and d
         "deal_name": "Acme Enterprise License",
         "deal_status": "open",
         "stage_name": "Negotiation",
+        "last_activity_at": "2026-03-20T14:00:00Z",
         "participant_id": "f4a5b6c7-d8e9-0123-fabc-456789abcdef",
-        "stance": null,
-        "decision_power": null,
         "relationship_role": "decision_maker"
       },
       {
@@ -708,9 +784,8 @@ Full contact detail including extended profile fields, enrichment content, and d
         "deal_name": "Acme Support Renewal",
         "deal_status": "won",
         "stage_name": "Closed Won",
+        "last_activity_at": null,
         "participant_id": "b6c7d8e9-f0a1-2345-bcda-6789abcdef01",
-        "stance": null,
-        "decision_power": null,
         "relationship_role": "evaluator"
       }
     ]
@@ -721,10 +796,12 @@ Full contact detail including extended profile fields, enrichment content, and d
 **Notes:**
 
 - `deal_count` equals the length of `deal_involvement` array
-- `stance` and `decision_power` are reserved for future AI-inferred values (currently always `null`)
 - `relationship_role` comes from the contact participant's `relationship_role`
-- `company_id` and `company_domain` are resolved in the detail response using explicit account linkage first, then email-domain matching.
+- `deal_involvement` is intentionally compact for the contact right panel. It requires one participant-to-deal join and does not include stakeholder fields such as `stance`, `decision_power`, `temperature`, or research.
+- `company` is resolved using explicit account linkage first, then email-domain matching for display fallback.
 - `linkedin_url` is returned from the top-level contact profile field, with a legacy `properties.linkedin_url` fallback.
+- `research_summary.summary` comes from contact-level research (`crm_contacts.contact_research`).
+- `profile_enrichment.data` contains structured provider/enrichment data and may be an empty object.
 
 #### Error Responses
 
@@ -1067,10 +1144,10 @@ The dropdown should display **account name + domain** (and optionally industry) 
 
 ### Backend rules the frontend must respect
 
-1. **`company_id` is set once** — never changes, never unlinks. Once a contact has an account, the dropdown should be **read-only** for that contact.
+1. **`company_id` is set once** — never changes, never unlinks. The backend enforces this on PATCH.
 2. **Email is a precondition** — you cannot link an account to a contact that has no email. If `contact.email` is null, the dropdown must be disabled with a message like "Add an email address before linking an account."
 3. **No silent auto-linking** — the backend will NOT auto-link based on email domain. If the user wants the link, the frontend must explicitly send `company_id`.
-4. **Display fallback** — for unlinked contacts (`company_id = null`), list/detail responses still return a `company_id` resolved from email domain matching for display purposes only. The dropdown should treat these as "suggested" not "linked".
+4. **Display fallback** — for unlinked contacts (`company_id = null`), list/detail responses may still return nested `company.id` from email-domain matching for display purposes only. Do not treat nested `company.id` alone as proof of a stored account link.
 
 ### Flow A: Creating a new contact
 
@@ -1092,14 +1169,14 @@ The dropdown should display **account name + domain** (and optionally industry) 
 ### Flow B: Adding an account to an existing contact
 
 ```
-1. Contact exists with company_id = null
+1. Contact exists with no stored account link
 2. User clicks the account dropdown
 3. PRECONDITION CHECK: contact.email exists?
    - No  → dropdown disabled, "Add an email first"
    - Yes → enable, GET /accounts/suggest?email_domain=...
 4. Same dropdown UX as Flow A (suggested + search + create)
 5. User picks/creates → PATCH /contacts/{id} with company_id
-6. Once linked → dropdown becomes read-only (set-once rule)
+6. Once linked → backend rejects future account changes (set-once rule)
 ```
 
 ### Frontend example
@@ -1122,10 +1199,12 @@ async function onAccountSearch(query: string, cursor?: string) {
   setNextAccountCursor(data.next_cursor);
 }
 
-// 3. Gate the dropdown on existing contact's email + lock state
-const canEditAccount = contact.email !== null && contact.company_id === null;
-// canEditAccount === false  →  show read-only "Linked to {company_name}" or
-//                              "Add email first" disabled state
+// 3. Gate the dropdown on existing contact's email.
+// Do not infer stored-link state from contact.company.id alone; it may be a
+// domain-match display fallback. The backend enforces the set-once rule on PATCH.
+const canOpenAccountPicker = contact.email !== null;
+// canOpenAccountPicker === false  →  show "Add email first" disabled state
+// PATCH 400 "Cannot change the account linked to this contact" → show read-only linked state
 ```
 
 ### Endpoints used

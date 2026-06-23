@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-18
+> Last Updated: 2026-06-23
 
 ---
 
@@ -17,7 +17,7 @@ All account records include an implicit origin via their `integration_id`:
 - **Internal accounts** (created via this API): Owned by the `INTERNAL_CRM` integration. Fully editable — users can update all fields, trigger enrichment, and manage relationships.
 - **CRM-synced accounts** (imported from HubSpot, Salesforce, etc.): Owned by the corresponding CRM integration. Editable through this API (updates are local only — they do **not** sync back to the external CRM).
 
-**Frontend Implementation**: Use the `source` field and local `company_id` to render and navigate accounts. Provider identifiers are stored in `crm_source_object_mappings` and are not part of canonical account API payloads.
+**Frontend Implementation**: Use the local `company_id` to render and navigate accounts. Provider identifiers are stored in `crm_source_object_mappings` and are not part of canonical account API payloads.
 
 ### Related APIs
 
@@ -146,19 +146,19 @@ These fields are calculated at query time, **not stored** in the database:
 | `deal_count` | Count of non-deleted deals whose `company_id` matches the account |
 | `pipeline_value` | Sum of `amount` from matched deals where `deal_status = 'open'` only |
 
-**Note on `deal_count` in nested contacts:** The `deal_count` on each `AccountContactItem` counts only **approved** stakeholder relationships (`approval_status = APPROVED`). Removed, rejected, and pending stakeholders are excluded.
+**Note on `deal_count` in account contact endpoints:** The standalone `GET /accounts/{company_id}/contacts` response includes a per-contact `deal_count`. Account detail keeps nested contacts compact and does not include per-contact deal counts.
 
 ---
 
 ## Enums & Field Reference
 
-### research_status
+### account_research.status
 
-Status of the AI research/enrichment for this account.
+Status of the account research content used by account detail.
 
 | Value | Description | Frontend Display |
 |-------|-------------|-----------------|
-| `null` | Never researched | Show "Not researched" or enrichment CTA |
+| `"not_available"` | Account research storage/generation is not available yet | Show empty/coming-soon research state |
 | `"pending"` | Research queued | Show spinner or "Pending..." |
 | `"in_progress"` | Research actively running | Show spinner or progress indicator |
 | `"completed"` | Research finished successfully | Show research content |
@@ -187,15 +187,15 @@ Free-form string from the CRM provider. Common values:
 | `industry` | Yes | Not provided |
 | `lifecycle_stage` | Yes | Not set in CRM |
 | `owner_name` | Yes | No owner assigned |
+| `owner` | Yes | No owner ID, name, or email is assigned |
 | `number_of_employees` | Yes | Not provided |
 | `annual_revenue` | Yes | Not provided |
 | `phone` | Yes | Not provided |
 | `country` | Yes | Not provided |
 | `linkedin_url` | Yes | Not provided |
 | `description` | Yes | Not provided (detail view only) |
-| `company_research` | Yes | Not yet researched (detail view only) |
-| `last_researched_at` | Yes | Never researched |
-| `research_status` | Yes | Never researched |
+| `account_research.content` | Yes | Account research is not available or not completed |
+| `account_research.last_researched_at` | Yes | Account research is not available or never completed |
 
 ---
 
@@ -211,6 +211,12 @@ type ISODate = string; // ISO 8601 datetime with timezone (e.g., "2026-03-15T10:
  *
  * contact_count, deal_count, and pipeline_value are computed at query time.
  */
+export interface AccountListOwner {
+  id: UUID | null;
+  name: string | null;
+  email: string | null;
+}
+
 export interface AccountListItem {
   company_id: UUID;
   name: string | null;
@@ -218,7 +224,8 @@ export interface AccountListItem {
   website: string | null;             // Full URL (may include protocol)
   industry: string | null;
   lifecycle_stage: string | null;     // Free-form CRM value
-  owner_name: string | null;
+  owner_name: string | null;          // Backwards-compatible display field
+  owner: AccountListOwner | null;     // Preferred owner object for new UI columns
   number_of_employees: number | null;
   annual_revenue: number | null;      // Decimal (up to 2 decimal places)
   phone: string | null;
@@ -231,19 +238,25 @@ export interface AccountListItem {
   deal_count: number;                 // Deals linked via company_id
   pipeline_value: number;             // Sum of open deal amounts (0.0 if no open deals)
 
-  // Research/enrichment
-  research_status: string | null;     // null | "pending" | "in_progress" | "completed" | "failed"
-  last_researched_at: ISODate | null;
-
   // Timestamps
   created_at: ISODate;
   updated_at: ISODate;
 }
 
 /**
+ * Stable research wrapper for the account detail main panel.
+ * Account research generation/persistence is not implemented yet.
+ */
+export interface AccountResearchSummary {
+  status: "not_available" | "pending" | "in_progress" | "completed" | "failed";
+  content: string | null;
+  last_researched_at: ISODate | null;
+}
+
+/**
  * Full account detail returned by GET /accounts/{company_id}.
- * Extends AccountListItem with description, location, research content,
- * and nested contacts + deals arrays.
+ * Extends AccountListItem with description, location, account research placeholder,
+ * and nested compact contacts + deals arrays.
  */
 export interface AccountDetail extends AccountListItem {
   description: string | null;
@@ -253,10 +266,10 @@ export interface AccountDetail extends AccountListItem {
   state: string | null;
   postal_code: string | null;
   timezone: string | null;            // IANA timezone (e.g., "America/Los_Angeles")
-  company_research: string | null;    // AI-generated research summary (markdown)
+  account_research: AccountResearchSummary;
 
   /** Contacts whose email domain matches this account's domain */
-  contacts: AccountContactItem[];
+  contacts: AccountDetailContactItem[];
 
   /** Deals linked via company_id */
   deals: AccountDealItem[];
@@ -266,12 +279,18 @@ export interface AccountDetail extends AccountListItem {
  * Contact summary nested inside AccountDetail.
  * Minimal fields for display in account detail view.
  */
-export interface AccountContactItem {
+export interface AccountDetailContactItem {
   contact_id: UUID;
   full_name: string | null;
   email: string | null;
   job_title: string | null;
-  deal_count: number;                 // Number of deals this contact is a stakeholder on
+}
+
+/**
+ * Contact summary returned by GET /accounts/{company_id}/contacts.
+ */
+export interface AccountContactItem extends AccountDetailContactItem {
+  deal_count: number;
 }
 
 /**
@@ -409,6 +428,11 @@ Paginated account list with computed `contact_count`, `deal_count`, and `pipelin
         "industry": "Technology",
         "lifecycle_stage": "customer",
         "owner_name": "Jane Smith",
+        "owner": {
+          "id": "9a8b7c6d-e5f4-4321-9876-123456789abc",
+          "name": "Jane Smith",
+          "email": "jane@example.com"
+        },
         "number_of_employees": 250,
         "annual_revenue": 50000000.00,
         "phone": "+1-555-0100",
@@ -418,8 +442,6 @@ Paginated account list with computed `contact_count`, `deal_count`, and `pipelin
         "contact_count": 12,
         "deal_count": 3,
         "pipeline_value": 150000.00,
-        "research_status": "completed",
-        "last_researched_at": "2026-03-15T10:30:00Z",
         "created_at": "2026-01-10T08:00:00Z",
         "updated_at": "2026-03-20T14:00:00Z"
       }
@@ -640,6 +662,7 @@ This creates an account with `name: "acme.com"` and `domain: "acme.com"` if no e
     "industry": "Technology",
     "lifecycle_stage": null,
     "owner_name": null,
+    "owner": null,
     "number_of_employees": null,
     "annual_revenue": null,
     "phone": null,
@@ -649,8 +672,6 @@ This creates an account with `name: "acme.com"` and `domain: "acme.com"` if no e
     "contact_count": 0,
     "deal_count": 0,
     "pipeline_value": 0.0,
-    "research_status": null,
-    "last_researched_at": null,
     "created_at": "2026-04-06T10:00:00Z",
     "updated_at": "2026-04-06T10:00:00Z"
   }
@@ -689,7 +710,7 @@ if (response.status === 409 && response.data?.company_id) {
 GET /users/crm/accounts/{company_id}
 ```
 
-Full account detail including nested contacts array, deals array, and all extended fields (description, location, research content).
+Full account detail including account fields, a stable account research placeholder, compact contacts, and account deal summaries.
 
 #### Path Parameters
 
@@ -711,6 +732,11 @@ Full account detail including nested contacts array, deals array, and all extend
     "industry": "Technology",
     "lifecycle_stage": "customer",
     "owner_name": "Jane Smith",
+    "owner": {
+      "id": "9a8b7c6d-e5f4-4321-9876-123456789abc",
+      "name": "Jane Smith",
+      "email": "jane@example.com"
+    },
     "number_of_employees": 250,
     "annual_revenue": 50000000.00,
     "phone": "+1-555-0100",
@@ -720,8 +746,6 @@ Full account detail including nested contacts array, deals array, and all extend
     "contact_count": 5,
     "deal_count": 2,
     "pipeline_value": 75000.00,
-    "research_status": "completed",
-    "last_researched_at": "2026-03-15T10:30:00Z",
     "created_at": "2026-01-10T08:00:00Z",
     "updated_at": "2026-03-20T14:00:00Z",
 
@@ -732,22 +756,24 @@ Full account detail including nested contacts array, deals array, and all extend
     "state": "CA",
     "postal_code": "94105",
     "timezone": "America/Los_Angeles",
-    "company_research": "## Company Overview\nAcme Corp is a mid-market...",
+    "account_research": {
+      "status": "not_available",
+      "content": null,
+      "last_researched_at": null
+    },
 
     "contacts": [
       {
         "contact_id": "c1d2e3f4-a5b6-7890-cdef-123456789abc",
         "full_name": "John Doe",
         "email": "john@acme.com",
-        "job_title": "VP Engineering",
-        "deal_count": 2
+        "job_title": "VP Engineering"
       },
       {
         "contact_id": "d2e3f4a5-b6c7-8901-defa-23456789abcd",
         "full_name": "Sarah Chen",
         "email": "sarah@acme.com",
-        "job_title": "CTO",
-        "deal_count": 1
+        "job_title": "CTO"
       }
     ],
 
@@ -775,7 +801,7 @@ Full account detail including nested contacts array, deals array, and all extend
 }
 ```
 
-**Note:** `contact_count` and `deal_count` in the detail response reflect the actual lengths of the `contacts` and `deals` arrays. `pipeline_value` is the sum of `amount` from deals where `deal_status = "open"` only (won/lost/closed deals are excluded).
+**Note:** `contact_count` and `deal_count` in the detail response reflect the actual lengths of the `contacts` and `deals` arrays. `pipeline_value` is the sum of `amount` from deals where `deal_status = "open"` only (won/lost/closed deals are excluded). Per-contact deal counts are intentionally not included in account detail contacts; use the standalone account contacts endpoint or contact detail when that relationship context is needed.
 
 #### Error Responses
 
@@ -1038,7 +1064,7 @@ Consolidated reference of all error responses across all endpoints.
 | `ix_crm_company_lifecycle` | `organisation_id, lifecycle_stage` | Lifecycle filtering |
 | `ix_crm_company_synced` | `organisation_id, synced_at` | Sync recency queries |
 
-**Migration:** Research fields (`company_research`, `last_researched_at`, `research_status`) added in migration `3c7f79637798_030_add_contact_company_research_fields`.
+**Account research:** `GET /accounts/{company_id}` currently returns a stable `account_research` placeholder with `status = "not_available"`. Durable account research storage/generation is deferred to a later implementation.
 
 ### Service Layer
 

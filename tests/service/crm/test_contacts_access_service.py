@@ -201,12 +201,28 @@ async def test_get_contact_detail_uses_participant_id_for_deal_involvement() -> 
         integration_id=integration_id,
         contact_id=contact_id,
         full_name="Buyer Contact",
+        email="buyer@example.com",
+        company_id=uuid4(),
+        owner_id=uuid4(),
+        owner_name="Nikhil Sharma",
+        owner_email="nikhil@example.com",
+        contact_research="Buyer research profile",
+    )
+    company = CRMCompany(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        company_id=contact.company_id,
+        name="Example Corp",
+        domain="example.com",
+        website="https://example.com",
+        industry="Software",
     )
     deal = CRMDeal(
         organisation_id=org_id,
         integration_id=integration_id,
         deal_id=deal_id,
         name="Expansion",
+        stage_name="Negotiation",
     )
     participant = CRMDealParticipant(
         organisation_id=org_id,
@@ -224,6 +240,7 @@ async def test_get_contact_detail_uses_participant_id_for_deal_involvement() -> 
         [
             _FakeResult(scalars=[contact]),
             _FakeResult(rows=[SimpleNamespace(CRMDeal=deal, CRMDealParticipant=participant)]),
+            _FakeResult(scalars=[company]),
             _FakeResult(scalar=IntegrationType.INTERNAL_CRM.value),
         ]
     )
@@ -231,10 +248,27 @@ async def test_get_contact_detail_uses_participant_id_for_deal_involvement() -> 
 
     detail = await service.get_contact_detail(contact_id)
 
-    assert detail["deals"][0]["deal"] == deal
-    assert detail["deals"][0]["participant_id"] == participant_id
+    assert detail["company"] == {
+        "id": company.company_id,
+        "name": "Example Corp",
+        "domain": "example.com",
+        "website": "https://example.com",
+        "industry": "Software",
+        "linkedin_url": None,
+        "country": None,
+    }
+    assert detail["owner"] == {
+        "id": contact.owner_id,
+        "name": "Nikhil Sharma",
+        "email": "nikhil@example.com",
+    }
+    assert detail["deals"][0] == {
+        "deal": deal,
+        "participant": participant,
+    }
+    assert detail["deals"][0]["participant"].participant_id == participant_id
+    assert detail["deals"][0]["participant"].relationship_role == "economic_buyer"
     assert "stakeholder_id" not in detail["deals"][0]
-    assert detail["deals"][0]["relationship_role"] == "economic_buyer"
 
 
 @pytest.mark.asyncio

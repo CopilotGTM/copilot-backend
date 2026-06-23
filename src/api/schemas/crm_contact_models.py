@@ -14,9 +14,8 @@ class ContactDealInvolvement(BaseModel):
     deal_name: str | None
     deal_status: str | None
     stage_name: str | None
+    last_activity_at: datetime | None
     participant_id: UUID
-    stance: str | None
-    decision_power: str | None
     relationship_role: str | None
 
 
@@ -34,6 +33,31 @@ class ContactListOwner(BaseModel):
     id: UUID | None
     name: str | None
     email: str | None
+
+
+class ContactDetailCompany(ContactListCompany):
+    """Account context returned by the contact detail endpoint."""
+
+    website: str | None
+    industry: str | None
+    linkedin_url: str | None
+    country: str | None
+
+
+class ContactResearchSummary(BaseModel):
+    """Contact-level research displayed in the main overview."""
+
+    summary: str | None
+    last_researched_at: datetime | None
+
+
+class ContactProfileEnrichment(BaseModel):
+    """Structured enrichment metadata for a contact profile."""
+
+    is_enriched: bool
+    source: str | None
+    enriched_at: datetime | None
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContactListItem(BaseModel):
@@ -84,22 +108,45 @@ class ContactMutationItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ContactDetail(ContactMutationItem):
-    """Extended contact detail including deal involvement."""
+class ContactDetail(BaseModel):
+    """Page-ready contact detail including research and compact deal involvement."""
 
+    contact_id: UUID
+    first_name: str | None
+    last_name: str | None
+    full_name: str | None
+    job_title: str | None
+    email: str | None
     additional_emails: list[str] = Field(default_factory=list)
+    phone: str | None
     mobile_phone: str | None
     linkedin_url: str | None
-    profile_enrichment: dict[str, Any] = Field(default_factory=dict)
-    profile_enrichment_source: str | None
-    profile_enriched_at: datetime | None
+    website: str | None
+    source: str = Field("crm_sync")
+    lifecycle_stage: str | None
+    lead_status: str | None
+    marketing_status: str | None
+    company: ContactDetailCompany | None
+    owner: ContactListOwner | None
     address: str | None
     city: str | None
     state: str | None
+    postal_code: str | None
     country: str | None
+    timezone: str | None
     last_contacted_at: datetime | None
     last_activity_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    source_created_at: datetime | None
+    source_modified_at: datetime | None
+    synced_at: datetime
+    research_summary: ContactResearchSummary | None
+    profile_enrichment: ContactProfileEnrichment
+    deal_count: int = Field(0)
     deal_involvement: list[ContactDealInvolvement] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
 
 
 class ContactsPage(BaseModel):
