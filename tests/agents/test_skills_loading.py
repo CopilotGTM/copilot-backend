@@ -533,8 +533,9 @@ def test_email_meeting_workflow_skill_preserves_user_local_meeting_times() -> No
     loader = LocalSkills(str(SKILLS_DIR))
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
-    assert "do not convert them to UTC" in skill.instructions
-    assert "Saturday 10 PM" in skill.instructions
+    assert "Pass local time expressions to the tool" in skill.instructions
+    assert "do not manually convert to UTC" in skill.instructions
+    assert "Schedule Exiter review with Saksham Bhutani Saturday" in skill.instructions
 
 
 def test_email_meeting_workflow_skill_batches_meeting_clarifications() -> None:
@@ -543,11 +544,10 @@ def test_email_meeting_workflow_skill_batches_meeting_clarifications() -> None:
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "ask for them together in one message" in instructions
+    assert "Ask for all missing or ambiguous required fields in one message" in instructions
     assert "Do not ask sequentially" in instructions
-    assert "title first, then attendee email, then date" in instructions
-    assert "one concise clarification" in instructions
-    assert "sender mailbox" in instructions
+    assert "title, then date, then attendee, then sender" in instructions
+    assert "sender calendar" in instructions
 
 
 def test_email_meeting_workflow_skill_documents_attendee_resolution_sources() -> None:
@@ -560,9 +560,9 @@ def test_email_meeting_workflow_skill_documents_attendee_resolution_sources() ->
     assert "crm contacts" in instructions
     assert "crm users" in instructions
     assert "active approved internal users" in instructions
-    assert 'attendees=["saksham"]' in instructions
-    assert 'attendees=["all stakeholders"]' in instructions
-    assert "if saksham resolves to an internal user" in instructions
+    assert "prefer passing the user's phrase" in instructions
+    assert "deal_id" in instructions
+    assert "all stakeholders" in instructions
 
 
 def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> None:
@@ -571,9 +571,12 @@ def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> 
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
+    assert "Meeting with {Name}" in instructions
     assert "Meeting with Saksham" in instructions
-    assert "Do not ask for a title first" in instructions
-    assert "If the attendee is only an email address and no topic exists" in instructions
+    assert (
+        "If the attendee is only an email address and no topic or business context exists"
+        in instructions
+    )
 
 
 def test_email_meeting_workflow_skill_requires_final_confirmation_after_details() -> None:
@@ -582,9 +585,9 @@ def test_email_meeting_workflow_skill_requires_final_confirmation_after_details(
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "do not treat that as approval" in instructions
+    assert "final approval" in instructions
     assert "confirmed=False" in instructions
-    assert "final confirmation card" in instructions
+    assert "confirmation_payload" in instructions
 
 
 def test_email_meeting_workflow_skill_defines_meeting_invite_state_machine() -> None:
@@ -593,9 +596,10 @@ def test_email_meeting_workflow_skill_defines_meeting_invite_state_machine() -> 
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "collect_details -> resolve_entities -> ask_one_missing_fields_question" in instructions
-    assert "final_confirmation -> send" in instructions
-    assert 'Do not say "ready to send"' in instructions
+    assert "determine_action -> collect_details -> resolve_entities" in instructions
+    assert "await_confirmation -> execute_once" in instructions
+    assert "verify_result -> report_receipt" in instructions
+    assert "Do not claim that a preview means the invite has been sent" in instructions
 
 
 def test_email_meeting_workflow_skill_forbids_email_based_titles_and_yes_sender() -> None:
@@ -604,9 +608,22 @@ def test_email_meeting_workflow_skill_forbids_email_based_titles_and_yes_sender(
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "Never put an email address in the title" in instructions
-    assert 'do not invent "Meeting with {email}"' in instructions
-    assert '"Yes" does not answer a sender mailbox question' in instructions
+    assert "put an email address in the title" in instructions
+    assert "Meeting with nikhilsinghal005@gmail.com" in instructions
+    assert "yes" in instructions.lower()
+    assert "does not answer a question asking which sender mailbox to use" in instructions
+
+
+def test_email_meeting_workflow_skill_does_not_claim_calendar_update_tools() -> None:
+    """The workflow must not imply unsupported calendar update/cancel execution."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "calendar event update/cancel tools are not available" in instructions
+    assert "use the matching calendar tool" not in instructions
+    assert "pending action" not in instructions
+    assert "preview token" not in instructions
 
 
 def test_email_meeting_workflow_skill_has_email_writing_reference() -> None:
