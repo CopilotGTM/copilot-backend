@@ -1,14 +1,13 @@
 ---
 name: crm-change-workflow
-description: Use when a chat, Teams, Slack, WhatsApp, web, or voice user asks to change CRM data, including creating, updating, completing, assigning, adding notes, or saving CRM records.
+description: Use when a chat, Teams, Slack, WhatsApp, web, or voice user asks to change CRM data, including creating, updating, completing, assigning, adding notes, adding stakeholders, creating tasks, or saving CRM records.
 ---
 
 # CRM Change Workflow
 
-## Purpose
-
-Use this skill when the user wants Kai to change CRM state. A CRM change includes
-creating, updating, completing, assigning, linking, adding notes, or saving records.
+Use this skill when the user wants Kai to change CRM state. CRM writes must be
+intent-confirmed, dependency-aware, and summarized back to the user in clear
+markdown. Do not treat tool success as the final answer.
 
 Do not use this skill for read-only analysis. If the user asks to explain stakeholders,
 summarize a deal, assess deal health, or compare CRM data, gather data and answer without
@@ -23,11 +22,27 @@ Before calling tools, classify the turn:
 | "Create/update/add/complete/save..." | Use this skill, then call the matching CRM change tool |
 | "Yes/confirm/go ahead" with a pending CRM action | Approve the pending action by `action_state_id` |
 | "Change it/make it..." with a pending CRM action | Patch the pending action |
+| Multiple requested CRM writes | Build a dependency plan before any write tool call |
 | "What is/who is/analyze/summarize..." | Read-only path, no CRM change tool |
 | Ambiguous target or missing required field | Ask one focused clarification question |
 
 Pending CRM state wins over new tool selection. If the current context shows a pending
 CRM action and the user approves or edits it, operate on that pending action first.
+
+## Mutation Plan
+
+For every CRM write request, make a short internal plan before tool calls:
+
+- Requested sub-actions, in the user's order.
+- The narrowest tool for each sub-action.
+- Required fields already present.
+- Required fields safely inferable from active context.
+- Target record or person resolution needed before mutation.
+- Dependencies between sub-actions.
+- Whether the final response will be single-action, multi-action, pending, or partial.
+
+Do not expose the internal plan unless progress tracking is useful. The plan exists to
+prevent wrong writes, duplicate writes, and misleading final answers.
 
 ## Clarification Rule
 
@@ -35,10 +50,60 @@ Ask a question only when all three are true:
 
 - A required field is missing.
 - No safe default or active context can fill it.
-- Guessing could change the wrong CRM record.
+- Guessing could change the wrong CRM record or create a useless record.
 
 Do not ask for optional fields before using a CRM change tool. Include optional fields
 only when the user already provided them.
+
+## Dependency and Parallelism Rules
+
+The runtime may allow parallel tool calls, but CRM writes may run in parallel only when
+they are truly independent.
+
+Run sub-actions sequentially when any of these are true:
+
+- A later action needs an ID or confirmed target produced by an earlier action.
+- A later action depends on a pending approval from an earlier action.
+- The actions write to the same deal, task, contact, account, stakeholder, or note and
+  ordering affects the result.
+- One action resolves duplicate or ambiguous identity for another action.
+- A failure in the first action would make the next action unsafe or meaningless.
+
+Parallel writes are allowed only when each action has all required fields, an unambiguous
+target, no shared mutable dependency, and no output from one tool is needed by another.
+When in doubt, run sequentially.
+
+Examples:
+
+| Request | Execution |
+| --- | --- |
+| "Create two tasks: follow up Friday, send deck Monday" | Two `create_task` calls may run in parallel if titles and dates are clear |
+| "Create a task and create an unrelated account for acme.com" | May run in parallel if neither result feeds the other |
+| "Create a deal for Acme, then add Sarah as stakeholder" | Sequential: create deal first, then add stakeholder using the created/resolved deal |
+| "Create a deal and add a note to it" | Sequential: the note needs the deal ID/name |
+| "Create a contact and link it to this deal" | Sequential unless a resolved deal ID is already in context |
+| "Create a task for the deal you just created" | Sequential: create deal first, then task with the created deal context |
+
+If a sequential parent action returns a pending approval or preview instead of a completed
+write, stop there. Do not run dependent child actions until the parent is approved and the
+created record is known.
+
+## Tool Routing
+
+Use the narrowest available tool for the requested change:
+
+| Intent | Required before tool call | Tool behavior |
+| --- | --- | --- |
+| Create deal | Deal name | Call `CreateDeal`. Include amount, currency, close date, account fields, priority, and description only when provided or safely inferred |
+| Create account | Account name, domain, or website | Call `CreateAccount`. Do not ask for optional enrichment fields first |
+| Create contact | Contact name and email | Call `CreateContact`. Include account or deal link only when resolved or explicitly provided |
+| Add stakeholder | Resolved existing deal ID/name and stakeholder email | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
+| Add deal note | Resolved existing deal ID/name and note text | Search/resolve the deal first, then call `AddDealNote` |
+| Create task | Meaningful task title | Call `create_task`. Include assignee, due date, priority, reminder, and deal only when provided or already in context |
+| Update/complete task | Resolved task or unambiguous active task context | Resolve the task if needed, then call the matching task tool |
+
+Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
+the model clearer schemas and reduce wrong writes.
 
 ## Creation Readiness
 
@@ -58,22 +123,23 @@ ask one focused confirmation question before creating it.
 If there are no doubts after checking required fields and context, proceed with the narrowest
 matching tool. Do not ask for optional information just to make the record more complete.
 
-## Tool Routing
+## Task Creation Contract
 
-Use the narrowest available tool for the requested change:
+For task requests, the useful unit is the work item, not the word "task."
 
-| Intent | Tool behavior |
-| --- | --- |
-| Create deal | Call `CreateDeal` once deal name is known |
-| Create account | Call `CreateAccount` once account name, domain, or website is known |
-| Create contact | Call `CreateContact` once name and email are known |
-| Add stakeholder | Resolve the deal, then call `AddStakeholder` once deal and email are known |
-| Add deal note | Resolve the deal, then call `AddDealNote` once deal and note text are known |
-| Create task | Call `create_task` once the task title is meaningful |
-| Update/complete task | Resolve the task if needed, then call the matching task tool |
+- If the title is meaningful, call `create_task` immediately.
+- Never create a placeholder title like "Task," "New task," or "Follow up" when the
+  object of the follow-up is missing.
+- Preserve explicit assignee text in `assign_to`; the tool resolves it to an org member.
+- If no assignee is given, let the tool default to the current user.
+- Preserve due-date language in the user's timezone, such as "Friday" or "tomorrow."
+- If a reminder is requested, pass it only when a due date is also present.
+- For multiple tasks, create one CRM task per distinct work item. Do not merge separate
+  tasks into one generic task unless the user asked for a combined task.
 
-Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
-the model clearer schemas and reduce wrong writes.
+When the tool returns an assignee, due date, priority, reminder, or deal link, include those
+fields in the final markdown. If assignment or deal resolution fails, say which task is
+blocked and what single detail is needed.
 
 ## Pending Action Rules
 
@@ -87,6 +153,7 @@ When a CRM change needs approval:
 - Apply safe defaults.
 - Create pending action state.
 - Return the preview/action card with `action_state_id`.
+- Do not run dependent child actions until this draft is approved.
 
 ### Draft Edit
 
@@ -115,6 +182,92 @@ When the user approves a pending CRM action:
 
 If multiple pending actions could match a short approval, ask which one.
 
+## Result Handling
+
+After every CRM write tool call, inspect the returned status before answering:
+
+| Tool result | Response handling |
+| --- | --- |
+| `created` | State the created record and key fields from the result |
+| `exists` or `already_linked` | State that the record/link already existed; do not imply a duplicate was created |
+| `preview_sent` or pending approval | State what is pending and how the user can approve, edit, or cancel |
+| selection needed, ambiguous match, missing field | Ask one focused question and list only the useful options |
+| `error` | Explain the blocker and the single next input/action needed |
+| partial success | Separate completed actions from blocked or follow-up actions |
+| unknown, timeout, or empty result | Do not retry blindly; check current state or tell the user the result is uncertain |
+
+Do not expose raw internal IDs in user-facing text unless the user asks or the UI/runtime
+requires them. Use human-readable names, email addresses, dates, amounts, and statuses.
+
+## Markdown Outcome Contract
+
+Every CRM mutation response must be readable markdown. Do not answer only "done" or paste
+raw JSON. The user should know what changed, what did not change, and what is next.
+
+For a single successful write:
+
+```markdown
+Done - created task **Send proposal**.
+
+- Assignee: Nikhil
+- Due: Friday
+- Priority: High
+- Related deal: Acme Enterprise
+```
+
+For multiple writes:
+
+```markdown
+Completed:
+- Deal: **Acme Enterprise** - USD 50,000, closes June 30
+- Stakeholder: **Sarah Chen** `<sarah@acme.com>` added to **Acme Enterprise**
+
+Blocked:
+- Task: **Send proposal** - I could not find assignee "Sam". Please provide the full name or email.
+```
+
+For pending approval:
+
+```markdown
+Ready for approval:
+- Deal: **Acme Enterprise**
+- Amount: USD 50,000
+- Close date: June 30
+
+You can approve it, edit a field, or cancel.
+```
+
+For clarification:
+
+```markdown
+I need one detail before I create this: what should the task be about?
+```
+
+For failures:
+
+```markdown
+I could not add the stakeholder because the deal match is ambiguous.
+
+Which deal should I use?
+- Acme Enterprise
+- Acme Renewal
+```
+
+## Output Fields by Record Type
+
+Include fields that are known from the user request or tool result:
+
+| Record | Useful markdown details |
+| --- | --- |
+| Deal | Name, amount/currency, account, pipeline/stage, close date, priority |
+| Task | Title, assignee, due date, priority, reminder, related deal |
+| Stakeholder | Name, email, deal, job title, stance, decision power, whether enrichment/research started if returned |
+| Account | Name, domain, website, industry |
+| Contact | Name, email, account, job title, linked deal |
+| Note | Deal, subject, note preview, whether an identical note already existed |
+
+Keep responses compact for voice and messaging channels. Use a short paragraph plus bullets.
+
 ## Safety Rules
 
 Every CRM change must preserve tenant and user boundaries:
@@ -136,13 +289,6 @@ payload.
 Do not add channel-specific CRM behavior to the general chat prompt when this skill can own
 the reusable rule.
 
-## Response Rules
-
-- For direct success, state what changed and any useful next step.
-- For pending approval, show what will change and how to approve, edit, or cancel.
-- For clarification, ask one focused question.
-- For failures, explain the blocker without exposing internal IDs.
-
 ## Examples
 
 ### Create deal
@@ -158,7 +304,8 @@ Behavior:
 - Call `CreateDeal` because the deal name is known.
 - Include amount and close date because the user provided them.
 - Let backend defaults fill omitted optional fields.
-- If approval is required, return a pending preview.
+- Final answer names the created deal and key fields in markdown.
+- If approval is required, return a pending preview and stop.
 
 User:
 
@@ -170,6 +317,77 @@ Behavior:
 
 - Approve the saved pending action by `action_state_id`.
 - Do not call `CreateDeal` again.
+
+### Create task
+
+User:
+
+```text
+Create a task to follow up with Sarah next Friday.
+```
+
+Behavior:
+
+- Call `create_task` because the task title is meaningful.
+- Pass due date if the user provided it.
+- Pass assignee only if "Sarah" is clearly the assignee; otherwise keep Sarah in the title.
+- Final answer includes title, due date, assignee if returned, priority, and related deal if any.
+
+User:
+
+```text
+Create a task and assign it to Mrinmoy.
+```
+
+Behavior:
+
+- Do not call `create_task`; there is no meaningful title.
+- Ask: "What should the task be about?"
+
+### Multiple independent tasks
+
+User:
+
+```text
+Create two tasks: send the proposal by Friday and review the contract by Monday.
+```
+
+Behavior:
+
+- Create two separate tasks because there are two work items.
+- The two `create_task` calls may run in parallel if there is no shared unresolved target.
+- Final answer lists both tasks under `Completed`.
+
+### Dependent deal and stakeholder
+
+User:
+
+```text
+Create a deal for Acme Enterprise worth 50k, then add Sarah Chen as stakeholder.
+Sarah's email is sarah@acme.com.
+```
+
+Behavior:
+
+- Run sequentially because `AddStakeholder` needs a resolved deal ID.
+- Call `CreateDeal` first.
+- If the deal is created, call `AddStakeholder` with the created deal ID/name and Sarah's email.
+- If deal creation returns pending approval, stop and show the pending deal preview. Do not add the stakeholder yet.
+- Final answer separates completed, pending, and blocked actions.
+
+### Missing stakeholder email
+
+User:
+
+```text
+Create a deal for Acme Enterprise and add Sarah as a stakeholder.
+```
+
+Behavior:
+
+- The stakeholder action is missing a required email.
+- If deal creation is safe, create or prepare the deal first only if that does not depend on Sarah.
+- Ask one focused question for the stakeholder email before calling `AddStakeholder`.
 
 ### Edit pending deal
 
@@ -185,23 +403,16 @@ Behavior:
 - Send only amount and close date changes.
 - Return the updated preview.
 
-### Create task
-
-User:
-
-```text
-Create a task to follow up with Sarah next Friday.
-```
-
-Behavior:
-
-- Call `create_task` because the task title is meaningful.
-- Include assignee and due date if the tool accepts them.
-- Default priority and other optional fields.
-
 ## Common Mistakes
 
+- Answering "done" without a markdown summary of what changed.
+- Pasting raw tool JSON instead of a user-facing outcome.
 - Asking for optional fields before calling a write tool.
+- Creating placeholder tasks when the task title is missing.
+- Merging multiple requested tasks into one vague task.
+- Running dependent CRM writes in parallel because parallel tool calls are enabled.
+- Calling `AddStakeholder` before the deal is resolved.
+- Continuing to dependent writes after a parent action returns pending approval.
 - Skipping the required creation logic check before mutating CRM data.
 - Creating a record when there is unresolved doubt about the target, person, or intent.
 - Treating "yes" as a new create request instead of pending-action approval.
