@@ -238,12 +238,24 @@ class AccountReadService:
         for row in res.all():
             company: CRMCompany = row[0]
             company_dict = company.model_dump()
+            company_dict["owner"] = self._account_owner_payload(company)
             company_dict["contact_count"] = row[1] or 0
             company_dict["deal_count"] = row[2] or 0
             company_dict["pipeline_value"] = float(row[3] or 0)
             result.append(company_dict)
 
         return result, total_count
+
+    @staticmethod
+    def _account_owner_payload(company: CRMCompany) -> dict | None:
+        """Build the nested owner object used by account list responses."""
+        if not any((company.owner_id, company.owner_name, company.owner_email)):
+            return None
+        return {
+            "id": company.owner_id,
+            "name": company.owner_name,
+            "email": company.owner_email,
+        }
 
     async def search_accounts(
         self,
@@ -330,12 +342,12 @@ class AccountReadService:
                 "full_name": c.get("full_name"),
                 "email": c.get("email"),
                 "job_title": c.get("job_title"),
-                "deal_count": c.get("deal_count", 0),
             }
             for c in contacts
         ]
 
         detail = company.model_dump()
+        detail["owner"] = self._account_owner_payload(company)
         detail["contacts"] = contact_dicts
         detail["deals"] = [dl.model_dump() for dl in deals]
         detail["contact_count"] = len(contacts)
@@ -343,7 +355,16 @@ class AccountReadService:
         detail["pipeline_value"] = float(
             sum((dl.amount or 0) for dl in deals if dl.deal_status == CRMDealStatus.OPEN.value)
         )
+        detail["account_research"] = self._account_research_payload()
         return detail
+
+    @staticmethod
+    def _account_research_payload() -> dict[str, Any]:
+        return {
+            "status": "not_available",
+            "content": None,
+            "last_researched_at": None,
+        }
 
     async def list_account_contacts(
         self, company_id: UUID, *, limit: int = 25

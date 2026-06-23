@@ -272,47 +272,66 @@ class ContactReadService:
         deals = [
             {
                 "deal": row.CRMDeal,
-                "relationship_role": row.CRMDealParticipant.relationship_role,
-                "participant_id": row.CRMDealParticipant.participant_id,
+                "participant": row.CRMDealParticipant,
             }
             for row in deal_res.all()
         ]
 
         resolved_company_id = contact.company_id
-        resolved_company_domain: str | None = None
+        email_domain = self._extract_domain(contact.email) if contact.email else None
+        company: CRMCompany | None = None
         if resolved_company_id:
-            company_domain_stmt = select(col(CRMCompany.domain)).where(
+            company_stmt = select(CRMCompany).where(
                 col(CRMCompany.company_id) == resolved_company_id,
                 col(CRMCompany.organisation_id) == self.organisation_id,
                 col(CRMCompany.is_deleted).is_(False),
             )
-            company_domain_res = await self.org_session.execute(company_domain_stmt)
-            resolved_company_domain = company_domain_res.scalar()
-        if not resolved_company_id:
-            email_domain = self._extract_domain(contact.email) if contact.email else None
-            if email_domain:
-                company_match_stmt = select(
-                    col(CRMCompany.company_id),
-                    col(CRMCompany.domain),
-                ).where(
-                    col(CRMCompany.organisation_id) == self.organisation_id,
-                    col(CRMCompany.is_deleted).is_(False),
-                    col(CRMCompany.domain) == email_domain,
-                )
-                company_match_res = await self.org_session.execute(company_match_stmt)
-                row = company_match_res.first()
-                if row:
-                    resolved_company_id = row[0]
-                    resolved_company_domain = row[1]
-                else:
-                    resolved_company_domain = email_domain
+            company_res = await self.org_session.execute(company_stmt)
+            company = company_res.scalars().first()
+        if not resolved_company_id and email_domain:
+            company_match_stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.is_deleted).is_(False),
+                col(CRMCompany.domain) == email_domain,
+            )
+            company_match_res = await self.org_session.execute(company_match_stmt)
+            company = company_match_res.scalars().first()
+            if company:
+                resolved_company_id = company.company_id
 
         return {
             "contact": contact,
             "deals": deals,
-            "company_id": resolved_company_id,
-            "company_domain": resolved_company_domain,
+            "company": self._contact_detail_company_payload(
+                contact=contact,
+                company=company,
+                email_domain=email_domain,
+            ),
+            "owner": self._contact_owner_payload(contact),
             "source": await self.resolve_source_for_contact(contact.integration_id),
+        }
+
+    @staticmethod
+    def _contact_detail_company_payload(
+        *,
+        contact: CRMContact,
+        company: CRMCompany | None,
+        email_domain: str | None,
+    ) -> dict | None:
+        """Build the account object used by the contact detail response."""
+        company_id = company.company_id if company else contact.company_id
+        name = company.name if company else contact.company_name
+        domain = company.domain if company else email_domain
+        if not any((company_id, name, domain)):
+            return None
+        return {
+            "id": company_id,
+            "name": name,
+            "domain": domain,
+            "website": company.website if company else None,
+            "industry": company.industry if company else None,
+            "linkedin_url": company.linkedin_url if company else None,
+            "country": company.country if company else None,
         }
 
     async def find_contact_by_email(self, email: str) -> CRMContact | None:

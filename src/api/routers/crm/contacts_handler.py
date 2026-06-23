@@ -22,6 +22,8 @@ from src.api.schemas.crm_contact_models import (
     ContactDetail,
     ContactListItem,
     ContactMutationItem,
+    ContactProfileEnrichment,
+    ContactResearchSummary,
     ContactsPage,
     CreateContactRequest,
     UpdateContactRequest,
@@ -253,17 +255,21 @@ async def get_contact_detail(
             ContactDealInvolvement(
                 deal_id=d["deal"].deal_id,
                 deal_name=d["deal"].name,
-                deal_status=str(d["deal"].deal_status) if d["deal"].deal_status else None,
+                deal_status=getattr(d["deal"].deal_status, "value", d["deal"].deal_status),
                 stage_name=d["deal"].stage_name,
-                participant_id=d["participant_id"],
-                stance=None,
-                decision_power=None,
-                relationship_role=str(d["relationship_role"])
-                if d.get("relationship_role")
-                else None,
+                last_activity_at=d["deal"].last_activity_at,
+                participant_id=d["participant"].participant_id,
+                relationship_role=d["participant"].relationship_role,
             )
             for d in deals
         ]
+        profile_enrichment = contact.profile_enrichment or {}
+        research_summary = None
+        if contact.contact_research or contact.last_researched_at:
+            research_summary = ContactResearchSummary(
+                summary=contact.contact_research,
+                last_researched_at=contact.last_researched_at,
+            )
 
         data = ContactDetail(
             contact_id=contact.contact_id,
@@ -273,27 +279,37 @@ async def get_contact_detail(
             email=contact.email,
             job_title=contact.job_title,
             phone=contact.phone,
-            company_name=contact.company_name,
-            company_id=result.get("company_id"),
-            company_domain=result.get("company_domain"),
+            mobile_phone=contact.mobile_phone,
+            linkedin_url=contact.linkedin_url or (contact.properties or {}).get("linkedin_url"),
+            website=contact.website,
             lifecycle_stage=contact.lifecycle_stage,
-            owner_name=getattr(contact, "owner_name", None),
+            lead_status=contact.lead_status,
+            marketing_status=contact.marketing_status,
+            company=result.get("company"),
+            owner=result.get("owner"),
             deal_count=len(deals),
             source=result.get("source", "manual"),
             created_at=contact.created_at,
             updated_at=contact.updated_at,
+            source_created_at=contact.source_created_at,
+            source_modified_at=contact.source_modified_at,
+            synced_at=contact.synced_at,
             additional_emails=contact.additional_emails or [],
-            mobile_phone=contact.mobile_phone,
-            linkedin_url=contact.linkedin_url or (contact.properties or {}).get("linkedin_url"),
-            profile_enrichment=contact.profile_enrichment or {},
-            profile_enrichment_source=contact.profile_enrichment_source,
-            profile_enriched_at=contact.profile_enriched_at,
             address=contact.address,
             city=contact.city,
             state=contact.state,
+            postal_code=contact.postal_code,
             country=contact.country,
+            timezone=contact.timezone,
             last_contacted_at=contact.last_contacted_at,
             last_activity_at=contact.last_activity_at,
+            research_summary=research_summary,
+            profile_enrichment=ContactProfileEnrichment(
+                is_enriched=bool(contact.profile_enriched_at or profile_enrichment),
+                source=contact.profile_enrichment_source,
+                enriched_at=contact.profile_enriched_at,
+                data=profile_enrichment,
+            ),
             deal_involvement=deal_involvement,
         )
         return Response.success_response(message="Contact retrieved", data=data)

@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from src.api.routers.crm.accounts_handler import (
     create_account,
     get_account_contacts,
+    get_account_detail,
+    list_accounts,
     search_accounts,
     update_account,
 )
@@ -93,6 +95,70 @@ async def test_create_account_commits_session_after_service_write() -> None:
     )
     service.session.commit.assert_awaited_once()
     assert response.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_returns_nested_owner_without_source() -> None:
+    company_id = uuid4()
+    owner_id = uuid4()
+    now = datetime.now(UTC)
+    service = SimpleNamespace(
+        list_accounts=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "company_id": company_id,
+                        "name": "Acme",
+                        "domain": "acme.com",
+                        "website": "https://acme.com",
+                        "industry": "Software",
+                        "lifecycle_stage": "customer",
+                        "owner_name": "Jane Smith",
+                        "owner": {
+                            "id": owner_id,
+                            "name": "Jane Smith",
+                            "email": "jane@example.com",
+                        },
+                        "number_of_employees": 250,
+                        "annual_revenue": 50000000.0,
+                        "phone": "+1-555-0100",
+                        "country": "US",
+                        "linkedin_url": "https://linkedin.com/company/acme",
+                        "is_active": True,
+                        "contact_count": 12,
+                        "deal_count": 3,
+                        "pipeline_value": 150000.0,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                ],
+                1,
+            )
+        )
+    )
+
+    response = await list_accounts(
+        response=FastAPIResponse(),
+        page=1,
+        limit=25,
+        q=None,
+        industry=None,
+        service=service,
+        _rl_read=None,
+    )
+
+    service.list_accounts.assert_awaited_once_with(page=1, limit=25, q=None, industry=None)
+    assert response.status == "SUCCESS"
+    assert response.data is not None
+    item = response.data.items[0]
+    dumped = item.model_dump()
+    assert dumped["owner"] == {
+        "id": owner_id,
+        "name": "Jane Smith",
+        "email": "jane@example.com",
+    }
+    assert dumped["owner_name"] == "Jane Smith"
+    assert "source" not in dumped
 
 
 @pytest.mark.asyncio
@@ -198,3 +264,108 @@ async def test_get_account_contacts_passes_limit_and_preserves_deal_count() -> N
     assert response.data[0].contact_id == contact_id
     assert response.data[0].full_name == "Sarah Chen"
     assert response.data[0].deal_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_account_detail_returns_compact_contacts_and_research_placeholder() -> None:
+    company_id = uuid4()
+    contact_id = uuid4()
+    deal_id = uuid4()
+    now = datetime.now(UTC)
+    service = SimpleNamespace(
+        get_account_detail=AsyncMock(
+            return_value={
+                "company_id": company_id,
+                "name": "Acme",
+                "domain": "acme.com",
+                "website": "https://acme.com",
+                "industry": "Software",
+                "lifecycle_stage": "customer",
+                "owner_name": "Jane Smith",
+                "owner": {
+                    "id": uuid4(),
+                    "name": "Jane Smith",
+                    "email": "jane@example.com",
+                },
+                "number_of_employees": 250,
+                "annual_revenue": 50000000.0,
+                "phone": "+1-555-0100",
+                "country": "US",
+                "linkedin_url": "https://linkedin.com/company/acme",
+                "is_active": True,
+                "contact_count": 1,
+                "deal_count": 1,
+                "pipeline_value": 10000.0,
+                "created_at": now,
+                "updated_at": now,
+                "description": "Account description",
+                "company_type": "Private",
+                "address": "123 Main St",
+                "city": "Pune",
+                "state": "Maharashtra",
+                "postal_code": "411001",
+                "timezone": "Asia/Kolkata",
+                "account_research": {
+                    "status": "not_available",
+                    "content": None,
+                    "last_researched_at": None,
+                },
+                "contacts": [
+                    {
+                        "contact_id": contact_id,
+                        "full_name": "Roop Singh",
+                        "email": "roop.s@acme.com",
+                        "job_title": "CEO",
+                        "deal_count": 5,
+                    }
+                ],
+                "deals": [
+                    {
+                        "deal_id": deal_id,
+                        "name": "Acme Expansion",
+                        "amount": 10000.0,
+                        "currency": "USD",
+                        "deal_status": "open",
+                        "stage_name": "Negotiation",
+                        "owner_name": "Jane Smith",
+                    }
+                ],
+            }
+        )
+    )
+
+    response = await get_account_detail(
+        company_id=company_id,
+        response=FastAPIResponse(),
+        service=service,
+        _rl_read=None,
+    )
+
+    service.get_account_detail.assert_awaited_once_with(company_id)
+    assert response.status == "SUCCESS"
+    assert response.data is not None
+    dumped = response.data.model_dump()
+    assert dumped["account_research"] == {
+        "status": "not_available",
+        "content": None,
+        "last_researched_at": None,
+    }
+    assert dumped["contacts"] == [
+        {
+            "contact_id": contact_id,
+            "full_name": "Roop Singh",
+            "email": "roop.s@acme.com",
+            "job_title": "CEO",
+        }
+    ]
+    assert dumped["deals"] == [
+        {
+            "deal_id": deal_id,
+            "name": "Acme Expansion",
+            "amount": 10000.0,
+            "currency": "USD",
+            "deal_status": "open",
+            "stage_name": "Negotiation",
+            "owner_name": "Jane Smith",
+        }
+    ]

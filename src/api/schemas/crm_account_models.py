@@ -15,6 +15,13 @@ class AccountContactItem(BaseModel):
     deal_count: int = 0
 
 
+class AccountDetailContactItem(BaseModel):
+    contact_id: UUID
+    full_name: str | None
+    email: str | None
+    job_title: str | None
+
+
 class AccountDealItem(BaseModel):
     deal_id: UUID
     name: str | None
@@ -25,6 +32,12 @@ class AccountDealItem(BaseModel):
     owner_name: str | None
 
 
+class AccountListOwner(BaseModel):
+    id: UUID | None
+    name: str | None
+    email: str | None
+
+
 class AccountListItem(BaseModel):
     company_id: UUID
     name: str | None
@@ -33,6 +46,7 @@ class AccountListItem(BaseModel):
     industry: str | None
     lifecycle_stage: str | None
     owner_name: str | None
+    owner: AccountListOwner | None = None
     number_of_employees: int | None
     annual_revenue: float | None
     phone: str | None
@@ -48,6 +62,12 @@ class AccountListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AccountResearchSummary(BaseModel):
+    status: str = Field("not_available")
+    content: str | None = None
+    last_researched_at: datetime | None = None
+
+
 class AccountDetail(AccountListItem):
     description: str | None
     company_type: str | None
@@ -56,7 +76,8 @@ class AccountDetail(AccountListItem):
     state: str | None
     postal_code: str | None
     timezone: str | None
-    contacts: list[AccountContactItem] = Field(default_factory=list)
+    account_research: AccountResearchSummary = Field(default_factory=AccountResearchSummary)
+    contacts: list[AccountDetailContactItem] = Field(default_factory=list)
     deals: list[AccountDealItem] = Field(default_factory=list)
 
 
