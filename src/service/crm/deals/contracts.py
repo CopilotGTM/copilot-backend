@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStageHistory
 
 DealWriteSource = Literal["api", "agent", "workflow", "bot_form", "import_assistant"]
 
@@ -41,6 +41,7 @@ class DealStageChangeResult:
     deal: CRMDeal
     changed_fields: dict[str, dict[str, Any]]
     changed: bool
+    stage_history: CRMDealStageHistory | None = None
 
 
 @dataclass(frozen=True)

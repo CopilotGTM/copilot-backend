@@ -167,6 +167,86 @@ async def test_writer_skips_stale_active_deal_without_overwriting_local_snapshot
 
 
 @pytest.mark.asyncio
+async def test_writer_does_not_project_deal_created_by_default() -> None:
+    """Bulk provider sync must not backfill deal-created feed rows for old deals."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Existing deal",
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = HubSpotDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    writer._projection.upsert_deal_created = AsyncMock()  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
+
+    result = await writer.apply(
+        normalized=[
+            _normalized_deal(external_id="123", name="Existing update"),
+            _normalized_deal(external_id="456", name="New deal"),
+        ],
+        maps=_empty_maps(),
+    )
+
+    assert result.deals_created == 1
+    writer._projection.upsert_deal_created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_writer_projects_provider_created_deal_when_local_row_already_exists() -> None:
+    """HubSpot creation webhooks can arrive after broad sync has created the deal."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Already synced deal",
+        source_modified_at=datetime(2026, 5, 3, tzinfo=UTC),
+        is_deleted=False,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = HubSpotDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    writer._projection.upsert_deal_created = AsyncMock()  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
+
+    stale_create_payload = replace(
+        _normalized_deal(external_id="123", name="Provider create event"),
+        source_modified_at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    result = await writer.apply(
+        normalized=[stale_create_payload],
+        maps=_empty_maps(),
+        project_deal_created_activity_feed=True,
+    )
+
+    assert result.deals_created == 0
+    assert result.deals_skipped_stale == 1
+    writer._projection.upsert_deal_created.assert_awaited_once_with(existing)
+
+
+@pytest.mark.asyncio
 async def test_writer_reactivates_soft_deleted_deal_even_when_timestamp_matches() -> None:
     """Freshness skip must not block HubSpot restore/upsert reactivation."""
     organisation_id = uuid4()

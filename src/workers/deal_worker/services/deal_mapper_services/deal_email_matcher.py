@@ -47,6 +47,7 @@ from src.domain.models.organisation_tables.sync.email_models import (
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.timeline.deal_timeline_sync_service import build_email_timeline_event
 from src.service.crm.timeline.timeline_event_source_resolver import resolve_email_event_source
 from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
@@ -1041,6 +1042,12 @@ class DealEmailMatcher:
                 event_source=resolved_source,
             )
             session.add(timeline_event)
+            # Keep the legacy timeline and new activity feed in the same insert
+            # transaction so either both surfaces show the email, or neither does.
+            await ActivityFeedProjectionService(
+                session,
+                self.organisation_id,
+            ).upsert_email_association(association, email)
 
             await self._update_stakeholder_last_contact_from_email(
                 session=session,

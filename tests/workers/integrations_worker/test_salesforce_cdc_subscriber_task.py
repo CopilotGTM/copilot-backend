@@ -237,6 +237,99 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
     assert operations == ["clear", "release", "enqueue"]
 
 
+@pytest.mark.asyncio
+async def test_opportunity_cdc_create_enables_deal_created_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    persisted: list[dict[str, object]] = []
+
+    class FakeOpportunityFetcher:
+        def __init__(self, *, token_info, instance_url, opportunity_id):  # noqa: ANN001
+            assert token_info == "token-info"
+            assert instance_url == "https://acme.my.salesforce.com"
+            assert opportunity_id == "006xx0000000001AAA"
+
+        async def fetch(self):
+            return {"Id": "006xx0000000001AAA", "Name": "Acme renewal"}
+
+    class FakeDealService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def persist_single_opportunity(self, **kwargs):
+            persisted.append(kwargs)
+
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceSingleOpportunityFetcher",
+        FakeOpportunityFetcher,
+    )
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceDealRecordSyncService",
+        FakeDealService,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="006xx0000000001AAA",
+        change_type="CREATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/OpportunityChangeEvent",
+    )
+
+    assert persisted[0]["raw_opportunity"]["Id"] == "006xx0000000001AAA"
+    assert persisted[0]["project_deal_created_activity_feed"] is True
+
+
+@pytest.mark.asyncio
+async def test_opportunity_cdc_update_does_not_enable_deal_created_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    persisted: list[dict[str, object]] = []
+
+    class FakeOpportunityFetcher:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def fetch(self):
+            return {"Id": "006xx0000000001AAA", "Name": "Acme renewal"}
+
+    class FakeDealService:
+        async def _load_context(self, organisation_id, integration_id):  # noqa: ANN001
+            return SimpleNamespace(token_info="token-info")
+
+        async def persist_single_opportunity(self, **kwargs):
+            persisted.append(kwargs)
+
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceSingleOpportunityFetcher",
+        FakeOpportunityFetcher,
+    )
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "SalesforceDealRecordSyncService",
+        FakeDealService,
+    )
+
+    await salesforce_cdc_subscriber_task._process_record_change(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        record_id="006xx0000000001AAA",
+        change_type="UPDATE",
+        instance_url="https://acme.my.salesforce.com",
+        channel="/data/OpportunityChangeEvent",
+    )
+
+    assert persisted[0]["project_deal_created_activity_feed"] is False
+
+
 @pytest.mark.parametrize(
     (
         "function_name",

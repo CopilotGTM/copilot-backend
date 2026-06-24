@@ -92,6 +92,51 @@ async def test_stage_history_writer_upserts_source_mapping_for_existing_transiti
 
 
 @pytest.mark.asyncio
+async def test_stage_history_writer_does_not_project_created_transition_by_default() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    stage_id = uuid4()
+    entered_at = datetime(2026, 4, 1, 10, 0, tzinfo=UTC)
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = SalesforceDealStageHistoryWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+    writer.source_mappings = mapping_helper
+    writer._projection.upsert_stage_change = AsyncMock()  # type: ignore[method-assign]
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        transitions=[
+            NormalizedSalesforceStageTransition(
+                deal_external_id="006A",
+                stage_external_id="012A:Prospecting",
+                from_stage_external_id=None,
+                entered_at=entered_at,
+                exited_at=None,
+                elapsed_seconds=None,
+                amount_at_stage=None,
+                probability_at_stage=None,
+                source="OpportunityHistory",
+                data_payload={"Id": "history"},
+            )
+        ],
+        deal_pk_map={"006A": deal_id},
+        stage_map={"012A:Prospecting": DimensionHit(internal_id=stage_id)},
+    )
+
+    assert result.stage_history_created == 1
+    writer._projection.upsert_stage_change.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_participant_writer_upserts_source_mapping_for_existing_participant() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()

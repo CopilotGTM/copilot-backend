@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.contracts import AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.custom_field_service import DealCustomFieldWriteService
 from src.service.crm.deals.mutation_event_service import DealMutationEventService, changed_field
@@ -75,6 +76,7 @@ class DealWriteService:
             master_session=self.master_session,
         )
         self._stages = DealStageService(self.session, self.organisation_id)
+        self._projection = ActivityFeedProjectionService(self.session, self.organisation_id)
 
     async def close(self) -> None:
         """Close the org-scoped session when this service owns dependency cleanup."""
@@ -303,6 +305,9 @@ class DealWriteService:
             )
             if contact:
                 await self._replace_primary_contact_participant(deal, contact, now)
+
+        await self._projection.upsert_deal_created(deal)
+        await self._projection.upsert_stage_change(history, deal=deal)
 
         created_changed_fields = DealMutationPolicy.build_create_changed_fields(deal)
 
@@ -681,7 +686,11 @@ class DealWriteService:
             if hasattr(deal, lifecycle_field):
                 old_values[lifecycle_field] = getattr(deal, lifecycle_field)
         write_context = context or self._write_context()
-        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
+        stage_result = await self._stages.apply_stage(
+            deal=deal,
+            stage=stage,
+            source=write_context.source,
+        )
 
         lifecycle_action: str | None = None
         stage_state_raw = getattr(stage, "stage_state", None)
@@ -725,6 +734,9 @@ class DealWriteService:
 
         if lifecycle_action:
             await self.session.flush()
+
+        if stage_result.stage_history is not None:
+            await self._projection.upsert_stage_change(stage_result.stage_history, deal=deal)
 
         changed_fields = self._collect_changed_fields(old_values=old_values, obj=deal)
         event_type = "crm.deal.stage_changed"
@@ -793,7 +805,11 @@ class DealWriteService:
             final_close_at = final_close_at.replace(tzinfo=UTC)
 
         write_context = context or self._write_context()
-        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
+        stage_result = await self._stages.apply_stage(
+            deal=deal,
+            stage=stage,
+            source=write_context.source,
+        )
 
         deal.deal_status = CRMDealStatus(normalized_outcome)
         deal.close_date = final_close_at
@@ -813,6 +829,8 @@ class DealWriteService:
         }
 
         await self.session.flush()
+        if stage_result.stage_history is not None:
+            await self._projection.upsert_stage_change(stage_result.stage_history, deal=deal)
         await self._record_mutation_event(
             deal=deal,
             event_type="crm.deal.closed",
@@ -851,7 +869,11 @@ class DealWriteService:
             stage_id=stage_id,
         )
         write_context = context or self._write_context()
-        await self._stages.apply_stage(deal=deal, stage=stage, source=write_context.source)
+        stage_result = await self._stages.apply_stage(
+            deal=deal,
+            stage=stage,
+            source=write_context.source,
+        )
 
         deal.deal_status = CRMDealStatus.OPEN
         deal.closed_won_at = None
@@ -866,6 +888,8 @@ class DealWriteService:
         }
 
         await self.session.flush()
+        if stage_result.stage_history is not None:
+            await self._projection.upsert_stage_change(stage_result.stage_history, deal=deal)
         await self._record_mutation_event(
             deal=deal,
             event_type="crm.deal.reopened",

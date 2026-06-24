@@ -32,13 +32,18 @@ class DealStageService:
     ) -> DealStageChangeResult:
         """Move a loaded deal to a loaded stage without loading either row again."""
         if deal.stage_id == stage.stage_id:
-            return DealStageChangeResult(deal=deal, changed_fields={}, changed=False)
+            return DealStageChangeResult(
+                deal=deal,
+                changed_fields={},
+                changed=False,
+                stage_history=None,
+            )
 
         old_stage_id = deal.stage_id
         old_stage_name = deal.stage_name
         now = datetime.now(UTC)
         self._apply_stage_update(deal=deal, stage=stage, now=now)
-        self._record_stage_history(
+        history = self._record_stage_history(
             deal=deal,
             stage=stage,
             now=now,
@@ -53,7 +58,12 @@ class DealStageService:
             changed_fields["stage_name"] = change
 
         await self.session.flush()
-        return DealStageChangeResult(deal=deal, changed_fields=changed_fields, changed=True)
+        return DealStageChangeResult(
+            deal=deal,
+            changed_fields=changed_fields,
+            changed=True,
+            stage_history=history,
+        )
 
     @staticmethod
     def _apply_stage_update(*, deal: CRMDeal, stage: CRMDealStage, now: datetime) -> None:

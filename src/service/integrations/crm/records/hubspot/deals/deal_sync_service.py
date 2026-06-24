@@ -184,6 +184,7 @@ class HubSpotDealRecordSyncService:
         integration_id: UUID,
         raw_deals: list[dict[str, Any]],
         property_list_size: int = 0,
+        project_deal_created_activity_feed: bool = False,
     ) -> DealSyncResult:
         """Persist raw HubSpot deal payloads from full sync or webhook fetches."""
         started_at = datetime.now(UTC)
@@ -217,6 +218,7 @@ class HubSpotDealRecordSyncService:
             transitions=transitions,
             participants=participants,
             edges=edges,
+            project_deal_created_activity_feed=project_deal_created_activity_feed,
         )
 
         completed_at = datetime.now(UTC)
@@ -385,6 +387,7 @@ class HubSpotDealRecordSyncService:
         transitions: list[NormalizedStageTransition],
         participants: list[NormalizedDealParticipant],
         edges: list[NormalizedDealAssociation],
+        project_deal_created_activity_feed: bool = False,
     ) -> tuple[Any, StageHistoryWriteResult, ParticipantWriteResult, AssociationWriteResult]:
         """Write deals and their sibling rows in one tenant-scoped transaction."""
         async for session in acquire_org_async_session(organisation_id):
@@ -399,7 +402,11 @@ class HubSpotDealRecordSyncService:
                 organisation_id=organisation_id,
                 integration_id=integration_id,
             )
-            write_result = await writer.apply(normalized=normalized, maps=maps)
+            write_result = await writer.apply(
+                normalized=normalized,
+                maps=maps,
+                project_deal_created_activity_feed=project_deal_created_activity_feed,
+            )
 
             # Deals are flushed (writer.apply runs flush internally), so PKs
             # are now visible. Build {deal_external_id → deal_id} map for the

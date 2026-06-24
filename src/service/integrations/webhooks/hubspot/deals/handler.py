@@ -96,6 +96,7 @@ class HubSpotDealWebhookHandler:
                 integration_id=target.integration_id,
                 raw_deals=[raw_deal],
                 property_list_size=len(property_list),
+                project_deal_created_activity_feed=event.subscription_type == DEAL_CREATION,
             )
 
     @classmethod

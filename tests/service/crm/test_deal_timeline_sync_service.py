@@ -23,6 +23,14 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderSource,
     StakeholderStance,
 )
+from src.domain.models.organisation_tables.sync.risk_blocker_models import (
+    DealRiskBlocker,
+    RiskBlockerCategory,
+    RiskBlockerSeverity,
+    RiskBlockerSource,
+    RiskBlockerStatus,
+    RiskBlockerType,
+)
 from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventSource,
     TimelineEventType,
@@ -31,6 +39,7 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
     build_deal_created_timeline_event,
     build_email_timeline_event,
     build_meeting_timeline_event,
+    build_risk_blocker_timeline_event,
     build_stage_change_timeline_event,
     build_stakeholder_timeline_event,
 )
@@ -920,3 +929,36 @@ class TestTitleTruncation:
         )
 
         assert len(event.title) == 500
+
+
+# =============================================================================
+# Risk/Blocker Timeline Tests
+# =============================================================================
+
+
+class TestRiskBlockerTimelineEvents:
+    def test_risk_resolved_timeline_title_uses_risk_label(self) -> None:
+        organisation_id = uuid4()
+        deal_id = uuid4()
+        risk = DealRiskBlocker(
+            organisation_id=organisation_id,
+            deal_id=deal_id,
+            item_type=RiskBlockerType.RISK,
+            title="Security review delay",
+            category=RiskBlockerCategory.SECURITY,
+            severity=RiskBlockerSeverity.HIGH,
+            status=RiskBlockerStatus.RESOLVED,
+            source_type=RiskBlockerSource.MANUAL,
+            resolution_notes="Approved.",
+            closed_at=datetime(2026, 6, 23, 16, 45, tzinfo=UTC),
+        )
+
+        event = build_risk_blocker_timeline_event(
+            organisation_id=organisation_id,
+            deal_id=deal_id,
+            risk_blocker=risk,
+            event_type=TimelineEventType.BLOCKER_RESOLVED,
+        )
+
+        assert event.title == "Risk Resolved: Security review delay"
+        assert event.event_metadata["item_type"] == "RISK"

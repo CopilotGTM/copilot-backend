@@ -400,6 +400,7 @@ class SalesforceDealRecordSyncService:
         participant_extraction: DealParticipantExtraction,
         backfill: bool = True,
         preserve_relationship_fields: bool = False,
+        project_deal_created_activity_feed: bool = False,
     ) -> tuple[
         Any, StageHistoryWriteResult, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]
     ]:
@@ -428,6 +429,7 @@ class SalesforceDealRecordSyncService:
                 normalized=opportunities,
                 maps=maps,
                 preserve_relationship_fields=preserve_relationship_fields,
+                project_deal_created_activity_feed=project_deal_created_activity_feed,
             )
 
             stage_history_result = StageHistoryWriteResult()
@@ -799,6 +801,7 @@ class SalesforceDealRecordSyncService:
         integration_id: UUID,
         raw_opportunity: dict[str, Any],
         instance_url: str,
+        project_deal_created_activity_feed: bool = False,
     ) -> dict[str, Any]:
         normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
             [raw_opportunity],
@@ -819,6 +822,7 @@ class SalesforceDealRecordSyncService:
             opportunities=normalized_opportunities,
             transitions=[],
             participant_extraction=DealParticipantExtraction(),
+            project_deal_created_activity_feed=project_deal_created_activity_feed,
         )
         return {
             "fetched_opportunities": 1,

@@ -1334,13 +1334,15 @@ def build_risk_blocker_timeline_event(
     )
 
     if event_type == TimelineEventType.BLOCKER_ADDED:
-        title = f"Blocker Added: {risk_blocker.title}"
+        title = f"Blocker Opened: {risk_blocker.title}"
     elif event_type == TimelineEventType.RISK_FLAGGED:
-        title = f"Risk Flagged: {risk_blocker.title}"
+        title = f"Risk Opened: {risk_blocker.title}"
     elif event_type == TimelineEventType.BLOCKER_RESOLVED:
-        title = f"Blocker Resolved: {risk_blocker.title}"
+        prefix = "Risk" if item_type_str == RiskBlockerType.RISK.value else "Blocker"
+        title = f"{prefix} Resolved: {risk_blocker.title}"
     elif event_type == TimelineEventType.BLOCKER_DISMISSED:
-        title = f"Blocker Dismissed: {risk_blocker.title}"
+        prefix = "Risk" if item_type_str == RiskBlockerType.RISK.value else "Blocker"
+        title = f"{prefix} Dismissed: {risk_blocker.title}"
     else:
         title = f"{item_type_str}: {risk_blocker.title}"
 

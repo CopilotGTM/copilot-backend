@@ -35,6 +35,7 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
         organisation_id=uuid4(),
         actor_user_id=uuid4(),
     )
+    service._projection = AsyncMock()  # type: ignore[assignment]
 
     previous_stage_id = uuid4()
     next_stage_id = uuid4()
@@ -86,6 +87,7 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
         organisation_id=uuid4(),
         actor_user_id=uuid4(),
     )
+    service._projection = AsyncMock()  # type: ignore[assignment]
 
     pipeline_id = uuid4()
     stage_id = uuid4()
@@ -121,6 +123,89 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
 
 
 @pytest.mark.asyncio
+async def test_create_deal_projects_deal_created_and_initial_stage_history() -> None:
+    """Internal deal creation projects both source rows created by the writer."""
+    session = _FakeOrgSession()
+    organisation_id = uuid4()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+    )
+
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    integration_id = uuid4()
+    pipeline = SimpleNamespace(pipeline_id=pipeline_id, name="Sales")
+    stage = SimpleNamespace(stage_id=stage_id, name="Discovery")
+    integration = SimpleNamespace(integration_id=integration_id)
+    projection = AsyncMock()
+
+    service._get_default_pipeline = AsyncMock(return_value=pipeline)
+    service._get_first_stage = AsyncMock(return_value=stage)
+    service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
+    service._projection = projection  # type: ignore[assignment]
+
+    with patch(
+        "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
+        new=AsyncMock(return_value=integration),
+    ):
+        deal = await service.create_deal({"name": "New Deal"})
+
+    history = next(obj for obj in session.added if isinstance(obj, CRMDealStageHistory))
+    projection.upsert_deal_created.assert_awaited_once_with(deal)
+    projection.upsert_stage_change.assert_awaited_once_with(history, deal=deal)
+
+
+@pytest.mark.asyncio
+async def test_move_stage_projects_created_stage_history() -> None:
+    """Internal stage moves project the exact history row created for the transition."""
+    session = _FakeOrgSession()
+    organisation_id = uuid4()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+    )
+
+    previous_stage_id = uuid4()
+    next_stage_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        pipeline_id=uuid4(),
+        integration_id=uuid4(),
+        stage_id=previous_stage_id,
+        stage_name="Discovery",
+        deal_status="open",
+        close_date=None,
+        closed_won_at=None,
+        closed_lost_at=None,
+        closed_reason=None,
+        properties={},
+        stage_entered_at=datetime(2026, 4, 10, 9, 0, tzinfo=UTC),
+        stage_updated_at=datetime(2026, 4, 10, 10, 0, tzinfo=UTC),
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+    stage = SimpleNamespace(stage_id=next_stage_id, name="Proposal", stage_state=None)
+    projection = AsyncMock()
+
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._load_stage = AsyncMock(return_value=stage)
+    service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
+    service._projection = projection  # type: ignore[assignment]
+
+    updated = await service.move_stage(deal.deal_id, next_stage_id)
+
+    history = next(obj for obj in session.added if isinstance(obj, CRMDealStageHistory))
+    assert updated is deal
+    projection.upsert_stage_change.assert_awaited_once_with(history, deal=deal)
+
+
+@pytest.mark.asyncio
 async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_fields() -> None:
     """Initial owner assignment is part of create, not a second owner-change event."""
     session = _FakeOrgSession()
@@ -130,6 +215,7 @@ async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_
         organisation_id=uuid4(),
         actor_user_id=uuid4(),
     )
+    service._projection = AsyncMock()  # type: ignore[assignment]
 
     pipeline_id = uuid4()
     stage_id = uuid4()
@@ -183,6 +269,7 @@ async def test_create_deal_records_initial_core_fields_without_update_semantics(
         actor_user_id=uuid4(),
     )
     service._record_mutation_event = AsyncMock()
+    service._projection = AsyncMock()  # type: ignore[assignment]
 
     pipeline_id = uuid4()
     stage_id = uuid4()
