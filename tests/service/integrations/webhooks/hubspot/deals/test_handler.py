@@ -193,5 +193,6 @@ async def test_deal_creation_fetches_full_deal_and_persists(monkeypatch) -> None
             "integration_id": integration_id,
             "raw_deals": [raw_deal],
             "property_list_size": 2,
+            "project_deal_created_activity_feed": True,
         }
     ]

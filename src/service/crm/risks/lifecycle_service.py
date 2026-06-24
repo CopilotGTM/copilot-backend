@@ -10,8 +10,10 @@ from src.contracts.crm.risk_blockers import RiskBlockerDetail
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerStatus,
+    RiskBlockerType,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.risks.contracts import (
     InvalidStatusTransitionError,
     RiskBlockerNotFoundError,
@@ -25,7 +27,7 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
 
 
 def _status_value(status: RiskBlockerStatus | str) -> str:
-    return status.value if hasattr(status, "value") else str(status)
+    return status.value if isinstance(status, RiskBlockerStatus) else str(status)
 
 
 class RiskBlockerLifecycleService:
@@ -33,6 +35,7 @@ class RiskBlockerLifecycleService:
         self.session = session
         self.organisation_id = organisation_id
         self._mapper = RiskBlockerMapper()
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def dismiss(
         self,
@@ -65,6 +68,10 @@ class RiskBlockerLifecycleService:
         )
         await self.session.flush()
         await self.session.refresh(item)
+        await self._projection.upsert_risk_blocker_lifecycle(
+            item,
+            source_type=self._lifecycle_source_type(item, "DISMISSED"),
+        )
         return self._mapper.to_detail(item)
 
     async def resolve(
@@ -101,6 +108,10 @@ class RiskBlockerLifecycleService:
         )
         await self.session.flush()
         await self.session.refresh(item)
+        await self._projection.upsert_risk_blocker_lifecycle(
+            item,
+            source_type=self._lifecycle_source_type(item, "RESOLVED"),
+        )
         return self._mapper.to_detail(item)
 
     async def reopen(
@@ -132,6 +143,10 @@ class RiskBlockerLifecycleService:
         )
         await self.session.flush()
         await self.session.refresh(item)
+        await self._projection.upsert_risk_blocker_lifecycle(
+            item,
+            source_type=self._lifecycle_source_type(item, "REOPENED"),
+        )
         return self._mapper.to_detail(item)
 
     async def get_status(self, risk_blocker_id: UUID) -> RiskBlockerStatus | str | None:
@@ -152,3 +167,7 @@ class RiskBlockerLifecycleService:
             )
         )
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _lifecycle_source_type(item: DealRiskBlocker, action: str) -> str:
+        return f"{'RISK' if item.item_type == RiskBlockerType.RISK else 'BLOCKER'}_{action}"

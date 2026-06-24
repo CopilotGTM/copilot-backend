@@ -1,3 +1,5 @@
+"""Regression coverage for Salesforce deal writer CDC interactions."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -69,6 +71,7 @@ def _normalized_deal(
 
 @pytest.mark.asyncio
 async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() -> None:
+    """Salesforce deal upserts resolve provider FK values at write time."""
     organisation_id = uuid4()
     integration_id = uuid4()
     existing = CRMDeal(
@@ -148,9 +151,98 @@ async def test_writer_creates_and_updates_deals_with_write_time_fk_resolution() 
 
 
 @pytest.mark.asyncio
+async def test_writer_does_not_project_deal_created_by_default() -> None:
+    """Bulk provider sync must not backfill deal-created feed rows for old deals."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="006A",
+        name="Existing",
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
+    writer.source_mappings = mapping_helper
+    writer._projection.upsert_deal_created = AsyncMock()  # type: ignore[method-assign]
+    writer._load_existing_rows = AsyncMock(return_value={"006A": existing})  # type: ignore[method-assign]
+
+    await writer.apply(
+        normalized=[
+            _normalized_deal(external_id="006A", company_external_id=None),
+            _normalized_deal(external_id="006B", company_external_id=None),
+        ],
+        maps=DealResolutionMaps(
+            pipeline_map={},
+            stage_map={},
+            user_map={},
+            company_map={},
+            contact_map={},
+        ),
+    )
+
+    writer._projection.upsert_deal_created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_writer_projects_provider_created_deal_when_local_row_already_exists() -> None:
+    """Salesforce CREATE CDC can arrive after broad sync has created the deal."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="006A",
+        name="Already synced",
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+    writer.source_mappings = mapping_helper
+    writer._projection.upsert_deal_created = AsyncMock()  # type: ignore[method-assign]
+    writer._load_existing_rows = AsyncMock(return_value={"006A": existing})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        normalized=[_normalized_deal(external_id="006A", company_external_id=None)],
+        maps=DealResolutionMaps(
+            pipeline_map={},
+            stage_map={},
+            user_map={},
+            company_map={},
+            contact_map={},
+        ),
+        project_deal_created_activity_feed=True,
+    )
+
+    assert result.deals_created == 0
+    assert result.deals_updated == 1
+    writer._projection.upsert_deal_created.assert_awaited_once_with(existing)
+
+
+@pytest.mark.asyncio
 async def test_load_existing_rows_chunks_local_id_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Large Salesforce mapping lookups must stay under the query parameter cap."""
     organisation_id = uuid4()
     integration_id = uuid4()
     rows = [

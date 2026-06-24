@@ -45,10 +45,12 @@ async def test_persist_single_opportunity_reuses_deal_writer_without_relationshi
         opportunities,
         transitions,
         participant_extraction,
+        project_deal_created_activity_feed=False,
     ):
         captured["opportunities"] = opportunities
         captured["transitions"] = transitions
         captured["participant_extraction"] = participant_extraction
+        captured["project_deal_created_activity_feed"] = project_deal_created_activity_feed
         return (
             DealWriteResult(deals_created=1, unresolved_stage_link=1),
             StageHistoryWriteResult(),
@@ -74,6 +76,7 @@ async def test_persist_single_opportunity_reuses_deal_writer_without_relationshi
     assert result["deals_updated"] == 0
     assert result["unresolved_stage_link"] == 1
     assert captured["transitions"] == []
+    assert captured["project_deal_created_activity_feed"] is False
     participant_extraction = captured["participant_extraction"]
     assert isinstance(participant_extraction, DealParticipantExtraction)
     assert participant_extraction.participants == []
@@ -212,7 +215,14 @@ async def test_persist_loads_resolution_maps_for_current_batch_only(
         def __init__(self, **_kwargs) -> None:
             pass
 
-        async def apply(self, *, normalized, maps, preserve_relationship_fields=False):
+        async def apply(
+            self,
+            *,
+            normalized,
+            maps,
+            preserve_relationship_fields=False,
+            project_deal_created_activity_feed=False,
+        ):
             return DealWriteResult(deals_created=len(normalized))
 
     async def fake_load_deal_pk_map(**_kwargs):
@@ -343,7 +353,14 @@ async def test_persist_skips_salesforce_association_writer(
         def __init__(self, **_kwargs) -> None:
             pass
 
-        async def apply(self, *, normalized, maps, preserve_relationship_fields=False):
+        async def apply(
+            self,
+            *,
+            normalized,
+            maps,
+            preserve_relationship_fields=False,
+            project_deal_created_activity_feed=False,
+        ):
             return DealWriteResult()
 
     class FakeStageHistoryWriter:

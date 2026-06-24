@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.query_chunks import (
     LOCAL_ID_QUERY_CHUNK_SIZE,
     iter_chunks,
@@ -54,6 +55,8 @@ class _ResolvedFks:
 
 
 class SalesforceDealWriter:
+    """Writer for crm_deals rows from Salesforce Opportunity snapshots."""
+
     def __init__(
         self,
         *,
@@ -70,6 +73,7 @@ class SalesforceDealWriter:
             integration_id=integration_id,
             provider="salesforce",
         )
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
@@ -77,13 +81,16 @@ class SalesforceDealWriter:
         normalized: list[NormalizedSalesforceOpportunity],
         maps: DealResolutionMaps,
         preserve_relationship_fields: bool = False,
+        project_deal_created_activity_feed: bool = False,
     ) -> DealWriteResult:
+        """Upsert normalized Opportunity rows for this org/integration pair."""
         result = DealWriteResult()
         now = datetime.now(UTC)
         existing_by_external = await self._load_existing_rows(
             external_ids={deal.external_id for deal in normalized}
         )
         mapping_rows: list[IntegrationMappingUpsert] = []
+        deal_created_projection_rows: list[CRMDeal] = []
 
         for deal in normalized:
             resolved = self._resolve_all(deal, maps, result)
@@ -92,6 +99,8 @@ class SalesforceDealWriter:
                 row = self._new_row(deal, resolved, now=now)
                 self.session.add(row)
                 existing_by_external[deal.external_id] = row
+                if project_deal_created_activity_feed:
+                    deal_created_projection_rows.append(row)
                 mapping_rows.append(self._source_mapping_row(deal, row.deal_id, now=now))
                 result.deals_created += 1
             else:
@@ -103,6 +112,8 @@ class SalesforceDealWriter:
                     preserve_relationship_fields=preserve_relationship_fields,
                 )
                 existing.is_deleted = False
+                if project_deal_created_activity_feed:
+                    deal_created_projection_rows.append(existing)
                 mapping_rows.append(self._source_mapping_row(deal, existing.deal_id, now=now))
                 result.deals_updated += 1
 
@@ -110,6 +121,8 @@ class SalesforceDealWriter:
             await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
+        for row in deal_created_projection_rows:
+            await self._projection.upsert_deal_created(row)
         logger.info(
             "Salesforce deal writer apply complete",
             extra={

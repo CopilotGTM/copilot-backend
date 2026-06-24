@@ -46,6 +46,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.timeline.deal_timeline_sync_service import build_meeting_timeline_event
 from src.service.crm.timeline.timeline_event_source_resolver import resolve_meeting_event_source
 from src.service.meeting_bot.recording_window import is_within_recording_dispatch_window
@@ -1247,6 +1248,12 @@ class DealMeetingMatcher:
                     event_source=resolved_source,
                 )
                 session.add(timeline_event)
+                # Projection happens before commit with the association insert.
+                # Replay stays idempotent because the association ID is the feed ID.
+                await ActivityFeedProjectionService(
+                    session,
+                    self.organisation_id,
+                ).upsert_meeting_association(new_assoc, event)
                 # Queue the provider send only for meetings we actually linked to
                 # a deal in this transaction.
                 await self._enqueue_meeting_recording(session, event)
@@ -1443,6 +1450,12 @@ class DealMeetingMatcher:
             participant_emails = self._collect_event_participant_emails(event)
             if not (participant_emails & contact_emails):
                 assoc.status = AssociationStatus.REMOVED
+                # Removing the association should hide the card from every feed
+                # link it created, while leaving the calendar event itself intact.
+                await ActivityFeedProjectionService(
+                    session,
+                    self.organisation_id,
+                ).soft_delete_activity_projection(assoc.association_id)
                 count += 1
                 logger.debug(
                     "Deactivated orphaned association: event_id=%s, deal_id=%s",
@@ -1509,6 +1522,12 @@ class DealMeetingMatcher:
         updated_count = 0
         for assoc in associations:
             assoc.status = AssociationStatus.CANCELLED
+            # Cancelled meetings are not deleted from calendar history, but the
+            # active deal feed should stop showing their projected activity card.
+            await ActivityFeedProjectionService(
+                session,
+                self.organisation_id,
+            ).soft_delete_activity_projection(assoc.association_id)
             updated_count += 1
             logger.info(
                 "Marked cancelled event association: event_id=%s, deal_id=%s",

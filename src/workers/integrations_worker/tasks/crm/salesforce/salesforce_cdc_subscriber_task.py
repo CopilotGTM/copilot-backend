@@ -492,6 +492,7 @@ async def _process_opportunity_record_change(
         integration_id=integration_id,
         raw_opportunity=record,
         instance_url=instance_url,
+        project_deal_created_activity_feed=change_type.upper() == "CREATE",
     )
 
 

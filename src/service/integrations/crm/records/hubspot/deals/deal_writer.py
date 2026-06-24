@@ -34,6 +34,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.deals.deal_types import (
     DealResolutionMaps,
@@ -87,18 +88,21 @@ class HubSpotDealWriter:
             integration_id=integration_id,
             provider="hubspot",
         )
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
         *,
         normalized: list[NormalizedHubSpotDeal],
         maps: DealResolutionMaps,
+        project_deal_created_activity_feed: bool = False,
     ) -> DealWriteResult:
         """Upsert normalized HubSpot deals for this org/integration pair."""
         result = DealWriteResult()
         now = datetime.now(UTC)
 
         existing_by_external = await self._load_existing_rows()
+        deal_created_projection_rows: list[CRMDeal] = []
 
         for deal in normalized:
             resolved = self._resolve_all(deal, maps, result)
@@ -107,18 +111,26 @@ class HubSpotDealWriter:
             if existing is None:
                 row = self._new_row(deal, resolved, now=now)
                 self.session.add(row)
+                if project_deal_created_activity_feed:
+                    deal_created_projection_rows.append(row)
                 await self._upsert_source_mapping(deal, row.deal_id, now=now)
                 result.deals_created += 1
             elif _has_same_or_newer_source_modified(existing, deal):
+                if project_deal_created_activity_feed:
+                    deal_created_projection_rows.append(existing)
                 result.deals_skipped_stale += 1
             else:
                 # Existing rows include soft-deleted tombstones. Updating the
                 # same row preserves local FKs while reactivating restored deals.
                 self._apply_updates(existing, deal, resolved, now=now)
+                if project_deal_created_activity_feed:
+                    deal_created_projection_rows.append(existing)
                 await self._upsert_source_mapping(deal, existing.deal_id, now=now)
                 result.deals_updated += 1
 
         await self.session.flush()
+        for row in deal_created_projection_rows:
+            await self._projection.upsert_deal_created(row)
         logger.info(
             "Deal writer apply complete",
             extra={

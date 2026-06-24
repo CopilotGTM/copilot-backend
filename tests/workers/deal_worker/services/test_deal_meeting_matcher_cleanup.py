@@ -21,6 +21,7 @@ class _FakeScalarResult:
         self._rows = rows
 
     def all(self) -> list[SimpleNamespace]:
+        """Return all scripted association rows for matcher cleanup scans."""
         return self._rows
 
 
@@ -29,6 +30,7 @@ class _FakeExecuteResult:
         self._rows = rows
 
     def scalars(self) -> _FakeScalarResult:
+        """Expose the fake scalar-result API used by matcher queries."""
         return _FakeScalarResult(self._rows)
 
 
@@ -37,6 +39,7 @@ class _FakeSession:
         self._rows = rows
 
     async def execute(self, _stmt):  # noqa: ANN001
+        """Return the same scripted rows for every cleanup query in this file."""
         return _FakeExecuteResult(self._rows)
 
 
@@ -46,14 +49,18 @@ class _FakeSession:
 
 
 class TestCleanupOrphanedAssociations:
+    """Contracts for hiding meeting cards when active associations become invalid."""
+
     @pytest.mark.asyncio
-    async def test_deactivates_orphans(self) -> None:
+    async def test_deactivates_orphans(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Association whose event has NO current contact attendees gets REMOVED."""
         matcher = DealMeetingMatcher(uuid4())
         deal = SimpleNamespace(deal_id=uuid4())
         contact_emails = {"buyer@acme.com"}
+        deleted_activity_ids = []
 
         orphan = SimpleNamespace(
+            association_id=uuid4(),
             event_id=uuid4(),
             deal_id=deal.deal_id,
             status=AssociationStatus.ACTIVE,
@@ -64,12 +71,28 @@ class TestCleanupOrphanedAssociations:
         )
         session = _FakeSession([orphan])
 
+        class _ProjectionService:
+            def __init__(self, projected_session, projected_org_id):  # noqa: ANN001
+                assert projected_session is session
+                assert projected_org_id == matcher.organisation_id
+
+            async def soft_delete_activity_projection(self, activity_id):  # noqa: ANN001
+                """Record the projected activity hidden by orphan cleanup."""
+                deleted_activity_ids.append(activity_id)
+
+        monkeypatch.setattr(
+            "src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher."
+            "ActivityFeedProjectionService",
+            _ProjectionService,
+        )
+
         count = await matcher._cleanup_orphaned_associations(  # noqa: SLF001
             session, deal, contact_emails
         )
 
         assert count == 1
         assert orphan.status == AssociationStatus.REMOVED
+        assert deleted_activity_ids == [orphan.association_id]
 
     @pytest.mark.asyncio
     async def test_preserves_valid_associations(self) -> None:
@@ -107,6 +130,7 @@ class TestCleanupOrphanedAssociations:
         contact_emails = {"buyer@acme.com", "cfo@acme.com"}
 
         orphan = SimpleNamespace(
+            association_id=uuid4(),
             event_id=uuid4(),
             deal_id=deal.deal_id,
             status=AssociationStatus.ACTIVE,
@@ -116,6 +140,7 @@ class TestCleanupOrphanedAssociations:
             ),
         )
         valid = SimpleNamespace(
+            association_id=uuid4(),
             event_id=uuid4(),
             deal_id=deal.deal_id,
             status=AssociationStatus.ACTIVE,
@@ -161,6 +186,7 @@ class TestCleanupOrphanedAssociations:
 
     @pytest.mark.asyncio
     async def test_no_associations_returns_zero(self) -> None:
+        """Cleanup is a no-op when no active associations are returned."""
         matcher = DealMeetingMatcher(uuid4())
         deal = SimpleNamespace(deal_id=uuid4())
 
@@ -171,3 +197,44 @@ class TestCleanupOrphanedAssociations:
         )
 
         assert count == 0
+
+
+class TestCancelledAssociations:
+    """Contracts for hiding projected activities when provider events are cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_event_associations_soft_delete_activity_projection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancelled meeting associations must stop showing in the deal feed."""
+        matcher = DealMeetingMatcher(uuid4())
+        association = SimpleNamespace(
+            association_id=uuid4(),
+            event_id=uuid4(),
+            deal_id=uuid4(),
+            status=AssociationStatus.ACTIVE,
+        )
+        session = _FakeSession([association])
+        deleted_activity_ids = []
+
+        class _ProjectionService:
+            def __init__(self, projected_session, projected_org_id):  # noqa: ANN001
+                assert projected_session is session
+                assert projected_org_id == matcher.organisation_id
+
+            async def soft_delete_activity_projection(self, activity_id):  # noqa: ANN001
+                """Record the projected activity hidden by cancellation cleanup."""
+                deleted_activity_ids.append(activity_id)
+
+        monkeypatch.setattr(
+            "src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher."
+            "ActivityFeedProjectionService",
+            _ProjectionService,
+        )
+
+        count = await matcher._handle_cancelled_associations(session)  # noqa: SLF001
+
+        assert count == 1
+        assert association.status == AssociationStatus.CANCELLED
+        assert deleted_activity_ids == [association.association_id]

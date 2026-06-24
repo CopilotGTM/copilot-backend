@@ -29,6 +29,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.deals.deal_types import (
     DimensionHit,
@@ -58,6 +59,7 @@ class HubSpotDealStageHistoryWriter:
             integration_id=integration_id,
             provider="hubspot",
         )
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
@@ -65,6 +67,7 @@ class HubSpotDealStageHistoryWriter:
         transitions: list[NormalizedStageTransition],
         deal_pk_map: dict[str, UUID],
         stage_map: dict[str, DimensionHit],
+        project_stage_change_activity_feed: bool = False,
     ) -> StageHistoryWriteResult:
         result = StageHistoryWriteResult()
         if not transitions:
@@ -73,6 +76,7 @@ class HubSpotDealStageHistoryWriter:
 
         now = datetime.now(UTC)
         existing_by_external = await self._load_existing_rows()
+        created_rows: list[CRMDealStageHistory] = []
 
         for transition in transitions:
             deal_id = deal_pk_map.get(transition.deal_external_id)
@@ -107,6 +111,7 @@ class HubSpotDealStageHistoryWriter:
                     now=now,
                 )
                 self.session.add(row)
+                created_rows.append(row)
                 await self._upsert_source_mapping(transition, external_id, row.history_id, now=now)
                 result.stage_history_created += 1
             else:
@@ -124,6 +129,9 @@ class HubSpotDealStageHistoryWriter:
                 result.stage_history_updated += 1
 
         await self.session.flush()
+        if project_stage_change_activity_feed:
+            for row in created_rows:
+                await self._projection.upsert_stage_change(row)
         logger.info(
             "Stage history writer apply complete",
             extra={

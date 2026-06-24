@@ -61,6 +61,7 @@ from src.service.crm.access.meetings_access_service import (
     CRMMeetingRecordingControlService,
     CRMMeetingsAccessServiceError,
 )
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
@@ -538,7 +539,12 @@ class MeetingsTabService:
         return deal
 
     async def _mirror_deal_link(self, event_id: UUID, deal_id: UUID) -> None:
-        """Create or reactivate the active meeting-to-deal association."""
+        """Create or reactivate a meeting-to-deal association for a user-owned event.
+
+        Called by manual Meetings tab linking after event ownership and deal
+        ownership have already been proven. The activity-feed projection is
+        refreshed in the same transaction so the deal feed matches the link chip.
+        """
         stmt = select(CalendarEventDealAssociation).where(
             col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
             col(CalendarEventDealAssociation.event_id) == event_id,
@@ -549,16 +555,29 @@ class MeetingsTabService:
             assoc.status = AssociationStatus.ACTIVE
             assoc.match_score = 1.0
             assoc.updated_at = datetime.now(UTC)
-            return
-        self.session.add(
-            CalendarEventDealAssociation(
+        else:
+            assoc = CalendarEventDealAssociation(
                 organisation_id=self.organisation_id,
                 event_id=event_id,
                 deal_id=deal_id,
                 status=AssociationStatus.ACTIVE,
                 match_score=1.0,
             )
+            self.session.add(assoc)
+
+        event_stmt = select(CalendarEvent).where(
+            col(CalendarEvent.organisation_id) == self.organisation_id,
+            col(CalendarEvent.event_id) == event_id,
         )
+        event = (await self.session.execute(event_stmt)).scalar_one_or_none()
+        if event is not None:
+            # The event lookup stays org-scoped even though `event_id` came from a
+            # user-owned query. Keeping the boundary local prevents accidental
+            # projection of a cross-org event if this method is reused later.
+            await ActivityFeedProjectionService(
+                self.session,
+                self.organisation_id,
+            ).upsert_meeting_association(assoc, event)
 
     async def _attendees_for_create(
         self, request: CreateMeetingRequest

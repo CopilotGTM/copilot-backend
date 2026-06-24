@@ -13,6 +13,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.integrations.crm.records.common.query_chunks import (
     LOCAL_ID_QUERY_CHUNK_SIZE,
     iter_chunks,
@@ -47,6 +48,7 @@ class SalesforceDealStageHistoryWriter:
             integration_id=integration_id,
             provider="salesforce",
         )
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def apply(
         self,
@@ -54,6 +56,7 @@ class SalesforceDealStageHistoryWriter:
         transitions: list[NormalizedSalesforceStageTransition],
         deal_pk_map: dict[str, UUID],
         stage_map: dict[str, DimensionHit],
+        project_stage_change_activity_feed: bool = False,
     ) -> StageHistoryWriteResult:
         result = StageHistoryWriteResult()
         if not transitions:
@@ -65,6 +68,7 @@ class SalesforceDealStageHistoryWriter:
             external_ids={_synthetic_external_id(transition) for transition in transitions}
         )
         mapping_rows: list[IntegrationMappingUpsert] = []
+        created_rows: list[CRMDealStageHistory] = []
 
         for transition in transitions:
             deal_id = deal_pk_map.get(transition.deal_external_id)
@@ -98,6 +102,7 @@ class SalesforceDealStageHistoryWriter:
                 )
                 self.session.add(row)
                 existing_by_external[external_id] = row
+                created_rows.append(row)
                 mapping_rows.append(
                     self._source_mapping_row(
                         external_id=external_id,
@@ -130,6 +135,9 @@ class SalesforceDealStageHistoryWriter:
             await self.source_mappings.bulk_upsert_integration_mappings(mapping_rows)
 
         await self.session.flush()
+        if project_stage_change_activity_feed:
+            for row in created_rows:
+                await self._projection.upsert_stage_change(row)
         logger.info(
             "Salesforce stage history writer apply complete",
             extra={

@@ -14,7 +14,11 @@ from src.api.schemas.meetings_tab_models import (
     MeetingLinkedRecordType,
     MeetingsView,
 )
-from src.domain.models.organisation_tables.sync.calendar import AssociationStatus, GenerationStatus
+from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
+    CalendarEvent,
+    GenerationStatus,
+)
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingStatus,
     MeetingTranscriptStatus,
@@ -38,6 +42,7 @@ def _service() -> MeetingsTabService:
 
 
 def test_meetings_tab_uses_provider_parent_calendar_integrations() -> None:
+    """Meetings tab must query provider-parent auth integrations, not dispatch-only children."""
     assert CALENDAR_INTEGRATION_TYPES == PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES
     assert CALENDAR_INTEGRATION_TYPES != DISPATCH_CALENDAR_INTEGRATION_TYPES
 
@@ -304,26 +309,44 @@ def test_bot_action_flags_are_time_and_state_scoped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mirror_deal_link_reactivates_without_removing_other_deal_associations() -> None:
+async def test_mirror_deal_link_reactivates_without_removing_other_deal_associations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Manual linking reactivates one association without enforcing a single active deal."""
+    event = CalendarEvent(
+        organisation_id=uuid4(),
+        event_id=uuid4(),
+        external_id="event-1",
+        title="Customer sync",
+        start_at=datetime.now(UTC) + timedelta(hours=1),
+        end_at=datetime.now(UTC) + timedelta(hours=2),
+    )
     existing_assoc = SimpleNamespace(
+        association_id=uuid4(),
+        organisation_id=event.organisation_id,
+        event_id=event.event_id,
+        deal_id=uuid4(),
         status=AssociationStatus.REMOVED,
         match_score=0.2,
         updated_at=datetime.now(UTC) - timedelta(days=1),
     )
 
     class _Result:
+        def __init__(self, value):
+            self._value = value
+
         def scalar_one_or_none(self):
-            """Return the existing association for the service lookup."""
-            return existing_assoc
+            """Return the scripted row for each service lookup."""
+            return self._value
 
     class _Session:
         def __init__(self):
             self.added = []
+            self.results = [existing_assoc, event]
 
         async def execute(self, _stmt):
             """Mimic the async session execute contract used by the link mirror."""
-            return _Result()
+            return _Result(self.results.pop(0))
 
         def add(self, item):
             """Capture unexpected inserts so the test can assert no duplicate row."""
@@ -332,13 +355,29 @@ async def test_mirror_deal_link_reactivates_without_removing_other_deal_associat
     service = _service()
     fake_session = _Session()
     service.session = fake_session
+    projected = []
 
-    await service._mirror_deal_link(uuid4(), uuid4())  # noqa: SLF001
+    class _ProjectionService:
+        def __init__(self, projected_session, projected_org_id):  # noqa: ANN001
+            assert projected_session is fake_session
+            assert projected_org_id == service.organisation_id
+
+        async def upsert_meeting_association(self, association, event_record):  # noqa: ANN001
+            """Record that manual link mirroring refreshes the feed projection."""
+            projected.append((association, event_record))
+
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.ActivityFeedProjectionService",
+        _ProjectionService,
+    )
+
+    await service._mirror_deal_link(event.event_id, existing_assoc.deal_id)  # noqa: SLF001
 
     assert existing_assoc.status == AssociationStatus.ACTIVE
     assert existing_assoc.match_score == 1.0
     assert existing_assoc.updated_at > datetime.now(UTC) - timedelta(seconds=5)
     assert fake_session.added == []
+    assert projected == [(existing_assoc, event)]
 
 
 def test_recordings_window_includes_today_by_default() -> None:
@@ -467,9 +506,11 @@ async def test_recording_detail_returns_transcript_segments_sorted_by_index(monk
 
     class _SegmentResult:
         def scalars(self):
+            """Return self so the fake result supports SQLAlchemy's chained API."""
             return self
 
         def all(self):
+            """Return ordered transcript rows for the recording-detail formatter."""
             return [
                 SimpleNamespace(
                     segment_index=1,
@@ -599,6 +640,7 @@ async def test_create_meeting_with_join_link_enqueues_single_event_bot_dispatch(
             return None
 
         async def create_invite(self, invite):
+            """Return a synced provider event so create_meeting can continue."""
             captured_invite["invite"] = invite
             return SimpleNamespace(
                 event_id=event_id,

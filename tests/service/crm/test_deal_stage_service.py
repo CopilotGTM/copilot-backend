@@ -50,9 +50,44 @@ async def test_apply_stage_noops_when_stage_is_already_current() -> None:
     ).apply_stage(deal=deal, stage=stage)  # type: ignore[arg-type]
 
     assert result.changed is False
+    assert result.stage_history is None
     assert result.changed_fields == {}
     assert deal.stage_entered_at == entered_at
     assert deal.stage_updated_at == entered_at
     assert deal.source_modified_at == entered_at
     assert session.flush_count == 0
     assert not any(isinstance(obj, CRMDealStageHistory) for obj in session.added)
+
+
+@pytest.mark.asyncio
+async def test_apply_stage_returns_created_stage_history_row() -> None:
+    """Callers need the exact source row to project one stage-change activity."""
+    organisation_id = uuid4()
+    previous_stage_id = uuid4()
+    next_stage_id = uuid4()
+    session = _FakeStageSession()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        integration_id=uuid4(),
+        stage_id=previous_stage_id,
+        stage_name="Discovery",
+        stage_entered_at=None,
+        stage_updated_at=None,
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+    stage = SimpleNamespace(stage_id=next_stage_id, name="Proposal")
+
+    result = await DealStageService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=organisation_id,
+    ).apply_stage(deal=deal, stage=stage, source="api")  # type: ignore[arg-type]
+
+    assert result.changed is True
+    assert isinstance(result.stage_history, CRMDealStageHistory)
+    assert result.stage_history in session.added
+    assert result.stage_history.organisation_id == organisation_id
+    assert result.stage_history.deal_id == deal.deal_id
+    assert result.stage_history.stage_id == next_stage_id
+    assert result.stage_history.from_stage_id == previous_stage_id

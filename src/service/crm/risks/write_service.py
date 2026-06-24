@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerType,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.risks.contracts import (
     RiskBlockerNotFoundError,
     RiskBlockerWriteContext,
@@ -133,6 +134,7 @@ class RiskBlockerWriteService:
         self.session = session
         self.organisation_id = organisation_id
         self._mapper = RiskBlockerMapper()
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
         self.last_changes: dict[str, dict[str, str]] = {}
 
     async def create_manual(
@@ -183,6 +185,10 @@ class RiskBlockerWriteService:
         self.session.add(self._build_opened_timeline_event(item))
         await self.session.flush()
         await self.session.refresh(item)
+        await self._projection.upsert_risk_blocker_lifecycle(
+            item,
+            source_type=self._opened_source_type(item),
+        )
         return self._mapper.to_detail(item)
 
     async def create_from_extraction(
@@ -204,6 +210,10 @@ class RiskBlockerWriteService:
         self.session.add(item)
         self.session.add(self._build_opened_timeline_event(item))
         await self.session.flush()
+        await self._projection.upsert_risk_blocker_lifecycle(
+            item,
+            source_type=self._opened_source_type(item),
+        )
         return item
 
     async def update_fields(
@@ -259,6 +269,7 @@ class RiskBlockerWriteService:
         item = await self._load_item(risk_blocker_id)
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
+        await self._projection.soft_delete_risk_blocker_projection(item)
         await self.session.delete(item)
         await self.session.flush()
 
@@ -283,3 +294,7 @@ class RiskBlockerWriteService:
             risk_blocker=item,
             event_type=event_type,
         )
+
+    @staticmethod
+    def _opened_source_type(item: DealRiskBlocker) -> str:
+        return "RISK_OPENED" if item.item_type == RiskBlockerType.RISK else "BLOCKER_OPENED"
