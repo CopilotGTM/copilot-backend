@@ -159,6 +159,21 @@ class ContactsPage(BaseModel):
     total_pages: int
 
 
+class ContactSearchItem(BaseModel):
+    contact_id: UUID
+    full_name: str | None
+    email: str | None
+    job_title: str | None
+    company: ContactListCompany | None
+    match_type: str
+
+
+class ContactSearchPage(BaseModel):
+    items: list[ContactSearchItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class CreateContactRequest(BaseModel):
     """Request to create a new contact."""
 

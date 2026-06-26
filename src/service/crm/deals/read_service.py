@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, TypedDict, cast
@@ -26,6 +28,31 @@ from src.service.crm.deals.contracts import DealReadServiceError
 from src.service.crm.participants.participant_write_service import ParticipantWriteService
 
 logger = get_logger("deal_read_service")
+
+_CURSOR_NAME_KEY = "name"
+_CURSOR_ID_KEY = "deal_id"
+
+
+def _encode_deal_search_cursor(name_key: str | None, deal_id: UUID) -> str:
+    payload = {
+        _CURSOR_NAME_KEY: (name_key or "").strip().lower(),
+        _CURSOR_ID_KEY: str(deal_id),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_deal_search_cursor(cursor: str) -> tuple[str, UUID]:
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        name_key = payload[_CURSOR_NAME_KEY]
+        deal_id = UUID(payload[_CURSOR_ID_KEY])
+    except Exception as exc:
+        raise DealReadServiceError("Invalid cursor", status_code=400) from exc
+    if not isinstance(name_key, str):
+        raise DealReadServiceError("Invalid cursor", status_code=400)
+    return name_key, deal_id
 
 
 class DealOwnerFilterRow(TypedDict):
@@ -199,6 +226,52 @@ class DealReadService:
         rows: list[CRMDeal] = list(res.scalars().all())
 
         return rows, total_count
+
+    async def search_deals(
+        self,
+        *,
+        q: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[list[CRMDeal], str | None]:
+        """Return lightweight deal rows for picker and browse search."""
+        c = cast(Any, CRMDeal).__table__.c
+        name_key = func.lower(func.coalesce(c.name, c.company_name, ""))
+
+        filters = [
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+        ]
+        if q and q.strip():
+            like_expr = f"%{q.strip().lower()}%"
+            filters.append(or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr)))
+
+        if cursor:
+            cursor_name, cursor_deal_id = _decode_deal_search_cursor(cursor)
+            filters.append(
+                or_(
+                    name_key > cursor_name,
+                    and_(name_key == cursor_name, c.deal_id > cursor_deal_id),
+                )
+            )
+
+        stmt = (
+            select(CRMDeal)
+            .where(*filters)
+            .order_by(name_key.asc(), c.deal_id.asc())
+            .limit(limit + 1)
+        )
+        res = await self.org_session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = _encode_deal_search_cursor(last.name or last.company_name, last.deal_id)
+
+        return items, next_cursor
 
     async def get_all_deals(
         self,

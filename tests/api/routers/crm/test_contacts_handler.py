@@ -8,7 +8,12 @@ import pytest
 import src.api.routers.crm.contacts_handler as contacts_handler
 from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
-from src.api.routers.crm.contacts_handler import create_contact, get_contact_detail, list_contacts
+from src.api.routers.crm.contacts_handler import (
+    create_contact,
+    get_contact_detail,
+    list_contacts,
+    search_contact_create_candidates,
+)
 from src.api.schemas.crm_contact_models import CreateContactRequest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -28,6 +33,20 @@ class _FakeContactReadService:
     async def list_contacts(self, **kwargs):
         self.request = kwargs
         return self.rows, self.total_count
+
+
+class _FakeContactSearchService:
+    def __init__(self, rows: list[dict], next_cursor: str | None):
+        self.rows = rows
+        self.next_cursor = next_cursor
+
+    async def search_contacts(self, **kwargs):
+        self.request = kwargs
+        return self.rows, self.next_cursor
+
+    async def search_contacts_for_create(self, **kwargs):
+        self.request = kwargs
+        return self.rows, self.next_cursor
 
 
 class _FakeContactDetailService:
@@ -315,6 +334,73 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
     assert "owner_name" not in dumped
     assert "lifecycle_stage" not in dumped
     assert "profile_enrichment_source" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_search_contacts_returns_cursor_page() -> None:
+    contact_id = uuid4()
+    company_id = uuid4()
+    service = _FakeContactSearchService(
+        rows=[
+            {
+                "contact_id": contact_id,
+                "full_name": "Sam Altman",
+                "email": "sam.altman@openai.com",
+                "job_title": "CEO",
+                "company": {
+                    "id": company_id,
+                    "name": "OpenAI",
+                    "domain": "openai.com",
+                },
+                "match_type": "exact_email",
+            }
+        ],
+        next_cursor="next-token",
+    )
+
+    result = await contacts_handler.search_contacts(
+        response=FastAPIResponse(),
+        q="sam.altman@openai.com",
+        limit=20,
+        cursor=None,
+        company_id=None,
+        service=service,  # type: ignore[arg-type]
+        _rl_read=None,
+    )
+
+    assert service.request == {
+        "q": "sam.altman@openai.com",
+        "limit": 20,
+        "cursor": None,
+        "company_id": None,
+    }
+    assert result.status == "SUCCESS"
+    assert result.data is not None
+    assert result.data.items[0].contact_id == contact_id
+    assert result.data.items[0].match_type == "exact_email"
+    assert result.data.next_cursor == "next-token"
+    assert result.data.has_more is True
+
+
+@pytest.mark.asyncio
+async def test_search_contact_create_candidates_uses_create_search() -> None:
+    service = _FakeContactSearchService(rows=[], next_cursor=None)
+
+    result = await search_contact_create_candidates(
+        response=FastAPIResponse(),
+        q="sam@openai.com",
+        limit=20,
+        cursor=None,
+        service=service,  # type: ignore[arg-type]
+        _rl_read=None,
+    )
+
+    assert service.request == {
+        "q": "sam@openai.com",
+        "limit": 20,
+        "cursor": None,
+    }
+    assert result.status == "SUCCESS"
 
 
 @pytest.mark.asyncio

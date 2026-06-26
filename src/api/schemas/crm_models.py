@@ -132,6 +132,33 @@ class DealsPage(BaseModel):
     total_pages: int = Field(..., description="Total number of pages")
 
 
+class DealSearchItem(BaseModel):
+    """Lightweight deal item returned by cursor search."""
+
+    deal_id: UUID
+    name: str | None
+    amount: float | None
+    currency: str | None
+    currency_symbol: str | None = None
+    deal_status: str | None
+    stage_name: str | None
+    pipeline_name: str | None
+    company_id: UUID | None = None
+    company_name: str | None = None
+    company_domain: str | None = None
+    owner_details: list[DealOwnerDetail] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class DealSearchPage(BaseModel):
+    """Cursor page for lightweight deal search."""
+
+    items: list[DealSearchItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class DealCustomColumnDefinition(BaseModel):
     """Custom column metadata for frontend control rendering.
 

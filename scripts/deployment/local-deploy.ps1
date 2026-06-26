@@ -18,6 +18,7 @@ param(
     [string]$DeployEnvironment = "dev",
     [bool]$EnableFlower = $false,
     [bool]$QuickApiOnly = $true,
+    [bool]$RunStartupJobs = $false,
     [bool]$UseSeparatedImages = $true,
     [bool]$UseFullImageForWorkers = $false,
     [bool]$UseFullImageForApi = $false,
@@ -26,11 +27,12 @@ param(
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-QuickApiOnly <bool>] [-EnableFlower <bool>] [-UseSeparatedImages <bool>] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-QuickApiOnly <bool>] [-RunStartupJobs <bool>] [-EnableFlower <bool>] [-UseSeparatedImages <bool>] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -DeployEnvironment    Target environment (default: dev)"
     Write-Host "  -QuickApiOnly         Fast API-only deploy: build API image, skip hooks/workers (default: true)"
+    Write-Host "  -RunStartupJobs       Allow Helm startup hooks/jobs during deploy (default: false)"
     Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: false)"
     Write-Host "  -UseSeparatedImages   Build separate images per component (default: true, matches pipeline)"
     Write-Host "  -UseFullImageForWorkers Build worker images using the 'full' target to include API deps (default: false)"
@@ -39,7 +41,8 @@ if ($Help) {
     Write-Host ""
     Write-Host "Example:"
     Write-Host "  .\local-deploy.ps1                              # Fast API-only deploy"
-    Write-Host "  .\local-deploy.ps1 -QuickApiOnly `$false         # Full API + workers deploy"
+    Write-Host "  .\local-deploy.ps1 -QuickApiOnly `$false         # Full API + workers deploy without startup jobs"
+    Write-Host "  .\local-deploy.ps1 -QuickApiOnly `$false -RunStartupJobs `$true  # Full deploy with startup jobs"
     Write-Host "  .\local-deploy.ps1 -EnableFlower `$true          # Deploy with Flower UI"
     Write-Host "  .\local-deploy.ps1 -UseSeparatedImages `$false   # Use legacy single image"
     exit 0
@@ -640,6 +643,15 @@ function Deploy-WithHelm {
             "--set", "flower.ingress.enabled=false",
             "--set", "global.celery.enableEvents=false"
         )
+    }
+
+    if (-not $RunStartupJobs) {
+        Write-Host "Startup jobs disabled: adding --no-hooks so Helm will not run startup hook jobs."
+        $helmArgs += @(
+            "--no-hooks"
+        )
+    } else {
+        Write-Warning "Startup jobs enabled: Helm hooks will run during this deploy."
     }
 
     # Execute Helm command and check for errors

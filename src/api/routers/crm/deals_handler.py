@@ -40,6 +40,8 @@ from src.api.schemas.crm_models import (
     DealOwnerDetail,
     DealOwnerFilterItem,
     DealOwnerFilters,
+    DealSearchItem,
+    DealSearchPage,
     DealsListParams,
     DealsPage,
     DealsStats,
@@ -577,6 +579,74 @@ async def list_deals(
         )
     except Exception as e:
         logger.error("Unexpected error listing deals: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
+    "/deals/search",
+    response_model=GenericResponse[DealSearchPage],
+    tags=["crm", "deals"],
+    summary="Search CRM deals with cursor pagination",
+)
+async def search_deals(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Case-insensitive search on deal or company name"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum deals per cursor page"),
+    cursor: str | None = Query(None, description="Opaque cursor returned by the previous page"),
+    service: DealReadService = Depends(get_deals_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[DealSearchPage]:
+    """Return lightweight deal rows for search dropdowns."""
+    try:
+        deals, next_cursor = await service.search_deals(q=q, limit=limit, cursor=cursor)
+        items = [
+            DealSearchItem(
+                deal_id=deal.deal_id,
+                name=deal.name,
+                amount=deal.amount,
+                currency=_normalize_currency_code(deal.currency),
+                currency_symbol=_currency_symbol_for(deal.currency),
+                deal_status=deal.deal_status,
+                stage_name=deal.stage_name,
+                pipeline_name=deal.pipeline_name,
+                company_id=deal.company_id,
+                company_name=getattr(deal, "company_name", None),
+                company_domain=getattr(deal, "company_domain", None),
+                owner_details=(
+                    [
+                        DealOwnerDetail(
+                            name=deal.owner_name,
+                            email=deal.owner_email,
+                            owner_id=deal.owner_id,
+                        )
+                    ]
+                    if any([getattr(deal, "owner_id", None), deal.owner_name, deal.owner_email])
+                    else []
+                ),
+                created_at=deal.created_at,
+                updated_at=deal.updated_at,
+            )
+            for deal in deals
+        ]
+        page = DealSearchPage(
+            items=items,
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
+        return Response.success_response(message="Deals search results retrieved", data=page)
+    except DealReadServiceError as e:
+        logger.warning("Deal search access error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            response=response,
+        )
+    except Exception as e:
+        logger.error("Unexpected error searching deals: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,

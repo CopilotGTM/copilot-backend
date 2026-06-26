@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-04-06
+> Last Updated: 2026-06-26
 
 ---
 
@@ -406,6 +406,35 @@ export interface ContactsPage {
 }
 
 /**
+ * Lightweight contact picker item returned by GET /contacts/search.
+ */
+export interface ContactSearchItem {
+  contact_id: UUID;
+  full_name: string | null;
+  email: string | null;
+  job_title: string | null;
+  company: ContactListCompany | null;
+  match_type:
+    | "exact_email"
+    | "additional_email"
+    | "email_prefix"
+    | "exact_name"
+    | "name_prefix"
+    | "name"
+    | "company"
+    | "other";
+}
+
+/**
+ * Cursor page for contact picker/typeahead search.
+ */
+export interface ContactSearchPage {
+  items: ContactSearchItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+/**
  * Request to create a new contact.
  */
 export interface CreateContactRequest {
@@ -594,6 +623,114 @@ Paginated contact list with computed `deal_count`, `source`, nested `company`, a
 | HTTP Status | `message` | When |
 |-------------|-----------|------|
 | `400` | `"Page must be >= 1"` | `page` parameter < 1 |
+| `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
+| `429` | `"Too many requests (per-minute limit exceeded)"` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 1a. Search Contacts
+
+```http
+GET /users/crm/contacts/search
+```
+
+Lightweight contact picker/typeahead endpoint. Use this for add-to-deal pickers, browse search, and any general contact UI where company-name matches are useful. It does not return `total_count`; clients should use `next_cursor` for infinite scroll.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `q` | string | — | Any string | Search by primary email, additional emails, full name, or company name |
+| `limit` | integer | `20` | `1–50` | Maximum contacts per cursor page |
+| `cursor` | string | — | Opaque cursor | Cursor from the previous response |
+| `company_id` | UUID | — | Valid UUID | Restrict results to contacts with this stored account link |
+
+#### Ranking
+
+Results are deterministic and ranked by match quality:
+
+1. Exact primary email
+2. Exact additional email
+3. Primary email prefix
+4. Exact full name
+5. Name prefix
+6. Name contains or company-name match
+7. Other matched fields
+
+Contact creation still performs its own duplicate-email check, so search endpoints are UX helpers, not the uniqueness boundary.
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Contacts search results retrieved",
+  "data": {
+    "items": [
+      {
+        "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "full_name": "Sam Altman",
+        "email": "sam@openai.com",
+        "job_title": "CEO",
+        "company": {
+          "id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+          "name": "OpenAI",
+          "domain": "openai.com"
+        },
+        "match_type": "additional_email"
+      }
+    ],
+    "next_cursor": "eyJyYW5rIjoxLCJuYW1lIjoic2FtIGFsdG1hbiIsImNvbnRhY3RfaWQiOiJhMWIyYzNkNC1lNWY2LTc4OTAtYWJjZC1lZjEyMzQ1Njc4OTAifQ==",
+    "has_more": true
+  }
+}
+```
+
+#### Frontend Usage
+
+- Debounce user input before calling this endpoint.
+- Reset `cursor` whenever `q` or `company_id` changes.
+- Fetch the next page when the dropdown scroll nears the end and `has_more` is `true`.
+- For contact creation, use `/contacts/search/create-candidates` instead so company-name matches do not hide the create action.
+
+---
+
+### 1b. Search Contact Create Candidates
+
+```http
+GET /users/crm/contacts/search/create-candidates
+```
+
+Strict contact identity search for the create-contact flow. This endpoint searches only person identity fields and intentionally does **not** search `company_name`.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `q` | string | — | Any string | Search by primary email, additional emails, or full name |
+| `limit` | integer | `20` | `1–50` | Maximum contacts per cursor page |
+| `cursor` | string | — | Opaque cursor | Cursor from the previous response |
+
+#### Ranking
+
+Results are deterministic and ranked by identity match quality:
+
+1. Exact primary email
+2. Exact additional email
+3. Primary email prefix
+4. Exact full name
+5. Name prefix
+6. Name contains
+7. Other matched fields
+
+Use this endpoint before `POST /contacts` when the UI wants to show possible duplicates. For valid email input with no exact match, show a create-contact action; `POST /contacts` still rejects duplicate primary emails if another request creates the contact first.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Invalid cursor"` | Cursor cannot be decoded or does not match the expected shape |
 | `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |

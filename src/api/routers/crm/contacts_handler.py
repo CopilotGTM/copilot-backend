@@ -34,6 +34,8 @@ from src.api.schemas.crm_contact_models import (
     ContactMutationItem,
     ContactProfileEnrichment,
     ContactResearchSummary,
+    ContactSearchItem,
+    ContactSearchPage,
     ContactsPage,
     CreateContactRequest,
     UpdateContactRequest,
@@ -213,6 +215,82 @@ async def list_contacts(
         )
     except Exception:
         logger.error("Error listing contacts", exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@contacts_router.get(
+    "/contacts/search",
+    response_model=GenericResponse[ContactSearchPage],
+    summary="Search CRM contacts with cursor pagination",
+)
+async def search_contacts(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Search by name, email, or company"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum contacts per cursor page"),
+    cursor: str | None = Query(None, description="Opaque cursor returned by the previous page"),
+    company_id: UUID | None = Query(None, description="Filter contacts by company UUID"),
+    service: ContactReadService = Depends(get_contact_read_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[ContactSearchPage]:
+    """Return lightweight contact picker rows using cursor pagination."""
+    try:
+        items_raw, next_cursor = await service.search_contacts(
+            q=q,
+            limit=limit,
+            cursor=cursor,
+            company_id=company_id,
+        )
+        page_data = ContactSearchPage(
+            items=[ContactSearchItem(**row) for row in items_raw],
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
+        return Response.success_response("Contacts search results retrieved", data=page_data)
+    except ContactReadServiceError as e:
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error searching contacts")
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@contacts_router.get(
+    "/contacts/search/create-candidates",
+    response_model=GenericResponse[ContactSearchPage],
+    summary="Search strict contact candidates before create",
+)
+async def search_contact_create_candidates(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Search by contact name or email"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum contacts per cursor page"),
+    cursor: str | None = Query(None, description="Opaque cursor returned by the previous page"),
+    service: ContactReadService = Depends(get_contact_read_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[ContactSearchPage]:
+    """Return strict person-identity candidates for the create-contact flow."""
+    try:
+        items_raw, next_cursor = await service.search_contacts_for_create(
+            q=q,
+            limit=limit,
+            cursor=cursor,
+        )
+        page_data = ContactSearchPage(
+            items=[ContactSearchItem(**row) for row in items_raw],
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
+        return Response.success_response("Contact create candidates retrieved", data=page_data)
+    except ContactReadServiceError as e:
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error searching contact create candidates")
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

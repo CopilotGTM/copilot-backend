@@ -158,7 +158,64 @@ POST /users/crm/deals
 
 ---
 
-## 2. List Deals
+## 2. Search Deals
+
+### Endpoint
+
+```
+GET /users/crm/deals/search
+```
+
+Lightweight cursor search for deal pickers and typeahead. This endpoint searches only deal identity fields: `name` and `company_name`. It does not return `total_count`; use `next_cursor` and `has_more` for infinite scroll.
+
+### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | - | Case-insensitive search by deal name or company name |
+| `limit` | integer | 20 | Items per cursor page (1-50) |
+| `cursor` | string | - | Opaque cursor returned by the previous response |
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deals search results retrieved",
+  "data": {
+    "items": [
+      {
+        "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+        "name": "Acme Corp - Enterprise License",
+        "amount": 50000,
+        "currency": "USD",
+        "currency_symbol": "$",
+        "deal_status": "open",
+        "stage_name": "Qualification",
+        "pipeline_name": "Default Pipeline",
+        "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+        "company_name": "Acme Corp",
+        "company_domain": "acme.com",
+        "owner_details": [
+          {
+            "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+            "name": "John Doe",
+            "email": "john@example.com"
+          }
+        ],
+        "created_at": "2026-01-22T10:00:00Z",
+        "updated_at": "2026-01-22T10:00:00Z"
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
+---
+
+## 3. List Deals
 
 ### Endpoint
 
@@ -229,7 +286,7 @@ GET /users/crm/deals
 
 ---
 
-## 3. Get Deal Detail
+## 4. Get Deal Detail
 
 ### Endpoint
 
@@ -381,7 +438,7 @@ returned on stakeholder detail as `active_research_job`.
 
 ---
 
-## 3.1 Generic Deal Job Stream
+## 4.1 Generic Deal Job Stream
 
 Subscribe to any user-visible deal job returned by deal or stakeholder APIs.
 This stream is used for stakeholder add processing jobs and stakeholder research
@@ -423,7 +480,7 @@ Use `Last-Event-ID` on reconnect when the client has a previous stream event id.
 
 ---
 
-## 4. Update Deal
+## 5. Update Deal
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`. External CRM deals (HubSpot, Salesforce) are read-only.
 
@@ -531,7 +588,7 @@ Update all editable fields:
 
 ---
 
-## 5. Move Stage
+## 6. Move Stage
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -604,7 +661,7 @@ becomes `open`.
 
 ---
 
-## 6. Close Deal
+## 7. Close Deal
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -671,7 +728,7 @@ POST /users/crm/deals/{deal_id}/close
 
 ---
 
-## 7. Reopen Deal
+## 8. Reopen Deal
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -725,7 +782,7 @@ POST /users/crm/deals/{deal_id}/reopen
 
 ---
 
-## 8. Assign Owner
+## 9. Assign Owner
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -815,7 +872,7 @@ Cleared:
 
 ---
 
-## 9. Update Deal Account
+## 10. Update Deal Account
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -875,7 +932,7 @@ PATCH /users/crm/deals/{deal_id}/account
 
 ---
 
-## 10. Update Primary Contact
+## 11. Update Primary Contact
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
 
@@ -917,7 +974,7 @@ At least one of the two fields must be provided.
 
 ---
 
-## 11. Delete Deal
+## 12. Delete Deal
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`. **This is a soft delete** - the deal is marked as deleted but remains in the database.
 

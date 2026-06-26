@@ -348,6 +348,47 @@ async def test_list_deals_default_includes_crm_only_owner_deals(
 
 
 @pytest.mark.asyncio
+async def test_search_deals_returns_cursor_page() -> None:
+    deal_id = uuid4()
+    now = datetime.now(UTC)
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        name="Acme Renewal",
+        amount=25000.0,
+        currency="usd",
+        deal_status="open",
+        stage_name="Negotiation",
+        pipeline_name="Sales",
+        company_id=uuid4(),
+        company_name="Acme",
+        company_domain="acme.com",
+        owner_name="Jane Smith",
+        owner_email="jane@example.com",
+        owner_id=uuid4(),
+        created_at=now,
+        updated_at=now,
+    )
+    service = SimpleNamespace(search_deals=AsyncMock(return_value=([deal], "next-token")))
+
+    result = await deals_handler_module.search_deals(
+        response=FastAPIResponse(),
+        q="acme",
+        limit=20,
+        cursor=None,
+        service=service,
+        _rl_read=None,
+    )
+
+    service.search_deals.assert_awaited_once_with(q="acme", limit=20, cursor=None)
+    assert result.status == "SUCCESS"
+    assert result.data is not None
+    assert result.data.items[0].deal_id == deal_id
+    assert result.data.items[0].currency == "USD"
+    assert result.data.next_cursor == "next-token"
+    assert result.data.has_more is True
+
+
+@pytest.mark.asyncio
 async def test_list_deal_owners_hydrates_selected_owner_outside_search(
     fake_deals_service, test_user_ids
 ):

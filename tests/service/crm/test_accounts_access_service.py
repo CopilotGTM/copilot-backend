@@ -66,6 +66,27 @@ def _mock_scalars_first(row):
     return mock_result
 
 
+class _FakeScalarResult:
+    def __init__(self, rows: list[object]):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    def __init__(self, results: list[list[object]]):
+        self._results = results
+        self.statements: list[object] = []
+
+    async def execute(self, statement: object):
+        self.statements.append(statement)
+        return _FakeScalarResult(self._results.pop(0))
+
+
 def test_account_search_cursor_round_trips_name_and_id() -> None:
     company_id = uuid4()
     cursor = _encode_account_search_cursor("Acme", company_id)
