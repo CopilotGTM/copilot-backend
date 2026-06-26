@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ContactDealInvolvement(BaseModel):
@@ -162,12 +162,12 @@ class ContactsPage(BaseModel):
 class CreateContactRequest(BaseModel):
     """Request to create a new contact."""
 
+    model_config = ConfigDict(extra="forbid")
+
     email: str = Field(..., description="Email address (required)")
-    name: str = Field(..., description="Full name (required)")
-    job_title: str | None = None
-    phone: str | None = None
-    linkedin_url: str | None = None
-    company_id: UUID | None = None
+    name: str | None = Field(None, description="Full name when already known")
+    job_title: str | None = Field(None, description="Job title when already known")
+    linkedin_url: str | None = Field(None, description="LinkedIn profile URL when already known")
 
 
 class UpdateContactRequest(BaseModel):

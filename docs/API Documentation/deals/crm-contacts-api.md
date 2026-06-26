@@ -121,20 +121,20 @@ The HTTP status code is set on the response (not inside the JSON body). Always c
 
 ## Data Relationships
 
-### Contact → Account (Explicit FK + Domain Matching)
+### Contact -> Account (Stored FK + Domain Matching)
 
-Contacts are linked to accounts via two mechanisms. The **explicit FK** takes precedence over domain matching:
+Contacts are linked to accounts via two mechanisms. The **stored FK** takes precedence over domain matching:
 
-1. **Explicit `company_id` FK** (stored on `CRMContact`): Set via the create or update endpoint. When present, the contact is directly linked to the referenced `CRMCompany` record.
+1. **Stored `company_id` FK** (stored on `CRMContact`): Set during contact create by email-domain account resolution, or later through the update endpoint or a dedicated account-linking flow. When present, the contact is directly linked to the referenced `CRMCompany` record.
 2. **Email domain matching** (fallback): When `company_id` is `null`, the system extracts the email domain and matches it against `CRMCompany.domain` at query time.
 
 ```
 Contact (company_id: "d3b07384-...")
-  → direct FK lookup → Account (id: "d3b07384-...")     ← explicit link (preferred)
+  -> direct FK lookup -> Account (id: "d3b07384-...")     <- stored link (preferred)
 
 Contact (company_id: null, email: "john@acme.com")
-  → extract domain → "acme.com" → match CRMCompany.domain
-  → Account (domain: "acme.com")                        ← fallback
+  -> extract domain -> "acme.com" -> match CRMCompany.domain
+  -> Account (domain: "acme.com")                        <- fallback
 ```
 
 This means:
@@ -142,7 +142,7 @@ This means:
 - `company.id` in the list response is either the **stored FK** (when set) or **resolved at query time** from email domain matching.
 - `company.domain` comes from the matched account when available, otherwise the contact email domain is used as display context.
 - If no account is linked or matched, the list may still return a `company` object with the contact's company string/domain context; otherwise `company` is `null`.
-- When `company_id` is explicitly set during create/update, `company_name` is auto-resolved from the linked account for legacy create/update responses. Detail responses expose the account through nested `company`.
+- When `company_id` is set during update/linking, `company_name` is auto-resolved from the linked account for legacy mutation responses. Detail responses expose the account through nested `company`.
 
 ### Contact → Deals (via Deal Participant)
 
@@ -410,11 +410,9 @@ export interface ContactsPage {
  */
 export interface CreateContactRequest {
   email: string;                      // Required. Primary email (auto-lowercased, trimmed)
-  name: string;                       // Required. Full name (auto-split into first/last)
-  job_title?: string | null;
-  phone?: string | null;
-  linkedin_url?: string | null;
-  company_id?: UUID | null;           // Explicit account link. Validates account exists. Auto-resolves company_name.
+  name?: string | null;               // Optional. Full name when already known
+  job_title?: string | null;          // Optional. Job title when already known
+  linkedin_url?: string | null;       // Optional. LinkedIn profile URL when already known
 }
 
 /**
@@ -497,13 +495,12 @@ function getContactDisplayName(contact: ContactListItem): string {
 }
 ```
 
-### Frontend Utility: Check if Contact is Enrichable
+### Frontend Utility: Check if Manual Enrich is Available
 
 ```ts
 /**
- * Contact enrichment requires the contact to be linked to at least one deal
- * via an approved contact participant. Use deal_count from list or deal_involvement
- * from detail to check.
+ * Manual legacy enrichment requires a deal participant. Contacts created through
+ * POST /contacts are researched automatically when eligible, independent of deals.
  */
 function isEnrichable(contact: ContactListItem): boolean {
   return contact.deal_count > 0;
@@ -610,6 +607,7 @@ POST /users/crm/contacts
 ```
 
 Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalised (lowercased, trimmed) and checked for uniqueness within the organisation.
+After the contact transaction commits, the API queues asynchronous contact research for eligible business-email contacts. Research runs outside the request path, so contact creation still succeeds if queue dispatch fails.
 
 #### Request Headers
 
@@ -623,11 +621,11 @@ Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalis
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
 | `email` | string | **Yes** | Non-empty, must contain `@` | Primary email (auto-lowercased, trimmed) |
-| `name` | string | **Yes** | Non-empty | Full name (auto-split into first/last) |
-| `job_title` | string | No | — | Job title |
-| `phone` | string | No | — | Phone number |
-| `linkedin_url` | string | No | — | LinkedIn profile URL |
-| `company_id` | UUID | No | Must reference an existing account | Explicit account link. When provided, validates the account exists and auto-resolves `company_name` from the linked account. |
+| `name` | string | No | Non-empty when provided | Full name when already known. If omitted, name fields remain `null`; clients can use email as a display fallback. |
+| `job_title` | string | No | Non-empty when provided | Job title when already known. |
+| `linkedin_url` | string | No | Non-empty when provided | LinkedIn profile URL when already known. |
+
+Unknown fields are rejected. Contact creation no longer accepts `phone` or account-link fields such as `company_id`, `account_id`, `account_name`, or `account_domain`.
 
 #### Auto-Resolution Behaviours
 
@@ -638,18 +636,29 @@ Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalis
 | `"John Doe"` | `"John"` | `"Doe"` |
 | `"John Michael Doe"` | `"John"` | `"Michael Doe"` |
 | `"Madonna"` | `"Madonna"` | `null` |
+| omitted | `null` | `null` |
 
-**Account linking (`company_id`):**
+**Account linking:**
 
-Account linking is **explicit only** — there is no silent auto-linking from the email domain. The frontend dropdown handles account suggestion via `GET /accounts/suggest?email_domain=...` before the create request, so if the user wants to link, they pass `company_id` explicitly.
+Create contact does not accept account inputs from the caller. The backend uses the email domain to resolve or create an internal CRM account through `AccountWriteService`, then stores `company_id` and `company_name` on the contact when a single account is available.
 
-- If `company_id` is provided → service validates the account exists in the organisation and auto-resolves `company_name` from the linked account. Returns `404` if the account does not exist.
-- If `company_id` is **not** provided → contact is created with `company_id = null` and `company_name = null`. The contact is unlinked.
-
-**Domain matching as runtime fallback:** When `company_id` is `null`, list/detail endpoints fall back to email domain matching for **display purposes only**. List/detail responses expose this as nested `company.id`; it is a read-time fallback and never writes to the FK column.
+- If one active account exists with the email domain, the contact is linked to it.
+- If no account exists with the email domain, an account is created with `name = domain` and `domain = domain`, then the contact is linked to it.
+- If multiple accounts match the same domain or the email has no usable domain, the contact is created without an account link.
 
 **Integration auto-creation:**
 If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is automatically created on first contact creation. This is idempotent.
+
+**Async contact research:**
+
+After commit, `POST /contacts` attempts to enqueue `contact_research.process_job`.
+
+- Free/personal email providers and their subdomains are skipped.
+- Business subdomains are preserved, e.g. `buyer@test.hackme.com` researches against `test.hackme.com`.
+- Provider enrichment writes structured profile fields and `profile_enrichment` first.
+- A no-tool summary step writes `contact_research` only after provider data exists.
+- If summary generation fails, structured enrichment remains saved.
+- Queue dispatch failure is logged and does not change the `201` response.
 
 #### Example Request
 
@@ -657,8 +666,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 {
   "email": "john@acme.com",
   "name": "John Doe",
-  "job_title": "VP Engineering",
-  "phone": "+1-555-0101",
+  "job_title": "VP Sales",
   "linkedin_url": "https://linkedin.com/in/johndoe"
 }
 ```
@@ -667,8 +675,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 
 ```json
 {
-  "email": "jane@example.com",
-  "name": "Jane Smith"
+  "email": "jane@example.com"
 }
 ```
 
@@ -684,10 +691,10 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
     "last_name": "Doe",
     "full_name": "John Doe",
     "email": "john@acme.com",
-    "job_title": "VP Engineering",
-    "phone": "+1-555-0101",
-    "company_name": "Acme Corp",
-    "company_id": null,
+    "job_title": "VP Sales",
+    "phone": null,
+    "company_name": "acme.com",
+    "company_id": "d3b07384-d9a0-4c62-bfe9-123456789abc",
     "company_domain": null,
     "lifecycle_stage": null,
     "owner_name": null,
@@ -699,15 +706,14 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 }
 ```
 
-**Note:** `company_id` and `company_domain` are `null` in the create response when they are not resolved during the write. List/detail endpoints resolve account display context at query time through nested `company`. `company_name` may be populated via auto-resolution.
+**Note:** `company_domain` is not recomputed in the create response. List/detail endpoints expose richer account context through nested `company`.
 
 #### Error Responses
 
 | HTTP Status | `message` | When |
 |-------------|-----------|------|
-| `404` | `"Account not found"` | `company_id` provided but no matching account exists in this organisation |
 | `409` | `"A contact with email 'john@acme.com' already exists"` | Non-deleted contact with same email (case-insensitive) |
-| `422` | Pydantic validation error | Missing `email` or `name`, or invalid field types |
+| `422` | Pydantic validation error | Missing `email`, invalid field types, or removed fields such as `phone` or `company_id` |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
@@ -865,6 +871,9 @@ CONTACT`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
 | `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
 | `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
 
+Contact lifecycle cards may use `source_type` values `CONTACT_CREATED`,
+`CONTACT_ENRICHMENT_TRIGGERED`, and `CONTACT_ENRICHMENT_COMPLETED`.
+
 #### Success Response (200)
 
 ```json
@@ -1000,11 +1009,13 @@ Returns the updated legacy `ContactMutationItem`. `deal_count` is `0`, `company_
 POST /users/crm/contacts/{contact_id}/enrich
 ```
 
-Trigger research enrichment for a contact. Enrichment piggybacks on the **stakeholder research pipeline**, which requires the contact to be linked to at least one deal via an approved contact participant.
+Trigger legacy manual enrichment for a contact. This manual endpoint still piggybacks on the stakeholder research pipeline and requires a deal participant.
+
+Contacts created through `POST /contacts` do **not** need this endpoint for first-pass research. The create route automatically queues contact-scoped research after commit when the email domain is eligible.
 
 #### Prerequisites
 
-The contact must have at least one approved contact participant record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
+For this manual endpoint, the contact must have at least one approved contact participant record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
 
 #### Path Parameters
 
@@ -1216,24 +1227,16 @@ The dropdown should display **account name + domain** (and optionally industry) 
 
 1. **`company_id` is set once** — never changes, never unlinks. The backend enforces this on PATCH.
 2. **Email is a precondition** — you cannot link an account to a contact that has no email. If `contact.email` is null, the dropdown must be disabled with a message like "Add an email address before linking an account."
-3. **No silent auto-linking** — the backend will NOT auto-link based on email domain. If the user wants the link, the frontend must explicitly send `company_id`.
-4. **Display fallback** — for unlinked contacts (`company_id = null`), list/detail responses may still return nested `company.id` from email-domain matching for display purposes only. Do not treat nested `company.id` alone as proof of a stored account link.
+3. **Create resolves account by email domain** — `POST /contacts` does not accept account fields, but the backend resolves or creates an account from the email domain and links it when unambiguous.
+4. **Display fallback** — for older or ambiguous unlinked contacts (`company_id = null`), list/detail responses may still return nested `company.id` from email-domain matching for display purposes only. Do not treat nested `company.id` alone as proof of a stored account link.
 
 ### Flow A: Creating a new contact
 
 ```
-1. User fills in name + email
-2. When email looks complete (basic regex):
-   → GET /accounts/suggest?email_domain=acme.com
-3. Dropdown shows:
-   - Suggested: "Acme Corp — acme.com" (NOT pre-selected)
-   - Search input
-4. User can:
-   - Click suggested → selects it
-   - Type to search → GET /accounts/search?q=...
-   - Click "Create new account" → POST /accounts inline
-   - Skip → leaves dropdown empty
-5. Submit → POST /contacts with company_id (or without)
+1. User enters email, and optionally name
+2. Submit → POST /contacts with email and optional name only
+3. Backend resolves or creates an account from the email domain when possible
+4. Response returns `company_id` and `company_name` when a stored account link was created
 ```
 
 ### Flow B: Adding an account to an existing contact
@@ -1284,7 +1287,7 @@ const canOpenAccountPicker = contact.email !== null;
 | `GET /users/crm/accounts/suggest?email_domain=...` | Auto-suggest based on email domain |
 | `GET /users/crm/accounts/search?q=...&cursor=...` | Cursor search accounts by name/domain/website for dropdowns |
 | `POST /users/crm/accounts` | Create a new account inline |
-| `POST /users/crm/contacts` (with `company_id`) | Create contact with account link |
+| `POST /users/crm/contacts` | Create contact and resolve/create an account from email domain when possible |
 | `PATCH /users/crm/contacts/{id}` (with `company_id`) | Link an existing contact (one-time) |
 
 ---
@@ -1303,7 +1306,7 @@ Consolidated reference of all error responses across all endpoints.
 | `400` | `"Contact must have an email address before being added to a deal..."` | Add to deal | Contact has no email |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
 | `404` | `"Contact not found"` | Get detail, Update, Enrich, Add to deal | Contact doesn't exist or is deleted |
-| `404` | `"Account not found"` | Create, Update | `company_id` references a non-existent account |
+| `404` | `"Account not found"` | Update | `company_id` references a non-existent account |
 | `409` | `"A contact with email '...' already exists"` | Create, Update | Duplicate email (case-insensitive) |
 | `422` | Pydantic validation error | Create, Update, Add to deal | Invalid request body |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
@@ -1331,7 +1334,7 @@ Consolidated reference of all error responses across all endpoints.
 
 ### Service Layer
 
-**Classes:** `ContactReadService`, `ContactWriteService`, and `ContactDealLinkService` under `src/service/crm/contacts/`. `ContactsAccessService` remains as a compatibility facade for older callers.
+**Classes:** `ContactReadService`, `ContactWriteService`, and `ContactDealLinkService` under `src/service/crm/contacts/`.
 
 - Receives `org_session` and `organisation_id` at construction
 - All queries filter by `organisation_id` and `is_deleted = False`
@@ -1340,7 +1343,8 @@ Consolidated reference of all error responses across all endpoints.
   - Batch-resolved `integration_type` for `source` annotation
   - Nested `company` resolved from stored FK first, with email domain matching as display fallback
   - Nested `owner` built from contact owner metadata
-- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; accepts optional `company_id` to set explicit account link
+- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; the canonical command accepts required `email` plus optional `name`, `job_title`, and `linkedin_url`
+- `create_contact()` does not accept `phone` or caller-supplied account-link fields; account resolution is derived from email domain through `AccountWriteService`
 - `update_contact()` accepts `company_id` to link/unlink accounts; validates account exists when non-null
 - `update_contact()` handles `linkedin_url` as a top-level contact profile field
 - `add_contact_to_deal()` delegates to `DealParticipantService` for centralized participant creation and duplicate detection
@@ -1370,18 +1374,19 @@ def _split_name(full_name: str) -> tuple[str, str | None]:
 
 ### Enrichment Pipeline Architecture
 
-Contact enrichment flows through the stakeholder research pipeline:
+Contacts created through this API use the contact research pipeline:
 
 ```
-POST /contacts/{id}/enrich
-  → Find an approved contact participant for this contact
-    → dispatch_stakeholder_research_async()
-      → Creates a deal_job in the deal_worker
-        → Runs stakeholder research agent
-          → Updates contact_research, research_status on CRMContact
+POST /contacts
+  → commit CRMContact
+    → dispatch_contact_research_async()
+      → creates a contact_research DealJobs row
+        → contact_research.process_job
+          → provider enrichment writes structured CRMContact fields
+          → no-tool summary agent writes contact_research when provider data exists
 ```
 
-This means enrichment requires a stakeholder linkage. A standalone contact research pipeline (independent of deals) is planned for a future phase.
+This automatic path does not require a stakeholder or deal linkage. Stakeholder-specific enrichment paths can migrate to the same contact-first pipeline later.
 
 ### Duplicate Detection
 

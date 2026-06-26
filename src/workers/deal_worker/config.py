@@ -118,6 +118,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_tasks.sync_from_summary",
             # Stakeholder research tasks
             "stakeholder_research.process_job",
+            "contact_research.process_job",
         )
 
         self.task_routes = {

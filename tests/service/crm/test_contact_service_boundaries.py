@@ -28,7 +28,5 @@ def test_contact_write_service_does_not_manage_deal_participants() -> None:
     assert "send_deal_task_async" not in source
 
 
-def test_contact_construction_removed_from_access_service() -> None:
-    source = Path("src/service/crm/access/contacts_access_service.py").read_text()
-
-    assert "CRMContact(" not in source
+def test_legacy_contacts_access_service_removed() -> None:
+    assert not Path("src/service/crm/access/contacts_access_service.py").exists()

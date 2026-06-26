@@ -15,9 +15,11 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
 )
-from src.service.crm.accounts.contracts import AccountWriteServiceError
+from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
     ContactWriteContext,
     ContactWriteResult,
     ContactWriteServiceError,
@@ -29,6 +31,8 @@ from src.service.crm.mutations.contracts import (
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import ContactMutationPolicy
+from src.service.crm.utils.identity import normalize_email
+from src.service.crm.utils.person import split_full_name
 
 
 class ContactWriteService:
@@ -40,29 +44,20 @@ class ContactWriteService:
         self.organisation_id = organisation_id
         self._account_writer = AccountWriteService(org_session, organisation_id)
         self._mutation_events = CRMMutationEventService(org_session, organisation_id)
+        self._projection = ActivityFeedProjectionService(org_session, organisation_id)
 
     async def close(self) -> None:
         """Close the owned org session when used as a FastAPI dependency."""
         await self.org_session.close()
 
-    @staticmethod
-    def _split_name(full_name: str) -> tuple[str, str | None]:
-        """Split 'First Last' into (first, last). Last may be None for single names."""
-        parts = full_name.strip().split(" ", 1)
-        first = parts[0]
-        last = parts[1] if len(parts) > 1 else None
-        return first, last
-
     async def create_contact(
         self,
-        email: str,
-        name: str,
+        command: ContactCreateCommand,
         *,
         context: ContactWriteContext | None = None,
-        **kwargs: Any,
     ) -> ContactWriteResult:
-        """Create an internal CRM contact with explicit-only account linking."""
-        normalized_email = email.strip().lower()
+        """Create an internal CRM contact without account-link side effects."""
+        normalized_email = normalize_email(command.email) or ""
         dup_stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.is_deleted).is_(False),
@@ -71,57 +66,43 @@ class ContactWriteService:
         dup_res = await self.org_session.execute(dup_stmt)
         if dup_res.scalars().first():
             raise ContactWriteServiceError(
-                f"A contact with email '{email}' already exists",
+                f"A contact with email '{command.email}' already exists",
                 status_code=409,
             )
 
         integration = await self._get_or_create_internal_integration(context)
-        first_name, last_name = self._split_name(name)
-
-        explicit_company_id: UUID | None = kwargs.pop("company_id", None)
-        company_name: str | None = kwargs.pop("company_name", None)
-        properties = kwargs.pop("properties", {}) or {}
-        metrics = kwargs.pop("metrics", {}) or {}
-        additional_emails = kwargs.pop("additional_emails", []) or []
-        linkedin_url = kwargs.pop("linkedin_url", None) or properties.pop("linkedin_url", None)
-        profile_enrichment = kwargs.pop("profile_enrichment", {}) or {}
-        profile_enrichment_source = kwargs.pop("profile_enrichment_source", None)
-        profile_enriched_at = kwargs.pop("profile_enriched_at", None)
-
-        if explicit_company_id:
-            try:
-                company = await self._account_writer.load_org_company(explicit_company_id)
-            except AccountWriteServiceError as exc:
-                raise ContactWriteServiceError(
-                    exc.message, status_code=exc.status_code, data=exc.data
-                ) from exc
-            company_name = company_name or company.name
+        contact_name = command.name.strip() if command.name and command.name.strip() else None
+        first_name, last_name = split_full_name(contact_name) if contact_name else (None, None)
+        account = await self._account_writer.resolve_or_create_account_for_contact_email(
+            normalized_email,
+            context=AccountWriteContext(
+                source=context.source if context else "contact_create",
+                actor_user_id=context.actor_user_id if context else None,
+                source_label=context.source_label if context else None,
+                created_via=context.created_via if context else None,
+            ),
+        )
 
         contact = CRMContact(
             contact_id=uuid4(),
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
             email=normalized_email,
-            linkedin_url=linkedin_url,
             first_name=first_name,
             last_name=last_name,
-            full_name=name.strip(),
-            company_name=company_name,
-            company_id=explicit_company_id,
+            full_name=contact_name,
+            job_title=command.job_title,
+            linkedin_url=command.linkedin_url,
+            company_id=account.company_id if account else None,
+            company_name=account.name if account else None,
             synced_at=datetime.now(UTC),
             is_deleted=False,
-            properties=properties,
-            metrics=metrics,
-            profile_enrichment=profile_enrichment,
-            profile_enrichment_source=profile_enrichment_source,
-            profile_enriched_at=profile_enriched_at,
-            additional_emails=additional_emails,
-            **kwargs,
         )
 
         self.org_session.add(contact)
         await self.org_session.flush()
         await self.org_session.refresh(contact)
+        await self._projection.upsert_contact_created(contact)
         await self._record_contact_create_event(contact, context=context)
         return ContactWriteResult(contact=contact, created=True, matched_by="created")
 
@@ -138,7 +119,7 @@ class ContactWriteService:
         Stakeholder, agent, workflow, and form callers use this path so contact
         normalization and future contact mutation events stay in one service.
         """
-        normalized_email = email.strip().lower()
+        normalized_email = normalize_email(email) or ""
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.is_deleted).is_(False),
@@ -157,7 +138,7 @@ class ContactWriteService:
                 ):
                     changed_fields["full_name"] = change
                 existing.full_name = stripped_name
-                first_name, last_name = self._split_name(name)
+                first_name, last_name = split_full_name(name)
                 if change := ContactMutationPolicy.changed_field(
                     "first_name", existing.first_name, first_name
                 ):
@@ -199,10 +180,20 @@ class ContactWriteService:
             return ContactWriteResult(contact=existing, created=False, matched_by="email")
 
         return await self.create_contact(
-            normalized_email,
-            name or normalized_email,
+            ContactCreateCommand(
+                email=normalized_email,
+                name=name,
+                job_title=updates.get("job_title"),
+                linkedin_url=(
+                    updates.get("linkedin_url")
+                    or (
+                        updates.get("properties", {}).get("linkedin_url")
+                        if isinstance(updates.get("properties"), dict)
+                        else None
+                    )
+                ),
+            ),
             context=context,
-            **updates,
         )
 
     async def update_contact(
@@ -233,7 +224,7 @@ class ContactWriteService:
                     "Cannot change an existing email address",
                     status_code=400,
                 )
-            normalized_email = new_email.strip().lower()
+            normalized_email = normalize_email(new_email) or ""
             dup_stmt = select(col(CRMContact.contact_id)).where(
                 col(CRMContact.organisation_id) == self.organisation_id,
                 col(CRMContact.is_deleted).is_(False),

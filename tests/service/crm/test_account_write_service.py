@@ -124,6 +124,108 @@ async def test_create_account_derives_name_from_domain_when_name_missing() -> No
 
 
 @pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_reuses_single_domain_account() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing = _company(organisation_id, integration_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(all_rows=[existing])),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+
+    account = await service.resolve_or_create_account_for_contact_email(" Jane@Acme.com ")
+
+    assert account is existing
+    session.add.assert_not_called()
+    session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_creates_missing_domain_account() -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                _result(all_rows=[]),
+                _result(all_rows=[]),
+                _result(first=integration),
+            ]
+        ),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+
+    account = await service.resolve_or_create_account_for_contact_email(
+        "jane@acme.com",
+        context=AccountWriteContext(source="contact_create"),
+    )
+
+    assert account is not None
+    assert account.name == "acme.com"
+    assert account.domain == "acme.com"
+    session.add.assert_any_call(account)
+    session.flush.assert_awaited()
+    session.refresh.assert_awaited_once_with(account)
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_returns_none_for_ambiguous_domain() -> (
+    None
+):
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    first = _company(organisation_id, integration_id, name="Acme US", domain="acme.com")
+    second = _company(organisation_id, integration_id, name="Acme EU", domain="acme.com")
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(all_rows=[first, second])),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+
+    account = await service.resolve_or_create_account_for_contact_email("jane@acme.com")
+
+    assert account is None
+    session.add.assert_not_called()
+    session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_returns_none_without_domain() -> None:
+    service = AccountWriteService(SimpleNamespace(), uuid4())
+
+    account = await service.resolve_or_create_account_for_contact_email("not-an-email")
+
+    assert account is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_skips_free_email_subdomain() -> None:
+    session = SimpleNamespace(
+        execute=AsyncMock(),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, uuid4())
+
+    account = await service.resolve_or_create_account_for_contact_email(
+        "nickelsinglezerofive@enter.gmail.com"
+    )
+
+    assert account is None
+    session.execute.assert_not_awaited()
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_create_account_normalizes_domain() -> None:
     organisation_id = uuid4()
     integration = _integration(organisation_id)

@@ -109,6 +109,17 @@ class AgentConfig:
     )
     STAKEHOLDER_RESEARCH_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_RESEARCH_TIMEOUT", "120"))
 
+    # Contact Research Summary Agent — turns provider enrichment into short UI copy
+    CONTACT_RESEARCH_SUMMARY_MODEL: str = os.getenv(
+        "AGENT_CONTACT_RESEARCH_SUMMARY_MODEL", "gpt-5-mini"
+    )
+    CONTACT_RESEARCH_SUMMARY_DEBUG: bool = (
+        os.getenv("AGENT_CONTACT_RESEARCH_SUMMARY_DEBUG", "false").lower() == "true"
+    )
+    CONTACT_RESEARCH_SUMMARY_TIMEOUT: int = int(
+        os.getenv("AGENT_CONTACT_RESEARCH_SUMMARY_TIMEOUT", "60")
+    )
+
     # ==========================================================================
     # SUB-AGENTS
     # ==========================================================================
@@ -194,6 +205,11 @@ class AgentConfig:
             "STAKEHOLDER_RESEARCH_MODEL",
             "STAKEHOLDER_RESEARCH_DEBUG",
             "STAKEHOLDER_RESEARCH_TIMEOUT",
+        ),
+        "contact_research_summary_agent": (
+            "CONTACT_RESEARCH_SUMMARY_MODEL",
+            "CONTACT_RESEARCH_SUMMARY_DEBUG",
+            "CONTACT_RESEARCH_SUMMARY_TIMEOUT",
         ),
     }
 

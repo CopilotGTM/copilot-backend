@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
     ContactWriteContext,
     ContactWriteServiceError,
 )
@@ -28,6 +30,21 @@ class _FakeResult:
     def first(self):
         return self._scalars[0] if self._scalars else None
 
+    def all(self):
+        return self._scalars
+
+
+def _disable_account_resolution(service: ContactWriteService) -> None:
+    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
+        return_value=None
+    )
+
+
+def _disable_contact_created_projection(service: ContactWriteService) -> None:
+    service._projection.upsert_contact_created = (  # type: ignore[method-assign]
+        AsyncMock()
+    )
+
 
 @pytest.mark.asyncio
 async def test_create_contact_normalizes_email_splits_name_and_does_not_commit() -> None:
@@ -44,10 +61,11 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     session.commit = AsyncMock()
 
     service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
 
     result = await service.create_contact(
-        email=" Jane@Example.COM ",
-        name="Jane Doe",
+        ContactCreateCommand(email=" Jane@Example.COM ", name="Jane Doe"),
         context=ContactWriteContext(source="test"),
     )
 
@@ -58,6 +76,8 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     added_rows = [call.args[0] for call in session.add.call_args_list]
     assert any(isinstance(row, CRMContact) for row in added_rows)
     assert any(isinstance(row, CRMDealMutationEvent) for row in added_rows)
+    projection = service._projection.upsert_contact_created
+    projection.assert_awaited_once_with(result.contact)  # type: ignore[attr-defined]
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(result.contact)
     session.commit.assert_not_called()
@@ -77,15 +97,165 @@ async def test_create_contact_promotes_linkedin_url_to_profile_column() -> None:
     session.refresh = AsyncMock()
 
     service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
 
     result = await service.create_contact(
-        email="jane@example.com",
-        name="Jane Doe",
-        properties={"linkedin_url": "https://linkedin.com/in/jane"},
+        ContactCreateCommand(
+            email="jane@example.com",
+            name="Jane Doe",
+            linkedin_url="https://linkedin.com/in/jane",
+        ),
     )
 
     assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
-    assert result.contact.properties == {}
+
+
+@pytest.mark.asyncio
+async def test_create_contact_accepts_job_title_but_not_phone() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(
+        ContactCreateCommand(email="jane@example.com", name="Jane Doe", job_title="CFO")
+    )
+
+    assert result.contact.job_title == "CFO"
+    assert result.contact.phone is None
+
+    with pytest.raises(TypeError):
+        ContactCreateCommand(email="jane@example.com", phone="+15555550100")
+
+
+@pytest.mark.asyncio
+async def test_create_contact_allows_missing_name_without_storing_email_as_name() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(ContactCreateCommand(email="buyer@example.com"))
+
+    assert result.contact.full_name is None
+    assert result.contact.first_name is None
+    assert result.contact.last_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_contact_links_account_returned_from_email_resolution() -> None:
+    org_id = uuid4()
+    company_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    company = SimpleNamespace(company_id=company_id, name="Acme", domain="acme.com")
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
+        return_value=company
+    )
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(ContactCreateCommand(email="buyer@example.com"))
+
+    account_resolver = service._account_writer.resolve_or_create_account_for_contact_email
+    account_resolver.assert_awaited_once()  # type: ignore[attr-defined]
+    assert result.contact.company_id == company_id
+    assert result.contact.company_name == "Acme"
+
+
+@pytest.mark.asyncio
+async def test_create_contact_stays_unlinked_when_email_account_resolution_returns_none() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
+        return_value=None
+    )
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(ContactCreateCommand(email="buyer@example.com"))
+
+    account_resolver = service._account_writer.resolve_or_create_account_for_contact_email
+    account_resolver.assert_awaited_once()  # type: ignore[attr-defined]
+    assert result.contact.company_id is None
+    assert result.contact.company_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_contact_with_free_email_subdomain_stays_unlinked() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(
+        ContactCreateCommand(email="nickelsinglezerofive@enter.gmail.com")
+    )
+
+    assert result.contact.email == "nickelsinglezerofive@enter.gmail.com"
+    assert result.contact.company_id is None
+    assert result.contact.company_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_contact_rejects_account_link_arguments() -> None:
+    org_id = uuid4()
+    company_id = uuid4()
+    session = MagicMock()
+    service = ContactWriteService(session, org_id)
+
+    with pytest.raises(TypeError):
+        await service.create_contact(
+            ContactCreateCommand(email="buyer@example.com", name="Buyer"),
+            company_id=company_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -107,6 +277,8 @@ async def test_find_or_create_by_email_reuses_existing_contact_and_merges_profil
     session.commit = AsyncMock()
 
     service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
 
     result = await service.find_or_create_contact_by_email(
         email=" Buyer@Example.com ",
@@ -152,19 +324,59 @@ async def test_find_or_create_by_email_creates_missing_contact() -> None:
     session.refresh = AsyncMock()
 
     service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
 
     result = await service.find_or_create_contact_by_email(
         email="buyer@example.com",
         name="Buyer Name",
         context=ContactWriteContext(source="stakeholder"),
-        profile_updates={"phone": "+15555550100"},
+        profile_updates={
+            "job_title": "CFO",
+            "phone": "+15555550100",
+            "linkedin_url": "https://linkedin.com/in/buyer",
+        },
     )
 
     assert result.created is True
     assert result.matched_by == "created"
     assert result.contact.email == "buyer@example.com"
     assert result.contact.full_name == "Buyer Name"
-    assert result.contact.phone == "+15555550100"
+    assert result.contact.job_title == "CFO"
+    assert result.contact.linkedin_url == "https://linkedin.com/in/buyer"
+    assert result.contact.phone is None
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_by_email_creates_missing_contact_without_synthetic_name() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[_FakeResult(), _FakeResult(), _FakeResult(scalars=[integration])]
+    )
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    result = await service.find_or_create_contact_by_email(
+        email="buyer@example.com",
+        name=None,
+        context=ContactWriteContext(source="stakeholder"),
+    )
+
+    assert result.created is True
+    assert result.contact.email == "buyer@example.com"
+    assert result.contact.full_name is None
+    assert result.contact.first_name is None
+    assert result.contact.last_name is None
 
 
 @pytest.mark.asyncio
@@ -182,9 +394,34 @@ async def test_create_contact_rejects_duplicate_email_in_org() -> None:
     service = ContactWriteService(session, org_id)
 
     with pytest.raises(ContactWriteServiceError) as exc:
-        await service.create_contact(email="jane@example.com", name="Jane Doe")
+        await service.create_contact(
+            ContactCreateCommand(email="jane@example.com", name="Jane Doe")
+        )
 
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_contact_duplicate_email_records_no_activity_projection() -> None:
+    org_id = uuid4()
+    existing = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[existing]))
+
+    service = ContactWriteService(session, org_id)
+    _disable_contact_created_projection(service)
+
+    with pytest.raises(ContactWriteServiceError):
+        await service.create_contact(
+            ContactCreateCommand(email="jane@example.com", name="Jane Doe")
+        )
+
+    service._projection.upsert_contact_created.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

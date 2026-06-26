@@ -1,4 +1,9 @@
-"""CRM Contacts API handler — tenant-scoped endpoints for accessing and managing contact data."""
+"""Tenant-scoped CRM contact endpoints.
+
+Called by the contacts UI and API clients that manage internal CRM contact records.
+The router keeps HTTP concerns here and delegates tenant isolation, validation, and
+persistence to org-scoped services built from the current user's organisation.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ from src.service.crm.activity_feed_read_service import (
     ActivityFeedReadServiceError,
 )
 from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
     ContactDealLinkServiceError,
     ContactReadServiceError,
     ContactWriteContext,
@@ -49,6 +55,9 @@ from src.service.crm.contacts.contracts import (
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
 from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.workers.deal_worker.utils.contact_research_dispatch import (
+    dispatch_contact_research_async,
+)
 
 logger = get_logger("contacts_handler")
 
@@ -62,7 +71,11 @@ async def get_contact_read_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a ContactReadService instance for the current org."""
+    """Yield a read service bound to the authenticated user's organisation.
+
+    The organisation id comes from auth context, not request parameters, so callers cannot
+    use a contact id from another tenant to cross the schema boundary.
+    """
     service = ContactReadService(org_session, user_ids.organisation_id)
     try:
         yield service
@@ -77,7 +90,11 @@ async def get_contact_write_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a ContactWriteService instance for the current org."""
+    """Yield a write service bound to the authenticated user's organisation.
+
+    Mutating routes share this dependency so create/update operations all use the same
+    tenant-scoped session and rollback path.
+    """
     service = ContactWriteService(org_session, user_ids.organisation_id)
     try:
         yield service
@@ -92,7 +109,11 @@ async def get_contact_deal_link_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a ContactDealLinkService instance for the current org."""
+    """Yield a contact-to-deal linker for the authenticated organisation.
+
+    The service validates both sides of the association inside the org schema before it
+    creates a participant row.
+    """
     service = ContactDealLinkService(org_session, user_ids.organisation_id)
     try:
         yield service
@@ -107,7 +128,11 @@ async def get_contact_activity_feed_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a contact activity-feed service for the current org."""
+    """Yield an activity feed reader scoped to the authenticated organisation.
+
+    Activity links are object-id based, so the org-scoped session is the trust boundary
+    that prevents a contact id from resolving activity in another tenant.
+    """
     service = ActivityFeedReadService(org_session, user_ids.organisation_id)
     try:
         yield service
@@ -132,7 +157,7 @@ async def list_contacts(
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactsPage]:
-    """List CRM contacts with optional filters and pagination."""
+    """Return a paginated contact page using only the current organisation's data."""
     try:
         rows, total_count = await service.list_contacts(
             page=page,
@@ -141,6 +166,8 @@ async def list_contacts(
             company_id=company_id,
         )
 
+        # The read service returns domain rows plus presentation helpers; this route flattens
+        # them into the API schema so clients do not need to understand internal joins.
         items = [
             ContactListItem(
                 contact_id=row["contact"].contact_id,
@@ -168,6 +195,8 @@ async def list_contacts(
             for row in rows
         ]
 
+        # Empty result sets still return page 1 so the frontend can render pagination controls
+        # without special-casing "zero pages".
         total_pages = max(1, math.ceil(total_count / limit)) if total_count > 0 else 1
 
         data = ContactsPage(
@@ -202,30 +231,42 @@ async def create_contact(
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactMutationItem]:
-    """Create a new contact in the internal CRM."""
+    """Create a manual CRM contact and commit the org-scoped transaction."""
     try:
-        extra: dict = {}
-        if body.job_title is not None:
-            extra["job_title"] = body.job_title
-        if body.phone is not None:
-            extra["phone"] = body.phone
-        if body.linkedin_url is not None:
-            extra["linkedin_url"] = body.linkedin_url
-        if body.company_id is not None:
-            extra["company_id"] = body.company_id
-
         result = await service.create_contact(
-            email=body.email,
-            name=body.name,
+            ContactCreateCommand(
+                email=body.email,
+                name=body.name,
+                job_title=body.job_title,
+                linkedin_url=body.linkedin_url,
+            ),
             context=ContactWriteContext(
                 source="api",
                 actor_user_id=user_ids.user_id,
                 created_via="contacts_app",
             ),
-            **extra,
         )
+        # The write service stages all changes on the request session; the router commits only
+        # after the mutation succeeds so validation failures can cleanly roll back.
         await service.org_session.commit()
         contact = result.contact
+        try:
+            await dispatch_contact_research_async(
+                organisation_id=user_ids.organisation_id,
+                contact_id=contact.contact_id,
+                user_id=user_ids.user_id,
+                trigger="contact_created",
+            )
+        except Exception:
+            logger.warning(
+                "Contact research dispatch failed after contact create",
+                extra={
+                    "event": "contact_research_dispatch_failed",
+                    "organisation_id": str(user_ids.organisation_id),
+                    "contact_id": str(contact.contact_id),
+                },
+                exc_info=True,
+            )
 
         data = ContactMutationItem(
             contact_id=contact.contact_id,
@@ -247,6 +288,8 @@ async def create_contact(
         )
         return Response.created_response(message="Contact created", data=data)
     except ContactWriteServiceError as e:
+        # Service errors are expected validation or conflict failures, but the session may
+        # already contain staged changes from the attempted write.
         await service.org_session.rollback()
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
@@ -270,12 +313,14 @@ async def get_contact_detail(
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactDetail]:
-    """Get full contact detail including deal involvement."""
+    """Return one contact with company, owner, enrichment, research, and deal context."""
     try:
         result = await service.get_contact_detail(contact_id)
         contact = result["contact"]
         deals = result.get("deals", [])
 
+        # Deal involvement is derived from participant rows so the contact page can show the
+        # contact's role in each deal without exposing raw join-table fields.
         deal_involvement = [
             ContactDealInvolvement(
                 deal_id=d["deal"].deal_id,
@@ -290,6 +335,8 @@ async def get_contact_detail(
         ]
         profile_enrichment = contact.profile_enrichment or {}
         research_summary = None
+        # A last-researched timestamp without a text summary still matters to clients because it
+        # tells them research ran and found no stored narrative.
         if contact.contact_research or contact.last_researched_at:
             research_summary = ContactResearchSummary(
                 summary=contact.contact_research,
@@ -363,8 +410,10 @@ async def get_contact_activity_feed(
     query: ActivityFeedQueryParams = Depends(),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ActivityFeedPage]:
-    """Get activity-feed cards linked to a contact through crm_activity_links."""
+    """Return activity-feed cards linked to this contact through org-local activity links."""
     try:
+        # The activity feed service resolves links inside the current org schema; object_id alone
+        # is not trusted as an access boundary.
         records, next_cursor, total_count = await service.list_object_activities(
             object_type=CRMActivityObjectType.CONTACT.value,
             object_id=contact_id,
@@ -416,7 +465,7 @@ async def update_contact(
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ContactMutationItem]:
-    """Update allowed fields on a contact."""
+    """Patch allowed contact fields and return the updated contact projection."""
     try:
         updates = body.model_dump(exclude_unset=True)
         result = await service.update_contact(
@@ -428,9 +477,13 @@ async def update_contact(
                 created_via="contacts_app",
             ),
         )
+        # Commit before shaping the response so the returned timestamps and downstream reads
+        # reflect the same durable state the client just wrote.
         await service.org_session.commit()
         contact = result.contact
 
+        # Source labels are read through the contact read service because integration display
+        # naming lives with read-side CRM presentation logic.
         source = await ContactReadService(
             service.org_session, service.organisation_id
         ).resolve_source_for_contact(contact.integration_id)
@@ -481,7 +534,7 @@ async def add_contact_to_deal(
     _crm_write_guard: None = Depends(require_crm_write_scope("deal_participants:create")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
-    """Add a contact to a deal as a participant."""
+    """Associate a contact with a deal participant record in the current organisation."""
     try:
         link_result = await service.add_contact_to_deal(
             contact_id=contact_id,
@@ -495,10 +548,12 @@ async def add_contact_to_deal(
             "contact_participant_changed": link_result.contact_participant_changed,
         }
 
-        # Commit participant records so the async worker can see them
+        # Commit participant records before queueing follow-up work; the worker opens its own
+        # session and would miss uncommitted participant rows.
         await service.org_session.commit()
 
-        # Trigger stakeholder sync so mapping/research follows the participant update.
+        # Trigger stakeholder sync only for new associations. Existing links are idempotent and
+        # should not enqueue duplicate rematching work.
         if result.get("created"):
             try:
                 from src.workers.deal_worker.client import send_deal_task_async
@@ -518,6 +573,8 @@ async def add_contact_to_deal(
                     },
                 )
             except Exception:
+                # The contact-to-deal write already succeeded; failing the HTTP request here would
+                # make clients retry and risk duplicate association attempts.
                 logger.warning(
                     "Failed to trigger stakeholder sync after contact-to-deal addition",
                     exc_info=True,

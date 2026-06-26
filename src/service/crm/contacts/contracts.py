@@ -12,6 +12,16 @@ ContactMatchedBy = Literal["email", "explicit_id", "created"]
 
 
 @dataclass(frozen=True)
+class ContactCreateCommand:
+    """Canonical contact-create payload shared by API, tools, and workflows."""
+
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    linkedin_url: str | None = None
+
+
+@dataclass(frozen=True)
 class ContactWriteContext:
     """Caller metadata for future contact audit events and workflow triggers."""
 

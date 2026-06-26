@@ -27,6 +27,7 @@ from src.service.crm.accounts.contracts import (
     AccountWriteResult,
     AccountWriteServiceError,
 )
+from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
     CRMMutationEventServiceError,
@@ -193,6 +194,32 @@ class AccountWriteService:
         await self.session.refresh(company)
         await self._record_account_create_event(company, context=context)
         return AccountWriteResult(account=company, created=True, matched_by="created")
+
+    async def resolve_or_create_account_for_contact_email(
+        self,
+        email: str,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> CRMCompany | None:
+        """Resolve one account by contact email domain, creating it when absent."""
+        domain = AccountDomainResolutionService.derive_safe_domain_from_email(email)
+        if not domain:
+            return None
+
+        matches = await self.find_accounts_by_domain(domain)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+
+        try:
+            result = await self.create_account(name=domain, domain=domain, context=context)
+        except AccountWriteServiceError as exc:
+            if exc.status_code == 409 and exc.data and exc.data.get("company_id"):
+                retry_matches = await self.find_accounts_by_domain(domain)
+                return retry_matches[0] if len(retry_matches) == 1 else None
+            raise
+        return result.account
 
     async def update_account(
         self,

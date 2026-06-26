@@ -865,6 +865,10 @@ COMPANY`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
 | `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
 | `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
 
+Contact lifecycle cards linked to an account may use `source_type` values
+`CONTACT_CREATED`, `CONTACT_ENRICHMENT_TRIGGERED`, and
+`CONTACT_ENRICHMENT_COMPLETED`.
+
 #### Success Response (200)
 
 ```json

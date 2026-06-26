@@ -212,6 +212,7 @@ class DealJobType(StrEnum):
 
     # Stakeholder research
     STAKEHOLDER_RESEARCH = "stakeholder_research"
+    CONTACT_RESEARCH = "contact_research"
 
 
 class DealJobs(TimestampMixin, table=True):

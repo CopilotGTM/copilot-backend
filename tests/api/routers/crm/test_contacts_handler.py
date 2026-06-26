@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import src.api.routers.crm.contacts_handler as contacts_handler
 from fastapi import Response as FastAPIResponse
-from src.api.routers.crm.contacts_handler import get_contact_detail, list_contacts
+from pydantic import ValidationError
+from src.api.routers.crm.contacts_handler import create_contact, get_contact_detail, list_contacts
+from src.api.schemas.crm_contact_models import CreateContactRequest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -13,6 +17,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
+from src.service.crm.contacts.contracts import ContactCreateCommand, ContactWriteResult
 
 
 class _FakeContactReadService:
@@ -32,6 +37,186 @@ class _FakeContactDetailService:
     async def get_contact_detail(self, contact_id):
         self.contact_id = contact_id
         return self.result
+
+
+class _FakeContactWriteService:
+    def __init__(self, contact: CRMContact):
+        self.contact = contact
+        self.org_session = SimpleNamespace(commit=_AsyncCall(), rollback=_AsyncCall())
+        self.calls: list[dict] = []
+
+    async def create_contact(self, command: ContactCreateCommand, **kwargs):
+        self.calls.append({"command": command, **kwargs})
+        return ContactWriteResult(contact=self.contact, created=True, matched_by="created")
+
+
+class _AsyncCall:
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def __call__(self) -> None:
+        self.count += 1
+
+
+def test_create_contact_request_accepts_email_without_name() -> None:
+    request = CreateContactRequest(
+        email="buyer@example.com",
+        job_title="CFO",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+
+    assert request.email == "buyer@example.com"
+    assert request.name is None
+    assert request.job_title == "CFO"
+    assert request.linkedin_url == "https://linkedin.com/in/buyer"
+
+
+def test_create_contact_request_rejects_removed_api_fields() -> None:
+    with pytest.raises(ValidationError):
+        CreateContactRequest(
+            email="buyer@example.com",
+            name="Buyer",
+            phone="+15555550100",
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_passes_create_command_to_service(monkeypatch) -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    now = datetime(2026, 6, 25, 10, 0, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        full_name=None,
+        created_at=now,
+        updated_at=now,
+    )
+    service = _FakeContactWriteService(contact)
+
+    async def noop_dispatch(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        noop_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(
+            email="buyer@example.com",
+            job_title="CFO",
+            linkedin_url="https://linkedin.com/in/buyer",
+        ),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.email == "buyer@example.com"  # type: ignore[union-attr]
+    command = service.calls[0]["command"]
+    assert command == ContactCreateCommand(
+        email="buyer@example.com",
+        job_title="CFO",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+    assert "phone" not in service.calls[0]
+    assert "company_id" not in service.calls[0]
+    assert service.org_session.commit.count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_dispatches_research_after_commit(monkeypatch) -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    now = datetime(2026, 6, 25, 10, 0, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        created_at=now,
+        updated_at=now,
+    )
+    service = _FakeContactWriteService(contact)
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        calls.append(
+            {
+                **kwargs,
+                "commit_count_at_dispatch": service.org_session.commit.count,
+            }
+        )
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(email="buyer@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.email == "buyer@example.com"  # type: ignore[union-attr]
+    assert calls == [
+        {
+            "organisation_id": org_id,
+            "contact_id": contact.contact_id,
+            "user_id": user_id,
+            "trigger": "contact_created",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_ignores_research_dispatch_failure(monkeypatch) -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+    )
+    service = _FakeContactWriteService(contact)
+
+    async def failing_dispatch(**_kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        failing_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(email="buyer@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.email == "buyer@example.com"  # type: ignore[union-attr]
+    assert service.org_session.commit.count == 1
+    assert service.org_session.rollback.count == 0
 
 
 @pytest.mark.asyncio
