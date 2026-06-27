@@ -74,6 +74,21 @@ class ContactWriteService:
             self.organisation_id,
             AUTOMATED_PIPELINE_USER_ID,
         ).get_or_create_internal_integration()
+        owner_id = (
+            context.actor_user_id
+            if context and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
+            else None
+        )
+        owner_name = (
+            context.actor_name.strip()
+            if owner_id and context and context.actor_name and context.actor_name.strip()
+            else None
+        )
+        owner_email = (
+            context.actor_email.strip()
+            if owner_id and context and context.actor_email and context.actor_email.strip()
+            else None
+        )
         contact_name = command.name.strip() if command.name and command.name.strip() else None
         first_name, last_name = split_full_name(contact_name) if contact_name else (None, None)
         account_result = (
@@ -82,6 +97,8 @@ class ContactWriteService:
                 context=AccountWriteContext(
                     source=context.source if context else "contact_create",
                     actor_user_id=context.actor_user_id if context else None,
+                    actor_name=context.actor_name if context else None,
+                    actor_email=context.actor_email if context else None,
                     source_label=context.source_label if context else None,
                     created_via="contact_create",
                 ),
@@ -102,6 +119,9 @@ class ContactWriteService:
                 "linkedin_url": command.linkedin_url,
                 "company_id": account.company_id if account else None,
                 "company_name": account.name if account else None,
+                "owner_id": owner_id,
+                "owner_name": owner_name,
+                "owner_email": owner_email,
                 "synced_at": datetime.now(UTC),
                 "is_deleted": False,
             }

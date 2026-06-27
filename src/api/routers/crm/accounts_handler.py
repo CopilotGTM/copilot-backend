@@ -230,6 +230,8 @@ async def create_account(
             context=AccountWriteContext(
                 source="api",
                 actor_user_id=user_ids.user_id,
+                actor_name=getattr(user_ids, "user_name", None),
+                actor_email=getattr(user_ids, "user_email", None),
                 created_via="accounts_app",
                 duplicate_scope="strict_org",
             ),

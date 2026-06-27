@@ -34,6 +34,11 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _actor_name(context: AgentContext) -> str | None:
+    value = context.metadata.get("user_name")
+    return _clean_optional(value) if isinstance(value, str) else None
+
+
 def _normalize_domain(domain: str | None) -> str | None:
     cleaned = _clean_optional(domain)
     if not cleaned:
@@ -223,6 +228,8 @@ async def create_account_direct(
                     context=AccountWriteContext(
                         source="agent_tool",
                         actor_user_id=context.user_id,
+                        actor_name=_actor_name(context),
+                        actor_email=context.user_email,
                         created_via="chat_tool",
                         duplicate_scope="internal_only",
                     ),

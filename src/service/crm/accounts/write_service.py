@@ -127,6 +127,11 @@ class AccountWriteService:
             self.organisation_id,
             AUTOMATED_PIPELINE_USER_ID,
         ).get_or_create_internal_integration()
+        owner_id = (
+            context.actor_user_id
+            if context and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
+            else None
+        )
 
         company_kwargs: dict[str, Any] = {
             "domain": command.domain,
@@ -143,6 +148,11 @@ class AccountWriteService:
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
             name=cleaned_name or normalized,
+            owner_id=owner_id,
+            owner_name=clean_optional_string(context.actor_name) if owner_id and context else None,
+            owner_email=clean_optional_string(context.actor_email)
+            if owner_id and context
+            else None,
             synced_at=datetime.now(UTC),
             is_deleted=False,
             **company_kwargs,

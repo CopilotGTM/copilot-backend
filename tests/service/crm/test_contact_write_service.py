@@ -86,6 +86,72 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
 
 
 @pytest.mark.asyncio
+async def test_create_contact_assigns_actor_owner_when_not_system_user() -> None:
+    org_id = uuid4()
+    actor_user_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _FakeResult(),
+            _FakeResult(scalars=[integration]),
+        ]
+    )
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(
+        ContactCreateCommand(email="buyer@example.com"),
+        context=ContactWriteContext(
+            source="api",
+            actor_user_id=actor_user_id,
+            actor_name="Jane Owner",
+            actor_email="jane@example.com",
+        ),
+    )
+
+    assert result.contact.owner_id == actor_user_id
+    assert result.contact.owner_name == "Jane Owner"
+    assert result.contact.owner_email == "jane@example.com"
+    added_rows = [call.args[0] for call in session.add.call_args_list]
+    assert any(row is result.contact for row in added_rows)
+    assert not any(row.__class__.__name__ == "CRMUser" for row in added_rows)
+
+
+@pytest.mark.asyncio
+async def test_create_contact_skips_system_actor_owner() -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(
+        ContactCreateCommand(email="buyer@example.com"),
+        context=ContactWriteContext(source="api", actor_user_id=AUTOMATED_PIPELINE_USER_ID),
+    )
+
+    assert result.contact.owner_id is None
+
+
+@pytest.mark.asyncio
 async def test_create_contact_gets_internal_integration_from_setup_service(monkeypatch) -> None:
     org_id = uuid4()
     integration = KnowledgeIntegration(
@@ -552,3 +618,39 @@ async def test_update_contact_stores_linkedin_url_in_profile_column_without_comm
     assert session.flush.await_count == 2
     session.refresh.assert_awaited_once_with(contact)
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_contact_actor_context_does_not_overwrite_owner() -> None:
+    org_id = uuid4()
+    original_owner_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+        owner_id=original_owner_id,
+        owner_name="Original Owner",
+        owner_email="original@example.com",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+
+    result = await service.update_contact(
+        contact.contact_id,
+        {"job_title": "CFO"},
+        context=ContactWriteContext(
+            source="api",
+            actor_user_id=uuid4(),
+            actor_name="Acting User",
+            actor_email="acting@example.com",
+        ),
+    )
+
+    assert result.contact.owner_id == original_owner_id
+    assert result.contact.owner_name == "Original Owner"
+    assert result.contact.owner_email == "original@example.com"

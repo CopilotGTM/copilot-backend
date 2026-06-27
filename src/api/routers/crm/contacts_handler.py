@@ -324,6 +324,8 @@ async def create_contact(
             context=ContactWriteContext(
                 source="api",
                 actor_user_id=user_ids.user_id,
+                actor_name=getattr(user_ids, "user_name", None),
+                actor_email=getattr(user_ids, "user_email", None),
                 created_via="contacts_app",
             ),
         )

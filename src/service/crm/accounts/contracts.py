@@ -37,6 +37,8 @@ class AccountWriteContext:
 
     source: str
     actor_user_id: UUID | None = None
+    actor_name: str | None = None
+    actor_email: str | None = None
     source_label: str | None = None
     created_via: str | None = None
     duplicate_scope: AccountDuplicateScope = "internal_only"

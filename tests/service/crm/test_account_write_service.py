@@ -99,6 +99,65 @@ async def test_create_account_accepts_typed_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_account_assigns_actor_owner_when_not_system_user() -> None:
+    organisation_id = uuid4()
+    actor_user_id = uuid4()
+    integration = _integration(organisation_id)
+
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                _result(all_rows=[]),
+                _result(first=integration),
+            ]
+        ),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    result = await service.create_account(
+        AccountCreateCommand(name="Acme"),
+        context=AccountWriteContext(
+            source="api",
+            actor_user_id=actor_user_id,
+            actor_name="Jane Owner",
+            actor_email="jane@example.com",
+        ),
+    )
+
+    assert result.account.owner_id == actor_user_id
+    assert result.account.owner_name == "Jane Owner"
+    assert result.account.owner_email == "jane@example.com"
+    added_rows = [call.args[0] for call in session.add.call_args_list]
+    assert result.account in added_rows
+    assert not any(row.__class__.__name__ == "CRMUser" for row in added_rows)
+
+
+@pytest.mark.asyncio
+async def test_create_account_skips_system_actor_owner() -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_result(all_rows=[]), _result(first=integration)]),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    result = await service.create_account(
+        AccountCreateCommand(name="Acme"),
+        context=AccountWriteContext(source="api", actor_user_id=AUTOMATED_PIPELINE_USER_ID),
+    )
+
+    assert result.account.owner_id is None
+
+
+@pytest.mark.asyncio
 async def test_create_account_gets_internal_integration_from_setup_service(monkeypatch) -> None:
     organisation_id = uuid4()
     integration = _integration(organisation_id)
@@ -477,6 +536,39 @@ async def test_update_account_ignores_unknown_fields() -> None:
     session.add.assert_any_call(company)
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(company)
+
+
+@pytest.mark.asyncio
+async def test_update_account_actor_context_does_not_overwrite_owner() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    original_owner_id = uuid4()
+    company = _company(organisation_id, integration_id)
+    company.owner_id = original_owner_id
+    company.owner_name = "Original Owner"
+    company.owner_email = "original@example.com"
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(first=company)),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+
+    updated = await service.update_account(
+        company.company_id,
+        {"name": "Acme Corp"},
+        context=AccountWriteContext(
+            source="api",
+            actor_user_id=uuid4(),
+            actor_name="Acting User",
+            actor_email="acting@example.com",
+        ),
+    )
+
+    assert updated.owner_id == original_owner_id
+    assert updated.owner_name == "Original Owner"
+    assert updated.owner_email == "original@example.com"
 
 
 @pytest.mark.asyncio
