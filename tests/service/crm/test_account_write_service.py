@@ -18,6 +18,7 @@ from src.service.crm.accounts.contracts import (
     AccountWriteServiceError,
 )
 from src.service.crm.accounts.write_service import AccountWriteService
+from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
 
 
 def _result(first=None, all_rows: list[object] | None = None):
@@ -95,6 +96,37 @@ async def test_create_account_accepts_typed_command() -> None:
     assert result.account.name == "Acme"
     assert result.account.domain == "acme.com"
     assert result.account.industry == "Software"
+
+
+@pytest.mark.asyncio
+async def test_create_account_gets_internal_integration_from_setup_service(monkeypatch) -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    setup_calls = []
+
+    class FakeSetupService:
+        def __init__(self, session_arg, organisation_id_arg, user_id_arg):
+            setup_calls.append((session_arg, organisation_id_arg, user_id_arg))
+
+        async def get_or_create_internal_integration(self):
+            return integration
+
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(all_rows=[])),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "src.service.crm.accounts.write_service.InternalCRMSetupService",
+        FakeSetupService,
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    await service.create_account(AccountCreateCommand(name="Acme"))
+
+    assert setup_calls == [(session, organisation_id, AUTOMATED_PIPELINE_USER_ID)]
 
 
 @pytest.mark.asyncio

@@ -19,16 +19,17 @@ from src.domain.models.organisation_tables.sync import (
     CalendarAttendee,
     CalendarEvent,
     CalendarEventUserState,
-    IntegrationScope,
-    IntegrationType,
     KnowledgeIntegration,
 )
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+    InternalCRMSetupService,
+)
 
 DISCOVERY_SOURCE = "calendar_initial_discovery"
-AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 MAX_DISCOVERY_ATTENDEES_PER_EVENT = 25
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,63}$")
@@ -465,7 +466,11 @@ class CalendarContactAccountDiscoveryService:
             existing_company_domains=existing_company_domains,
         )
 
-        internal_integration = await self._get_or_create_internal_integration()
+        internal_integration = await InternalCRMSetupService(
+            self.org_session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_or_create_internal_integration()
         created_companies = await self._create_accounts(plan.accounts, internal_integration)
         created_contacts = await self._create_contacts(
             plan.contacts,
@@ -608,32 +613,6 @@ class CalendarContactAccountDiscoveryService:
                 )
             )
         return list(events_by_id.values())
-
-    async def _get_or_create_internal_integration(self) -> KnowledgeIntegration:
-        stmt = select(KnowledgeIntegration).where(
-            col(KnowledgeIntegration.organisation_id) == self.organisation_id,
-            col(KnowledgeIntegration.integration_type) == IntegrationType.INTERNAL_CRM.value,
-        )
-        result = await self.org_session.execute(stmt)
-        integration = result.scalars().first()
-        if integration:
-            return integration
-
-        integration = KnowledgeIntegration(
-            organisation_id=self.organisation_id,
-            created_by_user_id=AUTOMATED_PIPELINE_USER_ID,
-            created_by_admin=False,
-            integration_type=IntegrationType.INTERNAL_CRM,
-            integration_scope=IntegrationScope.ORGANIZATION,
-            name="Copilot CRM",
-            credentials={},
-            connection_metadata={"source": "internal_crm", "internal": True},
-            is_active=True,
-        )
-        self.org_session.add(integration)
-        await self.org_session.flush()
-        await self.org_session.refresh(integration)
-        return integration
 
     async def _create_accounts(
         self,

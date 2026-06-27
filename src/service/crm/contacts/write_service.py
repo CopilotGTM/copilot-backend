@@ -10,11 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationScope,
-    IntegrationType,
-    KnowledgeIntegration,
-)
 from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
@@ -23,6 +18,10 @@ from src.service.crm.contacts.contracts import (
     ContactWriteContext,
     ContactWriteResult,
     ContactWriteServiceError,
+)
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+    InternalCRMSetupService,
 )
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
@@ -70,7 +69,11 @@ class ContactWriteService:
                 status_code=409,
             )
 
-        integration = await self._get_or_create_internal_integration(context)
+        integration = await InternalCRMSetupService(
+            self.org_session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_or_create_internal_integration()
         contact_name = command.name.strip() if command.name and command.name.strip() else None
         first_name, last_name = split_full_name(contact_name) if contact_name else (None, None)
         account_result = (
@@ -310,38 +313,6 @@ class ContactWriteService:
             context=context,
         )
         return ContactWriteResult(contact, False, "explicit_id")
-
-    async def _get_or_create_internal_integration(
-        self, context: ContactWriteContext | None = None
-    ) -> KnowledgeIntegration:
-        """Return the internal CRM integration used to own manually created contacts."""
-        _ = context
-        stmt = select(KnowledgeIntegration).where(
-            col(KnowledgeIntegration.organisation_id) == self.organisation_id,
-            col(KnowledgeIntegration.integration_type) == IntegrationType.INTERNAL_CRM.value,
-        )
-        res = await self.org_session.execute(stmt)
-        integration = res.scalars().first()
-        if integration:
-            return integration
-
-        integration = KnowledgeIntegration.model_validate(
-            {
-                "organisation_id": self.organisation_id,
-                "created_by_user_id": UUID("00000000-0000-0000-0000-000000000001"),
-                "created_by_admin": False,
-                "integration_type": IntegrationType.INTERNAL_CRM,
-                "integration_scope": IntegrationScope.ORGANIZATION,
-                "name": "Copilot CRM",
-                "credentials": {},
-                "connection_metadata": {"source": "internal_crm", "internal": True},
-                "is_active": True,
-            }
-        )
-        self.org_session.add(integration)
-        await self.org_session.flush()
-        await self.org_session.refresh(integration)
-        return integration
 
     async def _record_contact_create_event(
         self,

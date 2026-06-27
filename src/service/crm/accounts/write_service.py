@@ -16,11 +16,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationScope,
-    IntegrationType,
-    KnowledgeIntegration,
-)
 from src.service.crm.accounts.contracts import (
     AccountCreateCommand,
     AccountWriteContext,
@@ -29,6 +24,10 @@ from src.service.crm.accounts.contracts import (
 )
 from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+    InternalCRMSetupService,
+)
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
     CRMMutationEventServiceError,
@@ -123,7 +122,11 @@ class AccountWriteService:
                     status_code=409,
                     data={"company_id": str(existing_by_name.company_id)},
                 )
-        integration = await self._get_or_create_internal_integration(context)
+        integration = await InternalCRMSetupService(
+            self.session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_or_create_internal_integration()
 
         company_kwargs: dict[str, Any] = {
             "domain": command.domain,
@@ -611,37 +614,3 @@ class AccountWriteService:
             actor_user_id=context.actor_user_id,
             source_label=context.source_label,
         )
-
-    async def _get_or_create_internal_integration(
-        self, context: AccountWriteContext | None = None
-    ) -> KnowledgeIntegration:
-        """Return the internal CRM integration used to own manually created accounts."""
-        _ = context
-        ki = cast(Any, KnowledgeIntegration).__table__.c
-        stmt = select(KnowledgeIntegration).where(
-            ki.organisation_id == self.organisation_id,
-            ki.integration_type == IntegrationType.INTERNAL_CRM.value,
-        )
-        res = await self.session.execute(stmt)
-        integration = res.scalars().first()
-        if integration:
-            return integration
-
-        # Preserve the historical automated sentinel for setup-created internal
-        # integrations; the API actor is captured in AccountWriteContext for
-        # later audit events, not as the integration creator.
-        integration = KnowledgeIntegration(
-            organisation_id=self.organisation_id,
-            created_by_user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            created_by_admin=False,
-            integration_type=IntegrationType.INTERNAL_CRM,
-            integration_scope=IntegrationScope.ORGANIZATION,
-            name="Copilot CRM",
-            credentials={},
-            connection_metadata={"source": "internal_crm", "internal": True},
-            is_active=True,
-        )
-        self.session.add(integration)
-        await self.session.flush()
-        await self.session.refresh(integration)
-        return integration

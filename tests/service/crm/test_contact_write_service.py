@@ -15,6 +15,7 @@ from src.service.crm.contacts.contracts import (
     ContactWriteServiceError,
 )
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
 
 
 class _FakeResult:
@@ -82,6 +83,41 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(result.contact)
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_contact_gets_internal_integration_from_setup_service(monkeypatch) -> None:
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    setup_calls = []
+
+    class FakeSetupService:
+        def __init__(self, session_arg, organisation_id_arg, user_id_arg):
+            setup_calls.append((session_arg, organisation_id_arg, user_id_arg))
+
+        async def get_or_create_internal_integration(self):
+            return integration
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult())
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.InternalCRMSetupService",
+        FakeSetupService,
+    )
+
+    service = ContactWriteService(session, org_id)
+    _disable_account_resolution(service)
+    _disable_contact_created_projection(service)
+
+    await service.create_contact(ContactCreateCommand(email="jane@example.com"))
+
+    assert setup_calls == [(session, org_id, AUTOMATED_PIPELINE_USER_ID)]
 
 
 @pytest.mark.asyncio
