@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.service.crm.accounts.contracts import AccountWriteResult
 from src.service.crm.contacts.contracts import (
     ContactCreateCommand,
     ContactWriteContext,
@@ -35,7 +36,7 @@ class _FakeResult:
 
 
 def _disable_account_resolution(service: ContactWriteService) -> None:
-    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(
         return_value=None
     )
 
@@ -172,24 +173,65 @@ async def test_create_contact_links_account_returned_from_email_resolution() -> 
         integration_id=uuid4(),
         name="Copilot CRM",
     )
-    company = SimpleNamespace(company_id=company_id, name="Acme", domain="acme.com")
+    company = CRMCompany(
+        company_id=company_id,
+        organisation_id=org_id,
+        integration_id=integration.integration_id,
+        name="Acme",
+        domain="acme.com",
+    )
     session = MagicMock()
     session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
     session.flush = AsyncMock()
     session.refresh = AsyncMock()
 
     service = ContactWriteService(session, org_id)
-    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
-        return_value=company
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(
+        return_value=AccountWriteResult(account=company, created=False, matched_by="domain")
     )
     _disable_contact_created_projection(service)
 
     result = await service.create_contact(ContactCreateCommand(email="buyer@example.com"))
 
-    account_resolver = service._account_writer.resolve_or_create_account_for_contact_email
+    account_resolver = (
+        service._account_writer.resolve_or_create_account_for_contact_email_with_result
+    )
     account_resolver.assert_awaited_once()  # type: ignore[attr-defined]
     assert result.contact.company_id == company_id
     assert result.contact.company_name == "Acme"
+
+
+@pytest.mark.asyncio
+async def test_create_contact_reports_created_account_id() -> None:
+    org_id = uuid4()
+    company_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    company = CRMCompany(
+        company_id=company_id,
+        organisation_id=org_id,
+        integration_id=integration.integration_id,
+        name="Acme",
+        domain="acme.com",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(
+        return_value=AccountWriteResult(account=company, created=True, matched_by="created")
+    )
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(ContactCreateCommand(email="buyer@acme.com"))
+
+    assert result.contact.company_id == company_id
+    assert result.created_account_id == company_id
 
 
 @pytest.mark.asyncio
@@ -206,14 +248,16 @@ async def test_create_contact_stays_unlinked_when_email_account_resolution_retur
     session.refresh = AsyncMock()
 
     service = ContactWriteService(session, org_id)
-    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(
         return_value=None
     )
     _disable_contact_created_projection(service)
 
     result = await service.create_contact(ContactCreateCommand(email="buyer@example.com"))
 
-    account_resolver = service._account_writer.resolve_or_create_account_for_contact_email
+    account_resolver = (
+        service._account_writer.resolve_or_create_account_for_contact_email_with_result
+    )
     account_resolver.assert_awaited_once()  # type: ignore[attr-defined]
     assert result.contact.company_id is None
     assert result.contact.company_name is None

@@ -35,6 +35,7 @@ from src.service.crm.internal.deal_participant_service import DealParticipantSer
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 from src.service.crm.mutations.policies import DealMutationPolicy
+from src.service.crm.utils.account import normalize_account_domain, normalize_company_name
 
 logger = get_logger(__name__)
 
@@ -1650,11 +1651,11 @@ class DealWriteService:
 
     @staticmethod
     def _normalize_domain(value: str | None) -> str | None:
-        return AccountWriteService._normalize_domain(value)
+        return normalize_account_domain(value)
 
     @staticmethod
     def _normalize_company_name(value: str | None) -> str | None:
-        return AccountWriteService.normalize_company_name(value)
+        return normalize_company_name(value)
 
     @staticmethod
     def _normalize_contact_name(value: str | None) -> str | None:

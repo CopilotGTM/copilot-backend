@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.research.apollo_client import apollo_enrich_person
+from src.service.enrichment.apollo import apollo_enrich_person
 
 if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities

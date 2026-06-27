@@ -38,6 +38,7 @@ class ContactWriteResult:
     contact: CRMContact
     created: bool
     matched_by: ContactMatchedBy
+    created_account_id: UUID | None = None
 
 
 @dataclass(frozen=True)

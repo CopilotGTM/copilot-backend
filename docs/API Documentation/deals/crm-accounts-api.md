@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-23
+> Last Updated: 2026-06-26
 
 ---
 
@@ -152,16 +152,16 @@ These fields are calculated at query time, **not stored** in the database:
 
 ## Enums & Field Reference
 
-### account_research.status
+### account_summary.status
 
-Status of the account research content used by account detail.
+Status of the account summary content used by account detail.
 
 | Value | Description | Frontend Display |
 |-------|-------------|-----------------|
-| `"not_available"` | Account research storage/generation is not available yet | Show empty/coming-soon research state |
+| `"not_available"` | Account enrichment has not produced a readable summary yet | Show empty summary state |
 | `"pending"` | Research queued | Show spinner or "Pending..." |
 | `"in_progress"` | Research actively running | Show spinner or progress indicator |
-| `"completed"` | Research finished successfully | Show research content |
+| `"completed"` | Research finished successfully | Show summary content |
 | `"failed"` | Research encountered an error | Show retry CTA |
 
 ### lifecycle_stage
@@ -194,8 +194,8 @@ Free-form string from the CRM provider. Common values:
 | `country` | Yes | Not provided |
 | `linkedin_url` | Yes | Not provided |
 | `description` | Yes | Not provided (detail view only) |
-| `account_research.content` | Yes | Account research is not available or not completed |
-| `account_research.last_researched_at` | Yes | Account research is not available or never completed |
+| `account_summary.content` | Yes | Account research has not generated a summary yet |
+| `account_summary.last_researched_at` | Yes | Account enrichment has never completed or been attempted |
 
 ---
 
@@ -244,10 +244,10 @@ export interface AccountListItem {
 }
 
 /**
- * Stable research wrapper for the account detail main panel.
+ * Stable summary wrapper for the account detail main panel.
  * Account research generation/persistence is not implemented yet.
  */
-export interface AccountResearchSummary {
+export interface AccountSummary {
   status: "not_available" | "pending" | "in_progress" | "completed" | "failed";
   content: string | null;
   last_researched_at: ISODate | null;
@@ -255,7 +255,7 @@ export interface AccountResearchSummary {
 
 /**
  * Full account detail returned by GET /accounts/{company_id}.
- * Extends AccountListItem with description, location, account research placeholder,
+ * Extends AccountListItem with description, location, account summary,
  * and nested compact contacts + deals arrays.
  */
 export interface AccountDetail extends AccountListItem {
@@ -266,7 +266,7 @@ export interface AccountDetail extends AccountListItem {
   state: string | null;
   postal_code: string | null;
   timezone: string | null;            // IANA timezone (e.g., "America/Los_Angeles")
-  account_research: AccountResearchSummary;
+  account_summary: AccountSummary;
 
   /** Contacts whose email domain matches this account's domain */
   contacts: AccountDetailContactItem[];
@@ -619,6 +619,8 @@ POST /users/crm/accounts
 
 Creates a new account owned by the `INTERNAL_CRM` integration. Creation requires at least one identity field: `name`, `domain`, or `website`. When `domain` or `website` is supplied, the service derives a normalised domain, checks it for uniqueness, and stores it as the account's primary domain. If `name` is omitted, the account name falls back to the normalised domain (for example, `acme.com`).
 
+After the account transaction commits, the API attempts to enqueue asynchronous account enrichment for accounts with a safe domain, website-derived domain, or LinkedIn company URL. Enrichment runs outside the request path, so account creation still succeeds if queue dispatch fails.
+
 #### Request Headers
 
 | Header | Required | Value |
@@ -740,7 +742,7 @@ if (response.status === 409 && response.data?.company_id) {
 GET /users/crm/accounts/{company_id}
 ```
 
-Full account detail including account fields, a stable account research placeholder, compact contacts, and account deal summaries.
+Full account detail including account fields, generated account research summary, compact contacts, and account deal summaries.
 
 #### Path Parameters
 
@@ -786,10 +788,10 @@ Full account detail including account fields, a stable account research placehol
     "state": "CA",
     "postal_code": "94105",
     "timezone": "America/Los_Angeles",
-    "account_research": {
-      "status": "not_available",
-      "content": null,
-      "last_researched_at": null
+    "account_summary": {
+      "status": "completed",
+      "content": "- Acme Corp builds workflow software for mid-market operations teams.\n- The company is in the technology sector and has a sales-relevant web presence at acme.com.",
+      "last_researched_at": "2026-06-26T10:30:00Z"
     },
 
     "contacts": [
@@ -1068,7 +1070,7 @@ Returns deals linked to the account via local `company_id`.
 POST /users/crm/accounts/{company_id}/enrich
 ```
 
-Trigger account enrichment with external data sources. **Currently a placeholder** — the company research pipeline is deferred to a future phase. The endpoint validates that the account exists and belongs to the organisation, then returns an accepted response.
+Trigger account enrichment with external data sources. Account enrichment now runs automatically after internal account creation; this manual endpoint is reserved for future explicit refresh support.
 
 #### Path Parameters
 
@@ -1084,7 +1086,7 @@ Trigger account enrichment with external data sources. **Currently a placeholder
   "message": "Enrichment request accepted",
   "data": {
     "job_id": null,
-    "message": "Account enrichment will be available in a future release"
+    "message": "Account enrichment refresh will be available in a future release"
   }
 }
 ```
@@ -1138,7 +1140,7 @@ Consolidated reference of all error responses across all endpoints.
 | `ix_crm_company_lifecycle` | `organisation_id, lifecycle_stage` | Lifecycle filtering |
 | `ix_crm_company_synced` | `organisation_id, synced_at` | Sync recency queries |
 
-**Account research:** `GET /accounts/{company_id}` currently returns a stable `account_research` placeholder with `status = "not_available"`. Durable account research storage/generation is deferred to a later implementation.
+**Account summary:** `GET /accounts/{company_id}` returns `account_summary.status = "completed"` with generated summary content when async enrichment has produced an account summary. If enrichment has not produced a summary yet, the field remains `status = "not_available"` with `content = null`.
 
 ### Service Layer
 

@@ -797,6 +797,10 @@ After commit, `POST /contacts` attempts to enqueue `contact_research.process_job
 - If summary generation fails, structured enrichment remains saved.
 - Queue dispatch failure is logged and does not change the `201` response.
 
+**Async account enrichment from contact-created accounts:**
+
+When contact creation creates a new internal CRM account from the contact email domain, the API also attempts to enqueue `account_research.process_job` for that new account after the same commit. Existing matched accounts are not re-enriched from this path.
+
 #### Example Request
 
 ```json

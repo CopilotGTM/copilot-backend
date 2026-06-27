@@ -1,7 +1,7 @@
 """Add trigram indexes for CRM text search.
 
-Revision ID: 3c7f79637735
-Revises: 3c7f79637736
+Revision ID: 3c7f79637732
+Revises: 3c7f79637733
 Create Date: 2026-06-26
 """
 
@@ -9,8 +9,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "3c7f79637735"
-down_revision: str | None = "3c7f79637736"
+revision: str = "3c7f79637732"
+down_revision: str | None = "3c7f79637733"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

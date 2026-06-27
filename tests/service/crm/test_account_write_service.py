@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -12,6 +13,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
     AccountWriteContext,
     AccountWriteServiceError,
 )
@@ -55,6 +57,46 @@ def _company(organisation_id, integration_id, *, name="Acme", domain="acme.com")
     )
 
 
+def _stub_account_created_projection(service: AccountWriteService) -> None:
+    service._projection.upsert_account_created = AsyncMock()  # type: ignore[method-assign]
+
+
+def test_account_create_command_is_minimal_frontend_create_shape() -> None:
+    assert {field.name for field in fields(AccountCreateCommand)} == {
+        "name",
+        "domain",
+        "website",
+        "industry",
+        "linkedin_url",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_account_accepts_typed_command() -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_result(all_rows=[]), _result(first=integration)]),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    result = await service.create_account(
+        AccountCreateCommand(
+            name=" Acme ",
+            domain="https://www.ACME.com/about",
+            industry=" Software ",
+        )
+    )
+
+    assert result.account.name == "Acme"
+    assert result.account.domain == "acme.com"
+    assert result.account.industry == "Software"
+
+
 @pytest.mark.asyncio
 async def test_create_account_rejects_duplicate_domain() -> None:
     organisation_id = uuid4()
@@ -64,7 +106,9 @@ async def test_create_account_rejects_duplicate_domain() -> None:
     service = AccountWriteService(session, organisation_id)
 
     with pytest.raises(AccountWriteServiceError) as exc_info:
-        await service.create_account(name="Acme", domain="https://www.acme.com")
+        await service.create_account(
+            AccountCreateCommand(name="Acme", domain="https://www.acme.com")
+        )
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.data == {"company_id": str(existing.company_id)}
@@ -79,7 +123,7 @@ async def test_create_account_rejects_duplicate_name_when_web_identity_missing()
     service = AccountWriteService(session, organisation_id)
 
     with pytest.raises(AccountWriteServiceError) as exc_info:
-        await service.create_account(name="Acme")
+        await service.create_account(AccountCreateCommand(name="Acme"))
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.data == {"company_id": str(existing.company_id)}
@@ -96,8 +140,9 @@ async def test_create_account_allows_name_only_when_no_duplicate_exists() -> Non
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
-    result = await service.create_account(name=" Acme ")
+    result = await service.create_account(AccountCreateCommand(name=" Acme "))
 
     assert result.account.name == "Acme"
     assert result.account.domain is None
@@ -116,11 +161,35 @@ async def test_create_account_derives_name_from_domain_when_name_missing() -> No
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
-    result = await service.create_account(name=None, domain="https://www.acme.com/path")
+    result = await service.create_account(
+        AccountCreateCommand(name=None, domain="https://www.acme.com/path")
+    )
 
     assert result.account.name == "acme.com"
     assert result.account.domain == "acme.com"
+
+
+@pytest.mark.asyncio
+async def test_create_account_projects_created_activity_without_created_via_gate() -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_result(all_rows=[]), _result(first=integration)]),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    result = await service.create_account(
+        AccountCreateCommand(name="Acme", domain="acme.com"),
+        context=AccountWriteContext(source="api"),
+    )
+
+    service._projection.upsert_account_created.assert_awaited_once_with(result.account)  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -160,6 +229,7 @@ async def test_resolve_or_create_account_for_contact_email_creates_missing_domai
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
     account = await service.resolve_or_create_account_for_contact_email(
         "jane@acme.com",
@@ -172,6 +242,36 @@ async def test_resolve_or_create_account_for_contact_email_creates_missing_domai
     session.add.assert_any_call(account)
     session.flush.assert_awaited()
     session.refresh.assert_awaited_once_with(account)
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_account_for_contact_email_with_result_reports_created() -> None:
+    organisation_id = uuid4()
+    integration = _integration(organisation_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                _result(all_rows=[]),
+                _result(all_rows=[]),
+                _result(first=integration),
+            ]
+        ),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
+
+    result = await service.resolve_or_create_account_for_contact_email_with_result(
+        "jane@acme.com",
+        context=AccountWriteContext(source="contact_create"),
+    )
+
+    assert result is not None
+    assert result.created is True
+    assert result.account.domain == "acme.com"
+    assert result.matched_by == "created"
 
 
 @pytest.mark.asyncio
@@ -236,10 +336,10 @@ async def test_create_account_normalizes_domain() -> None:
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
     result = await service.create_account(
-        name="Acme",
-        domain="https://www.ACME.com/about",
+        AccountCreateCommand(name="Acme", domain="https://www.ACME.com/about"),
         context=AccountWriteContext(source="api"),
     )
 
@@ -262,10 +362,10 @@ async def test_create_account_derives_domain_from_website() -> None:
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
     result = await service.create_account(
-        name="Acme",
-        website="https://www.acme.com/about",
+        AccountCreateCommand(name="Acme", website="https://www.acme.com/about"),
         context=AccountWriteContext(source="api"),
     )
 
@@ -284,8 +384,11 @@ async def test_create_account_derives_name_from_website_when_name_missing() -> N
         refresh=AsyncMock(),
     )
     service = AccountWriteService(session, organisation_id)
+    _stub_account_created_projection(service)
 
-    result = await service.create_account(name=None, website="https://www.acme.com/about")
+    result = await service.create_account(
+        AccountCreateCommand(name=None, website="https://www.acme.com/about")
+    )
 
     assert result.account.name == "acme.com"
     assert result.account.domain == "acme.com"
@@ -298,7 +401,7 @@ async def test_create_account_rejects_missing_name_domain_and_website() -> None:
     service = AccountWriteService(SimpleNamespace(), organisation_id)
 
     with pytest.raises(AccountWriteServiceError) as exc_info:
-        await service.create_account(name=None)
+        await service.create_account(AccountCreateCommand(name=None))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.message == "Account name, domain, or website is required"

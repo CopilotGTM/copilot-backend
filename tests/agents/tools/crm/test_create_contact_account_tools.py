@@ -10,7 +10,11 @@ from src.agents.context import AgentContext
 from src.agents.tools.crm.create_account import create_account_direct, create_create_account
 from src.agents.tools.crm.create_contact import create_contact_direct, create_create_contact
 from src.agents.tools.crm.search_accounts import search_accounts
-from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteResult
+from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
+    AccountWriteContext,
+    AccountWriteResult,
+)
 from src.service.crm.contacts.contracts import (
     ContactCreateCommand,
     ContactDealLinkResult,
@@ -104,16 +108,18 @@ async def test_create_account_direct_creates_and_commits() -> None:
         )
 
     writer.create_account.assert_awaited_once_with(
-        name="Acme",
+        AccountCreateCommand(
+            name="Acme",
+            domain="acme.com",
+            website="https://acme.com",
+            industry="Software",
+        ),
         context=AccountWriteContext(
             source="agent_tool",
             actor_user_id=context.user_id,
             created_via="chat_tool",
             duplicate_scope="internal_only",
         ),
-        domain="acme.com",
-        website="https://acme.com",
-        industry="Software",
     )
     org_session.commit.assert_awaited_once()
     assert result["status"] == "created"
@@ -190,14 +196,13 @@ async def test_create_account_direct_allows_domain_only_create() -> None:
 
     reader.find_accounts_by_domain.assert_awaited_once_with("acme.com")
     writer.create_account.assert_awaited_once_with(
-        name=None,
+        AccountCreateCommand(name=None, domain="acme.com"),
         context=AccountWriteContext(
             source="agent_tool",
             actor_user_id=context.user_id,
             created_via="chat_tool",
             duplicate_scope="internal_only",
         ),
-        domain="acme.com",
     )
     org_session.commit.assert_awaited_once()
     assert result["status"] == "created"
@@ -342,6 +347,20 @@ def test_create_contact_direct_has_no_account_selection_inputs() -> None:
     assert "account_name" not in params
     assert "account_domain" not in params
     assert "phone" not in params
+
+
+def test_create_account_direct_uses_minimal_create_inputs() -> None:
+    params = signature(create_account_direct).parameters
+
+    assert "name" in params
+    assert "domain" in params
+    assert "website" in params
+    assert "industry" in params
+    assert "linkedin_url" in params
+    assert "phone" not in params
+    assert "country" not in params
+    assert "annual_revenue" not in params
+    assert "number_of_employees" not in params
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+import src.api.routers.crm.accounts_handler as accounts_handler
 from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
 from src.api.routers.crm.accounts_handler import (
@@ -17,7 +18,11 @@ from src.api.routers.crm.accounts_handler import (
     update_account,
 )
 from src.api.schemas.crm_account_models import CreateAccountRequest, UpdateAccountRequest
-from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteResult
+from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
+    AccountWriteContext,
+    AccountWriteResult,
+)
 
 
 def _company_payload() -> dict:
@@ -81,11 +86,13 @@ async def test_create_account_commits_session_after_service_write() -> None:
     )
 
     service.create_account.assert_awaited_once_with(
-        name="Acme",
-        domain="https://www.acme.com",
-        website="https://acme.com",
-        industry="Software",
-        linkedin_url=None,
+        AccountCreateCommand(
+            name="Acme",
+            domain="https://www.acme.com",
+            website="https://acme.com",
+            industry="Software",
+            linkedin_url=None,
+        ),
         context=AccountWriteContext(
             source="api",
             actor_user_id=user_ids.user_id,
@@ -95,6 +102,85 @@ async def test_create_account_commits_session_after_service_write() -> None:
     )
     service.session.commit.assert_awaited_once()
     assert response.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_create_account_dispatches_account_research_after_commit(monkeypatch) -> None:
+    user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    company_id = uuid4()
+    company = SimpleNamespace(company_id=company_id, model_dump=lambda: _company_payload())
+    service = SimpleNamespace(
+        session=SimpleNamespace(commit=AsyncMock()),
+        create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
+    )
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        calls.append(
+            {
+                **kwargs,
+                "commit_count_at_dispatch": service.session.commit.await_count,
+            }
+        )
+
+    monkeypatch.setattr(
+        accounts_handler,
+        "dispatch_account_research_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    response = await create_account(
+        response=FastAPIResponse(),
+        body=CreateAccountRequest(name="Acme", domain="acme.com"),
+        user_ids=user_ids,
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status == "SUCCESS"
+    assert calls == [
+        {
+            "organisation_id": user_ids.organisation_id,
+            "company_id": company_id,
+            "user_id": user_ids.user_id,
+            "trigger": "account_created",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_account_ignores_account_research_dispatch_failure(monkeypatch) -> None:
+    user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    company = SimpleNamespace(company_id=uuid4(), model_dump=lambda: _company_payload())
+    service = SimpleNamespace(
+        session=SimpleNamespace(commit=AsyncMock()),
+        create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
+    )
+
+    async def failing_dispatch(**_kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(
+        accounts_handler,
+        "dispatch_account_research_async",
+        failing_dispatch,
+        raising=False,
+    )
+
+    response = await create_account(
+        response=FastAPIResponse(),
+        body=CreateAccountRequest(name="Acme", domain="acme.com"),
+        user_ids=user_ids,
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status == "SUCCESS"
+    service.session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -267,7 +353,7 @@ async def test_get_account_contacts_passes_limit_and_preserves_deal_count() -> N
 
 
 @pytest.mark.asyncio
-async def test_get_account_detail_returns_compact_contacts_and_research_placeholder() -> None:
+async def test_get_account_detail_returns_compact_contacts_and_summary_placeholder() -> None:
     company_id = uuid4()
     contact_id = uuid4()
     deal_id = uuid4()
@@ -305,7 +391,7 @@ async def test_get_account_detail_returns_compact_contacts_and_research_placehol
                 "state": "Maharashtra",
                 "postal_code": "411001",
                 "timezone": "Asia/Kolkata",
-                "account_research": {
+                "account_summary": {
                     "status": "not_available",
                     "content": None,
                     "last_researched_at": None,
@@ -345,7 +431,7 @@ async def test_get_account_detail_returns_compact_contacts_and_research_placehol
     assert response.status == "SUCCESS"
     assert response.data is not None
     dumped = response.data.model_dump()
-    assert dumped["account_research"] == {
+    assert dumped["account_summary"] == {
         "status": "not_available",
         "content": None,
         "last_researched_at": None,

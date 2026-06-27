@@ -62,7 +62,7 @@ class AccountListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AccountResearchSummary(BaseModel):
+class AccountSummary(BaseModel):
     status: str = Field("not_available")
     content: str | None = None
     last_researched_at: datetime | None = None
@@ -76,7 +76,7 @@ class AccountDetail(AccountListItem):
     state: str | None
     postal_code: str | None
     timezone: str | None
-    account_research: AccountResearchSummary = Field(default_factory=AccountResearchSummary)
+    account_summary: AccountSummary = Field(default_factory=AccountSummary)
     contacts: list[AccountDetailContactItem] = Field(default_factory=list)
     deals: list[AccountDealItem] = Field(default_factory=list)
 

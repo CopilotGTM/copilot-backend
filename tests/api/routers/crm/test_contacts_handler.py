@@ -203,6 +203,80 @@ async def test_create_contact_handler_dispatches_research_after_commit(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_contact_handler_dispatches_account_research_for_created_account(
+    monkeypatch,
+) -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    company_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+    )
+    service = _FakeContactWriteService(contact)
+
+    async def create_contact_with_account(*args, **kwargs):
+        result = await _FakeContactWriteService.create_contact(service, *args, **kwargs)
+        return ContactWriteResult(
+            contact=result.contact,
+            created=True,
+            matched_by="created",
+            created_account_id=company_id,
+        )
+
+    service.create_contact = create_contact_with_account
+    contact_calls: list[dict] = []
+    account_calls: list[dict] = []
+
+    async def fake_contact_dispatch(**kwargs):
+        contact_calls.append(kwargs)
+
+    async def fake_account_dispatch(**kwargs):
+        account_calls.append(
+            {
+                **kwargs,
+                "commit_count_at_dispatch": service.org_session.commit.count,
+            }
+        )
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fake_contact_dispatch,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_account_research_async",
+        fake_account_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(email="buyer@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert len(contact_calls) == 1
+    assert account_calls == [
+        {
+            "organisation_id": org_id,
+            "company_id": company_id,
+            "user_id": user_id,
+            "trigger": "contact_created_account",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_contact_handler_ignores_research_dispatch_failure(monkeypatch) -> None:
     org_id = uuid4()
     user_id = uuid4()

@@ -57,6 +57,9 @@ from src.service.crm.contacts.contracts import (
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
 from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.workers.deal_worker.utils.account_research_dispatch import (
+    dispatch_account_research_async,
+)
 from src.workers.deal_worker.utils.contact_research_dispatch import (
     dispatch_contact_research_async,
 )
@@ -345,6 +348,25 @@ async def create_contact(
                 },
                 exc_info=True,
             )
+        if result.created_account_id:
+            try:
+                await dispatch_account_research_async(
+                    organisation_id=user_ids.organisation_id,
+                    company_id=result.created_account_id,
+                    user_id=user_ids.user_id,
+                    trigger="contact_created_account",
+                )
+            except Exception:
+                logger.warning(
+                    "Account research dispatch failed after contact-created account",
+                    extra={
+                        "event": "account_research_dispatch_failed",
+                        "organisation_id": str(user_ids.organisation_id),
+                        "company_id": str(result.created_account_id),
+                        "contact_id": str(contact.contact_id),
+                    },
+                    exc_info=True,
+                )
 
         data = ContactMutationItem(
             contact_id=contact.contact_id,

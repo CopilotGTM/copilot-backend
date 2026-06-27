@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
 from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
     AccountWriteContext,
     AccountWriteServiceError,
 )
@@ -181,8 +182,6 @@ async def create_account_direct(
     website: str | None = None,
     industry: str | None = None,
     linkedin_url: str | None = None,
-    phone: str | None = None,
-    country: str | None = None,
 ) -> dict[str, Any]:
     """Create or reuse an internal CRM account directly."""
     organisation_id = context.organisation_id
@@ -195,18 +194,13 @@ async def create_account_direct(
     if not cleaned_name and not normalized_domain and not cleaned_website:
         return {"status": "error", "message": "Account name, domain, or website is required."}
 
-    kwargs = {
-        key: value
-        for key, value in {
-            "domain": normalized_domain,
-            "website": cleaned_website,
-            "industry": _clean_optional(industry),
-            "linkedin_url": _clean_optional(linkedin_url),
-            "phone": _clean_optional(phone),
-            "country": _clean_optional(country),
-        }.items()
-        if value is not None
-    }
+    command = AccountCreateCommand(
+        name=cleaned_name,
+        domain=normalized_domain,
+        website=cleaned_website,
+        industry=_clean_optional(industry),
+        linkedin_url=_clean_optional(linkedin_url),
+    )
 
     async with context.acquire_session() as org_session:
         reader = AccountReadService(org_session, organisation_id)
@@ -225,14 +219,13 @@ async def create_account_direct(
                 result = _account_result(existing[0], status="exists")
             else:
                 write_result = await writer.create_account(
-                    name=cleaned_name,
+                    command,
                     context=AccountWriteContext(
                         source="agent_tool",
                         actor_user_id=context.user_id,
                         created_via="chat_tool",
                         duplicate_scope="internal_only",
                     ),
-                    **kwargs,
                 )
                 account = write_result.account
                 await org_session.commit()
@@ -265,8 +258,6 @@ def create_create_account(
         website: str | None = None,
         industry: str | None = None,
         linkedin_url: str | None = None,
-        phone: str | None = None,
-        country: str | None = None,
     ) -> dict[str, Any]:
         """Create an internal CRM account once a name, domain, or website is known."""
         result = await execute_with_capabilities(
@@ -280,8 +271,6 @@ def create_create_account(
                 "website": website,
                 "industry": industry,
                 "linkedin_url": linkedin_url,
-                "phone": phone,
-                "country": country,
             },
             description=f"Creating account {name or ''}".strip(),
             fallback_value={"status": "error", "message": "Could not create account."},

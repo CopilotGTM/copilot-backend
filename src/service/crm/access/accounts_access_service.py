@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
     AccountReadServiceError,
     AccountWriteServiceError,
 )
@@ -94,8 +95,15 @@ class AccountsAccessService:
 
     async def create_account(self, name: str | None, **kwargs: Any) -> CRMCompany:
         """Create an account through AccountWriteService for legacy callers."""
+        command_fields = {
+            key: kwargs.get(key)
+            for key in ("domain", "website", "industry", "linkedin_url")
+            if key in kwargs
+        }
         try:
-            result = await self._writer.create_account(name=name, **kwargs)
+            result = await self._writer.create_account(
+                AccountCreateCommand(name=name, **command_fields)
+            )
         except AccountWriteServiceError as exc:
             # Older callers catch AccountsAccessServiceError, so translate write
             # errors instead of leaking the new vertical-service exception type.

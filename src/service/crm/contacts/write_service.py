@@ -73,30 +73,35 @@ class ContactWriteService:
         integration = await self._get_or_create_internal_integration(context)
         contact_name = command.name.strip() if command.name and command.name.strip() else None
         first_name, last_name = split_full_name(contact_name) if contact_name else (None, None)
-        account = await self._account_writer.resolve_or_create_account_for_contact_email(
-            normalized_email,
-            context=AccountWriteContext(
-                source=context.source if context else "contact_create",
-                actor_user_id=context.actor_user_id if context else None,
-                source_label=context.source_label if context else None,
-                created_via=context.created_via if context else None,
-            ),
+        account_result = (
+            await self._account_writer.resolve_or_create_account_for_contact_email_with_result(
+                normalized_email,
+                context=AccountWriteContext(
+                    source=context.source if context else "contact_create",
+                    actor_user_id=context.actor_user_id if context else None,
+                    source_label=context.source_label if context else None,
+                    created_via="contact_create",
+                ),
+            )
         )
+        account = account_result.account if account_result else None
 
-        contact = CRMContact(
-            contact_id=uuid4(),
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            email=normalized_email,
-            first_name=first_name,
-            last_name=last_name,
-            full_name=contact_name,
-            job_title=command.job_title,
-            linkedin_url=command.linkedin_url,
-            company_id=account.company_id if account else None,
-            company_name=account.name if account else None,
-            synced_at=datetime.now(UTC),
-            is_deleted=False,
+        contact = CRMContact.model_validate(
+            {
+                "contact_id": uuid4(),
+                "organisation_id": self.organisation_id,
+                "integration_id": integration.integration_id,
+                "email": normalized_email,
+                "first_name": first_name,
+                "last_name": last_name,
+                "full_name": contact_name,
+                "job_title": command.job_title,
+                "linkedin_url": command.linkedin_url,
+                "company_id": account.company_id if account else None,
+                "company_name": account.name if account else None,
+                "synced_at": datetime.now(UTC),
+                "is_deleted": False,
+            }
         )
 
         self.org_session.add(contact)
@@ -104,7 +109,10 @@ class ContactWriteService:
         await self.org_session.refresh(contact)
         await self._projection.upsert_contact_created(contact)
         await self._record_contact_create_event(contact, context=context)
-        return ContactWriteResult(contact=contact, created=True, matched_by="created")
+        created_account_id = (
+            account.company_id if account and account_result and account_result.created else None
+        )
+        return ContactWriteResult(contact, True, "created", created_account_id)
 
     async def find_or_create_contact_by_email(
         self,
@@ -177,7 +185,7 @@ class ContactWriteService:
                 changed_fields=changed_fields,
                 context=context,
             )
-            return ContactWriteResult(contact=existing, created=False, matched_by="email")
+            return ContactWriteResult(existing, False, "email")
 
         return await self.create_contact(
             ContactCreateCommand(
@@ -301,7 +309,7 @@ class ContactWriteService:
             changed_fields=changed_fields,
             context=context,
         )
-        return ContactWriteResult(contact=contact, created=False, matched_by="explicit_id")
+        return ContactWriteResult(contact, False, "explicit_id")
 
     async def _get_or_create_internal_integration(
         self, context: ContactWriteContext | None = None

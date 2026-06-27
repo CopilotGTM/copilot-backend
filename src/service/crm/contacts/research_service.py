@@ -15,8 +15,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.agents.tools.research.apollo_client import apollo_enrich_person
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.service.enrichment.apollo import apollo_enrich_person
 
 ContactProviderStatus = Literal["found", "not_found", "error"]
 ContactSummaryStatus = Literal["generated", "skipped", "error"]

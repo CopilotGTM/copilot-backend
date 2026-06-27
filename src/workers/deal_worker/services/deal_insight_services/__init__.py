@@ -11,6 +11,10 @@ Each service follows fresh session pattern:
 - Phase 3: Save result (fresh session)
 """
 
+from src.workers.deal_worker.services.deal_insight_services.account_research_service import (
+    AccountResearchWorkflowError,
+    AccountResearchWorkflowService,
+)
 from src.workers.deal_worker.services.deal_insight_services.contact_research_service import (
     ContactResearchWorkflowError,
     ContactResearchWorkflowService,
@@ -55,6 +59,8 @@ __all__ = [
     "StakeholderResearchError",
     "StakeholderResearchService",
     # Contact research
+    "AccountResearchWorkflowError",
+    "AccountResearchWorkflowService",
     "ContactResearchWorkflowError",
     "ContactResearchWorkflowService",
 ]

@@ -19,6 +19,9 @@ from src.infra.utils.resource_naming import get_schema_name  # noqa: E402
 
 load_dotenv()
 
+# copilotgtm: one-off --all quarantine for hello5; move to DB-backed migration policy if this grows.
+ORG_MIGRATION_ALL_EXCLUDED_ORG_IDS = {"6fc45305-2989-44ae-9cc1-a55f39450a9e"}
+
 
 def get_database_url():
     host = os.getenv("DATABASE_HOST", "localhost")
@@ -137,6 +140,19 @@ def run_migrations_for_orgs(
             print("Fetching all organizations (deriving schemas)...")
             stmt_all = select(Organisation).where(Organisation.status != OrganisationStatus.FAILED)
             target_orgs = list(session.exec(stmt_all).all())
+            skipped_orgs = [
+                org
+                for org in target_orgs
+                if str(org.organisation_id) in ORG_MIGRATION_ALL_EXCLUDED_ORG_IDS
+            ]
+            if skipped_orgs:
+                skipped_ids = ", ".join(str(org.organisation_id) for org in skipped_orgs)
+                print(f"Skipping --all excluded organization(s): {skipped_ids}")
+                target_orgs = [
+                    org
+                    for org in target_orgs
+                    if str(org.organisation_id) not in ORG_MIGRATION_ALL_EXCLUDED_ORG_IDS
+                ]
             if not target_orgs:
                 print("No organizations found.")
                 return True

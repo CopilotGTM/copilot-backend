@@ -113,7 +113,7 @@ async def test_create_contact_records_contact_created_mutation_event() -> None:
         company=_company(org_id, company_id),
     )
     service = ContactWriteService(session, org_id)
-    service._account_writer.resolve_or_create_account_for_contact_email = AsyncMock(  # type: ignore[method-assign]
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(  # type: ignore[method-assign]
         return_value=None
     )
 
