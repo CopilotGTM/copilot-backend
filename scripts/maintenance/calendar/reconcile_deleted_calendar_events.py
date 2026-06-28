@@ -24,6 +24,7 @@ from sqlmodel import col
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.domain.models.organisation_tables.sync import (  # noqa: E402
+    IntegrationSyncState,
     IntegrationType,
     KnowledgeIntegration,
 )
@@ -74,6 +75,7 @@ class IntegrationReport:
     organisation_id: UUID
     integration_id: UUID
     integration_type: str
+    capability: str
     provider_event_count: int
     provider_active_count: int
     local_active_count: int
@@ -81,14 +83,20 @@ class IntegrationReport:
     applied_count: int = 0
 
 
-def _provider_for_integration(integration_type: IntegrationType | str) -> str:
-    if isinstance(integration_type, str):
-        integration_type = IntegrationType(integration_type)
-    if integration_type == IntegrationType.GOOGLE_CALENDAR:
+@dataclass(frozen=True)
+class TargetCalendarIntegration:
+    integration: KnowledgeIntegration
+    capability: IntegrationType
+
+
+def _provider_for_capability(capability: IntegrationType | str) -> str:
+    if isinstance(capability, str):
+        capability = IntegrationType(capability)
+    if capability == IntegrationType.GOOGLE_CALENDAR:
         return "google"
-    if integration_type == IntegrationType.OUTLOOK_CALENDAR:
+    if capability == IntegrationType.OUTLOOK_CALENDAR:
         return "outlook"
-    raise ValueError(f"Unsupported calendar integration type: {integration_type}")
+    raise ValueError(f"Unsupported calendar capability: {capability}")
 
 
 def _integration_type_value(integration_type: IntegrationType | str) -> str:
@@ -229,8 +237,11 @@ def _parse_args() -> argparse.Namespace:
 async def _load_integrations(
     organisation_id: UUID,
     integration_ids: set[UUID] | None,
-) -> list[KnowledgeIntegration]:
+) -> list[TargetCalendarIntegration]:
+    targets: list[TargetCalendarIntegration] = []
     async for session in acquire_org_async_session(organisation_id):
+        target_by_id: dict[UUID, TargetCalendarIntegration] = {}
+
         conditions = [
             col(KnowledgeIntegration.integration_type).in_(tuple(t.value for t in CALENDAR_TYPES)),
             col(KnowledgeIntegration.is_active).is_(True),
@@ -240,14 +251,50 @@ async def _load_integrations(
             conditions.append(col(KnowledgeIntegration.integration_id).in_(tuple(integration_ids)))
         stmt = select(KnowledgeIntegration).where(*conditions)
         result = await session.execute(stmt)
-        return list(result.scalars().all())
-    return []
+        for integration in result.scalars().all():
+            integration_type = integration.integration_type
+            if isinstance(integration_type, str):
+                integration_type = IntegrationType(integration_type)
+            target_by_id[integration.integration_id] = TargetCalendarIntegration(
+                integration=integration,
+                capability=integration_type,
+            )
+
+        # Bundled Google/Microsoft connections keep OAuth on provider-parent
+        # integrations and enable calendar through IntegrationSyncState.
+        parent_conditions = [
+            col(KnowledgeIntegration.integration_id) == col(IntegrationSyncState.integration_id),
+            col(IntegrationSyncState.capability).in_(tuple(t.value for t in CALENDAR_TYPES)),
+            col(IntegrationSyncState.enabled).is_(True),
+            col(KnowledgeIntegration.is_active).is_(True),
+            col(KnowledgeIntegration.connection_id).isnot(None),
+        ]
+        if integration_ids:
+            parent_conditions.append(
+                col(KnowledgeIntegration.integration_id).in_(tuple(integration_ids))
+            )
+        parent_stmt = select(KnowledgeIntegration, IntegrationSyncState.capability).where(
+            *parent_conditions
+        )
+        parent_result = await session.execute(parent_stmt)
+        for integration, capability in parent_result.all():
+            if isinstance(capability, str):
+                capability = IntegrationType(capability)
+            target_by_id[integration.integration_id] = TargetCalendarIntegration(
+                integration=integration,
+                capability=capability,
+            )
+
+        targets = list(target_by_id.values())
+        break
+    return targets
 
 
 async def _fetch_provider_events(
     organisation_id: UUID,
-    integration: KnowledgeIntegration,
+    target: TargetCalendarIntegration,
 ) -> list[dict[str, Any]]:
+    integration = target.integration
     integration_type = integration.integration_type
     if isinstance(integration_type, str):
         integration_type = IntegrationType(integration_type)
@@ -255,7 +302,7 @@ async def _fetch_provider_events(
         raise RuntimeError(f"Integration {integration.integration_id} has no connection_id")
 
     token_info = IntegrationTokenInfo.from_integration(integration, organisation_id)
-    if integration_type == IntegrationType.GOOGLE_CALENDAR:
+    if target.capability == IntegrationType.GOOGLE_CALENDAR:
         result = await google_calendar.fetch_events_with_cursor(
             token_info=token_info,
             connection_id=integration.connection_id,
@@ -264,7 +311,7 @@ async def _fetch_provider_events(
             sync_token=None,
         )
         return result.events
-    if integration_type == IntegrationType.OUTLOOK_CALENDAR:
+    if target.capability == IntegrationType.OUTLOOK_CALENDAR:
         result = await outlook_calendar.fetch_events(
             token_info=token_info,
             connection_id=integration.connection_id,
@@ -273,7 +320,7 @@ async def _fetch_provider_events(
             delta_link=None,
         )
         return result.events
-    raise ValueError(f"Unsupported calendar integration type: {integration_type}")
+    raise ValueError(f"Unsupported calendar capability: {target.capability}")
 
 
 async def _load_local_active_states(
@@ -282,6 +329,7 @@ async def _load_local_active_states(
     window_start: datetime,
     window_end: datetime,
 ) -> list[LocalCalendarState]:
+    rows: list[LocalCalendarState] = []
     async for session in acquire_org_async_session(organisation_id):
         stmt = (
             select(CalendarEvent, CalendarEventUserState)
@@ -299,7 +347,6 @@ async def _load_local_active_states(
             .order_by(col(CalendarEvent.start_at).asc())
         )
         result = await session.execute(stmt)
-        rows: list[LocalCalendarState] = []
         for event, state in result.all():
             rows.append(
                 LocalCalendarState(
@@ -315,8 +362,8 @@ async def _load_local_active_states(
                     status=event.status,
                 )
             )
-        return rows
-    return []
+        break
+    return rows
 
 
 async def _event_has_active_user_states(session: Any, event_id: UUID) -> bool:
@@ -336,6 +383,7 @@ async def _apply_soft_deletes(
         return 0
 
     now = datetime.now(UTC)
+    applied_count = 0
     async for session in acquire_org_async_session(organisation_id):
         state_ids = [candidate.state_id for candidate in candidates]
         await session.execute(
@@ -355,8 +403,9 @@ async def _apply_soft_deletes(
             )
 
         await session.commit()
-        return len(candidates)
-    return 0
+        applied_count = len(candidates)
+        break
+    return applied_count
 
 
 def _write_report(
@@ -377,6 +426,7 @@ def _write_report(
         "organisation_id": str(report.organisation_id),
         "integration_id": str(report.integration_id),
         "integration_type": report.integration_type,
+        "capability": report.capability,
         "provider_event_count": report.provider_event_count,
         "provider_active_count": report.provider_active_count,
         "local_active_count": report.local_active_count,
@@ -394,7 +444,7 @@ def _write_report(
 
 async def _process_integration(
     organisation_id: UUID,
-    integration: KnowledgeIntegration,
+    target: TargetCalendarIntegration,
     *,
     window_start: datetime,
     window_end: datetime,
@@ -402,8 +452,9 @@ async def _process_integration(
     sample_limit: int,
     execute: bool,
 ) -> IntegrationReport:
-    provider = _provider_for_integration(integration.integration_type)
-    provider_events = await _fetch_provider_events(organisation_id, integration)
+    integration = target.integration
+    provider = _provider_for_capability(target.capability)
+    provider_events = await _fetch_provider_events(organisation_id, target)
     snapshot = build_provider_snapshot(provider_events, provider)
     local_rows = await _load_local_active_states(
         organisation_id,
@@ -417,6 +468,7 @@ async def _process_integration(
         organisation_id=organisation_id,
         integration_id=integration.integration_id,
         integration_type=_integration_type_value(integration.integration_type),
+        capability=target.capability.value,
         provider_event_count=len(provider_events),
         provider_active_count=snapshot.active_count,
         local_active_count=len(local_rows),
@@ -434,7 +486,7 @@ async def _process_integration(
     )
     print(
         "  "
-        f"{integration.integration_id} [{report.integration_type}]: "
+        f"{integration.integration_id} [{report.integration_type}/{report.capability}]: "
         f"provider={len(provider_events)} active_provider={snapshot.active_count} "
         f"local_active={len(local_rows)} candidates={len(candidates)} "
         f"applied={report.applied_count} report={report_path}"
@@ -472,11 +524,11 @@ async def main() -> None:
         if not integrations:
             print("  No matching active calendar integrations.")
             continue
-        for integration in integrations:
+        for target in integrations:
             reports.append(
                 await _process_integration(
                     org_id,
-                    integration,
+                    target,
                     window_start=window_start,
                     window_end=window_end,
                     output_dir=output_dir,

@@ -3,10 +3,17 @@ from uuid import uuid4
 
 from scripts.maintenance.calendar.reconcile_deleted_calendar_events import (
     LocalCalendarState,
+    _provider_for_capability,
     build_provider_snapshot,
     find_missing_local_states,
     format_candidate,
 )
+from src.domain.models.organisation_tables.sync import IntegrationType
+
+
+def test_provider_for_capability_supports_bundled_parent_calendar_states() -> None:
+    assert _provider_for_capability(IntegrationType.GOOGLE_CALENDAR) == "google"
+    assert _provider_for_capability(IntegrationType.OUTLOOK_CALENDAR) == "outlook"
 
 
 def test_provider_snapshot_keeps_active_user_and_canonical_keys() -> None:
