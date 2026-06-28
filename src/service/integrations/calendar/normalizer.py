@@ -106,6 +106,7 @@ class CalendarEventNormalizer:
                 original_start_at=original_start_at,
             ),
             user_external_id=self.extract_user_external_id(event_data, provider),
+            series_external_id=self.extract_series_external_id(event_data, provider),
             fields=fields,
             attendees=self.extract_attendees(event_data),
             has_attendee_snapshot=self.has_attendee_snapshot(event_data),
@@ -197,6 +198,22 @@ class CalendarEventNormalizer:
         if provider in ("microsoft", "outlook"):
             return event_data.get("id")
         return event_data.get("id")
+
+    @staticmethod
+    def extract_series_external_id(event_data: dict[str, Any], provider: str) -> str | None:
+        """Extract the provider series/master id for this mailbox copy.
+
+        The value belongs on CalendarEventUserState, not CalendarEvent: it is
+        the provider-copy series identity used to reconcile whole-series
+        tombstones back to the current integration's stored occurrence rows.
+        """
+        if provider == "google":
+            value = event_data.get("recurringEventId")
+            return value if isinstance(value, str) and value else None
+        if provider in ("microsoft", "outlook"):
+            value = event_data.get("seriesMasterId")
+            return value if isinstance(value, str) and value else None
+        return None
 
     @classmethod
     def extract_occurrence_anchor(

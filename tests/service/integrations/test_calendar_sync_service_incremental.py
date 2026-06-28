@@ -379,8 +379,8 @@ class TestCalendarIncrementalBatchWrites:
 
         await service._batch_upsert_user_states(
             [
-                (uuid4(), integration_id, "user-event-1"),
-                (uuid4(), integration_id, "user-event-2"),
+                (uuid4(), integration_id, "user-event-1", "series-1"),
+                (uuid4(), integration_id, "user-event-2", None),
             ]
         )
 
@@ -389,6 +389,7 @@ class TestCalendarIncrementalBatchWrites:
         assert "ON CONFLICT" in sql
         assert "is_deleted" in sql
         assert "external_id" in sql
+        assert "series_external_id" in sql
 
     @pytest.mark.asyncio
     async def test_incremental_sync_batches_mixed_changed_and_state_only_events(self) -> None:
@@ -771,6 +772,216 @@ class TestCalendarIncrementalBatchWrites:
             queue="deal",
             routing_key="deal",
         )
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_google_series_delete_cancels_matching_occurrences(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whole-series tombstones match user-state series ids, not occurrence ids."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        commit_count = 0
+
+        async def _commit() -> None:
+            nonlocal commit_count
+            commit_count += 1
+
+        session = AsyncMock()
+        session.commit = AsyncMock(side_effect=_commit)
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._find_event_by_user_external_id = AsyncMock(return_value=None)
+        first_occurrence = _event_row("ical-series", "2026-07-01T10:00:00Z")
+        first_occurrence.start_at = datetime.now(UTC) + timedelta(hours=2)
+        second_occurrence = _event_row("ical-series", "2026-07-02T10:00:00Z")
+        second_occurrence.start_at = datetime.now(UTC) + timedelta(hours=3)
+        service._find_events_by_series_external_id = AsyncMock(
+            return_value=[
+                (first_occurrence, "google-occurrence-1"),
+                (second_occurrence, "google-occurrence-2"),
+            ]
+        )
+        service._mark_user_state_deleted = AsyncMock(return_value=True)
+        service._all_user_states_deleted = AsyncMock(side_effect=[True, False])
+        service._batch_upsert_events = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+        send_task = AsyncMock()
+
+        async def _send_task(*args, **kwargs):
+            assert commit_count >= 1
+            return await send_task(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "src.service.integrations.calendar.sync_service.send_deal_task_async",
+            _send_task,
+        )
+
+        result = await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[
+                {
+                    "id": "google-series-master",
+                    "status": "cancelled",
+                    "start": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-07-01T10:30:00Z", "timeZone": "UTC"},
+                    "_sync_metadata": {"sync_action": SyncAction.DELETED.value},
+                }
+            ],
+        )
+
+        service._find_events_by_series_external_id.assert_awaited_once_with(
+            "google-series-master",
+            integration.integration_id,
+        )
+        assert service._mark_user_state_deleted.await_args_list[0].args == (
+            first_occurrence.event_id,
+            integration.integration_id,
+            "google-occurrence-1",
+        )
+        assert service._mark_user_state_deleted.await_args_list[1].args == (
+            second_occurrence.event_id,
+            integration.integration_id,
+            "google-occurrence-2",
+        )
+        assert first_occurrence.status == "cancelled"
+        assert second_occurrence.status == "confirmed"
+        assert result["deleted_processed"] == 1
+        assert result["changed_event_ids"] == [str(first_occurrence.event_id)]
+        send_task.assert_awaited_once_with(
+            "deal.send_meeting_recording",
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "calendar_event_id": str(first_occurrence.event_id),
+            },
+            queue="deal",
+            routing_key="deal",
+        )
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_microsoft_series_delete_uses_series_master_id(self) -> None:
+        """Microsoft whole-series deletes resolve by user-state seriesMasterId."""
+        organisation_id = uuid4()
+        integration = _make_integration(
+            organisation_id=organisation_id,
+            integration_type=IntegrationType.MICROSOFT,
+        )
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        service._find_event_by_user_external_id = AsyncMock(return_value=None)
+        occurrence = _event_row("ms-occurrence-ical")
+        service._find_events_by_series_external_id = AsyncMock(
+            return_value=[(occurrence, "ms-occurrence-id")]
+        )
+        service._mark_user_state_deleted = AsyncMock(return_value=True)
+        service._all_user_states_deleted = AsyncMock(return_value=True)
+        service._batch_upsert_events = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+
+        result = await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="microsoft",
+            events=[
+                {
+                    "id": "ms-series-master",
+                    "isCancelled": True,
+                    "start": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-07-01T10:30:00Z", "timeZone": "UTC"},
+                    "_sync_metadata": {"sync_action": SyncAction.DELETED.value},
+                }
+            ],
+        )
+
+        service._find_events_by_series_external_id.assert_awaited_once_with(
+            "ms-series-master",
+            integration.integration_id,
+        )
+        service._mark_user_state_deleted.assert_awaited_once_with(
+            occurrence.event_id,
+            integration.integration_id,
+            "ms-occurrence-id",
+        )
+        assert occurrence.status == "cancelled"
+        assert result["deleted_processed"] == 1
+        assert result["changed_event_ids"] == [str(occurrence.event_id)]
+
+    @pytest.mark.asyncio
+    async def test_google_cancelled_exception_without_uid_uses_user_state_gate(self) -> None:
+        """A deleted Google occurrence must not cancel the shared event while another state is active."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_events_by_identity = AsyncMock(return_value={})
+        existing = _event_row("ical-recurring", "2026-07-01T10:00:00Z")
+        service._find_event_by_user_external_id = AsyncMock(return_value=existing)
+        service._mark_user_state_deleted = AsyncMock(return_value=True)
+        service._all_user_states_deleted = AsyncMock(return_value=False)
+        service._batch_upsert_events = AsyncMock(return_value={})
+        service._batch_sync_attendees = AsyncMock()
+        service._batch_upsert_user_states = AsyncMock()
+
+        result = await service.sync_calendar_events_incremental(
+            integration=integration,
+            provider="google",
+            events=[
+                {
+                    "id": "google-occurrence-1",
+                    "status": "cancelled",
+                    "recurringEventId": "google-series-master",
+                    "originalStartTime": {
+                        "dateTime": "2026-07-01T10:00:00Z",
+                        "timeZone": "UTC",
+                    },
+                    "start": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-07-01T10:30:00Z", "timeZone": "UTC"},
+                }
+            ],
+        )
+
+        service._mark_user_state_deleted.assert_awaited_once_with(
+            existing.event_id,
+            integration.integration_id,
+            "google-occurrence-1",
+        )
+        service._all_user_states_deleted.assert_awaited_once_with(existing.event_id)
+        assert existing.status == "confirmed"
+        assert result["changed_event_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_series_external_id_lookup_is_org_and_integration_scoped(self) -> None:
+        """Series fallback must not trust provider ids without org and integration boundaries."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        row = (_event_row("ical-series", "2026-07-01T10:00:00Z"), "google-occurrence-1")
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: [row]))
+        service = CalendarSyncService(session, organisation_id)
+
+        result = await service._find_events_by_series_external_id(
+            "google-series-master",
+            integration_id,
+        )
+
+        assert result == [row]
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "calendar_events.organisation_id" in sql
+        assert "calendar_event_user_states.integration_id" in sql
+        assert "calendar_event_user_states.series_external_id" in sql
 
     @pytest.mark.asyncio
     async def test_incremental_sync_does_not_enqueue_ineligible_meeting_bot_events(
