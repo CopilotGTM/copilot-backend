@@ -259,11 +259,15 @@ class CalendarSyncWriter:
         event_id: UUID,
         integration_id: UUID,
         external_id: str,
-    ) -> tuple[UUID, UUID, str]:
-        return (event_id, integration_id, external_id)
+        series_external_id: str | None,
+    ) -> tuple[UUID, UUID, str, str | None]:
+        """Build the tuple shape sync_service batches for user-state upserts."""
+        return (event_id, integration_id, external_id, series_external_id)
 
     @staticmethod
-    def build_user_state_values(rows: list[tuple[UUID, UUID, str]]) -> list[dict[str, Any]]:
+    def build_user_state_values(
+        rows: list[tuple[UUID, UUID, str, str | None]],
+    ) -> list[dict[str, Any]]:
         """Collapse user-state tuples into the column-keyed dicts the bulk insert expects.
 
         Pre-collapses by (event_id, integration_id) — same reason as
@@ -271,20 +275,26 @@ class CalendarSyncWriter:
         rows that conflict on the same unique key in one statement.
         """
         now = datetime.now(UTC)
-        latest_by_key: dict[tuple[UUID, UUID], tuple[UUID, UUID, str]] = {}
-        for event_id, integration_id, external_id in rows:
-            latest_by_key[(event_id, integration_id)] = (event_id, integration_id, external_id)
+        latest_by_key: dict[tuple[UUID, UUID], tuple[UUID, UUID, str, str | None]] = {}
+        for event_id, integration_id, external_id, series_external_id in rows:
+            latest_by_key[(event_id, integration_id)] = (
+                event_id,
+                integration_id,
+                external_id,
+                series_external_id,
+            )
 
         return [
             {
                 "event_id": event_id,
                 "integration_id": integration_id,
                 "external_id": external_id,
+                "series_external_id": series_external_id,
                 "is_deleted": False,
                 "created_at": now,
                 "updated_at": now,
             }
-            for event_id, integration_id, external_id in latest_by_key.values()
+            for event_id, integration_id, external_id, series_external_id in latest_by_key.values()
         ]
 
     @staticmethod
@@ -295,11 +305,15 @@ class CalendarSyncWriter:
         # integration's perspective, and bump updated_at.
         return {
             "external_id": stmt.excluded.external_id,
+            "series_external_id": stmt.excluded.series_external_id,
             "is_deleted": False,
             "updated_at": stmt.excluded.updated_at,
         }
 
-    async def batch_upsert_user_states(self, rows: list[tuple[UUID, UUID, str]]) -> None:
+    async def batch_upsert_user_states(
+        self,
+        rows: list[tuple[UUID, UUID, str, str | None]],
+    ) -> None:
         """Upsert per-integration event state in one statement.
 
         User-state rows track which integrations can currently see which event
@@ -323,9 +337,18 @@ class CalendarSyncWriter:
         event: CalendarEvent,
         integration: KnowledgeIntegration,
         external_id: str,
+        series_external_id: str | None = None,
     ) -> CalendarEventUserState:
+        """Single-row user-state upsert used by full calendar sync."""
         values = self.build_user_state_values(
-            [self.build_user_state_row(event.event_id, integration.integration_id, external_id)]
+            [
+                self.build_user_state_row(
+                    event.event_id,
+                    integration.integration_id,
+                    external_id,
+                    series_external_id,
+                )
+            ]
         )[0]
 
         stmt: Any = insert(CalendarEventUserState).values(**values)

@@ -165,7 +165,12 @@ class CalendarSyncService:
                     event = await self._upsert_event(integration, normalized)
                     await self._sync_attendees(event, normalized)
                     user_external_id = normalized.user_external_id or external_id
-                    await self._upsert_user_state(event, integration, user_external_id)
+                    await self._upsert_user_state(
+                        event,
+                        integration,
+                        user_external_id,
+                        normalized.series_external_id,
+                    )
                     existing[key] = event
                     changed_event_ids.append(str(event.event_id))
                     self._queue_recording_dispatch_if_eligible(event)
@@ -351,7 +356,7 @@ class CalendarSyncService:
             # local (rather than calling the writer per event) is the second
             # half of the N+1 fix.
             events_to_upsert: list[CalendarEventUpsertBatchItem] = []
-            user_states_to_upsert: list[tuple[UUID, UUID, str]] = []
+            user_states_to_upsert: list[tuple[UUID, UUID, str, str | None]] = []
             attendee_snapshots: list[tuple[CalendarEvent, NormalizedCalendarEvent]] = []
 
             # --- Step 2: per-event routing — classify, accumulate writes ---
@@ -376,17 +381,17 @@ class CalendarSyncService:
                             user_external_id,
                             integration.integration_id,
                         )
-                        if record and await self._mark_user_state_deleted(
-                            record.event_id,
+                        records = [(record, user_external_id)] if record else []
+                        if not records:
+                            records = await self._find_events_by_series_external_id(
+                                user_external_id,
+                                integration.integration_id,
+                            )
+                        if await self._mark_user_state_records_deleted(
+                            records,
                             integration.integration_id,
-                            user_external_id,
+                            directly_changed_event_ids,
                         ):
-                            if await self._all_user_states_deleted(record.event_id):
-                                record.status = "cancelled"
-                                record.synced_at = datetime.now(UTC)
-                                self.db.add(record)
-                                directly_changed_event_ids.append(str(record.event_id))
-                                self._queue_recording_dispatch_if_eligible(record)
                             deleted_processed_count += 1
                             records_processed += 1
                         else:
@@ -410,17 +415,17 @@ class CalendarSyncService:
                             user_external_id,
                             integration.integration_id,
                         )
-                        if record and await self._mark_user_state_deleted(
-                            record.event_id,
+                        records = [(record, user_external_id)] if record else []
+                        if not records:
+                            records = await self._find_events_by_series_external_id(
+                                user_external_id,
+                                integration.integration_id,
+                            )
+                        if await self._mark_user_state_records_deleted(
+                            records,
                             integration.integration_id,
-                            user_external_id,
+                            directly_changed_event_ids,
                         ):
-                            if await self._all_user_states_deleted(record.event_id):
-                                record.status = "cancelled"
-                                record.synced_at = datetime.now(UTC)
-                                self.db.add(record)
-                                directly_changed_event_ids.append(str(record.event_id))
-                                self._queue_recording_dispatch_if_eligible(record)
                             cancelled_existing_count += 1
                             records_processed += 1
                         else:
@@ -439,12 +444,21 @@ class CalendarSyncService:
                                 user_external_id,
                                 integration.integration_id,
                             )
-                            if record:
-                                record.status = "cancelled"
-                                record.synced_at = datetime.now(UTC)
-                                self.db.add(record)
-                                directly_changed_event_ids.append(str(record.event_id))
+                            records = [(record, user_external_id)] if record else []
+                            if not records and normalized.series_external_id and occurrence_anchor:
+                                record_with_state = await self._find_event_by_series_external_id_and_occurrence_anchor(
+                                    normalized.series_external_id,
+                                    occurrence_anchor,
+                                    integration.integration_id,
+                                )
+                                records = [record_with_state] if record_with_state else []
+                            if await self._mark_user_state_records_deleted(
+                                records,
+                                integration.integration_id,
+                                directly_changed_event_ids,
+                            ):
                                 records_processed += 1
+                                cancelled_existing_count += 1
                                 continue
                         logger.warning("Event %d: skipping (missing shared global UID)", idx)
                         if len(missing_identity_samples) < SAMPLE_LOG_LIMIT:
@@ -473,6 +487,7 @@ class CalendarSyncService:
                                         record.event_id,
                                         integration.integration_id,
                                         user_external_id,
+                                        normalized.series_external_id,
                                     )
                                 )
                             attendee_snapshots.append((record, normalized))
@@ -504,6 +519,7 @@ class CalendarSyncService:
                                         record.event_id,
                                         integration.integration_id,
                                         user_external_id,
+                                        normalized.series_external_id,
                                     )
                                 )
                             if len(unchanged_samples) < SAMPLE_LOG_LIMIT:
@@ -554,6 +570,7 @@ class CalendarSyncService:
                         event.event_id,
                         integration.integration_id,
                         user_external_id,
+                        item.event.series_external_id,
                     )
                 )
 
@@ -703,8 +720,14 @@ class CalendarSyncService:
         event: CalendarEvent,
         integration: KnowledgeIntegration,
         external_id: str,
+        series_external_id: str | None = None,
     ) -> CalendarEventUserState:
-        return await self._writer.upsert_user_state(event, integration, external_id)
+        return await self._writer.upsert_user_state(
+            event,
+            integration,
+            external_id,
+            series_external_id,
+        )
 
     async def _sync_attendees(
         self,
@@ -726,7 +749,10 @@ class CalendarSyncService:
     ) -> None:
         await self._writer.batch_sync_attendees(event_snapshots)
 
-    async def _batch_upsert_user_states(self, rows: list[tuple[UUID, UUID, str]]) -> None:
+    async def _batch_upsert_user_states(
+        self,
+        rows: list[tuple[UUID, UUID, str, str | None]],
+    ) -> None:
         await self._writer.batch_upsert_user_states(rows)
 
     def _queue_recording_dispatch_if_eligible(self, event: CalendarEvent) -> None:
@@ -783,8 +809,14 @@ class CalendarSyncService:
         event_id: UUID,
         integration_id: UUID,
         external_id: str,
-    ) -> tuple[UUID, UUID, str]:
-        return CalendarSyncWriter.build_user_state_row(event_id, integration_id, external_id)
+        series_external_id: str | None,
+    ) -> tuple[UUID, UUID, str, str | None]:
+        return CalendarSyncWriter.build_user_state_row(
+            event_id,
+            integration_id,
+            external_id,
+            series_external_id,
+        )
 
     def _has_meaningful_event_changes(
         self,
@@ -854,6 +886,83 @@ class CalendarSyncService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _find_events_by_series_external_id(
+        self,
+        series_external_id: str,
+        integration_id: UUID,
+    ) -> list[tuple[CalendarEvent, str]]:
+        """Load active occurrence rows for a provider recurring series tombstone."""
+        stmt = (
+            select(CalendarEvent, CalendarEventUserState.external_id)
+            .join(
+                CalendarEventUserState,
+                col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
+            )
+            .where(
+                col(CalendarEvent.organisation_id) == self.organisation_id,
+                col(CalendarEventUserState.integration_id) == integration_id,
+                col(CalendarEventUserState.series_external_id) == series_external_id,
+                col(CalendarEventUserState.is_deleted).is_(False),
+            )
+        )
+        result = await self.db.execute(stmt)
+        return [(event, external_id) for event, external_id in result.all()]
+
+    async def _find_event_by_series_external_id_and_occurrence_anchor(
+        self,
+        series_external_id: str,
+        occurrence_anchor: str,
+        integration_id: UUID,
+    ) -> tuple[CalendarEvent, str] | None:
+        """Resolve a cancelled recurring exception by series id plus occurrence anchor."""
+        stmt = (
+            select(CalendarEvent, CalendarEventUserState.external_id)
+            .join(
+                CalendarEventUserState,
+                col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
+            )
+            .where(
+                col(CalendarEvent.organisation_id) == self.organisation_id,
+                col(CalendarEvent.occurrence_anchor) == occurrence_anchor,
+                col(CalendarEventUserState.integration_id) == integration_id,
+                col(CalendarEventUserState.series_external_id) == series_external_id,
+                col(CalendarEventUserState.is_deleted).is_(False),
+            )
+        )
+        result = await self.db.execute(stmt)
+        row = result.first()
+        if row is None:
+            return None
+
+        event, external_id = row
+        return (event, external_id)
+
+    async def _mark_user_state_records_deleted(
+        self,
+        records: list[tuple[CalendarEvent, str]],
+        integration_id: UUID,
+        directly_changed_event_ids: list[str],
+    ) -> bool:
+        deleted_any = False
+        for record, user_external_id in records:
+            deleted = await self._mark_user_state_deleted(
+                record.event_id,
+                integration_id,
+                user_external_id,
+            )
+            if not deleted:
+                continue
+
+            deleted_any = True
+            if await self._all_user_states_deleted(record.event_id):
+                record.status = "cancelled"
+                record.synced_at = datetime.now(UTC)
+                self.db.add(record)
+                directly_changed_event_ids.append(str(record.event_id))
+                self._queue_recording_dispatch_if_eligible(record)
+
+        return deleted_any
 
     async def _mark_user_state_deleted(
         self,

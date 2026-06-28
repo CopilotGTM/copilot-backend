@@ -80,6 +80,43 @@ def test_microsoft_normalizer_reads_nested_attendee_payload() -> None:
     assert normalized.attendees[0].display_name == "Buyer"
 
 
+def test_normalizer_extracts_provider_series_external_id() -> None:
+    """Recurring provider series ids stay on per-user state, not canonical identity."""
+    google = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-occurrence-1",
+            "iCalUID": "shared-google-ical",
+            "recurringEventId": "google-series-master",
+            "originalStartTime": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+            "summary": "Recurring Sync",
+            "status": "confirmed",
+            "start": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-07-01T10:30:00Z", "timeZone": "UTC"},
+        },
+        "google",
+    )
+    microsoft = CalendarEventNormalizer().normalize(
+        {
+            "id": "ms-occurrence-1",
+            "iCalUId": "shared-ms-occurrence-ical",
+            "seriesMasterId": "ms-series-master",
+            "type": "occurrence",
+            "subject": "Recurring Sync",
+            "isCancelled": False,
+            "start": {"dateTime": "2026-07-01T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-07-01T10:30:00Z", "timeZone": "UTC"},
+        },
+        "microsoft",
+    )
+
+    assert google.series_external_id == "google-series-master"
+    assert google.identity.external_id == "shared-google-ical"
+    assert google.identity.occurrence_anchor == "2026-07-01T10:00:00Z"
+    assert microsoft.series_external_id == "ms-series-master"
+    assert microsoft.identity.external_id == "shared-ms-occurrence-ical"
+    assert microsoft.identity.occurrence_anchor == ""
+
+
 def test_change_detector_uses_normalized_fields_for_state_only_skip() -> None:
     """Equivalent re-sync of an event must not flag a meaningful change.
 

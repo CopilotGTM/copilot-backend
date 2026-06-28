@@ -169,6 +169,11 @@ class CalendarEventUserState(SQLModel, table=True):
         UniqueConstraint("event_id", "integration_id", name="uq_calendar_event_user_state"),
         Index("ix_calendar_user_state_integration", "integration_id"),
         Index("ix_calendar_user_state_integration_external", "integration_id", "external_id"),
+        Index(
+            "ix_calendar_user_state_integration_series_external",
+            "integration_id",
+            "series_external_id",
+        ),
     )
 
     state_id: UUID = Field(
@@ -189,6 +194,11 @@ class CalendarEventUserState(SQLModel, table=True):
     external_id: str = Field(
         sa_column=Column(String(1024), nullable=False),
         description="Mailbox-specific provider event ID for this integration/user.",
+    )
+    series_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(1024), nullable=True),
+        description="Mailbox-specific recurring series/master event ID for this integration/user.",
     )
     is_deleted: bool = Field(
         default=False,

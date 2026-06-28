@@ -69,6 +69,7 @@ class NormalizedCalendarEvent:
     provider_event_id: str | None
     identity: CalendarEventIdentity
     user_external_id: str | None
+    series_external_id: str | None
     fields: dict[str, Any]
     attendees: list[NormalizedCalendarAttendee]
     has_attendee_snapshot: bool

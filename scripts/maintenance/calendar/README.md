@@ -34,6 +34,20 @@ Resets sync cursors (delta tokens, sync tokens, last_synced_at) and dispatches m
 .venv\Scripts\python.exe -m scripts.maintenance.calendar.trigger_initial_integrations_sync --execute
 ```
 
+### `reconcile_deleted_calendar_events.py`
+Fetches a fresh bounded provider snapshot for one or more organizations, compares it with active local `calendar_event_user_states`, and reports rows that should be soft-deleted because they are no longer present in the provider calendar. Dry run writes JSON reports; `--execute` marks matching user-state rows deleted and only marks the canonical event cancelled when no active user-state rows remain.
+
+```powershell
+# Dry run one org, all active calendar integrations
+.venv\Scripts\python.exe -m scripts.maintenance.calendar.reconcile_deleted_calendar_events --org-id "<org-id>"
+
+# Dry run one integration and write reports to a chosen folder
+.venv\Scripts\python.exe -m scripts.maintenance.calendar.reconcile_deleted_calendar_events --org-id "<org-id>" --integration-id "<integration-id>" --output-dir ".\calendar-reconciliation-reports"
+
+# Execute after reviewing the JSON report
+.venv\Scripts\python.exe -m scripts.maintenance.calendar.reconcile_deleted_calendar_events --org-id "<org-id>" --integration-id "<integration-id>" --execute
+```
+
 ### `delete_series_calendar_events.py`
 Deletes recurring/series calendar events and all dependent records (user_states, attendees, deal_associations, meetings, transcript_segments, deal_jobs). Used for clean re-fetch of recurring data after identity model changes.
 
