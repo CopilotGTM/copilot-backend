@@ -292,7 +292,11 @@ class WhatsAppBotService:
 
     async def _route_message(self, message: WhatsAppInboundMessage) -> None:
         """Route one normalized message to login, job creation, and enqueue path."""
-        user, _ = await self._get_linked_user(message.recipient_wa_id, message.phone_number_id)
+        user, _ = await self._get_linked_user(
+            message.recipient_wa_id,
+            message.phone_number_id,
+            inbound_message_id=message.message_id,
+        )
         if not user:
             login_message = self._get_login_message_with_state(message)
             # Unlinked numbers cannot be trusted for chat history, so we force a
@@ -449,7 +453,11 @@ class WhatsAppBotService:
         )
 
     async def _get_linked_user(
-        self, recipient_wa_id: str, phone_number_id: str
+        self,
+        recipient_wa_id: str,
+        phone_number_id: str,
+        *,
+        inbound_message_id: str | None = None,
     ) -> tuple[User | None, dict[str, Any] | None]:
         # Identity lookups only trust the org mapping stored in master DB.
         # External IDs (WA IDs/phone IDs) are used only as lookup keys.
@@ -462,6 +470,20 @@ class WhatsAppBotService:
                     phone_number_id,
                 )
                 if user and mapping:
+                    now = datetime.now(UTC)
+                    context = dict(mapping.conversation_context or {})
+                    context.update(
+                        {
+                            "phone_number_id": phone_number_id,
+                            "recipient_wa_id": recipient_wa_id,
+                            "last_inbound_at": now.isoformat(),
+                        }
+                    )
+                    if inbound_message_id:
+                        context["last_inbound_message_id"] = inbound_message_id
+                    mapping.conversation_context = context
+                    mapping.last_used_at = now
+                    await session.commit()
                     return user, mapping.conversation_context
                 return None, None
             return None, None
