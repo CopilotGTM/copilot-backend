@@ -1,3 +1,11 @@
+"""Workflow tests for contact research orchestration.
+
+The worker workflow loads a contact, releases the session before provider work,
+then reopens write sessions for provider fields, optional summaries, and the
+visible completion activity. These tests keep those phase boundaries explicit
+without requiring a real database or Celery worker.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -9,14 +17,19 @@ from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 
 
 class _Result:
+    """Tiny scalar result wrapper matching the SQLAlchemy result method used here."""
+
     def __init__(self, row=None):
         self.row = row
 
     def scalar_one_or_none(self):
+        """Return the configured row for service lookups."""
         return self.row
 
 
 class _SessionSource:
+    """Async iterable that yields fake sessions in workflow phase order."""
+
     def __init__(self, *sessions):
         self.sessions = list(sessions)
 
@@ -26,6 +39,8 @@ class _SessionSource:
 
 
 class _SessionFactory:
+    """Factory fake that returns one session source per acquire call."""
+
     def __init__(self, *sessions):
         self.sessions = list(sessions)
 
@@ -34,31 +49,46 @@ class _SessionFactory:
 
 
 class _LoadSession:
+    """Read-phase session fake used before provider calls."""
+
     def __init__(self, contact):
         self.contact = contact
 
     async def get(self, _model, _item_id):  # noqa: ANN001
+        """Return the fixture contact for snapshot loading."""
         return self.contact
 
 
 class _WriteSession:
+    """Write-phase session fake that records commits and SQL statements."""
+
     def __init__(self, contact):
         self.contact = contact
         self.commits = 0
+        self.statements = []
 
     async def get(self, _model, _item_id):  # noqa: ANN001
+        """Return the fixture contact for persistence and activity phases."""
         return self.contact
 
+    async def execute(self, stmt):  # noqa: ANN001
+        """Capture propagation SQL without executing it."""
+        self.statements.append(stmt)
+
     async def commit(self):
+        """Count transaction commits issued by the workflow."""
         self.commits += 1
 
 
 class _Projection:
+    """Activity projection fake that captures completion cards."""
+
     def __init__(self, _session, _organisation_id):  # noqa: ANN001
         self.completed_calls = []
         PROJECTIONS.append(self)
 
     async def upsert_contact_enrichment_completed(self, contact, **kwargs):  # noqa: ANN001
+        """Record the completion activity payload for assertions."""
         self.completed_calls.append((contact, kwargs))
 
 
@@ -100,6 +130,7 @@ async def test_provider_success_persists_enrichment_when_summary_fails(monkeypat
     monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
 
     async def fake_provider(payload):  # noqa: ANN001
+        """Return durable Apollo fields while the summary phase fails."""
         return service_module.ContactProviderResearchResult(
             status="found",
             profile_enrichment={
@@ -116,6 +147,7 @@ async def test_provider_success_persists_enrichment_when_summary_fails(monkeypat
         )
 
     async def failing_summary(_profile_enrichment):  # noqa: ANN001
+        """Simulate an LLM summary failure after provider persistence succeeds."""
         return service_module.ContactResearchSummaryResult(
             status="error",
             error_detail="summary model unavailable",
@@ -186,11 +218,13 @@ async def test_provider_not_found_marks_attempt_without_summary(monkeypatch) -> 
     monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
 
     async def fake_provider(payload):  # noqa: ANN001
+        """Return a provider no-match that should mark the attempt complete."""
         return service_module.ContactProviderResearchResult(status="not_found")
 
     summary_called = False
 
     async def summary_generator(_profile_enrichment):  # noqa: ANN001
+        """Fail the test if summary generation runs after a provider no-match."""
         nonlocal summary_called
         summary_called = True
         return service_module.ContactResearchSummaryResult(status="generated", summary_markdown="")
@@ -249,6 +283,7 @@ async def test_provider_error_records_no_completed_activity(monkeypatch) -> None
     monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
 
     async def failing_provider(payload):  # noqa: ANN001
+        """Return a retryable provider failure without writing completion activity."""
         return service_module.ContactProviderResearchResult(
             status="error",
             error_detail="apollo unavailable",
@@ -289,6 +324,7 @@ async def test_unsafe_free_email_domain_skips_provider(monkeypatch) -> None:
     )
 
     async def provider_should_not_run(payload):  # noqa: ANN001
+        """Guard that unsafe free-email domains skip provider lookup entirely."""
         raise AssertionError("provider should not be called for unsafe domains")
 
     workflow = workflow_module.ContactResearchWorkflowService(
