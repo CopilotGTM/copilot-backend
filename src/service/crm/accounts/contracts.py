@@ -21,11 +21,24 @@ AccountMatchedBy = Literal["domain", "name", "explicit_id", "copied_source", "cr
 
 
 @dataclass(frozen=True)
+class AccountCreateCommand:
+    """Canonical account-create payload shared by API, tools, and workflows."""
+
+    name: str | None = None
+    domain: str | None = None
+    website: str | None = None
+    industry: str | None = None
+    linkedin_url: str | None = None
+
+
+@dataclass(frozen=True)
 class AccountWriteContext:
     """Caller metadata for duplicate policy and future account audit events."""
 
     source: str
     actor_user_id: UUID | None = None
+    actor_name: str | None = None
+    actor_email: str | None = None
     source_label: str | None = None
     created_via: str | None = None
     duplicate_scope: AccountDuplicateScope = "internal_only"

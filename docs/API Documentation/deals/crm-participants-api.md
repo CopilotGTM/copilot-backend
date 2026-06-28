@@ -24,6 +24,15 @@ All endpoints return the shared `GenericResponse` envelope.
 
 ---
 
+## Write Request Validation
+
+Participant write request bodies are strict. Unknown fields are rejected with
+`422`; send only `participants[].participant_type`, `participants[].related_id`,
+`participants[].relationship_role`, or `relationship_role` on the role update
+endpoint. Add requests must include at least one item in `participants`.
+
+---
+
 ## Authentication
 
 - Required: Bearer token (`Authorization: Bearer <access_token>`)
@@ -95,6 +104,7 @@ Success response (201):
         "related_local_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
         "related_name": "Rita Singh",
         "related_email": "rita@acme.com",
+        "linkedin_url": "https://www.linkedin.com/in/rita-singh",
         "relationship_role": "decision_maker",
         "is_deleted": false
       }
@@ -110,6 +120,10 @@ Success response (201):
 Notes:
 - Only internal CRM deals are writable. External CRM deals return HTTP 409.
 - `related_id` must belong to the same internal CRM integration.
+- `relationship_role` is trimmed; blank strings are stored as `null`.
+- Contact participants are de-duplicated by contact/email identity, not by role; adding the same contact twice skips the duplicate even if the role differs.
+- A contact participant with a primary-contact role marks the participant as primary-contact state internally.
+- Company participants update the deal account snapshot (`company_id`, `company_name`, `company_domain`, and related profile fields) in the same transaction.
 - Contact participants trigger stakeholder sync for the deal.
 - Use `GET /contacts`, `GET /companies`, and `GET /users`
   to resolve selectable IDs.
@@ -135,6 +149,7 @@ Success response (200):
     "related_local_id": "e3a8f0a5-8c79-4ab3-93c0-4b3da7c8a1e6",
     "related_name": "Rita Singh",
     "related_email": null,
+    "linkedin_url": "https://www.linkedin.com/in/rita-singh",
     "relationship_role": "decision_maker",
     "is_deleted": true
   }
@@ -173,6 +188,7 @@ Success response (200):
     "related_local_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
     "related_name": "Saksham Bhutani",
     "related_email": "saksham@example.com",
+    "linkedin_url": null,
     "relationship_role": "se",
     "is_deleted": false
   }
@@ -182,6 +198,7 @@ Success response (200):
 Notes:
 - Only internal CRM deal participants are writable.
 - Changing role updates the participant identity for de-duplication.
+- `relationship_role` is trimmed; send `null` or a blank string to clear it.
 
 ---
 

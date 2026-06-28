@@ -11,8 +11,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
 
-AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 CALENDAR_DISCOVERY_METADATA_KEY = "calendar_contact_account_discovery_v1"
 CALENDAR_DISCOVERY_RUN_VERSION = "calendar_contact_account_discovery_v1"
 CALENDAR_DISCOVERY_DEDUPE_KEY_PREFIX = CALENDAR_DISCOVERY_RUN_VERSION

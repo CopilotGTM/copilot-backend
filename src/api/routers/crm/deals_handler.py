@@ -40,6 +40,8 @@ from src.api.schemas.crm_models import (
     DealOwnerDetail,
     DealOwnerFilterItem,
     DealOwnerFilters,
+    DealSearchItem,
+    DealSearchPage,
     DealsListParams,
     DealsPage,
     DealsStats,
@@ -129,6 +131,12 @@ def _currency_symbol_for(value: str | None) -> str | None:
     return _CURRENCY_SYMBOL_BY_CODE.get(code)
 
 
+def _normalize_deal_status(value) -> str:
+    if value is None:
+        return "open"
+    return getattr(value, "value", value)
+
+
 def get_deals_list_params(
     limit: int = Query(40, ge=1, le=100, description="Maximum deals per page"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
@@ -137,9 +145,15 @@ def get_deals_list_params(
     owner_ids: list[UUID] | None = Query(None, description="Filter by internal owner IDs"),
     min_amount: float | None = Query(None, description="Minimum deal amount"),
     max_amount: float | None = Query(None, description="Maximum deal amount"),
-    min_close_date: datetime | None = Query(None, description="Minimum close date"),
-    max_close_date: datetime | None = Query(None, description="Maximum close date"),
-    q: str | None = Query(None, description="Case-insensitive search on deal name"),
+    min_close_date: datetime | None = Query(None, description="Minimum actual close date"),
+    max_close_date: datetime | None = Query(None, description="Maximum actual close date"),
+    min_expected_close_date: datetime | None = Query(
+        None, description="Minimum expected close date"
+    ),
+    max_expected_close_date: datetime | None = Query(
+        None, description="Maximum expected close date"
+    ),
+    q: str | None = Query(None, description="Case-insensitive search on deal or company name"),
 ) -> DealsListParams:
     """Dependency that parses and returns deals list query parameters."""
     return DealsListParams(
@@ -152,6 +166,8 @@ def get_deals_list_params(
         max_amount=max_amount,
         min_close_date=min_close_date,
         max_close_date=max_close_date,
+        min_expected_close_date=min_expected_close_date,
+        max_expected_close_date=max_expected_close_date,
         q=q,
     )
 
@@ -242,18 +258,68 @@ async def _get_integration_types_map(
 
 
 def _map_deal_write_response(deal) -> DealWriteResponse:
+    owner_details = (
+        [
+            DealOwnerDetail(
+                owner_id=deal.owner_id,
+                name=getattr(deal, "owner_name", None),
+                email=getattr(deal, "owner_email", None),
+            )
+        ]
+        if any(
+            [
+                getattr(deal, "owner_id", None),
+                getattr(deal, "owner_name", None),
+                getattr(deal, "owner_email", None),
+            ]
+        )
+        else []
+    )
     return DealWriteResponse(
         deal_id=deal.deal_id,
         name=deal.name,
+        amount=getattr(deal, "amount", None),
+        predicted_amount=getattr(deal, "predicted_amount", None),
+        currency=_normalize_currency_code(getattr(deal, "currency", None)),
+        currency_symbol=_currency_symbol_for(getattr(deal, "currency", None)),
         pipeline_id=deal.pipeline_id,
+        pipeline_name=getattr(deal, "pipeline_name", None),
+        pipeline_label=getattr(deal, "pipeline_label", None),
         stage_id=deal.stage_id,
-        deal_status=str(deal.deal_status),
+        stage_name=getattr(deal, "stage_name", None),
+        stage_label=getattr(deal, "stage_label", None),
+        deal_status=_normalize_deal_status(deal.deal_status),
+        probability=getattr(deal, "probability", None),
+        forecast_category=getattr(deal, "forecast_category", None),
         owner_user_id=deal.owner_id,
+        owner_name=getattr(deal, "owner_name", None),
+        owner_email=getattr(deal, "owner_email", None),
+        owner_details=owner_details,
         company_id=getattr(deal, "company_id", None),
         company_name=getattr(deal, "company_name", None),
         company_domain=getattr(deal, "company_domain", None),
+        company_industry=getattr(deal, "company_industry", None),
+        company_website=getattr(deal, "company_website", None),
+        company_linkedin_url=getattr(deal, "company_linkedin_url", None),
+        company_country=getattr(deal, "company_country", None),
+        primary_contact_id=getattr(deal, "primary_contact_id", None),
+        primary_contact_name=getattr(deal, "primary_contact_name", None),
+        primary_contact_email=getattr(deal, "primary_contact_email", None),
+        source_created_at=getattr(deal, "source_created_at", None),
+        close_date=getattr(deal, "close_date", None),
+        expected_close_date=getattr(deal, "expected_close_date", None),
+        closed_won_at=getattr(deal, "closed_won_at", None),
+        closed_lost_at=getattr(deal, "closed_lost_at", None),
+        closed_reason=getattr(deal, "closed_reason", None),
+        stage_entered_at=getattr(deal, "stage_entered_at", None),
+        stage_updated_at=getattr(deal, "stage_updated_at", None),
+        deal_type=getattr(deal, "deal_type", None),
+        priority=getattr(deal, "priority", None),
+        lead_source=getattr(deal, "lead_source", None),
+        description=getattr(deal, "description", None),
         created_at=deal.created_at,
         updated_at=deal.updated_at,
+        synced_at=getattr(deal, "synced_at", None),
     )
 
 
@@ -392,6 +458,7 @@ def _map_custom_field_definitions(
                 default_currency_code=deal_currency_code,
             )
             currency_symbol = _currency_symbol_for(currency_code)
+        is_formula = data_type == "formula"
 
         mapped.append(
             DealCustomColumnDefinition(
@@ -403,6 +470,11 @@ def _map_custom_field_definitions(
                 validation=field.validation if isinstance(field.validation, dict) else {},
                 currency_code=currency_code,
                 currency_symbol=currency_symbol,
+                editable=not is_formula,
+                patch_field=None if is_formula else f"custom_columns.{field.key}",
+                edit_control=None if is_formula else data_type,
+                edit_policy="formula" if is_formula else "custom_columns",
+                locked_reason="Formula custom fields are read-only." if is_formula else None,
             )
         )
     return mapped
@@ -460,8 +532,9 @@ def _extract_custom_columns(
     - Pipeline ID
     - Owner ID (internal)
     - Deal Amount range (min/max)
-    - Close Date range (min/max)
-    - Search query on deal name (case-insensitive)
+    - Actual Close Date range (min/max)
+    - Expected Close Date range (min/max)
+    - Search query on deal or company name (case-insensitive)
     """,
 )
 @deals_router.get(
@@ -492,6 +565,8 @@ async def list_deals(
             max_amount=params.max_amount,
             min_close_date=params.min_close_date,
             max_close_date=params.max_close_date,
+            min_expected_close_date=params.min_expected_close_date,
+            max_expected_close_date=params.max_expected_close_date,
             q=params.q,
         )
 
@@ -511,14 +586,17 @@ async def list_deals(
                 deal_id=deal.deal_id,
                 name=deal.name,
                 amount=deal.amount,
+                predicted_amount=deal.predicted_amount,
                 currency=_normalize_currency_code(deal.currency),
                 currency_symbol=_currency_symbol_for(deal.currency),
-                deal_status=deal.deal_status,
+                deal_status=_normalize_deal_status(deal.deal_status),
                 probability=deal.probability,
                 close_date=deal.close_date,
                 expected_close_date=deal.expected_close_date,
+                stage_id=deal.stage_id,
                 stage_name=deal.stage_name,
                 stage_label=deal.stage_label,
+                pipeline_id=deal.pipeline_id,
                 pipeline_name=deal.pipeline_name,
                 pipeline_label=deal.pipeline_label,
                 owner_details=(
@@ -585,6 +663,82 @@ async def list_deals(
 
 
 @deals_router.get(
+    "/deals/search",
+    response_model=GenericResponse[DealSearchPage],
+    tags=["crm", "deals"],
+    summary="Search CRM deals with cursor pagination",
+)
+async def search_deals(
+    response: FastAPIResponse,
+    q: str | None = Query(None, description="Case-insensitive search on deal or company name"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum deals per cursor page"),
+    cursor: str | None = Query(None, description="Opaque cursor returned by the previous page"),
+    service: DealReadService = Depends(get_deals_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[DealSearchPage]:
+    """Return lightweight deal rows for search dropdowns."""
+    try:
+        deals, next_cursor = await service.search_deals(q=q, limit=limit, cursor=cursor)
+        integration_ids = {deal.integration_id for deal in deals if deal.integration_id}
+        integration_types_map = await _get_integration_types_map(
+            service.session, service.organisation_id, integration_ids
+        )
+        items = [
+            DealSearchItem(
+                deal_id=deal.deal_id,
+                name=deal.name,
+                amount=deal.amount,
+                predicted_amount=deal.predicted_amount,
+                currency=_normalize_currency_code(deal.currency),
+                currency_symbol=_currency_symbol_for(deal.currency),
+                deal_status=_normalize_deal_status(deal.deal_status),
+                stage_id=deal.stage_id,
+                stage_name=deal.stage_name,
+                pipeline_id=deal.pipeline_id,
+                pipeline_name=deal.pipeline_name,
+                company_id=deal.company_id,
+                company_name=getattr(deal, "company_name", None),
+                company_domain=getattr(deal, "company_domain", None),
+                is_internal=integration_types_map.get(deal.integration_id, False),
+                owner_details=(
+                    [
+                        DealOwnerDetail(
+                            name=deal.owner_name,
+                            email=deal.owner_email,
+                            owner_id=deal.owner_id,
+                        )
+                    ]
+                    if any([getattr(deal, "owner_id", None), deal.owner_name, deal.owner_email])
+                    else []
+                ),
+                created_at=deal.created_at,
+                updated_at=deal.updated_at,
+            )
+            for deal in deals
+        ]
+        page = DealSearchPage(
+            items=items,
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
+        return Response.success_response(message="Deals search results retrieved", data=page)
+    except DealReadServiceError as e:
+        logger.warning("Deal search access error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            response=response,
+        )
+    except Exception as e:
+        logger.error("Unexpected error searching deals: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
     "/deals/owners",
     response_model=GenericResponse[DealOwnerFilters],
     tags=["crm", "deals"],
@@ -599,7 +753,7 @@ async def list_deals(
 async def list_deal_owners(
     response: FastAPIResponse,
     limit: int = Query(200, ge=1, le=1000, description="Maximum owners to return"),
-    q: str | None = Query(None, description="Search by owner name, email, or external ID"),
+    q: str | None = Query(None, description="Search by owner name, email, or owner UUID"),
     owner_ids: list[UUID] | None = Query(
         None,
         description="Owner IDs to hydrate even if they are outside the current search result.",
@@ -836,11 +990,12 @@ async def get_deal(
                 created_at = created_at.replace(tzinfo=UTC)
             deal_age_days = (datetime.now(UTC) - created_at).days
 
-        # Fetch company details from associated company (these live on CRMCompany, not CRMDeal)
-        company_industry = None
-        company_website = None
-        company_linkedin_url = None
-        company_country = None
+        # Prefer the linked company row, but keep any profile snapshot already
+        # carried by the deal so detail matches write responses after account edits.
+        company_industry = getattr(deal, "company_industry", None)
+        company_website = getattr(deal, "company_website", None)
+        company_linkedin_url = getattr(deal, "company_linkedin_url", None)
+        company_country = getattr(deal, "company_country", None)
         if deal.company_id:
             company = await service.get_company_by_id(deal.company_id)
             if company:
@@ -934,7 +1089,7 @@ async def get_deal(
             currency=_normalize_currency_code(deal.currency),
             currency_symbol=_currency_symbol_for(deal.currency),
             predicted_amount=deal.predicted_amount,
-            deal_status=deal.deal_status,
+            deal_status=_normalize_deal_status(deal.deal_status),
             probability=deal.probability,
             forecast_category=deal.forecast_category,
             stage_id=deal.stage_id,
@@ -1022,7 +1177,11 @@ async def create_deal(
 ) -> GenericResponse[DealWriteResponse]:
     """Create a new internal CRM deal."""
     try:
-        deal = await service.create_deal(request.model_dump())
+        create_payload = request.model_dump()
+        # Contact stakeholders need the route-level job/research follow-up below,
+        # so keep creation in one place instead of pre-creating participants here.
+        create_payload.pop("contact_participants", None)
+        deal = await service.create_deal(create_payload)
         inline_stakeholder_ids: list[UUID] = []
         if request.contact_participants:
             stakeholder_service = StakeholderWriteService(
@@ -1041,17 +1200,29 @@ async def create_deal(
         await service.session.refresh(deal)
 
         if inline_stakeholder_ids:
-            job_visibility_service = StakeholderJobVisibilityService(
-                service.session,
-                service.organisation_id,
-                service.actor_user_id,
-            )
-            for participant_id in inline_stakeholder_ids:
-                await job_visibility_service.create_stakeholder_processing_jobs(
-                    deal.deal_id,
-                    participant_id,
+            try:
+                job_visibility_service = StakeholderJobVisibilityService(
+                    service.session,
+                    service.organisation_id,
+                    service.actor_user_id,
                 )
-            await service.session.commit()
+                for participant_id in inline_stakeholder_ids:
+                    await job_visibility_service.create_stakeholder_processing_jobs(
+                        deal.deal_id,
+                        participant_id,
+                    )
+                await service.session.commit()
+            except Exception:
+                await service.session.rollback()
+                logger.error(
+                    "Failed to create stakeholder processing jobs after deal creation",
+                    extra={
+                        "organisation_id": str(service.organisation_id),
+                        "deal_id": str(deal.deal_id),
+                        "participant_ids": [str(pid) for pid in inline_stakeholder_ids],
+                    },
+                    exc_info=True,
+                )
             for participant_id in inline_stakeholder_ids:
                 await _dispatch_auto_stakeholder_research(
                     organisation_id=service.organisation_id,
@@ -1168,6 +1339,7 @@ async def update_deal_primary_contact(
             deal_id=deal_id,
             primary_contact_name=request.primary_contact_name,
             primary_contact_email=request.primary_contact_email,
+            clear_primary_contact=request.is_clear_request,
         )
         await service.session.commit()
         await service.session.refresh(deal)

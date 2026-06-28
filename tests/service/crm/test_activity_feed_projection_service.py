@@ -18,7 +18,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
-from src.domain.models.organisation_tables.sync.crm import CRMDeal, CRMNote, CRMTask
+from src.domain.models.organisation_tables.sync.crm import CRMContact, CRMDeal, CRMNote, CRMTask
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
@@ -98,6 +98,123 @@ def _activity_link_values(session: _FakeSession) -> set[tuple[object, object, ob
     return {
         (values["object_type"], values["object_id"], values["link_role"], values["link_source"])
         for values in link_values
+    }
+
+
+def _activity_values_by_source_type(session: _FakeSession, source_type: str) -> dict[str, object]:
+    for statement in session.statements:
+        values = _compiled_values(statement)
+        if values.get("source_type") == source_type:
+            return values
+    raise AssertionError(f"activity source_type not found: {source_type}")
+
+
+@pytest.mark.asyncio
+async def test_contact_created_projection_writes_contact_activity_and_links() -> None:
+    """Manual contact creation should be visible on the contact and account activity feeds."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    contact_id = uuid4()
+    company_id = uuid4()
+    created_at = datetime(2026, 6, 25, 9, 0, tzinfo=UTC)
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        full_name="Jane Buyer",
+        email="jane@example.com",
+        job_title="CFO",
+        company_id=company_id,
+        company_name="Acme",
+        created_at=created_at,
+    )
+    session = _FakeSession()
+
+    await ActivityFeedProjectionService(session, organisation_id).upsert_contact_created(contact)
+
+    values = _compiled_values(session.statements[0])
+    assert values["activity_id"] == contact_id
+    assert values["activity_type"] == "EVENT"
+    assert values["title"] == "Contact created: Jane Buyer"
+    assert values["summary"] == "jane@example.com"
+    assert values["preview"] == "jane@example.com"
+    assert values["occurred_at"] == created_at
+    assert values["source_type"] == "CONTACT_CREATED"
+    assert values["source_record_id"] == str(contact_id)
+    assert values["source_integration_id"] == integration_id
+    assert values["display_payload"] == {
+        "contact_name": "Jane Buyer",
+        "email": "jane@example.com",
+        "job_title": "CFO",
+        "company_name": "Acme",
+    }
+    assert _activity_link_values(session) == {
+        ("CONTACT", contact_id, "RELATED", "SYSTEM"),
+        ("COMPANY", company_id, "RELATED", "SYSTEM"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_contact_enrichment_lifecycle_projection_writes_deterministic_events() -> None:
+    """Enrichment trigger and completion cards should be replay-safe per job."""
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    company_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
+    occurred_at = datetime(2026, 6, 25, 9, 30, tzinfo=UTC)
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        full_name="Jane Buyer",
+        email="jane@example.com",
+        company_id=company_id,
+        profile_enrichment_source="apollo",
+    )
+    session = _FakeSession()
+
+    service = ActivityFeedProjectionService(session, organisation_id)
+    await service.upsert_contact_enrichment_triggered(
+        contact,
+        job_id=job_id,
+        actor_user_id=user_id,
+        occurred_at=occurred_at,
+    )
+    await service.upsert_contact_enrichment_completed(
+        contact,
+        job_id=job_id,
+        provider_status="found",
+        summary_status="generated",
+        occurred_at=occurred_at,
+    )
+
+    triggered = _activity_values_by_source_type(session, "CONTACT_ENRICHMENT_TRIGGERED")
+    completed = _activity_values_by_source_type(session, "CONTACT_ENRICHMENT_COMPLETED")
+    assert triggered["activity_id"] != completed["activity_id"]
+    assert triggered["source_type"] == "CONTACT_ENRICHMENT_TRIGGERED"
+    assert triggered["source_record_id"] == f"{contact_id}:CONTACT_ENRICHMENT_TRIGGERED:{job_id}"
+    assert triggered["title"] == "Contact enrichment triggered"
+    assert triggered["display_payload"] == {
+        "contact_name": "Jane Buyer",
+        "email": "jane@example.com",
+        "job_id": str(job_id),
+    }
+    assert completed["source_type"] == "CONTACT_ENRICHMENT_COMPLETED"
+    assert completed["source_record_id"] == f"{contact_id}:CONTACT_ENRICHMENT_COMPLETED:{job_id}"
+    assert completed["title"] == "Contact enrichment completed"
+    assert completed["display_payload"] == {
+        "contact_name": "Jane Buyer",
+        "email": "jane@example.com",
+        "job_id": str(job_id),
+        "provider_status": "found",
+        "summary_status": "generated",
+        "provider": "apollo",
+    }
+    assert _activity_link_values(session) == {
+        ("CONTACT", contact_id, "RELATED", "SYSTEM"),
+        ("COMPANY", company_id, "RELATED", "SYSTEM"),
+        ("USER", user_id, "OWNER", "SYSTEM"),
     }
 
 

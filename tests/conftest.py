@@ -79,6 +79,7 @@ def client(mocker):
     mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", new=AsyncMock())
     mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
     mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.init_sentry", return_value=None)
     mocker.patch(
         "src.api.routers.integrations.copilot_oauth_routes.app_config.APP_URL",
         "http://localhost:3000",

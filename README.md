@@ -1,232 +1,304 @@
-# Copilot Backend - Production-Grade B2B SaaS
+# CopilotGTM Backend
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688.svg)](https://fastapi.tiangolo.com)
 [![UV](https://img.shields.io/badge/uv-package%20manager-blue)](https://github.com/astral-sh/uv)
 
-Enterprise-grade B2B SaaS backend built with FastAPI, async support, and AI integrations.
+CopilotGTM Backend is the enterprise B2B SaaS backend for deal management,
+CRM/integration sync, knowledge workflows, and AI-powered sales insights.
 
----
+The application is built with Python 3.11, FastAPI, PostgreSQL with pgvector,
+Redis, Celery workers, SQLModel/SQLAlchemy, Alembic, Supabase auth, Azure
+services, and Agno/OpenAI-based agent workflows.
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
-- **Python 3.11+** - [Download](https://www.python.org/downloads/)
-- **UV** - Fast Python package installer ([Installation Guide](https://github.com/astral-sh/uv#installation))
-- **Docker & Docker Compose** - For containerized services
-- **PostgreSQL 16** with pgvector extension
-- **Redis 6+** - For caching and task queue
+- Python 3.11
+- uv
+- Docker and Docker Compose
+- PostgreSQL 16 with pgvector
+- Redis 6+
 
-### Install UV (Fast Package Manager)
-
-**Windows (PowerShell):**
-
-```powershell
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-**macOS/Linux:**
+### Install Dependencies
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
----
-
-## 📦 Installation
-
-### 1. Clone and Setup Dependencies
-
-```bash
-# Install dependencies
 uv sync --all-extras
 ```
 
-**⚠️ IMPORTANT**: Always use `uv sync --all-extras` for development to get dev tools!
+Use `uv sync --all-extras` for development so local tools, tests, and worker
+dependencies are available.
 
-### 2. Start Infrastructure Services
+### Start Local Infrastructure
 
 ```bash
 docker run -d --name copilot-postgres -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres pgvector/pgvector:pg16
 docker run -d --name copilot-redis -p 6379:6379 redis:7-alpine
 ```
 
-### 3. Configure Environment Variables
-
-Create a `.env` file in the project root:
+Or start the repository Compose stack:
 
 ```bash
-# Database Configuration
+docker-compose up -d
+```
+
+### Configure Environment
+
+Create `.env` in the project root. Common local variables:
+
+```bash
 DATABASE_HOST=localhost
 DATABASE_PORT=5432
 DATABASE_USER=postgres
 DATABASE_PASSWORD=postgres
 DATABASE_NAME=postgres
 
-# Super Admin Configuration
 SUPER_ADMIN_EMAIL=admin@yourcompany.com
 
-# Supabase Configuration
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_JWT_SECRET=your-jwt-secret
 
-# Email Configuration (Resend)
 RESEND_API_KEY=your-resend-api-key
 FROM_EMAIL=noreply@yourdomain.com
 
-# Application Configuration
 APP_NAME=CopilotGTM
 APP_URL=https://your-app-domain.com
 
-# Azure Configuration (if using Azure services)
 AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-api-key
 ```
 
-### 4. Initialize Database Migrations
+### Run Migrations
 
 ```bash
-# Run master schema migrations
 uv run python -m scripts.run_master_migrations
-
-# Deploy super admin (if SUPER_ADMIN_EMAIL is set)
-uv run python -m scripts.admin.deploy_with_super_admin
-
-# For development: Initialize organization schema (test_org_schema)
-# First create schema manually if no version file exists or making changes:
-python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup"
-python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head
+uv run python -m scripts.run_org_migrations
 ```
 
-### 5. Run the Application
+Deploy the configured super admin when needed:
 
-**Development Mode:**
+```bash
+uv run python -m scripts.admin.deploy_with_super_admin
+```
+
+### Run the API
 
 ```bash
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Production Mode:**
+Production-style local run:
 
 ```bash
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
----
+## Essential Commands
 
-## 🐳 Docker Deployment
+```bash
+uv sync --all-extras
+uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+uv run pytest tests/ -v
+uv run pytest tests/path/to/test.py -v
+uv run pytest tests/ -v -k "test_name"
+uv run ruff check src/ tests/
+uv run ruff check --fix src/ tests/
+uv run mypy src/
+```
 
-### Build Production Image
+Only run broad lint/type checks when preparing a PR or when the touched code
+makes them relevant. Prefer targeted tests while iterating.
+
+## Architecture
+
+CopilotGTM is a schema-isolated multi-tenant backend.
+
+- `public` schema stores global data such as organisations, users, and super admins.
+- Each organization gets an isolated `org_*` schema for tenant data.
+- API routes should remain thin and delegate business logic to services.
+- Workers own long-running asynchronous jobs.
+- Agents are initialized with immutable security boundaries and acquire sessions on demand.
+
+### Source Layout
+
+```text
+src/
+├── api/              FastAPI routes, dependencies, events, schemas
+├── agents/           AI agent orchestration, tools, workflows
+├── domain/models/    SQLModel data models
+│   ├── master_tables/        Public schema tables
+│   └── organisation_tables/  Tenant schema tables
+├── service/          Business logic services
+├── infra/            Database, auth, config, storage, messaging, observability
+└── workers/          Celery worker applications
+```
+
+### Workers
+
+The backend has these Celery worker areas:
+
+- `knowledge_worker`
+- `chat_worker`
+- `deal_worker`
+- `integrations_worker`
+- `organization_worker`
+
+Each worker follows the local worker pattern with `celery_app.py`, `config.py`,
+`client.py`, and task modules.
+
+### Migrations
+
+```text
+migrations/
+├── master_migrations/    Alembic migrations for public schema
+└── org_migrations/       Alembic migrations for org_* schemas
+```
+
+## Critical Rules
+
+### Organization Isolation
+
+Every tenant data path must enforce organization isolation.
+
+- Always scope tenant queries by the current `organisation_id`.
+- Never trust external IDs alone.
+- Validate resource ownership before returning or mutating tenant data.
+- Agent tools must not access cross-organization data.
+- Scope by both `organisation_id` and `user_id` where the domain requires it.
+
+### Database Sessions
+
+Database connections are limited. Acquire, use, and release promptly.
+
+- Do not hold sessions across LLM calls, slow external services, or unpredictable network calls.
+- Use the existing fresh-session pattern in agents and workers.
+- Extract needed values, release the session, then perform long-running work.
+
+### Agent Boundaries
+
+Agents receive security boundaries at initialization.
+
+```python
+agent = SummaryAgent(
+    organisation_id=org_uuid,
+    deal_id=deal_uuid,
+    publisher=publisher,
+)
+```
+
+Do not pass a long-lived database session into an agent. Tools should acquire
+sessions on demand through the agent context.
+
+Agent model configuration lives in `src/infra/config/agent_config.py` and can be
+overridden through environment variables, for example:
+
+```bash
+AGENT_DEAL_SUMMARY_MODEL=gpt-5-mini
+AGENT_DEAL_SUMMARY_DEBUG=false
+AGENT_DEAL_SUMMARY_TIMEOUT=180
+```
+
+### Agent Tooling
+
+Agno injects tool definitions into model context. Keep tool descriptions as the
+primary source of tool behavior and keep workflow prompts strict only where a
+tool call is mandatory.
+
+Single source of truth:
+
+- Tool availability: `src/agents/tools/registry.py`
+- Tool behavior: tool function docstrings and descriptions
+- Workflow constraints: `src/agents/workflows/*/prompts.py`
+
+## Documentation By Task
+
+Read the relevant guide before implementing:
+
+| Task | Documentation |
+| --- | --- |
+| Building or changing an API endpoint | `docs/Technical Documentation/service-architecture-base.md` |
+| Creating a Celery worker | `docs/Technical Documentation/celery-worker-creation-guide.md` |
+| Scheduled tasks across organizations | Three-Tier Architecture section in the Celery worker guide |
+| Adding or changing endpoints | Relevant file under `docs/API Documentation/` |
+| Integration sync behavior | `docs/Technical Documentation/integrations/` |
+
+Agent-calling tasks do not automatically follow the three-tier worker
+architecture unless explicitly requested. They usually operate at deal,
+meeting, or deal-plus-meeting scope, with business logic extracted to services.
+
+## Code Style
+
+- Python 3.11
+- Line length: 100
+- Ruff for linting and formatting compatibility
+- MyPy for type checking
+- Type hints required for new/changed code where practical
+- Comments explain why, not what
+- Put endpoint request/response docs in the matching `docs/API Documentation/` file
+
+Comment useful business decisions, security constraints, non-obvious
+performance choices, and caller context. Avoid comments that restate obvious
+code.
+
+## External Services
+
+- Supabase: JWT authentication
+- Azure OpenAI: LLM integration
+- Azure Blob Storage: file storage
+- Azure Key Vault: tenant and infrastructure secrets
+- Nango: OAuth provider management
+- Redis: broker, caching, SSE streaming
+- Resend: email delivery
+- Grafana Loki: log querying
+
+## Investigating Data
+
+Use local investigation scripts for debugging:
+
+```bash
+uv run python -m scripts.test_local.investigate_transcript_data
+uv run python -m scripts.test_local.investigate_timeline_data
+```
+
+Tenant schema names are derived from organization IDs:
+
+```python
+from src.infra.utils.resource_naming import get_schema_name
+
+schema_name = get_schema_name(org_id)
+```
+
+When querying tenant data directly, set the PostgreSQL search path to the org
+schema plus `public`.
+
+## Docker
+
+Build the application image:
 
 ```bash
 docker build -t copilot-backend:latest .
 ```
 
-### Run Container
+Run with an env file:
 
 ```bash
 docker run -p 8080:80 --env-file .env copilot-backend:latest
 ```
 
----
-
-## 🛠️ Development Workflow
-
-### Code Quality Checks
+Deploy through Helm:
 
 ```bash
-# Format and lint code
-uv run black src/ tests/
-uv run ruff check src/ tests/
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-uv run pytest tests/ -v
-
-# Run with coverage
-uv run pytest tests/ -v --cov=src --cov-report=html
-```
-
----
-
-## 📚 Dependency Management
-
-```bash
-# Add new dependency
-uv add package-name
-
-# Add dev dependency
-uv add --dev package-name
-
-# Update all dependencies
-uv lock --upgrade && uv sync
-```
-
----
-
-## 🚢 Production Deployment
-
-### Build Production-Ready Image
-
-```bash
-# Clean build
-docker build --no-cache -t copilot-backend:production .
-
-# Tag for registry
-docker tag copilot-backend:production registry.example.com/copilot-backend:latest
-
-# Push to registry
-docker push registry.example.com/copilot-backend:latest
-```
-
-### Kubernetes/Helm Deployment
-
-```bash
-# Deploy using Helm
 helm upgrade --install copilot-backend ./charts/application \
   --namespace production \
   --values ./charts/application/values.yaml
 ```
 
----
+## Logs
 
-## 📖 Additional Documentation
-
-- [API Documentation](./docs/API%20Documentation/)
-- [Technical Documentation](./docs/Technical%20Documentation/)
-- [Functional Documentation](./docs/Functional%20Documentation/)
-
----
-
-## 🔧 Troubleshooting
-
-### Issue: UV not found
-
-**Solution:** Ensure UV is installed and in your PATH. Restart your terminal after installation.
-
-### Issue: Database connection errors
-
-**Solution:** Ensure PostgreSQL and Redis containers are running:
-
-```bash
-docker ps
-docker logs copilot-postgres
-docker logs copilot-redis
-```
-
----
-
-## 📝 Helper Commands Reference
-
-### Grafana Loki live logs
-
-Install `logcli` and configure the Loki environment variables in PowerShell:
+Configure `logcli`:
 
 ```powershell
 $env:LOKI_ADDR="https://logs-prod-021.grafana.net"
@@ -234,33 +306,14 @@ $env:LOKI_USERNAME="1510920"
 $env:LOKI_PASSWORD="<grafana-cloud-token-with-logs-read>"
 ```
 
-Discover available Loki labels and backend services:
-
-```powershell
-logcli labels --since=1h
-logcli labels service_name --since=1h
-```
-
-Tail all backend logs for the dev environment:
+Tail backend logs:
 
 ```powershell
 logcli query '{deployment_environment="dev", service_name=~"copilotgtm-backend-.*"}' --tail --since=5m
-```
-
-Tail all backend logs for the prod environment:
-
-```powershell
 logcli query '{deployment_environment="prod", service_name=~"copilotgtm-backend-.*"}' --tail --since=5m
 ```
 
-Tail a specific service:
-
-```powershell
-logcli query '{deployment_environment="dev", service_name="copilotgtm-backend-api"}' --tail --since=5m
-logcli query '{deployment_environment="prod", service_name="copilotgtm-backend-integrations_worker"}' --tail --since=5m
-```
-
-Tail errors only:
+Tail backend errors:
 
 ```powershell
 logcli query '{deployment_environment="dev", service_name=~"copilotgtm-backend-.*", detected_level="error"}' --tail --since=1h
@@ -269,16 +322,12 @@ logcli query '{deployment_environment="prod", service_name=~"copilotgtm-backend-
 
 Stop live tailing with `Ctrl+C`.
 
----
+## Reference Docs
 
-## 📄 License
+- `docs/API Documentation/`
+- `docs/Technical Documentation/`
+- `docs/Functional Documentation/`
 
-Proprietary - All rights reserved
+## License
 
----
-
-## 🔗 Links
-
-- [UV Documentation](https://github.com/astral-sh/uv)
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [Docker Documentation](https://docs.docker.com)
+Proprietary. All rights reserved.

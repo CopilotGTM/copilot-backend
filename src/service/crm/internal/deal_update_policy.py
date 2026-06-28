@@ -12,18 +12,19 @@ from typing import Any, Literal
 PolicyStatus = Literal["applied", "approval_required", "skipped"]
 
 SAFE_DIRECT_FIELDS = {
+    "name",
     "amount",
     "currency",
+    "source_created_at",
     "description",
     "expected_close_date",
-    "close_date",
     "priority",
     "probability",
     "forecast_category",
     "lead_source",
     "deal_type",
 }
-ACCOUNT_FIELDS = {"website", "domain", "linkedin_url", "industry"}
+ACCOUNT_FIELDS = {"name", "domain", "website", "linkedin_url", "industry", "country"}
 # TODO: Re-enable primary-contact updates when contact-write policy is designed.
 # This module intentionally keeps primary-contact updates out of the first slice
 # so we can build identity validation separately.

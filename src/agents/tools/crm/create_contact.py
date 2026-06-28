@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
-from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
-from src.service.crm.accounts.read_service import AccountReadService
-from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
     ContactDealLinkServiceError,
     ContactWriteContext,
     ContactWriteServiceError,
@@ -38,6 +36,11 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _actor_name(context: AgentContext) -> str | None:
+    value = context.metadata.get("user_name")
+    return _clean_optional(value) if isinstance(value, str) else None
+
+
 def _parse_uuid(value: UUID | str | None) -> UUID | None:
     if value is None or isinstance(value, UUID):
         return value
@@ -48,13 +51,6 @@ def _parse_uuid(value: UUID | str | None) -> UUID | None:
         return UUID(cleaned)
     except ValueError:
         return None
-
-
-def _email_domain(email: str) -> str | None:
-    if "@" not in email:
-        return None
-    domain = email.rsplit("@", 1)[1].strip().lower()
-    return domain or None
 
 
 async def _rollback_if_available(session: Any) -> None:
@@ -69,14 +65,6 @@ def _contact_name(contact: Any) -> str:
         or getattr(contact, "name", None)
         or getattr(contact, "email", "")
     )
-
-
-def _account_summary(account: Any) -> dict[str, Any]:
-    return {
-        "account_id": str(account.company_id),
-        "name": getattr(account, "name", None),
-        "domain": getattr(account, "domain", None),
-    }
 
 
 def _contact_result(contact: Any, *, status: str) -> dict[str, Any]:
@@ -103,14 +91,6 @@ def _contact_result(contact: Any, *, status: str) -> dict[str, Any]:
 
 def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if not key.startswith("_")}
-
-
-def _selection_result(accounts: list[Any]) -> dict[str, Any]:
-    return {
-        "status": "needs_account_selection",
-        "message": "Multiple matching accounts were found. Ask the user which account to use.",
-        "candidates": [_account_summary(account) for account in accounts],
-    }
 
 
 def _channel_payload(context: AgentContext, contact: Any, *, status: str) -> dict[str, Any] | None:
@@ -229,11 +209,7 @@ async def create_contact_direct(
     email: str | None,
     name: str | None,
     job_title: str | None = None,
-    phone: str | None = None,
     linkedin_url: str | None = None,
-    account_id: UUID | str | None = None,
-    account_name: str | None = None,
-    account_domain: str | None = None,
     deal_id: UUID | str | None = None,
     deal_name: str | None = None,
     relationship_role: str | None = None,
@@ -247,13 +223,8 @@ async def create_contact_direct(
     cleaned_name = _clean_optional(name)
     if not cleaned_email:
         return {"status": "error", "message": "Contact email is required."}
-    if not cleaned_name:
-        return {"status": "error", "message": "Contact name is required."}
 
     normalized_email = cleaned_email.lower()
-    parsed_account_id = _parse_uuid(account_id)
-    if account_id and parsed_account_id is None:
-        return {"status": "error", "message": "account_id must be a valid UUID."}
     parsed_deal_id = _parse_uuid(deal_id)
     if deal_id and parsed_deal_id is None:
         return {"status": "error", "message": "deal_id must be a valid UUID."}
@@ -261,80 +232,31 @@ async def create_contact_direct(
     async with context.acquire_session() as org_session:
         contact_reader = ContactReadService(org_session, organisation_id)
         contact_writer = ContactWriteService(org_session, organisation_id)
-        account_reader = AccountReadService(org_session, organisation_id)
-        account_writer = AccountWriteService(org_session, organisation_id)
         deal_linker = ContactDealLinkService(org_session, organisation_id)
         try:
             contact = await contact_reader.find_contact_by_email(normalized_email)
             status = "exists" if contact else "created"
-            created_account = None
 
-            kwargs: dict[str, Any] = {}
             if not contact:
-                if parsed_account_id:
-                    kwargs["company_id"] = parsed_account_id
-                else:
-                    lookup_domain = _clean_optional(account_domain) or _email_domain(
-                        normalized_email
-                    )
-                    matches = (
-                        await account_reader.find_accounts_by_domain(lookup_domain)
-                        if lookup_domain
-                        else []
-                    )
-                    if len(matches) > 1:
-                        return _selection_result(matches)
-                    if len(matches) == 1:
-                        kwargs["company_id"] = matches[0].company_id
-                        kwargs["company_name"] = matches[0].name
-                    elif _clean_optional(account_name):
-                        name_value = _clean_optional(account_name) or ""
-                        name_matches = await account_reader.find_accounts_by_name(name_value)
-                        if len(name_matches) > 1:
-                            return _selection_result(name_matches)
-                        account = (
-                            name_matches[0]
-                            if name_matches
-                            else (
-                                await account_writer.create_account(
-                                    name=name_value,
-                                    context=AccountWriteContext(
-                                        source="agent_tool",
-                                        actor_user_id=context.user_id,
-                                        created_via="chat_tool",
-                                        duplicate_scope="internal_only",
-                                    ),
-                                )
-                            ).account
-                        )
-                        kwargs["company_id"] = account.company_id
-                        kwargs["company_name"] = account.name
-                        if not name_matches:
-                            created_account = _account_summary(account)
-
-                for key, value in (("job_title", job_title), ("phone", phone)):
-                    cleaned = _clean_optional(value)
-                    if cleaned:
-                        kwargs[key] = cleaned
-                linkedin = _clean_optional(linkedin_url)
-                if linkedin:
-                    kwargs["linkedin_url"] = linkedin
                 contact_result = await contact_writer.create_contact(
-                    email=normalized_email,
-                    name=cleaned_name,
+                    ContactCreateCommand(
+                        email=normalized_email,
+                        name=cleaned_name,
+                        job_title=_clean_optional(job_title),
+                        linkedin_url=_clean_optional(linkedin_url),
+                    ),
                     context=ContactWriteContext(
                         source="agent_tool",
                         actor_user_id=context.user_id,
+                        actor_name=_actor_name(context),
+                        actor_email=context.user_email,
                         created_via="chat_tool",
                     ),
-                    **kwargs,
                 )
                 contact = contact_result.contact
                 await org_session.commit()
 
             result = _contact_result(contact, status=status)
-            if created_account:
-                result["created_account"] = created_account
 
             if parsed_deal_id:
                 link_result = await deal_linker.add_contact_to_deal(
@@ -360,11 +282,7 @@ async def create_contact_direct(
                 result["deal_id"] = str(parsed_deal_id)
                 if _clean_optional(deal_name):
                     result["deal_name"] = _clean_optional(deal_name)
-        except (
-            AccountWriteServiceError,
-            ContactWriteServiceError,
-            ContactDealLinkServiceError,
-        ) as exc:
+        except (ContactWriteServiceError, ContactDealLinkServiceError) as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create contact: {exc.message}"}
         except Exception:
@@ -388,16 +306,12 @@ def create_create_contact(
         email: str | None = None,
         name: str | None = None,
         job_title: str | None = None,
-        phone: str | None = None,
         linkedin_url: str | None = None,
-        account_id: str | None = None,
-        account_name: str | None = None,
-        account_domain: str | None = None,
         deal_id: str | None = None,
         deal_name: str | None = None,
         relationship_role: str | None = None,
     ) -> dict[str, Any]:
-        """Create an internal CRM contact directly once email and name are known."""
+        """Create an internal CRM contact directly once email is known."""
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateContact",
@@ -407,11 +321,7 @@ def create_create_contact(
                 "email": email,
                 "name": name,
                 "job_title": job_title,
-                "phone": phone,
                 "linkedin_url": linkedin_url,
-                "account_id": account_id,
-                "account_name": account_name,
-                "account_domain": account_domain,
                 "deal_id": deal_id,
                 "deal_name": deal_name,
                 "relationship_role": relationship_role,

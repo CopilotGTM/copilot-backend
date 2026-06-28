@@ -24,6 +24,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityLink,
     CRMActivityObjectType,
     CRMActivityType,
+    CRMCompany,
     CRMContact,
     CRMDeal,
     CRMNote,
@@ -378,6 +379,175 @@ class ActivityFeedProjectionService:
             activity_id=deal.deal_id,
             user_id=deal.owner_id,
             occurred_at=occurred_at,
+        )
+
+    async def upsert_contact_created(self, contact: CRMContact) -> None:
+        """Project a created contact row into the activity feed."""
+        if contact.organisation_id != self.organisation_id:
+            raise ValueError("contact does not belong to projection organisation")
+
+        occurred_at = contact.source_created_at or contact.created_at or _now_utc()
+        display_name = contact.full_name or contact.email
+        title = f"Contact created: {display_name}" if display_name else "Contact created"
+        await self._upsert_activity(
+            activity_id=contact.contact_id,
+            integration_id=contact.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=contact.email,
+            preview=_compact_preview(contact.email or contact.full_name),
+            occurred_at=occurred_at,
+            source_type="CONTACT_CREATED",
+            source_record_id=str(contact.contact_id),
+            source_provider=None,
+            actor_name=None,
+            actor_email=None,
+            display_payload=self._contact_display_payload(contact),
+        )
+        await self._sync_contact_lifecycle_links(
+            activity_id=contact.contact_id,
+            contact=contact,
+            occurred_at=occurred_at,
+        )
+
+    async def upsert_contact_enrichment_triggered(
+        self,
+        contact: CRMContact,
+        *,
+        job_id: UUID,
+        actor_user_id: UUID | None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Project the start of an async contact enrichment job into the feed."""
+        activity_id = self._contact_lifecycle_activity_id(
+            contact.contact_id,
+            "CONTACT_ENRICHMENT_TRIGGERED",
+            job_id,
+        )
+        await self._upsert_contact_lifecycle_event(
+            contact,
+            activity_id=activity_id,
+            source_type="CONTACT_ENRICHMENT_TRIGGERED",
+            source_record_id=f"{contact.contact_id}:CONTACT_ENRICHMENT_TRIGGERED:{job_id}",
+            title="Contact enrichment triggered",
+            occurred_at=occurred_at or _now_utc(),
+            actor_user_id=actor_user_id,
+            display_payload={"job_id": str(job_id)},
+        )
+
+    async def upsert_contact_enrichment_completed(
+        self,
+        contact: CRMContact,
+        *,
+        job_id: UUID,
+        provider_status: str,
+        summary_status: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Project the terminal successful contact enrichment result into the feed."""
+        activity_id = self._contact_lifecycle_activity_id(
+            contact.contact_id,
+            "CONTACT_ENRICHMENT_COMPLETED",
+            job_id,
+        )
+        provider = contact.profile_enrichment_source
+        await self._upsert_contact_lifecycle_event(
+            contact,
+            activity_id=activity_id,
+            source_type="CONTACT_ENRICHMENT_COMPLETED",
+            source_record_id=f"{contact.contact_id}:CONTACT_ENRICHMENT_COMPLETED:{job_id}",
+            title="Contact enrichment completed",
+            occurred_at=occurred_at or contact.profile_enriched_at or _now_utc(),
+            actor_user_id=None,
+            display_payload={
+                "job_id": str(job_id),
+                "provider_status": provider_status,
+                "summary_status": summary_status,
+                "provider": provider,
+            },
+        )
+
+    async def upsert_account_created(self, account: CRMCompany) -> None:
+        """Project a created account row into the activity feed."""
+        if account.organisation_id != self.organisation_id:
+            raise ValueError("account does not belong to projection organisation")
+
+        occurred_at = account.source_created_at or account.created_at or _now_utc()
+        display_name = account.name or account.domain
+        title = f"Account created: {display_name}" if display_name else "Account created"
+        await self._upsert_activity(
+            activity_id=account.company_id,
+            integration_id=account.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=account.domain,
+            preview=_compact_preview(account.domain or account.name),
+            occurred_at=occurred_at,
+            source_type="ACCOUNT_CREATED",
+            source_record_id=str(account.company_id),
+            source_provider=None,
+            actor_name=account.owner_name,
+            actor_email=account.owner_email,
+            display_payload=self._account_display_payload(account),
+        )
+        await self._sync_account_lifecycle_links(
+            activity_id=account.company_id,
+            account=account,
+            occurred_at=occurred_at,
+        )
+
+    async def upsert_account_enrichment_triggered(
+        self,
+        account: CRMCompany,
+        *,
+        job_id: UUID,
+        actor_user_id: UUID | None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Project the start of an async account enrichment job into the feed."""
+        activity_id = self._account_lifecycle_activity_id(
+            account.company_id,
+            "ACCOUNT_ENRICHMENT_TRIGGERED",
+            job_id,
+        )
+        await self._upsert_account_lifecycle_event(
+            account,
+            activity_id=activity_id,
+            source_type="ACCOUNT_ENRICHMENT_TRIGGERED",
+            source_record_id=f"{account.company_id}:ACCOUNT_ENRICHMENT_TRIGGERED:{job_id}",
+            title="Account enrichment triggered",
+            occurred_at=occurred_at or _now_utc(),
+            actor_user_id=actor_user_id,
+            display_payload={"job_id": str(job_id)},
+        )
+
+    async def upsert_account_enrichment_completed(
+        self,
+        account: CRMCompany,
+        *,
+        job_id: UUID,
+        provider_status: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Project the terminal account enrichment result into the feed."""
+        activity_id = self._account_lifecycle_activity_id(
+            account.company_id,
+            "ACCOUNT_ENRICHMENT_COMPLETED",
+            job_id,
+        )
+        await self._upsert_account_lifecycle_event(
+            account,
+            activity_id=activity_id,
+            source_type="ACCOUNT_ENRICHMENT_COMPLETED",
+            source_record_id=f"{account.company_id}:ACCOUNT_ENRICHMENT_COMPLETED:{job_id}",
+            title="Account enrichment completed",
+            occurred_at=occurred_at or account.company_enriched_at or _now_utc(),
+            actor_user_id=None,
+            display_payload={
+                "job_id": str(job_id),
+                "provider_status": provider_status,
+                "provider": account.company_enrichment_source,
+            },
         )
 
     async def upsert_stage_change(
@@ -902,3 +1072,157 @@ class ActivityFeedProjectionService:
             set_={"occurred_at": occurred_at},
         )
         await self.session.execute(stmt)
+
+    async def _upsert_contact_lifecycle_event(
+        self,
+        contact: CRMContact,
+        *,
+        activity_id: UUID,
+        source_type: str,
+        source_record_id: str,
+        title: str,
+        occurred_at: datetime,
+        actor_user_id: UUID | None,
+        display_payload: dict[str, Any],
+    ) -> None:
+        if contact.organisation_id != self.organisation_id:
+            raise ValueError("contact does not belong to projection organisation")
+
+        payload = {**self._contact_display_payload(contact), **display_payload}
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=contact.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=contact.email,
+            preview=_compact_preview(contact.email or contact.full_name),
+            occurred_at=occurred_at,
+            source_type=source_type,
+            source_record_id=source_record_id,
+            source_provider=None,
+            actor_name=None,
+            actor_email=None,
+            display_payload=payload,
+        )
+        await self._sync_contact_lifecycle_links(
+            activity_id=activity_id,
+            contact=contact,
+            occurred_at=occurred_at,
+        )
+        await self._sync_owner_user_link(
+            activity_id=activity_id,
+            user_id=actor_user_id,
+            occurred_at=occurred_at,
+        )
+
+    async def _sync_contact_lifecycle_links(
+        self,
+        *,
+        activity_id: UUID,
+        contact: CRMContact,
+        occurred_at: datetime,
+    ) -> None:
+        await self._sync_related_object_link(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_id=contact.contact_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_related_object_link(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.COMPANY.value,
+            object_id=contact.company_id,
+            occurred_at=occurred_at,
+        )
+
+    def _contact_lifecycle_activity_id(
+        self,
+        contact_id: UUID,
+        source_type: str,
+        job_id: UUID,
+    ) -> UUID:
+        identity = f"crm-contact:{self.organisation_id}:{contact_id}:{source_type}:{job_id}"
+        return uuid5(NAMESPACE_URL, identity)
+
+    async def _upsert_account_lifecycle_event(
+        self,
+        account: CRMCompany,
+        *,
+        activity_id: UUID,
+        source_type: str,
+        source_record_id: str,
+        title: str,
+        occurred_at: datetime,
+        actor_user_id: UUID | None,
+        display_payload: dict[str, Any],
+    ) -> None:
+        if account.organisation_id != self.organisation_id:
+            raise ValueError("account does not belong to projection organisation")
+
+        payload = {**self._account_display_payload(account), **display_payload}
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=account.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=account.domain,
+            preview=_compact_preview(account.domain or account.name),
+            occurred_at=occurred_at,
+            source_type=source_type,
+            source_record_id=source_record_id,
+            source_provider=None,
+            actor_name=account.owner_name,
+            actor_email=account.owner_email,
+            display_payload=payload,
+        )
+        await self._sync_account_lifecycle_links(
+            activity_id=activity_id,
+            account=account,
+            occurred_at=occurred_at,
+        )
+        await self._sync_owner_user_link(
+            activity_id=activity_id,
+            user_id=actor_user_id,
+            occurred_at=occurred_at,
+        )
+
+    async def _sync_account_lifecycle_links(
+        self,
+        *,
+        activity_id: UUID,
+        account: CRMCompany,
+        occurred_at: datetime,
+    ) -> None:
+        await self._sync_related_object_link(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.COMPANY.value,
+            object_id=account.company_id,
+            occurred_at=occurred_at,
+        )
+
+    def _account_lifecycle_activity_id(
+        self,
+        company_id: UUID,
+        source_type: str,
+        job_id: UUID,
+    ) -> UUID:
+        identity = f"crm-account:{self.organisation_id}:{company_id}:{source_type}:{job_id}"
+        return uuid5(NAMESPACE_URL, identity)
+
+    @staticmethod
+    def _contact_display_payload(contact: CRMContact) -> dict[str, Any]:
+        return {
+            "contact_name": contact.full_name,
+            "email": contact.email,
+            "job_title": contact.job_title,
+            "company_name": contact.company_name,
+        }
+
+    @staticmethod
+    def _account_display_payload(account: CRMCompany) -> dict[str, Any]:
+        return {
+            "account_name": account.name,
+            "domain": account.domain,
+            "industry": account.industry,
+            "website": account.website,
+        }

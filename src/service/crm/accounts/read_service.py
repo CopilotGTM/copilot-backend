@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -355,11 +356,25 @@ class AccountReadService:
         detail["pipeline_value"] = float(
             sum((dl.amount or 0) for dl in deals if dl.deal_status == CRMDealStatus.OPEN.value)
         )
-        detail["account_research"] = self._account_research_payload()
+        detail["account_summary"] = self._account_summary_payload(company)
         return detail
 
     @staticmethod
-    def _account_research_payload() -> dict[str, Any]:
+    def _account_summary_payload(company: CRMCompany) -> dict[str, Any]:
+        account_summary = getattr(company, "account_summary", None)
+        last_researched_at = getattr(company, "last_researched_at", None)
+        if isinstance(account_summary, str) and account_summary.strip():
+            return {
+                "status": "completed",
+                "content": account_summary.strip(),
+                "last_researched_at": last_researched_at,
+            }
+        if isinstance(last_researched_at, datetime):
+            return {
+                "status": "not_available",
+                "content": None,
+                "last_researched_at": last_researched_at,
+            }
         return {
             "status": "not_available",
             "content": None,

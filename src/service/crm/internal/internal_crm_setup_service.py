@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 
 
 DEFAULT_PIPELINE_NAME = "Default Pipeline"
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 DEFAULT_STAGES: list[dict[str, Any]] = [
     {
@@ -137,6 +138,10 @@ class InternalCRMSetupService:
         """Return the internal CRM integration record, or None if not set up."""
         return await self._get_internal_integration()
 
+    async def get_or_create_internal_integration(self) -> KnowledgeIntegration:
+        """Return the internal CRM integration, creating it when absent."""
+        return await self._ensure_internal_integration()
+
     async def _get_internal_integration(self) -> KnowledgeIntegration | None:
         stmt = select(KnowledgeIntegration).where(
             col(KnowledgeIntegration.organisation_id) == self.organisation_id,
@@ -153,6 +158,7 @@ class InternalCRMSetupService:
         integration = KnowledgeIntegration(
             organisation_id=self.organisation_id,
             created_by_user_id=self.user_id,
+            created_by_admin=False,
             integration_type=IntegrationType.INTERNAL_CRM,
             integration_scope=IntegrationScope.ORGANIZATION,
             name="Copilot CRM",

@@ -98,11 +98,19 @@ async def get_deal_summary(
         output: dict[str, Any] = {
             "deal_id": str(deal.deal_id),
             "name": deal.name,
+            "company_id": str(deal.company_id) if deal.company_id else None,
             "company_name": deal.company_name,
-            "amount": float(deal.amount) if deal.amount else None,
+            "amount": float(deal.amount) if deal.amount is not None else None,
+            "predicted_amount": float(deal.predicted_amount)
+            if deal.predicted_amount is not None
+            else None,
             "currency": deal.currency,
             "deal_status": deal.deal_status,
+            "forecast_category": deal.forecast_category,
+            "stage_id": str(deal.stage_id) if deal.stage_id else None,
             "stage_name": deal.stage_name,
+            "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
+            "pipeline_name": deal.pipeline_name,
         }
 
         if deal.deal_summary_data:

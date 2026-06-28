@@ -24,6 +24,8 @@ from src.api.routers.crm.stakeholder_insights_handler import get_insight_service
 from src.api.routers.crm.stakeholders_handler import (
     get_stakeholder_deal_job_service,
     get_stakeholder_job_visibility_service,
+    get_stakeholder_read_service,
+    get_stakeholder_write_service,
     get_stakeholders_service,
 )
 from src.api.routers.crm.tasks_handler import get_tasks_access_service
@@ -51,6 +53,11 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.service.crm.access.tasks_access_service import TasksAccessServiceError
+from src.service.crm.deals.read_service import (
+    _deal_search_cursor_name_key,
+    _decode_deal_search_cursor,
+    _encode_deal_search_cursor,
+)
 from src.service.crm.notes.contracts import NoteReadRecord
 from src.service.crm.tasks.contracts import TaskReadRecord
 
@@ -78,6 +85,12 @@ class _EmptyExecuteResult:
 
 
 class FakeAsyncSession:
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
     async def scalar(self, *_args, **_kwargs):
         return 0
 
@@ -247,6 +260,7 @@ class FakeStakeholdersService:
 
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
+        self.session = FakeAsyncSession()
         self._stakeholders: dict[UUID, list[FakeStakeholder]] = {}  # deal_id -> stakeholders
         self._contacts: dict[UUID, FakeContact] = {}  # contact_id -> contact
 
@@ -860,6 +874,10 @@ class FakeDeal:
         company_id: UUID | None = None,
         company_name: str | None = None,
         company_domain: str | None = None,
+        company_industry: str | None = None,
+        company_website: str | None = None,
+        company_linkedin_url: str | None = None,
+        company_country: str | None = None,
         primary_contact_id: UUID | None = None,
         primary_contact_name: str | None = None,
         primary_contact_email: str | None = None,
@@ -910,6 +928,10 @@ class FakeDeal:
         self.company_id = company_id
         self.company_name = company_name
         self.company_domain = company_domain
+        self.company_industry = company_industry
+        self.company_website = company_website
+        self.company_linkedin_url = company_linkedin_url
+        self.company_country = company_country
         self.primary_contact_id = primary_contact_id
         self.primary_contact_name = primary_contact_name
         self.primary_contact_email = primary_contact_email
@@ -1071,6 +1093,8 @@ class FakeDealsAccessService:
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
         max_close_date: datetime | None = None,
+        min_expected_close_date: datetime | None = None,
+        max_expected_close_date: datetime | None = None,
         q: str | None = None,
     ):
         """List deals with pagination and filtering."""
@@ -1086,6 +1110,8 @@ class FakeDealsAccessService:
             max_amount,
             min_close_date,
             max_close_date,
+            min_expected_close_date,
+            max_expected_close_date,
             q,
         )
 
@@ -1095,6 +1121,57 @@ class FakeDealsAccessService:
         total_count = len(deals)
         start = max(page - 1, 0) * limit
         return deals[start : start + limit], total_count
+
+    async def search_deals(
+        self,
+        *,
+        q: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ):
+        """Search deals for picker routes using the same identity fields as production."""
+        deals = self._apply_filters(
+            list(self._deals.values()),
+            statuses=None,
+            pipeline_ids=None,
+            owner_ids=None,
+            min_amount=None,
+            max_amount=None,
+            min_close_date=None,
+            max_close_date=None,
+            min_expected_close_date=None,
+            max_expected_close_date=None,
+            q=q,
+        )
+        deals.sort(
+            key=lambda deal: (
+                _deal_search_cursor_name_key(deal.name, deal.company_name),
+                str(deal.deal_id),
+            )
+        )
+        if cursor:
+            cursor_name, cursor_id = _decode_deal_search_cursor(cursor)
+            deals = [
+                deal
+                for deal in deals
+                if (
+                    _deal_search_cursor_name_key(deal.name, deal.company_name),
+                    deal.deal_id,
+                )
+                > (cursor_name, cursor_id)
+            ]
+
+        page = deals[: limit + 1]
+        items = page[:limit]
+        next_cursor = (
+            _encode_deal_search_cursor(
+                _deal_search_cursor_name_key(items[-1].name, items[-1].company_name),
+                items[-1].deal_id,
+            )
+            if len(page) > limit
+            else None
+        )
+        return items, next_cursor
 
     async def get_all_deals(
         self,
@@ -1106,6 +1183,8 @@ class FakeDealsAccessService:
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
         max_close_date: datetime | None = None,
+        min_expected_close_date: datetime | None = None,
+        max_expected_close_date: datetime | None = None,
         q: str | None = None,
     ):
         """Get all deals (up to max_results) without pagination."""
@@ -1121,6 +1200,8 @@ class FakeDealsAccessService:
             max_amount,
             min_close_date,
             max_close_date,
+            min_expected_close_date,
+            max_expected_close_date,
             q,
         )
 
@@ -1139,6 +1220,8 @@ class FakeDealsAccessService:
         max_amount: float | None,
         min_close_date: datetime | None,
         max_close_date: datetime | None,
+        min_expected_close_date: datetime | None,
+        max_expected_close_date: datetime | None,
         q: str | None,
     ) -> list[FakeDeal]:
         """Apply all filters to deals list."""
@@ -1167,9 +1250,30 @@ class FakeDealsAccessService:
                 d for d in deals if d.close_date is not None and d.close_date <= max_close_date
             ]
 
-        if q:
-            q_lower = q.lower()
-            deals = [d for d in deals if d.name and q_lower in d.name.lower()]
+        if min_expected_close_date is not None:
+            deals = [
+                d
+                for d in deals
+                if d.expected_close_date is not None
+                and d.expected_close_date >= min_expected_close_date
+            ]
+
+        if max_expected_close_date is not None:
+            deals = [
+                d
+                for d in deals
+                if d.expected_close_date is not None
+                and d.expected_close_date <= max_expected_close_date
+            ]
+
+        q_lower = q.strip().lower() if q else None
+        if q_lower:
+            deals = [
+                d
+                for d in deals
+                if (d.name and q_lower in d.name.lower())
+                or (d.company_name and q_lower in d.company_name.lower())
+            ]
 
         return deals
 
@@ -1224,7 +1328,7 @@ class FakeDealsAccessService:
     ) -> list[dict]:
         """Return distinct owners from seeded deals, with selected-owner hydration."""
         selected_ids = set(owner_ids or [])
-        q_lower = q.lower() if q else None
+        q_lower = q.strip().lower() if q else None
         owners: dict[UUID, dict] = {}
         for deal in self._deals.values():
             if not deal.owner_id:
@@ -1233,7 +1337,7 @@ class FakeDealsAccessService:
                 not q_lower
                 or (deal.owner_name and q_lower in deal.owner_name.lower())
                 or (deal.owner_email and q_lower in deal.owner_email.lower())
-                or str(deal.owner_id) == q
+                or str(deal.owner_id) == q_lower
             )
             if not matches_query and deal.owner_id not in selected_ids:
                 continue
@@ -1257,7 +1361,7 @@ class FakeDealsAccessService:
         user_email: str | None,
     ) -> list[dict]:
         """Resolve current app user to seeded owner rows by ID or email."""
-        email_lower = user_email.lower() if user_email else None
+        email_lower = user_email.strip().lower() if user_email else None
         owners: dict[UUID, dict] = {}
         for deal in self._deals.values():
             if not deal.owner_id:
@@ -1477,6 +1581,8 @@ def stakeholders_dependency_overrides(
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_stakeholders_service] = _override_service
+    app.dependency_overrides[get_stakeholder_read_service] = _override_service
+    app.dependency_overrides[get_stakeholder_write_service] = _override_service
     app.dependency_overrides[get_stakeholder_job_visibility_service] = (
         _override_job_visibility_service
     )

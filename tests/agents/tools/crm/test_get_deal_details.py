@@ -28,42 +28,60 @@ def mock_context() -> MagicMock:
 DEAL_ID = "22222222-2222-2222-2222-222222222222"
 
 
-def _make_deal() -> MagicMock:
-    deal = MagicMock()
-    deal.deal_id = UUID(DEAL_ID)
-    deal.name = "Acme Deal"
-    deal.description = "Big deal with Acme"
-    deal.company_name = "Acme Corp"
-    deal.company_domain = "acme.com"
-    deal.amount = 75000.0
-    deal.currency = "USD"
-    deal.deal_status = "open"
-    deal.stage_name = "Negotiation"
-    deal.stage_label = "Negotiation"
-    deal.probability = 0.6
-    deal.pipeline_name = "Main Pipeline"
-    deal.pipeline_label = "Main Pipeline"
-    deal.owner_name = "Jane Doe"
-    deal.owner_email = "jane@test.com"
-    deal.primary_contact_name = "Bob Acme"
-    deal.primary_contact_email = "bob@acme.com"
-    deal.source_created_at = datetime(2026, 1, 10)
-    deal.source_modified_at = datetime(2026, 2, 20)
-    deal.expected_close_date = datetime(2026, 6, 30)
-    deal.close_date = None
-    deal.closed_won_at = None
-    deal.closed_lost_at = None
-    deal.last_activity_at = datetime(2026, 2, 18)
-    deal.closed_reason = None
-    deal.deal_type = "new_business"
-    deal.lead_source = "inbound"
-    deal.priority = "high"
-    deal.crm_url = "https://crm.example.com/deals/123"
-    deal.associated_contact_count = 3
-    deal.associated_company_count = 1
-    deal.note_count = 5
-    deal.deal_summary_data = {"executive_summary": "Looking good"}
-    return deal
+def _make_deal() -> SimpleNamespace:
+    return SimpleNamespace(
+        deal_id=UUID(DEAL_ID),
+        name="Acme Deal",
+        description="Big deal with Acme",
+        company_id=UUID("44444444-4444-4444-4444-444444444444"),
+        company_name="Acme Corp",
+        company_domain="acme.com",
+        amount=75000.0,
+        predicted_amount=52500.0,
+        currency="USD",
+        deal_status="open",
+        forecast_category="Commit",
+        stage_id=UUID("66666666-6666-6666-6666-666666666666"),
+        stage_name="Negotiation",
+        stage_label="Negotiation",
+        probability=0.6,
+        pipeline_id=UUID("77777777-7777-7777-7777-777777777777"),
+        pipeline_name="Main Pipeline",
+        pipeline_label="Main Pipeline",
+        owner_id=UUID("33333333-3333-3333-3333-333333333333"),
+        owner_name="Jane Doe",
+        owner_email="jane@test.com",
+        primary_contact_id=UUID("55555555-5555-5555-5555-555555555555"),
+        primary_contact_name="Bob Acme",
+        primary_contact_email="bob@acme.com",
+        source_created_at=datetime(2026, 1, 10),
+        source_modified_at=datetime(2026, 2, 20),
+        expected_close_date=datetime(2026, 6, 30),
+        close_date=None,
+        closed_won_at=None,
+        closed_lost_at=None,
+        last_activity_at=datetime(2026, 2, 18),
+        stage_entered_at=datetime(2026, 2, 1),
+        stage_updated_at=datetime(2026, 2, 15),
+        closed_reason=None,
+        deal_type="new_business",
+        lead_source="inbound",
+        priority="high",
+        crm_url="https://crm.example.com/deals/123",
+        associated_contact_count=3,
+        associated_company_count=1,
+        note_count=5,
+        deal_summary_data={"executive_summary": "Looking good"},
+    )
+
+
+def _make_company() -> SimpleNamespace:
+    return SimpleNamespace(
+        industry="Manufacturing",
+        website="https://acme.com",
+        linkedin_url="https://linkedin.com/company/acme",
+        country="United States",
+    )
 
 
 def _make_stakeholder(
@@ -125,6 +143,7 @@ class TestGetDealDetails:
     @pytest.mark.asyncio
     async def test_full_deal_details(self, mock_context: MagicMock) -> None:
         deal = _make_deal()
+        company = _make_company()
         stakeholder = _make_stakeholder()
         risk = _make_risk()
 
@@ -133,6 +152,8 @@ class TestGetDealDetails:
             side_effect=[
                 # Deal query
                 MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                # Linked company profile query
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
                 # Stakeholders query
                 MagicMock(
                     scalars=MagicMock(
@@ -152,9 +173,25 @@ class TestGetDealDetails:
         assert result["deal_id"] == DEAL_ID
         assert result["name"] == "Acme Deal"
         assert result["amount"] == 75000.0
+        assert result["predicted_amount"] == 52500.0
+        assert result["forecast_category"] == "Commit"
+        assert result["company_id"] == "44444444-4444-4444-4444-444444444444"
+        assert result["company_industry"] == "Manufacturing"
+        assert result["company_website"] == "https://acme.com"
+        assert result["company_linkedin_url"] == "https://linkedin.com/company/acme"
+        assert result["company_country"] == "United States"
+        assert result["stage"]["stage_id"] == "66666666-6666-6666-6666-666666666666"
         assert result["stage"]["name"] == "Negotiation"
+        assert result["stage"]["entered_at"] == "2026-02-01T00:00:00"
+        assert result["stage"]["updated_at"] == "2026-02-15T00:00:00"
+        assert result["pipeline"]["pipeline_id"] == "77777777-7777-7777-7777-777777777777"
         assert result["pipeline"]["name"] == "Main Pipeline"
+        assert result["owner"]["owner_user_id"] == "33333333-3333-3333-3333-333333333333"
         assert result["owner"]["email"] == "jane@test.com"
+        assert (
+            result["primary_contact"]["primary_contact_id"]
+            == "55555555-5555-5555-5555-555555555555"
+        )
         assert result["deal_summary"] == {"executive_summary": "Looking good"}
 
         # Stakeholders
@@ -170,11 +207,13 @@ class TestGetDealDetails:
     @pytest.mark.asyncio
     async def test_exclude_stakeholders(self, mock_context: MagicMock) -> None:
         deal = _make_deal()
+        company = _make_company()
 
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
                 # Only risks query (no stakeholder query)
                 MagicMock(
                     scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
@@ -191,11 +230,13 @@ class TestGetDealDetails:
     @pytest.mark.asyncio
     async def test_exclude_risks(self, mock_context: MagicMock) -> None:
         deal = _make_deal()
+        company = _make_company()
 
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
                 # Only stakeholders query (no risks query)
                 MagicMock(
                     scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
@@ -244,6 +285,23 @@ class TestGetDealDetails:
         assert result["amount"] is None
 
     @pytest.mark.asyncio
+    async def test_zero_amount_is_preserved(self, mock_context: MagicMock) -> None:
+        deal = _make_deal()
+        deal.amount = 0
+
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=deal))
+        )
+
+        result = await get_deal_details(
+            DEAL_ID, context=mock_context, include_stakeholders=False, include_risks=False
+        )
+
+        assert result is not None
+        assert result["amount"] == 0.0
+
+    @pytest.mark.asyncio
     async def test_db_error_returns_none(self, mock_context: MagicMock) -> None:
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
@@ -258,11 +316,13 @@ class TestGetDealDetails:
     ) -> None:
         """Stakeholder fetch failure should not break the whole response."""
         deal = _make_deal()
+        company = _make_company()
 
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
                 RuntimeError("stakeholder query failed"),
                 MagicMock(
                     scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
@@ -280,11 +340,13 @@ class TestGetDealDetails:
     async def test_risk_fetch_error_returns_empty_list(self, mock_context: MagicMock) -> None:
         """Risk fetch failure should not break the whole response."""
         deal = _make_deal()
+        company = _make_company()
 
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
                 MagicMock(
                     scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
                 ),

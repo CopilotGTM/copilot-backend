@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -9,7 +10,11 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
-from src.service.crm.contacts.contracts import ContactWriteContext, ContactWriteServiceError
+from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
+    ContactWriteContext,
+    ContactWriteServiceError,
+)
 from src.service.crm.contacts.write_service import ContactWriteService
 
 
@@ -108,13 +113,17 @@ async def test_create_contact_records_contact_created_mutation_event() -> None:
         company=_company(org_id, company_id),
     )
     service = ContactWriteService(session, org_id)
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
 
     result = await service.create_contact(
-        email=" Buyer@Example.com ",
-        name="Buyer Person",
+        ContactCreateCommand(
+            email=" Buyer@Example.com ",
+            name="Buyer Person",
+            job_title="CFO",
+        ),
         context=ContactWriteContext(source="api", actor_user_id=uuid4()),
-        company_id=company_id,
-        job_title="CFO",
     )
 
     events = _mutation_events(session)
@@ -125,7 +134,7 @@ async def test_create_contact_records_contact_created_mutation_event() -> None:
     assert events[0].event_type == "crm.contact.created"
     assert events[0].semantic_event_types == ["crm.contact.created"]
     assert events[0].changed_fields["email"] == {"old": None, "new": "buyer@example.com"}
-    assert events[0].changed_fields["company_id"] == {"old": None, "new": str(company_id)}
+    assert "company_id" not in events[0].changed_fields
     assert events[0].changed_fields["job_title"] == {"old": None, "new": "CFO"}
 
 
@@ -137,8 +146,7 @@ async def test_create_contact_duplicate_email_records_no_mutation_event() -> Non
 
     with pytest.raises(ContactWriteServiceError):
         await service.create_contact(
-            email="buyer@example.com",
-            name="Buyer Person",
+            ContactCreateCommand(email="buyer@example.com", name="Buyer Person"),
             context=ContactWriteContext(source="api", actor_user_id=uuid4()),
         )
 
@@ -231,24 +239,23 @@ async def test_update_contact_linkedin_url_is_profile_audit_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_contact_linkedin_url_clear_is_audited() -> None:
+async def test_update_contact_existing_linkedin_url_clear_records_no_mutation_event() -> None:
     org_id = uuid4()
     contact = _contact(org_id, linkedin_url="https://linkedin.com/in/buyer")
     session = _ContactSession(existing_contact=contact)
     service = ContactWriteService(session, org_id)
 
-    await service.update_contact(
-        contact.contact_id,
-        {"linkedin_url": None},
-        context=ContactWriteContext(source="api", actor_user_id=uuid4()),
-    )
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.update_contact(
+            contact.contact_id,
+            {"linkedin_url": None},
+            context=ContactWriteContext(source="api", actor_user_id=uuid4()),
+        )
 
     events = _mutation_events(session)
-    assert contact.linkedin_url is None
-    assert len(events) == 1
-    assert events[0].changed_fields == {
-        "linkedin_url": {"old": "https://linkedin.com/in/buyer", "new": None}
-    }
+    assert exc.value.status_code == 400
+    assert contact.linkedin_url == "https://linkedin.com/in/buyer"
+    assert events == []
 
 
 @pytest.mark.asyncio

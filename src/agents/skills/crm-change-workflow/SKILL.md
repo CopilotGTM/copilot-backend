@@ -94,7 +94,7 @@ Use the narrowest available tool for the requested change:
 
 | Intent | Required before tool call | Tool behavior |
 | --- | --- | --- |
-| Create deal | Deal name | Call `CreateDeal`. Include amount, currency, close date, account fields, priority, and description only when provided or safely inferred |
+| Create deal | Deal name | Call `CreateDeal`. Include amount, currency, expected close date, account fields, priority, and description only when provided or safely inferred |
 | Create account | Account name, domain, or website | Call `CreateAccount`. Do not ask for optional enrichment fields first |
 | Create contact | Contact name and email | Call `CreateContact`. Include account or deal link only when resolved or explicitly provided |
 | Add stakeholder | Resolved existing deal ID/name and stakeholder email | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
@@ -219,7 +219,7 @@ For multiple writes:
 
 ```markdown
 Completed:
-- Deal: **Acme Enterprise** - USD 50,000, closes June 30
+- Deal: **Acme Enterprise** - USD 50,000, expected close June 30
 - Stakeholder: **Sarah Chen** `<sarah@acme.com>` added to **Acme Enterprise**
 
 Blocked:
@@ -232,7 +232,7 @@ For pending approval:
 Ready for approval:
 - Deal: **Acme Enterprise**
 - Amount: USD 50,000
-- Close date: June 30
+- Expected close date: June 30
 
 You can approve it, edit a field, or cancel.
 ```
@@ -259,7 +259,7 @@ Include fields that are known from the user request or tool result:
 
 | Record | Useful markdown details |
 | --- | --- |
-| Deal | Name, amount/currency, account, pipeline/stage, close date, priority |
+| Deal | Name, amount/currency, account, pipeline/stage, expected close date, priority |
 | Task | Title, assignee, due date, priority, reminder, related deal |
 | Stakeholder | Name, email, deal, job title, stance, decision power, whether enrichment/research started if returned |
 | Account | Name, domain, website, industry |
@@ -296,13 +296,13 @@ the reusable rule.
 User:
 
 ```text
-Create a deal for Acme worth 50k closing next month.
+Create a deal for Acme worth 50k expected to close next month.
 ```
 
 Behavior:
 
 - Call `CreateDeal` because the deal name is known.
-- Include amount and close date because the user provided them.
+- Include amount and expected close date because the user provided them.
 - Let backend defaults fill omitted optional fields.
 - Final answer names the created deal and key fields in markdown.
 - If approval is required, return a pending preview and stop.
@@ -394,13 +394,13 @@ Behavior:
 User:
 
 ```text
-Actually make it 75k and close date June 30.
+Actually make it 75k and expected close date June 30.
 ```
 
 Behavior:
 
 - Patch the active pending action.
-- Send only amount and close date changes.
+- Send only amount and expected close date changes.
 - Return the updated preview.
 
 ## Common Mistakes

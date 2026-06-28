@@ -88,9 +88,11 @@ async def get_deal_change_history(
             col(CRMDeal.deal_id),
             col(CRMDeal.name),
             col(CRMDeal.company_name),
+            col(CRMDeal.stage_id),
             col(CRMDeal.stage_name),
             col(CRMDeal.stage_label),
             col(CRMDeal.stage_entered_at),
+            col(CRMDeal.pipeline_id),
             col(CRMDeal.pipeline_name),
             col(CRMDeal.pipeline_label),
         ).where(
@@ -110,7 +112,8 @@ async def get_deal_change_history(
             logger.info("get_deal_change_history: deal not found: %s", deal_id)
             return None
 
-        # Get only required stage history columns, ordered by entered_at descending
+        # Stage history can grow for long-running deals, so the tool projects
+        # only fields needed for the response and keeps newest transitions first.
         history_stmt = (
             select(
                 col(CRMDealStageHistory.history_id),
@@ -163,6 +166,7 @@ async def get_deal_change_history(
             stage_info = stage_map.get(row.stage_id) if row.stage_id else None
 
             change_entry: dict[str, Any] = {
+                "stage_id": str(row.stage_id) if row.stage_id else None,
                 "entered_at": row.entered_at.isoformat() if row.entered_at else None,
                 "exited_at": row.exited_at.isoformat() if row.exited_at else None,
                 "from_stage_id": str(row.from_stage_id) if row.from_stage_id else None,
@@ -170,7 +174,9 @@ async def get_deal_change_history(
                 "elapsed_days": round(row.elapsed_seconds / 86400, 1)
                 if row.elapsed_seconds
                 else None,
-                "amount_at_stage": float(row.amount_at_stage) if row.amount_at_stage else None,
+                "amount_at_stage": (
+                    float(row.amount_at_stage) if row.amount_at_stage is not None else None
+                ),
                 "probability_at_stage": row.probability_at_stage,
                 "source": row.source,
             }
@@ -197,6 +203,7 @@ async def get_deal_change_history(
             "deal_name": deal_row.name,
             "company_name": deal_row.company_name,
             "current_stage": {
+                "stage_id": str(deal_row.stage_id) if deal_row.stage_id else None,
                 "name": deal_row.stage_name,
                 "label": deal_row.stage_label,
                 "entered_at": deal_row.stage_entered_at.isoformat()
@@ -204,6 +211,7 @@ async def get_deal_change_history(
                 else None,
             },
             "current_pipeline": {
+                "pipeline_id": str(deal_row.pipeline_id) if deal_row.pipeline_id else None,
                 "name": deal_row.pipeline_name,
                 "label": deal_row.pipeline_label,
             },

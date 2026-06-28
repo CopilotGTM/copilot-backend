@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import get_args, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
 from src.agents.tools.crm.list_deals import (
     DealFilters,
+    _apply_filters,
+    _apply_sorting,
     _apply_status_filter,
     _format_deal_output,
     list_deals,
@@ -32,29 +35,40 @@ def mock_context() -> MagicMock:
 def _make_deal(
     deal_id: str = "22222222-2222-2222-2222-222222222222",
     name: str = "Test Deal",
+    company_id: str | None = "44444444-4444-4444-4444-444444444444",
     company_name: str | None = "Test Corp",
     amount: float | None = 50000.0,
+    predicted_amount: float | None = 25000.0,
     currency: str | None = "USD",
+    stage_id: str | None = "55555555-5555-5555-5555-555555555555",
     stage_name: str | None = "Negotiation",
     stage_label: str | None = "Negotiation",
+    pipeline_id: str | None = "66666666-6666-6666-6666-666666666666",
     deal_status: str | None = "open",
     probability: float | None = 0.5,
     owner_name: str | None = "John Doe",
     owner_email: str | None = "john@test.com",
+    owner_id: str | None = "33333333-3333-3333-3333-333333333333",
 ) -> MagicMock:
     deal = MagicMock()
     deal.deal_id = UUID(deal_id)
     deal.name = name
+    deal.company_id = UUID(company_id) if company_id else None
     deal.company_name = company_name
     deal.amount = amount
+    deal.predicted_amount = predicted_amount
     deal.currency = currency
+    deal.stage_id = UUID(stage_id) if stage_id else None
     deal.stage_name = stage_name
     deal.stage_label = stage_label
+    deal.pipeline_id = UUID(pipeline_id) if pipeline_id else None
     deal.deal_status = deal_status
     deal.probability = probability
+    deal.owner_id = UUID(owner_id) if owner_id else None
     deal.owner_name = owner_name
     deal.owner_email = owner_email
     deal.expected_close_date = None
+    deal.close_date = None
     deal.source_created_at = datetime(2026, 1, 15, 10, 0, 0)
     deal.source_modified_at = datetime(2026, 2, 20, 14, 30, 0)
     deal.last_activity_at = None
@@ -94,6 +108,17 @@ class TestDealFilters:
         assert f.limit == 50
         assert f.offset == 10
 
+    def test_date_filter_annotations_accept_voice_schema_strings(self) -> None:
+        hints = get_type_hints(DealFilters)
+
+        for field_name in (
+            "min_close_date",
+            "max_close_date",
+            "min_expected_close_date",
+            "max_expected_close_date",
+        ):
+            assert str in get_args(hints[field_name])
+
 
 class TestFormatDealOutput:
     """Tests for the _format_deal_output helper."""
@@ -104,29 +129,51 @@ class TestFormatDealOutput:
 
         assert output["deal_id"] == "22222222-2222-2222-2222-222222222222"
         assert output["name"] == "Test Deal"
+        assert output["company_id"] == "44444444-4444-4444-4444-444444444444"
         assert output["company_name"] == "Test Corp"
         assert output["amount"] == 50000.0
+        assert output["predicted_amount"] == 25000.0
         assert output["currency"] == "USD"
+        assert output["stage_id"] == "55555555-5555-5555-5555-555555555555"
         assert output["stage_name"] == "Negotiation"
+        assert output["pipeline_id"] == "66666666-6666-6666-6666-666666666666"
         assert output["deal_status"] == "open"
+        assert output["owner_user_id"] == "33333333-3333-3333-3333-333333333333"
         assert output["owner_name"] == "John Doe"
         assert output["owner_email"] == "john@test.com"
         assert output["created_at"] == "2026-01-15T10:00:00"
         assert output["updated_at"] == "2026-02-20T14:30:00"
+
+    def test_outputs_expected_and_actual_close_dates(self) -> None:
+        deal = _make_deal()
+        deal.expected_close_date = datetime(2026, 6, 30, 0, 0, 0)
+        deal.close_date = datetime(2026, 7, 2, 12, 30, 0)
+
+        output = _format_deal_output(deal)
+
+        assert output["expected_close_date"] == "2026-06-30T00:00:00"
+        assert output["close_date"] == "2026-07-02T12:30:00"
 
     def test_none_amount(self) -> None:
         deal = _make_deal(amount=None)
         output = _format_deal_output(deal)
         assert output["amount"] is None
 
+    def test_zero_amount_is_preserved(self) -> None:
+        deal = _make_deal(amount=0)
+        output = _format_deal_output(deal)
+        assert output["amount"] == 0.0
+
     def test_none_dates(self) -> None:
         deal = _make_deal()
         deal.expected_close_date = None
+        deal.close_date = None
         deal.last_activity_at = None
         deal.source_created_at = None
         deal.source_modified_at = None
         output = _format_deal_output(deal)
         assert output["expected_close_date"] is None
+        assert output["close_date"] is None
         assert output["last_activity_at"] is None
         assert output["created_at"] is None
         assert output["updated_at"] is None
@@ -183,6 +230,150 @@ class TestApplyStatusFilter:
         result = _apply_status_filter(stmt, "OPEN", c)
         stmt.where.assert_called_once()
         assert result is stmt
+
+
+class TestApplyFilters:
+    """Tests for scalar/range deal filters."""
+
+    class _FilterColumn:
+        def __init__(self) -> None:
+            self.ge_calls = 0
+            self.le_calls = 0
+
+        def __ge__(self, other):  # noqa: ANN001
+            self.ge_calls += 1
+            return ("ge", other)
+
+        def __le__(self, other):  # noqa: ANN001
+            self.le_calls += 1
+            return ("le", other)
+
+    class _Columns:
+        def __init__(self) -> None:
+            self.name = MagicMock()
+            self.deal_status = MagicMock()
+            self.stage_name = MagicMock()
+            self.amount = MagicMock()
+            self.owner_email = MagicMock()
+            self.company_name = MagicMock()
+            self.close_date = TestApplyFilters._FilterColumn()
+            self.expected_close_date = TestApplyFilters._FilterColumn()
+
+    def test_expected_close_date_filters_use_forecast_date(self) -> None:
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        result = _apply_filters(
+            stmt,
+            DealFilters(
+                min_expected_close_date=datetime(2026, 7, 1),
+                max_expected_close_date=datetime(2026, 7, 31),
+            ),
+            c,
+        )
+
+        assert result is stmt
+        assert stmt.where.call_count == 2
+        assert c.expected_close_date.ge_calls == 1
+        assert c.expected_close_date.le_calls == 1
+        assert c.close_date.ge_calls == 0
+        assert c.close_date.le_calls == 0
+
+    def test_string_expected_close_date_filters_are_parsed(self) -> None:
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        _apply_filters(
+            stmt,
+            DealFilters(min_expected_close_date="2026-07-01T00:00:00Z"),  # type: ignore[arg-type]
+            c,
+        )
+
+        comparison_value = stmt.where.call_args.args[0][1]
+        assert comparison_value == datetime(2026, 7, 1, 0, 0, 0)
+
+    def test_aware_datetime_close_date_filter_is_normalized(self) -> None:
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        _apply_filters(
+            stmt,
+            DealFilters(min_close_date=datetime(2026, 7, 1, 0, 0, 0, tzinfo=UTC)),
+            c,
+        )
+
+        comparison_value = stmt.where.call_args.args[0][1]
+        assert comparison_value == datetime(2026, 7, 1, 0, 0, 0)
+
+    def test_invalid_string_close_date_filter_is_ignored(self) -> None:
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        result = _apply_filters(
+            stmt,
+            DealFilters(min_close_date="not-a-date"),  # type: ignore[arg-type]
+            c,
+        )
+
+        assert result is stmt
+        stmt.where.assert_not_called()
+
+
+class TestApplySorting:
+    """Tests for _apply_sorting helper."""
+
+    class _SortColumn:
+        def __init__(self) -> None:
+            self.desc_calls = 0
+            self.asc_calls = 0
+
+        def desc(self) -> TestApplySorting._SortColumn:
+            self.desc_calls += 1
+            return self
+
+        def asc(self) -> TestApplySorting._SortColumn:
+            self.asc_calls += 1
+            return self
+
+        def nulls_last(self) -> TestApplySorting._SortColumn:
+            return self
+
+    class _Columns:
+        def __init__(self) -> None:
+            self.amount = TestApplySorting._SortColumn()
+            self.source_created_at = TestApplySorting._SortColumn()
+            self.close_date = TestApplySorting._SortColumn()
+            self.expected_close_date = TestApplySorting._SortColumn()
+            self.source_modified_at = TestApplySorting._SortColumn()
+            self.name = TestApplySorting._SortColumn()
+
+    def test_close_date_sort_uses_actual_close_date(self) -> None:
+        stmt = MagicMock()
+        stmt.order_by = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        result = _apply_sorting(stmt, DealFilters(sort_by="close_date"), c)
+
+        stmt.order_by.assert_called_once()
+        assert result is stmt
+        assert c.close_date.desc_calls == 1
+        assert c.expected_close_date.desc_calls == 0
+
+    def test_expected_close_date_sort_uses_forecast_date(self) -> None:
+        stmt = MagicMock()
+        stmt.order_by = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        result = _apply_sorting(stmt, DealFilters(sort_by="expected_close_date"), c)
+
+        stmt.order_by.assert_called_once()
+        assert result is stmt
+        assert c.expected_close_date.desc_calls == 1
+        assert c.close_date.desc_calls == 0
 
 
 class TestListDeals:

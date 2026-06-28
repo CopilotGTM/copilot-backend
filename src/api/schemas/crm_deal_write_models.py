@@ -6,10 +6,45 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from src.api.schemas.crm_models import DealOwnerDetail
 
 
-class DealAccountInput(BaseModel):
+class _StrictDealWriteModel(BaseModel):
+    """Base class for write payloads where unknown keys should fail fast."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _reject_null_custom_properties(data: Any) -> Any:
+    """Reject explicit null custom field payloads while still allowing omission."""
+    if not isinstance(data, dict):
+        return data
+    for field_name in ("custom_properties", "custom_columns"):
+        if data.get(field_name) is None and field_name in data:
+            raise ValueError(
+                f"{field_name} must be an object; omit it when not updating custom fields"
+            )
+    if (
+        "custom_properties" in data
+        and "custom_columns" in data
+        and data["custom_properties"] != data["custom_columns"]
+    ):
+        raise ValueError("custom_columns and custom_properties must match when both are provided")
+    return data
+
+
+def _is_valid_email(value: str) -> bool:
+    """Validate simple business-email syntax without pulling in deliverability checks."""
+    local, separator, domain = value.partition("@")
+    if not local or not separator or not domain or "@" in domain:
+        return False
+    if any(ch.isspace() for ch in value):
+        return False
+    return all(part for part in domain.split(".")) and "." in domain
+
+
+class DealAccountInput(_StrictDealWriteModel):
     """Optional account details supplied during deal creation."""
 
     company_id: UUID | None = None
@@ -23,6 +58,7 @@ class DealAccountInput(BaseModel):
     @field_validator("name", "domain", "website", "linkedin_url", "industry", "country")
     @classmethod
     def normalize_strings(cls, v: str | None) -> str | None:
+        """Trim optional account fields so empty sections collapse cleanly."""
         if v is None:
             return None
         value = v.strip()
@@ -32,8 +68,49 @@ class DealAccountInput(BaseModel):
 class DealAccountUpdateRequest(DealAccountInput):
     """Request payload to update account details for an internal CRM deal."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_identity_field_clears(cls, data: Any) -> Any:
+        """Prevent clearing account identity fields through the account update action."""
+        if isinstance(data, dict):
+            for field_name in ("name", "domain"):
+                if field_name in data and data[field_name] is None:
+                    raise ValueError(f"{field_name} cannot be cleared")
+        return data
 
-class DealTeamMemberInput(BaseModel):
+    @field_validator(
+        "name", "domain", "website", "linkedin_url", "industry", "country", mode="before"
+    )
+    @classmethod
+    def reject_blank_strings(cls, v: str | None) -> str | None:
+        """Treat blank strings as invalid updates instead of silent clears."""
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("Account update fields cannot be blank")
+        return v
+
+    @model_validator(mode="after")
+    def require_account_field(self) -> DealAccountUpdateRequest:
+        """Require at least one account field, including explicit nullable profile clears."""
+        if not any(
+            [
+                self.company_id,
+                self.name,
+                self.domain,
+                self.website,
+                self.linkedin_url,
+                self.industry,
+                self.country,
+                "website" in self.model_fields_set,
+                "linkedin_url" in self.model_fields_set,
+                "industry" in self.model_fields_set,
+                "country" in self.model_fields_set,
+            ]
+        ):
+            raise ValueError("At least one account field is required")
+        return self
+
+
+class DealTeamMemberInput(_StrictDealWriteModel):
     """Internal team member added during deal creation."""
 
     user_id: UUID
@@ -42,19 +119,20 @@ class DealTeamMemberInput(BaseModel):
     @field_validator("role")
     @classmethod
     def normalize_role(cls, v: str | None) -> str | None:
+        """Trim optional team-member roles before creating participant rows."""
         if v is None:
             return None
         value = v.strip()
         return value or None
 
 
-class DealContactParticipantInput(BaseModel):
+class DealContactParticipantInput(_StrictDealWriteModel):
     """External CRM contact added as a deal participant during deal creation."""
 
     contact_id: UUID
 
 
-class DealCreateRequest(BaseModel):
+class DealCreateRequest(_StrictDealWriteModel):
     """Request payload to create an internal CRM deal."""
 
     name: str = Field(
@@ -85,11 +163,6 @@ class DealCreateRequest(BaseModel):
         default=None,
         description="User UUID of the deal owner responsible for driving this deal to close.",
     )
-    close_date: datetime | None = Field(
-        default=None,
-        description="Actual date the deal was closed (won or lost). "
-        "Only set when recording a historical close; leave empty for open deals.",
-    )
     expected_close_date: datetime | None = Field(
         default=None,
         description="Projected date the deal is expected to close. "
@@ -111,6 +184,27 @@ class DealCreateRequest(BaseModel):
         default=None,
         description="How the deal originated — e.g. 'Inbound', 'Outbound', 'Referral', 'Event'.",
     )
+    probability: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Win probability percentage for forecasting. Must be between 0 and 100.",
+    )
+    forecast_category: str | None = Field(
+        default=None,
+        description="Forecast bucket — e.g. 'Pipeline', 'Best Case', 'Commit', 'Closed'.",
+    )
+    custom_properties: dict[str, Any] | None = Field(
+        default=None,
+        min_length=1,
+        description="Internal deal custom field values keyed by custom field key.",
+    )
+    custom_columns: dict[str, Any] | None = Field(
+        default=None,
+        min_length=1,
+        exclude=True,
+        description="Public alias for internal deal custom field values keyed by custom field key.",
+    )
     source_created_at: datetime | None = Field(
         default=None,
         description="Date the deal engagement originally started. "
@@ -128,10 +222,25 @@ class DealCreateRequest(BaseModel):
         default=None,
         description="External CRM contacts to attach as deal participants/stakeholders.",
     )
+    primary_contact_name: str | None = Field(
+        default=None,
+        description="Primary contact display name snapshot to attach to the deal.",
+    )
+    primary_contact_email: str | None = Field(
+        default=None,
+        description="Primary contact email snapshot to attach to the deal.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_custom_properties(cls, data: Any) -> Any:
+        """Share custom field null/alias validation with deal update payloads."""
+        return _reject_null_custom_properties(data)
 
     @field_validator("name")
     @classmethod
     def name_not_empty(cls, v: str) -> str:
+        """Normalize the required deal name and reject whitespace-only values."""
         value = v.strip()
         if not value:
             raise ValueError("Deal name cannot be empty")
@@ -140,12 +249,41 @@ class DealCreateRequest(BaseModel):
     @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, v: str | None) -> str | None:
+        """Store currency codes in uppercase ISO-style form."""
         if v is None:
             return None
         return v.strip().upper() or None
 
+    @field_validator(
+        "description",
+        "deal_type",
+        "priority",
+        "lead_source",
+        "forecast_category",
+        "primary_contact_name",
+        "primary_contact_email",
+    )
+    @classmethod
+    def normalize_optional_text(cls, v: str | None) -> str | None:
+        """Trim optional text fields and drop blanks during create."""
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+    @field_validator("primary_contact_email")
+    @classmethod
+    def validate_primary_contact_email(cls, v: str | None) -> str | None:
+        """Reject malformed primary-contact snapshots before deal creation."""
+        if v is not None and not _is_valid_email(v):
+            raise ValueError("primary_contact_email must be a valid email")
+        return v
+
     @model_validator(mode="after")
     def normalize_optional_sections(self) -> DealCreateRequest:
+        """Collapse empty nested sections and map public custom_columns into storage keys."""
+        if self.custom_columns is not None:
+            self.custom_properties = self.custom_columns
         if self.account and not any(
             [
                 self.account.name,
@@ -165,14 +303,13 @@ class DealCreateRequest(BaseModel):
         return self
 
 
-class DealUpdateRequest(BaseModel):
+class DealUpdateRequest(_StrictDealWriteModel):
     """Request payload to update an internal CRM deal."""
 
     name: str | None = Field(default=None, max_length=500)
     amount: float | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     source_created_at: datetime | None = None
-    close_date: datetime | None = None
     expected_close_date: datetime | None = None
     description: str | None = None
     deal_type: str | None = None
@@ -180,19 +317,30 @@ class DealUpdateRequest(BaseModel):
     lead_source: str | None = None
     probability: float | None = Field(default=None, ge=0, le=100)
     forecast_category: str | None = None
-    custom_properties: dict[str, Any] | None = None
+    custom_properties: dict[str, Any] | None = Field(default=None, min_length=1)
+    custom_columns: dict[str, Any] | None = Field(default=None, min_length=1, exclude=True)
 
-    @field_validator("name")
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_custom_properties(cls, data: Any) -> Any:
+        """Keep custom field clears field-by-field instead of accepting null maps."""
+        return _reject_null_custom_properties(data)
+
+    @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, v: str | None) -> str | None:
+        """Reject empty deal names when the update explicitly includes name."""
         if v is None:
-            return None
-        value = v.strip()
-        return value or None
+            raise ValueError("Deal name cannot be empty")
+        value = v.strip() if isinstance(v, str) else str(v).strip()
+        if not value:
+            raise ValueError("Deal name cannot be empty")
+        return value
 
     @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, v: str | None) -> str | None:
+        """Normalize update currency codes to uppercase."""
         if v is None:
             return None
         return v.strip().upper() or None
@@ -206,28 +354,70 @@ class DealUpdateRequest(BaseModel):
     )
     @classmethod
     def normalize_optional_text(cls, v: str | None) -> str | None:
+        """Trim optional update text while preserving explicit null clears."""
         if v is None:
             return None
         value = v.strip()
         return value or None
 
+    @model_validator(mode="after")
+    def normalize_custom_columns_alias(self) -> DealUpdateRequest:
+        """Let clients use custom_columns while the service layer consumes custom_properties."""
+        if self.custom_columns is not None:
+            self.custom_properties = self.custom_columns
+        return self
 
-class DealPrimaryContactUpdateRequest(BaseModel):
+
+class DealPrimaryContactUpdateRequest(_StrictDealWriteModel):
     """Request payload to update primary contact details for an internal CRM deal."""
 
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
 
+    @field_validator("primary_contact_name", "primary_contact_email", mode="before")
+    @classmethod
+    def reject_blank_strings(cls, v: str | None) -> str | None:
+        """Reject ambiguous blank primary-contact values before normalization."""
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("Primary contact fields cannot be blank")
+        return v
+
     @field_validator("primary_contact_name", "primary_contact_email")
     @classmethod
     def normalize_strings(cls, v: str | None) -> str | None:
+        """Trim primary-contact snapshot values while preserving explicit clear requests."""
         if v is None:
             return None
-        value = v.strip()
-        return value or None
+        return v.strip()
+
+    @field_validator("primary_contact_email")
+    @classmethod
+    def validate_primary_contact_email(cls, v: str | None) -> str | None:
+        """Validate email snapshots before they become deal participant identity."""
+        if v is not None and not _is_valid_email(v):
+            raise ValueError("primary_contact_email must be a valid email")
+        return v
+
+    @property
+    def is_clear_request(self) -> bool:
+        """Return True only for the explicit two-field primary-contact clear payload."""
+        return (
+            {"primary_contact_name", "primary_contact_email"} <= self.model_fields_set
+            and self.primary_contact_name is None
+            and self.primary_contact_email is None
+        )
+
+    @model_validator(mode="after")
+    def require_contact_field(self) -> DealPrimaryContactUpdateRequest:
+        """Allow explicit clears but reject no-op primary-contact updates."""
+        if self.is_clear_request:
+            return self
+        if not self.primary_contact_name and not self.primary_contact_email:
+            raise ValueError("At least one primary contact field is required")
+        return self
 
 
-class DealCloseRequest(BaseModel):
+class DealCloseRequest(_StrictDealWriteModel):
     """Request payload to close an internal CRM deal as won or lost."""
 
     outcome: Literal["won", "lost"]
@@ -235,9 +425,18 @@ class DealCloseRequest(BaseModel):
     close_date: datetime | None = None
     stage_id: UUID | None = None
 
+    @field_validator("outcome", mode="before")
+    @classmethod
+    def normalize_outcome(cls, v: str) -> str:
+        """Accept mixed-case close outcomes from tools while storing canonical values."""
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
+
     @field_validator("closed_reason")
     @classmethod
     def normalize_closed_reason(cls, v: str | None) -> str | None:
+        """Trim lost reasons and let blank values fail the lost-deal policy check."""
         if v is None:
             return None
         value = v.strip()
@@ -245,28 +444,31 @@ class DealCloseRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_reason_policy(self) -> DealCloseRequest:
+        """Require lost reasons and clear stale reason text when closing as won."""
+        if self.outcome == "won":
+            self.closed_reason = None
         if self.outcome == "lost" and not self.closed_reason:
             raise ValueError("closed_reason is required when outcome is 'lost'")
         return self
 
 
-class DealReopenRequest(BaseModel):
+class DealReopenRequest(_StrictDealWriteModel):
     """Request payload to reopen a previously closed internal CRM deal."""
 
     stage_id: UUID | None = None
     clear_closed_reason: bool = False
 
 
-class DealStageMoveRequest(BaseModel):
+class DealStageMoveRequest(_StrictDealWriteModel):
     """Request payload to move a deal to a new stage."""
 
     stage_id: UUID
 
 
-class DealOwnerAssignRequest(BaseModel):
+class DealOwnerAssignRequest(_StrictDealWriteModel):
     """Request payload to assign or clear a deal owner."""
 
-    owner_user_id: UUID | None = None
+    owner_user_id: UUID | None
 
 
 class DealWriteResponse(BaseModel):
@@ -274,14 +476,48 @@ class DealWriteResponse(BaseModel):
 
     deal_id: UUID
     name: str | None
+    amount: float | None = None
+    predicted_amount: float | None = None
+    currency: str | None = None
+    currency_symbol: str | None = None
     pipeline_id: UUID | None
+    pipeline_name: str | None = None
+    pipeline_label: str | None = None
     stage_id: UUID | None
+    stage_name: str | None = None
+    stage_label: str | None = None
     deal_status: str
+    probability: float | None = None
+    forecast_category: str | None = None
     owner_user_id: UUID | None
+    owner_name: str | None = None
+    owner_email: str | None = None
+    owner_details: list[DealOwnerDetail] = Field(default_factory=list)
+    is_internal: bool = True
     company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
+    company_industry: str | None = None
+    company_website: str | None = None
+    company_linkedin_url: str | None = None
+    company_country: str | None = None
+    primary_contact_id: UUID | None = None
+    primary_contact_name: str | None = None
+    primary_contact_email: str | None = None
+    source_created_at: datetime | None = None
+    close_date: datetime | None = None
+    expected_close_date: datetime | None = None
+    closed_won_at: datetime | None = None
+    closed_lost_at: datetime | None = None
+    closed_reason: str | None = None
+    stage_entered_at: datetime | None = None
+    stage_updated_at: datetime | None = None
+    deal_type: str | None = None
+    priority: str | None = None
+    lead_source: str | None = None
+    description: str | None = None
     created_at: datetime
     updated_at: datetime
+    synced_at: datetime | None = None
 
     model_config = {"from_attributes": True}

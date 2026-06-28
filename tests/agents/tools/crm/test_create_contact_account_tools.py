@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -9,8 +10,16 @@ from src.agents.context import AgentContext
 from src.agents.tools.crm.create_account import create_account_direct, create_create_account
 from src.agents.tools.crm.create_contact import create_contact_direct, create_create_contact
 from src.agents.tools.crm.search_accounts import search_accounts
-from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteResult
-from src.service.crm.contacts.contracts import ContactDealLinkResult, ContactWriteResult
+from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
+    AccountWriteContext,
+    AccountWriteResult,
+)
+from src.service.crm.contacts.contracts import (
+    ContactCreateCommand,
+    ContactDealLinkResult,
+    ContactWriteResult,
+)
 
 
 class _AsyncSessionContext:
@@ -99,16 +108,18 @@ async def test_create_account_direct_creates_and_commits() -> None:
         )
 
     writer.create_account.assert_awaited_once_with(
-        name="Acme",
+        AccountCreateCommand(
+            name="Acme",
+            domain="acme.com",
+            website="https://acme.com",
+            industry="Software",
+        ),
         context=AccountWriteContext(
             source="agent_tool",
             actor_user_id=context.user_id,
             created_via="chat_tool",
             duplicate_scope="internal_only",
         ),
-        domain="acme.com",
-        website="https://acme.com",
-        industry="Software",
     )
     org_session.commit.assert_awaited_once()
     assert result["status"] == "created"
@@ -185,14 +196,13 @@ async def test_create_account_direct_allows_domain_only_create() -> None:
 
     reader.find_accounts_by_domain.assert_awaited_once_with("acme.com")
     writer.create_account.assert_awaited_once_with(
-        name=None,
+        AccountCreateCommand(name=None, domain="acme.com"),
         context=AccountWriteContext(
             source="agent_tool",
             actor_user_id=context.user_id,
             created_via="chat_tool",
             duplicate_scope="internal_only",
         ),
-        domain="acme.com",
     )
     org_session.commit.assert_awaited_once()
     assert result["status"] == "created"
@@ -244,14 +254,13 @@ async def test_create_contact_direct_reuses_existing_email() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_contact_direct_links_single_domain_account() -> None:
+async def test_create_contact_direct_does_not_resolve_account() -> None:
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
     org_session.rollback = AsyncMock()
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
     company_id = uuid4()
-    account = SimpleNamespace(company_id=company_id, name="Acme", domain="acme.com")
     contact = SimpleNamespace(
         contact_id=uuid4(),
         email="jane@acme.com",
@@ -263,15 +272,11 @@ async def test_create_contact_direct_links_single_domain_account() -> None:
 
     with (
         patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
-        patch("src.agents.tools.crm.create_contact.AccountReadService") as account_reader_cls,
         patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
     ):
         contact_reader = MagicMock()
         contact_reader.find_contact_by_email = AsyncMock(return_value=None)
         contact_reader_cls.return_value = contact_reader
-        account_reader = MagicMock()
-        account_reader.find_accounts_by_domain = AsyncMock(return_value=[account])
-        account_reader_cls.return_value = account_reader
         contact_writer = MagicMock()
         contact_writer.create_contact = AsyncMock(
             return_value=ContactWriteResult(contact=contact, created=True, matched_by="created")
@@ -285,43 +290,119 @@ async def test_create_contact_direct_links_single_domain_account() -> None:
         )
 
     contact_writer.create_contact.assert_awaited_once()
-    _, kwargs = contact_writer.create_contact.call_args
-    assert kwargs["email"] == "jane@acme.com"
-    assert kwargs["name"] == "Jane Doe"
-    assert kwargs["company_id"] == company_id
-    assert kwargs["company_name"] == "Acme"
+    command = contact_writer.create_contact.call_args.args[0]
+    kwargs = contact_writer.create_contact.call_args.kwargs
+    assert command == ContactCreateCommand(email="jane@acme.com", name="Jane Doe")
+    assert "company_id" not in kwargs
+    assert "company_name" not in kwargs
     org_session.commit.assert_awaited_once()
     assert result["company_id"] == str(company_id)
 
 
 @pytest.mark.asyncio
-async def test_create_contact_direct_returns_account_selection_for_ambiguous_domain() -> None:
-    account_one = SimpleNamespace(company_id=uuid4(), name="Acme US", domain="acme.com")
-    account_two = SimpleNamespace(company_id=uuid4(), name="Acme EU", domain="acme.com")
+async def test_create_contact_direct_allows_missing_name() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    contact = SimpleNamespace(
+        contact_id=uuid4(),
+        email="jane@acme.com",
+        full_name="jane@acme.com",
+        job_title=None,
+        company_name=None,
+        company_id=None,
+    )
 
     with (
         patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
-        patch("src.agents.tools.crm.create_contact.AccountReadService") as account_reader_cls,
         patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
     ):
         contact_reader = MagicMock()
         contact_reader.find_contact_by_email = AsyncMock(return_value=None)
         contact_reader_cls.return_value = contact_reader
-        account_reader = MagicMock()
-        account_reader.find_accounts_by_domain = AsyncMock(return_value=[account_one, account_two])
-        account_reader_cls.return_value = account_reader
         contact_writer = MagicMock()
+        contact_writer.create_contact = AsyncMock(
+            return_value=ContactWriteResult(contact=contact, created=True, matched_by="created")
+        )
         contact_writer_cls.return_value = contact_writer
 
         result = await create_contact_direct(
-            context=_context(),
+            context=context,
+            email="jane@acme.com",
+            name=None,
+        )
+
+    contact_writer.create_contact.assert_awaited_once()
+    command = contact_writer.create_contact.call_args.args[0]
+    assert command == ContactCreateCommand(email="jane@acme.com", name=None)
+    assert result["status"] == "created"
+
+
+def test_create_contact_direct_has_no_account_selection_inputs() -> None:
+    params = signature(create_contact_direct).parameters
+
+    assert "account_id" not in params
+    assert "account_name" not in params
+    assert "account_domain" not in params
+    assert "phone" not in params
+
+
+def test_create_account_direct_uses_minimal_create_inputs() -> None:
+    params = signature(create_account_direct).parameters
+
+    assert "name" in params
+    assert "domain" in params
+    assert "website" in params
+    assert "industry" in params
+    assert "linkedin_url" in params
+    assert "phone" not in params
+    assert "country" not in params
+    assert "annual_revenue" not in params
+    assert "number_of_employees" not in params
+
+
+@pytest.mark.asyncio
+async def test_create_contact_direct_does_not_block_on_ambiguous_account_domain() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    contact = SimpleNamespace(
+        contact_id=uuid4(),
+        email="jane@acme.com",
+        full_name="Jane Doe",
+        job_title=None,
+        company_name=None,
+        company_id=None,
+    )
+
+    with (
+        patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
+        patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
+    ):
+        contact_reader = MagicMock()
+        contact_reader.find_contact_by_email = AsyncMock(return_value=None)
+        contact_reader_cls.return_value = contact_reader
+        contact_writer = MagicMock()
+        contact_writer.create_contact = AsyncMock(
+            return_value=ContactWriteResult(contact=contact, created=True, matched_by="created")
+        )
+        contact_writer_cls.return_value = contact_writer
+
+        result = await create_contact_direct(
+            context=context,
             email="jane@acme.com",
             name="Jane Doe",
         )
 
-    contact_writer.create_contact.assert_not_called()
-    assert result["status"] == "needs_account_selection"
-    assert len(result["candidates"]) == 2
+    contact_writer.create_contact.assert_awaited_once()
+    kwargs = contact_writer.create_contact.call_args.kwargs
+    assert "company_id" not in kwargs
+    assert "company_name" not in kwargs
+    assert result["status"] == "created"
 
 
 @pytest.mark.asyncio
@@ -342,7 +423,6 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
 
     with (
         patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
-        patch("src.agents.tools.crm.create_contact.AccountReadService") as account_reader_cls,
         patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
         patch("src.agents.tools.crm.create_contact.ContactDealLinkService") as linker_cls,
         patch("src.agents.tools.crm.create_contact.send_deal_task_async", AsyncMock()) as dispatch,
@@ -350,9 +430,6 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
         contact_reader = MagicMock()
         contact_reader.find_contact_by_email = AsyncMock(return_value=None)
         contact_reader_cls.return_value = contact_reader
-        account_reader = MagicMock()
-        account_reader.find_accounts_by_domain = AsyncMock(return_value=[])
-        account_reader_cls.return_value = account_reader
         contact_writer = MagicMock()
         contact_writer.create_contact = AsyncMock(
             return_value=ContactWriteResult(contact=contact, created=True, matched_by="created")

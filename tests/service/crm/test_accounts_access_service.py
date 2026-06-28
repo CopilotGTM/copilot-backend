@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -66,6 +67,27 @@ def _mock_scalars_first(row):
     return mock_result
 
 
+class _FakeScalarResult:
+    def __init__(self, rows: list[object]):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    def __init__(self, results: list[list[object]]):
+        self._results = results
+        self.statements: list[object] = []
+
+    async def execute(self, statement: object):
+        self.statements.append(statement)
+        return _FakeScalarResult(self._results.pop(0))
+
+
 def test_account_search_cursor_round_trips_name_and_id() -> None:
     company_id = uuid4()
     cursor = _encode_account_search_cursor("Acme", company_id)
@@ -108,6 +130,8 @@ async def test_get_account_detail_maps_row_like_count_results() -> None:
 
     company = MagicMock()
     company.model_dump.return_value = {"company_id": company_id, "name": "Acme"}
+    company.account_summary = "- Acme is a software company."
+    company.last_researched_at = datetime(2026, 6, 26, tzinfo=UTC)
 
     contact_with_count = MagicMock(spec=CRMContact)
     contact_with_count.contact_id = contact_with_count_id
@@ -157,10 +181,10 @@ async def test_get_account_detail_maps_row_like_count_results() -> None:
     assert detail["contact_count"] == 2
     assert detail["deal_count"] == 2
     assert detail["pipeline_value"] == 1250.0
-    assert detail["account_research"] == {
-        "status": "not_available",
-        "content": None,
-        "last_researched_at": None,
+    assert detail["account_summary"] == {
+        "status": "completed",
+        "content": "- Acme is a software company.",
+        "last_researched_at": datetime(2026, 6, 26, tzinfo=UTC),
     }
     assert detail["contacts"] == [
         {

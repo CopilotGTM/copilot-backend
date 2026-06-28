@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -87,13 +89,21 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
     master_session = MagicMock()
     deal_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    owner_id = context.user_id
+    company_id = uuid4()
     deal = SimpleNamespace(
         deal_id=deal_id,
         name="Acme Expansion",
         amount=None,
         currency=None,
+        pipeline_id=pipeline_id,
         pipeline_name="Sales Pipeline",
+        stage_id=stage_id,
         stage_name="Discovery",
+        owner_id=owner_id,
+        company_id=company_id,
     )
 
     with (
@@ -128,8 +138,12 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
         "status": "created",
         "deal_id": str(deal_id),
         "name": "Acme Expansion",
+        "pipeline_id": str(pipeline_id),
         "pipeline_name": "Sales Pipeline",
+        "stage_id": str(stage_id),
         "stage_name": "Discovery",
+        "owner_user_id": str(owner_id),
+        "company_id": str(company_id),
         "message": "Created deal **Acme Expansion** in Sales Pipeline > Discovery.",
         "_bot_channel_payload": {
             "type": "message",
@@ -214,6 +228,48 @@ async def test_create_deal_direct_defaults_currency_when_amount_has_no_currency(
     assert result["amount"] == 12000
     assert result["currency"] == "USD"
     assert "Amount: USD 12,000.00" in result["message"]
+
+
+def test_create_deal_direct_contract_does_not_accept_actual_close_date() -> None:
+    assert "close_date" not in signature(create_deal_direct).parameters
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_maps_expected_close_date() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Renewal Deal",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        await create_deal_direct(
+            context=context,
+            name="Renewal Deal",
+            expected_close_date="2027-03-31",
+        )
+
+    payload = service.create_deal.await_args.args[0]
+    assert payload["expected_close_date"] == datetime(2027, 3, 31)
+    assert "close_date" not in payload
 
 
 @pytest.mark.asyncio

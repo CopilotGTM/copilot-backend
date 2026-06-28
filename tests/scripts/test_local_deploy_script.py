@@ -39,3 +39,12 @@ def test_full_local_deploy_keeps_bootstrap_install_values() -> None:
     assert '"--create-namespace"' in full_deploy_args
     assert "api.secrets.REDIS_HOST=$($env:REDIS_HOST)" in full_deploy_args
     assert "global.redis.host=$($env:REDIS_HOST)" in full_deploy_args
+
+
+def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> None:
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+    full_deploy_args = _full_deploy_helm_args(script_text)
+
+    assert "[bool]$RunStartupJobs = $false" in script_text
+    assert "if (-not $RunStartupJobs) {" in full_deploy_args
+    assert '"--no-hooks"' in full_deploy_args

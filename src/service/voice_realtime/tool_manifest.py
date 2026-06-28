@@ -1,3 +1,11 @@
+"""Voice realtime tool allowlist and schema manifest.
+
+The realtime voice surface exposes a smaller set of agent tools than text chat
+because voice actions must be concise, confirmable, and safe to execute from
+spoken input. This module is the single place that maps allowed tool names to
+OpenAI realtime schemas and the factories used to execute them.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -14,12 +22,15 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class VoiceRealtimeToolDefinition:
+    """One voice-safe tool plus the schema and factory needed by realtime sessions."""
+
     tool_name: ToolName
     description: str
     parameters: dict[str, Any]
     factory_builder: Callable[[AgentContext], Callable[[], Callable[..., Any]]]
 
     def build_schema(self) -> dict[str, Any]:
+        """Return an isolated schema copy so callers cannot mutate the manifest."""
         return {
             "type": "function",
             "name": self.tool_name.value,
@@ -379,9 +390,35 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "stage_name": {"type": "string"},
                 "min_amount": {"type": "number"},
                 "max_amount": {"type": "number"},
+                "min_close_date": {
+                    "type": "string",
+                    "description": "Minimum actual close date in ISO 8601 format.",
+                },
+                "max_close_date": {
+                    "type": "string",
+                    "description": "Maximum actual close date in ISO 8601 format.",
+                },
+                "min_expected_close_date": {
+                    "type": "string",
+                    "description": "Minimum expected close date in ISO 8601 format.",
+                },
+                "max_expected_close_date": {
+                    "type": "string",
+                    "description": "Maximum expected close date in ISO 8601 format.",
+                },
                 "owner_email": {"type": "string"},
                 "company_name": {"type": "string"},
-                "sort_by": {"type": "string"},
+                "sort_by": {
+                    "type": "string",
+                    "enum": [
+                        "amount",
+                        "created_at",
+                        "close_date",
+                        "expected_close_date",
+                        "updated_at",
+                        "name",
+                    ],
+                },
                 "sort_order": {"type": "string", "enum": ["asc", "desc"]},
                 "limit": {"type": "integer"},
             },
@@ -402,7 +439,10 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "amount": {"type": "number"},
                 "currency": {"type": "string"},
                 "description": {"type": "string"},
-                "close_date": {"type": "string"},
+                "expected_close_date": {
+                    "type": "string",
+                    "description": "Expected close date for forecasting, in YYYY-MM-DD format.",
+                },
                 "priority": {"type": "string"},
                 "account_name": {"type": "string"},
                 "account_domain": {"type": "string"},
@@ -885,16 +925,19 @@ VOICE_REALTIME_SUPPORTED_TOOLS: tuple[ToolName, ...] = tuple(
 
 
 def build_voice_allowed_tools() -> list[str]:
+    """Return the tool-name allowlist sent to realtime session configuration."""
     return [definition.tool_name.value for definition in VOICE_REALTIME_TOOL_DEFINITIONS]
 
 
 def build_voice_tool_schemas() -> list[dict[str, Any]]:
+    """Return function schemas for the voice model's tool registry."""
     return [definition.build_schema() for definition in VOICE_REALTIME_TOOL_DEFINITIONS]
 
 
 def build_voice_tool_factories(
     context: AgentContext,
 ) -> dict[ToolName, Callable[[], Callable[..., Any]]]:
+    """Bind the current agent context to every voice-supported tool factory."""
     return {
         definition.tool_name: definition.factory_builder(context)
         for definition in VOICE_REALTIME_TOOL_DEFINITIONS

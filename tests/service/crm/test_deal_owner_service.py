@@ -12,9 +12,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.owner_service import DealOwnerService
 from src.service.crm.deals.write_service import DealWriteService
-from src.service.crm.participants.contracts import ParticipantWriteResult
+from src.service.crm.participants.contracts import ParticipantServiceError, ParticipantWriteResult
 
 
 class _FakeScalarResult:
@@ -184,6 +185,24 @@ def test_apply_owner_same_owner_reports_no_change() -> None:
 
 
 @pytest.mark.asyncio
+async def test_assign_owner_rejects_invalid_owner_user_id_before_loading_deal() -> None:
+    service = DealWriteService(
+        org_session=_FakeOwnerSession(),  # type: ignore[arg-type]
+        master_session=SimpleNamespace(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._load_internal_deal = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.assign_owner(uuid4(), "not-a-uuid")  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Invalid owner_user_id"
+    service._load_internal_deal.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_assign_owner_updates_snapshot_syncs_projection_and_records_one_event() -> None:
     """Public owner assignment orchestrates snapshot, projection, and one mutation event."""
     session = _FakeOwnerSession()
@@ -317,3 +336,48 @@ async def test_assign_owner_none_clears_snapshot_and_owner_projection() -> None:
         deal=deal
     )
     service._record_mutation_event.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_assign_owner_preserves_participant_projection_error_status() -> None:
+    """Owner assignment should surface participant-boundary 4xx errors, not generic 500s."""
+    session = _FakeOwnerSession()
+    service = DealWriteService(
+        org_session=session,  # type: ignore[arg-type]
+        master_session=SimpleNamespace(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    owner_user_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        integration_id=uuid4(),
+        owner_id=None,
+        owner_name=None,
+        owner_email=None,
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+    crm_user = SimpleNamespace(
+        user_id=owner_user_id,
+        full_name="Owner User",
+        email="owner@example.com",
+    )
+    service._load_internal_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
+    service._owners.sync_owner_participant = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ParticipantServiceError("External CRM users are read-only", status_code=409)
+    )
+    service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            AsyncMock(return_value=crm_user),
+        )
+        with pytest.raises(DealWriteServiceError) as exc_info:
+            await service.assign_owner(deal.deal_id, owner_user_id)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "External CRM users are read-only"
+    service._record_mutation_event.assert_not_awaited()  # type: ignore[attr-defined]

@@ -23,12 +23,12 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.research.apollo_client import apollo_enrich_person
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.enrichment.apollo import apollo_enrich_person
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext

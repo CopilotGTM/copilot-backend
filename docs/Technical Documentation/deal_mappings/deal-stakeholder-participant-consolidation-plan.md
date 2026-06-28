@@ -72,7 +72,6 @@ These surfaces currently depend on `DealStakeholder`, `deal_stakeholders`, or ol
 - `src/service/crm/internal/deal_participant_service.py`
 - `src/service/crm/internal/deal_write_service.py`
 - `src/service/crm/access/leads_access_service.py`
-- `src/service/crm/access/contacts_access_service.py`
 - `src/service/crm/insights/stakeholder_insight_service.py`
 - `src/service/crm/timeline/deal_timeline_sync_service.py`
 - `src/service/crm/jobs/deal_job_service.py`
@@ -385,7 +384,6 @@ Implementation note:
 
 **Files:**
 - Modify: `src/service/crm/insights/stakeholders_service.py`
-- Modify: `src/service/crm/access/contacts_access_service.py`
 - Modify: `src/contracts/crm/stakeholders.py`
 - Modify: `src/api/schemas/crm_models.py`
 - Modify: `src/api/schemas/crm_contact_models.py`

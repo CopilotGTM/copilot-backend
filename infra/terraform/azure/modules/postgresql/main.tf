@@ -43,7 +43,7 @@ resource "azurerm_postgresql_flexible_server" "db" {
 resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {
   name      = "azure.extensions"
   server_id = azurerm_postgresql_flexible_server.db.id
-  value     = "VECTOR"
+  value     = "VECTOR,PG_TRGM"
 }
 
 # -----------------------------------------------------------------

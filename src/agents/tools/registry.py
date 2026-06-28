@@ -129,9 +129,6 @@ class ToolName(str, Enum):
     CRAWL_WEBPAGE = "crawl_webpage"
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
-    ENRICH_LINKEDIN_PROFILE = (
-        "enrich_linkedin_profile"  # LinkedIn enrichment for stakeholder workflows
-    )
     RESEARCH_LINKEDIN_PROFILE = "research_linkedin_profile"  # LinkedIn research for general chat
     RESEARCH_STAKEHOLDER = "research_stakeholder"  # Read-only stakeholder lookup via Apollo
 
@@ -265,7 +262,6 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.SEARCH_ARXIV,
     ToolName.EXTRACT_NEWS_ARTICLE,
     ToolName.RESEARCH_LINKEDIN_PROFILE,
-    ToolName.ENRICH_LINKEDIN_PROFILE,
     # Stakeholder tools (write)
     ToolName.ENRICH_STAKEHOLDER,
     # Teams tools
@@ -417,7 +413,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
-        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research by name/URL
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
@@ -573,7 +568,6 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.CRAWL_WEBPAGE: ToolCategory.SEARCH,
     ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
-    ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
     ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
     ToolName.RESEARCH_STAKEHOLDER: ToolCategory.SEARCH,
     # Tasks
@@ -675,7 +669,6 @@ class ToolRegistry:
         )
         from src.agents.tools.research import (
             create_crawl_webpage,
-            create_enrich_linkedin_profile,
             create_extract_news_article,
             create_get_company_financials,
             create_get_stock_info,
@@ -868,9 +861,6 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.EXTRACT_NEWS_ARTICLE] = lambda: create_extract_news_article(
             self.capabilities_getter
-        )
-        self._tool_factories[ToolName.ENRICH_LINKEDIN_PROFILE] = (
-            lambda: create_enrich_linkedin_profile(self.capabilities_getter)
         )
         self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
             lambda: create_research_linkedin_profile(self.capabilities_getter)

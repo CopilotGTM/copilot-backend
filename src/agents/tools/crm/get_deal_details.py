@@ -34,6 +34,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -100,29 +101,69 @@ async def get_deal_details(
             logger.info("get_deal_details: deal not found: %s", deal_id)
             return None
 
+        company_industry = None
+        company_website = None
+        company_linkedin_url = None
+        company_country = None
+        if deal.company_id:
+            company_c = cast(Any, CRMCompany).__table__.c
+            company_stmt = select(CRMCompany).where(
+                company_c.organisation_id == organisation_id,
+                company_c.company_id == deal.company_id,
+                company_c.is_deleted.is_(False),
+            )
+            try:
+                company_result = await session.execute(company_stmt)
+                company = company_result.scalar_one_or_none()
+            except Exception as e:
+                logger.warning("get_deal_details: error fetching company profile: %s", e)
+                company = None
+            if company:
+                company_industry = getattr(company, "industry", None)
+                company_website = getattr(company, "website", None)
+                company_linkedin_url = getattr(company, "linkedin_url", None)
+                company_country = getattr(company, "country", None)
+
         output: dict[str, Any] = {
             "deal_id": str(deal.deal_id),
             "name": deal.name,
             "description": deal.description,
+            "company_id": str(deal.company_id) if deal.company_id else None,
             "company_name": deal.company_name,
             "company_domain": deal.company_domain,
-            "amount": float(deal.amount) if deal.amount else None,
+            "company_industry": company_industry,
+            "company_website": company_website,
+            "company_linkedin_url": company_linkedin_url,
+            "company_country": company_country,
+            "amount": float(deal.amount) if deal.amount is not None else None,
+            "predicted_amount": float(deal.predicted_amount)
+            if deal.predicted_amount is not None
+            else None,
             "currency": deal.currency,
             "deal_status": deal.deal_status,
+            "forecast_category": deal.forecast_category,
             "stage": {
+                "stage_id": str(deal.stage_id) if deal.stage_id else None,
                 "name": deal.stage_name,
                 "label": deal.stage_label,
                 "probability": deal.probability,
+                "entered_at": deal.stage_entered_at.isoformat() if deal.stage_entered_at else None,
+                "updated_at": deal.stage_updated_at.isoformat() if deal.stage_updated_at else None,
             },
             "pipeline": {
+                "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
                 "name": deal.pipeline_name,
                 "label": deal.pipeline_label,
             },
             "owner": {
+                "owner_user_id": str(deal.owner_id) if deal.owner_id else None,
                 "name": deal.owner_name,
                 "email": deal.owner_email,
             },
             "primary_contact": {
+                "primary_contact_id": (
+                    str(deal.primary_contact_id) if deal.primary_contact_id else None
+                ),
                 "name": deal.primary_contact_name,
                 "email": deal.primary_contact_email,
             },

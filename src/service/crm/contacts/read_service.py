@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
@@ -23,6 +26,34 @@ from src.infra.utils.logger import get_logger
 from src.service.crm.contacts.contracts import ContactReadServiceError
 
 logger = get_logger("contact_read_service")
+
+_CURSOR_RANK_KEY = "rank"
+_CURSOR_NAME_KEY = "name"
+_CURSOR_ID_KEY = "contact_id"
+
+
+def _encode_contact_search_cursor(rank: int, name_key: str | None, contact_id: UUID) -> str:
+    payload = {
+        _CURSOR_RANK_KEY: rank,
+        _CURSOR_NAME_KEY: (name_key or "").strip().lower(),
+        _CURSOR_ID_KEY: str(contact_id),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_contact_search_cursor(cursor: str) -> tuple[int, str, UUID]:
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        rank = int(payload[_CURSOR_RANK_KEY])
+        name_key = payload[_CURSOR_NAME_KEY]
+        contact_id = UUID(payload[_CURSOR_ID_KEY])
+    except Exception as exc:
+        raise ContactReadServiceError("Invalid cursor", status_code=400) from exc
+    if not isinstance(name_key, str):
+        raise ContactReadServiceError("Invalid cursor", status_code=400)
+    return rank, name_key, contact_id
 
 
 class ContactReadService:
@@ -204,6 +235,206 @@ class ContactReadService:
             )
 
         return result, total_count
+
+    async def search_contacts(
+        self,
+        *,
+        q: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        company_id: UUID | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Return lightweight contact rows for picker and browse search."""
+        return await self._search_contacts(
+            q=q,
+            limit=limit,
+            cursor=cursor,
+            company_id=company_id,
+            include_company_name=True,
+        )
+
+    async def search_contacts_for_create(
+        self,
+        *,
+        q: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Return strict contact candidates used before creating a new contact."""
+        return await self._search_contacts(
+            q=q,
+            limit=limit,
+            cursor=cursor,
+            company_id=None,
+            include_company_name=False,
+        )
+
+    async def _search_contacts(
+        self,
+        *,
+        q: str | None,
+        limit: int,
+        cursor: str | None,
+        company_id: UUID | None,
+        include_company_name: bool,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        c = cast(Any, CRMContact).__table__.c
+        query = q.strip().lower() if q and q.strip() else None
+        name_key = func.lower(func.coalesce(c.full_name, c.email, ""))
+        email_key = func.lower(func.coalesce(c.email, ""))
+        company_key = func.lower(func.coalesce(c.company_name, ""))
+        additional_emails_text = c.additional_emails.cast(String)
+        additional_emails_key = func.lower(additional_emails_text)
+
+        filters = [
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+        ]
+        if company_id is not None:
+            filters.append(c.company_id == company_id)
+
+        if query:
+            like_expr = f"%{query}%"
+            prefix_expr = f"{query}%"
+            search_conditions = [
+                email_key == query,
+                c.email.ilike(prefix_expr),
+                name_key == query,
+                c.full_name.ilike(like_expr),
+                additional_emails_text.ilike(like_expr),
+            ]
+            if include_company_name:
+                search_conditions.append(c.company_name.ilike(like_expr))
+
+            filters.append(or_(*search_conditions))
+            rank_cases = [
+                (email_key == query, 0),
+                (additional_emails_key.like(f'%"{query}"%'), 1),
+                (email_key.like(prefix_expr), 2),
+                (name_key == query, 3),
+                (name_key.like(prefix_expr), 4),
+            ]
+            if include_company_name:
+                rank_cases.append((company_key.like(like_expr), 6))
+            rank_expr = case(
+                *rank_cases,
+                else_=7,
+            )
+        else:
+            rank_expr = case((c.contact_id.is_not(None), 0), else_=0)
+
+        if cursor:
+            cursor_rank, cursor_name, cursor_contact_id = _decode_contact_search_cursor(cursor)
+            filters.append(
+                or_(
+                    rank_expr > cursor_rank,
+                    and_(rank_expr == cursor_rank, name_key > cursor_name),
+                    and_(
+                        rank_expr == cursor_rank,
+                        name_key == cursor_name,
+                        c.contact_id > cursor_contact_id,
+                    ),
+                )
+            )
+
+        stmt = (
+            select(CRMContact)
+            .where(*filters)
+            .order_by(rank_expr.asc(), name_key.asc(), c.contact_id.asc())
+            .limit(limit + 1)
+        )
+        res = await self.org_session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        has_more = len(rows) > limit
+        contacts = rows[:limit]
+        next_cursor = None
+        if has_more and contacts:
+            last = contacts[-1]
+            next_cursor = _encode_contact_search_cursor(
+                self._contact_match_rank(last, query, include_company_name),
+                self._contact_name_key(last),
+                last.contact_id,
+            )
+
+        companies = await self._load_companies_for_contacts(contacts)
+        return [
+            {
+                "contact_id": contact.contact_id,
+                "full_name": contact.full_name,
+                "email": contact.email,
+                "job_title": contact.job_title,
+                "company": self._contact_company_payload(
+                    contact=contact,
+                    company=companies.get(contact.company_id) if contact.company_id else None,
+                    email_domain=self._extract_domain(contact.email) if contact.email else None,
+                ),
+                "match_type": self._contact_match_type(contact, query, include_company_name),
+            }
+            for contact in contacts
+        ], next_cursor
+
+    async def _load_companies_for_contacts(
+        self, contacts: list[CRMContact]
+    ) -> dict[UUID, CRMCompany]:
+        company_ids = {contact.company_id for contact in contacts if contact.company_id}
+        if not company_ids:
+            return {}
+        stmt = select(CRMCompany).where(
+            col(CRMCompany.organisation_id) == self.organisation_id,
+            col(CRMCompany.is_deleted).is_(False),
+            col(CRMCompany.company_id).in_(list(company_ids)),
+        )
+        res = await self.org_session.execute(stmt)
+        return {company.company_id: company for company in res.scalars().all()}
+
+    @staticmethod
+    def _contact_name_key(contact: CRMContact) -> str:
+        return (contact.full_name or contact.email or "").strip().lower()
+
+    @classmethod
+    def _contact_match_rank(
+        cls, contact: CRMContact, query: str | None, include_company_name: bool
+    ) -> int:
+        match_type = cls._contact_match_type(contact, query, include_company_name)
+        return {
+            "exact_email": 0,
+            "additional_email": 1,
+            "email_prefix": 2,
+            "exact_name": 3,
+            "name_prefix": 4,
+            "name": 5,
+            "company": 6,
+            "other": 7,
+        }[match_type]
+
+    @staticmethod
+    def _contact_match_type(
+        contact: CRMContact, query: str | None, include_company_name: bool
+    ) -> str:
+        if not query:
+            return "other"
+        email = (contact.email or "").strip().lower()
+        name = (contact.full_name or "").strip().lower()
+        company = (contact.company_name or "").strip().lower()
+        additional_emails = [
+            value.strip().lower() for value in contact.additional_emails or [] if value.strip()
+        ]
+        if email == query:
+            return "exact_email"
+        if query in additional_emails:
+            return "additional_email"
+        if email.startswith(query):
+            return "email_prefix"
+        if name == query:
+            return "exact_name"
+        if name.startswith(query):
+            return "name_prefix"
+        if query in name:
+            return "name"
+        if include_company_name and query in company:
+            return "company"
+        return "other"
 
     @staticmethod
     def _contact_company_payload(

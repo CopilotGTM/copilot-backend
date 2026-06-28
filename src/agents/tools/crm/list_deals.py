@@ -15,6 +15,8 @@ FILTERS AVAILABLE:
 - status: "open", "closed", "won", "lost"
 - stage_name: Filter by sales stage
 - min_amount / max_amount: Deal value range
+- min_close_date / max_close_date: Actual close date range
+- min_expected_close_date / max_expected_close_date: Forecast close date range
 - owner_email: Deal owner filter
 - company_name: Partial match on company name
 
@@ -33,6 +35,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
@@ -57,6 +60,10 @@ class DealFilters:
     stage_name: str | None = None
     min_amount: float | None = None
     max_amount: float | None = None
+    min_close_date: datetime | str | None = None
+    max_close_date: datetime | str | None = None
+    min_expected_close_date: datetime | str | None = None
+    max_expected_close_date: datetime | str | None = None
     owner_email: str | None = None
     company_name: str | None = None
     sort_by: str = "source_modified_at"
@@ -77,6 +84,10 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
         Modified select statement with filters applied.
     """
     c = table_columns
+    min_close_date = _parse_filter_datetime(filters.min_close_date)
+    max_close_date = _parse_filter_datetime(filters.max_close_date)
+    min_expected_close_date = _parse_filter_datetime(filters.min_expected_close_date)
+    max_expected_close_date = _parse_filter_datetime(filters.max_expected_close_date)
 
     if filters.name:
         stmt = stmt.where(func.lower(c.name).like(func.lower(f"%{filters.name}%")))
@@ -93,6 +104,18 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
     if filters.max_amount is not None:
         stmt = stmt.where(c.amount <= filters.max_amount)
 
+    if min_close_date is not None:
+        stmt = stmt.where(c.close_date >= min_close_date)
+
+    if max_close_date is not None:
+        stmt = stmt.where(c.close_date <= max_close_date)
+
+    if min_expected_close_date is not None:
+        stmt = stmt.where(c.expected_close_date >= min_expected_close_date)
+
+    if max_expected_close_date is not None:
+        stmt = stmt.where(c.expected_close_date <= max_expected_close_date)
+
     if filters.owner_email:
         stmt = stmt.where(func.lower(c.owner_email) == func.lower(filters.owner_email))
 
@@ -100,6 +123,28 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
         stmt = stmt.where(func.lower(c.company_name).like(func.lower(f"%{filters.company_name}%")))
 
     return stmt
+
+
+def _parse_filter_datetime(value: datetime | str | None) -> datetime | None:
+    """Normalize voice/agent date filter values before building SQL comparisons."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+        if parsed.tzinfo is None:
+            return parsed
+        return parsed.astimezone(UTC).replace(tzinfo=None)
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("list_deals: invalid date filter ignored: %s", value)
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(UTC).replace(tzinfo=None)
 
 
 def _apply_status_filter(stmt: Select, status: str, c: Any) -> Select:
@@ -122,7 +167,8 @@ def _apply_sorting(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
     sort_column_map = {
         "amount": c.amount,
         "created_at": c.source_created_at,
-        "close_date": c.expected_close_date,
+        "close_date": c.close_date,
+        "expected_close_date": c.expected_close_date,
         "updated_at": c.source_modified_at,
         "source_modified_at": c.source_modified_at,
         "name": c.name,
@@ -139,18 +185,26 @@ def _format_deal_output(deal: CRMDeal) -> dict[str, Any]:
     return {
         "deal_id": str(deal.deal_id),
         "name": deal.name,
+        "company_id": str(deal.company_id) if deal.company_id else None,
         "company_name": deal.company_name,
-        "amount": float(deal.amount) if deal.amount else None,
+        "amount": float(deal.amount) if deal.amount is not None else None,
+        "predicted_amount": float(deal.predicted_amount)
+        if deal.predicted_amount is not None
+        else None,
         "currency": deal.currency,
+        "stage_id": str(deal.stage_id) if deal.stage_id else None,
         "stage_name": deal.stage_name,
         "stage_label": deal.stage_label,
+        "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
         "deal_status": deal.deal_status,
         "probability": deal.probability,
+        "owner_user_id": str(deal.owner_id) if deal.owner_id else None,
         "owner_name": deal.owner_name,
         "owner_email": deal.owner_email,
         "expected_close_date": deal.expected_close_date.isoformat()
         if deal.expected_close_date
         else None,
+        "close_date": deal.close_date.isoformat() if deal.close_date else None,
         "created_at": deal.source_created_at.isoformat() if deal.source_created_at else None,
         "updated_at": deal.source_modified_at.isoformat() if deal.source_modified_at else None,
         "last_activity_at": deal.last_activity_at.isoformat() if deal.last_activity_at else None,
@@ -225,6 +279,10 @@ def create_list_deals(
         stage_name: str | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
+        min_close_date: datetime | str | None = None,
+        max_close_date: datetime | str | None = None,
+        min_expected_close_date: datetime | str | None = None,
+        max_expected_close_date: datetime | str | None = None,
         owner_email: str | None = None,
         company_name: str | None = None,
         sort_by: str = "updated_at",
@@ -241,9 +299,14 @@ def create_list_deals(
             stage_name: Filter by stage name
             min_amount: Filter: deal amount >= value
             max_amount: Filter: deal amount <= value
+            min_close_date: Filter: actual close date >= value
+            max_close_date: Filter: actual close date <= value
+            min_expected_close_date: Filter: forecast close date >= value
+            max_expected_close_date: Filter: forecast close date <= value
             owner_email: Filter by deal owner email
             company_name: Filter by company name (partial match)
-            sort_by: Sort by: "amount", "created_at", "close_date", "updated_at", "name"
+            sort_by: Sort by: "amount", "created_at", "close_date", "expected_close_date",
+                "updated_at", "name"
             sort_order: "asc" or "desc"
             limit: Max results (default: 20, max: 100)
 
@@ -270,6 +333,10 @@ def create_list_deals(
             stage_name=stage_name,
             min_amount=min_amount,
             max_amount=max_amount,
+            min_close_date=min_close_date,
+            max_close_date=max_close_date,
+            min_expected_close_date=min_expected_close_date,
+            max_expected_close_date=max_expected_close_date,
             owner_email=owner_email,
             company_name=company_name,
             sort_by=sort_by,

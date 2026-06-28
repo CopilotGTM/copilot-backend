@@ -12,7 +12,11 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
 )
-from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
+from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
+    AccountWriteContext,
+    AccountWriteServiceError,
+)
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.mutations.policies import AccountMutationPolicy
 
@@ -161,9 +165,11 @@ async def test_create_account_records_account_created_mutation_event() -> None:
     service = AccountWriteService(session, org_id)
 
     result = await service.create_account(
-        name="Acme",
-        domain="https://www.acme.com/about",
-        industry="Software",
+        AccountCreateCommand(
+            name="Acme",
+            domain="https://www.acme.com/about",
+            industry="Software",
+        ),
         context=AccountWriteContext(source="api", actor_user_id=actor_id),
     )
 
@@ -189,8 +195,7 @@ async def test_create_account_records_normalized_domain_not_raw_input() -> None:
     service = AccountWriteService(session, org_id)
 
     await service.create_account(
-        name=None,
-        domain="HTTPS://WWW.Acme.COM/path",
+        AccountCreateCommand(name=None, domain="HTTPS://WWW.Acme.COM/path"),
         context=AccountWriteContext(source="agent_tool"),
     )
 
@@ -208,8 +213,7 @@ async def test_create_account_duplicate_domain_records_no_mutation_event() -> No
 
     with pytest.raises(AccountWriteServiceError):
         await service.create_account(
-            name="Acme",
-            domain="https://www.acme.com",
+            AccountCreateCommand(name="Acme", domain="https://www.acme.com"),
             context=AccountWriteContext(source="api"),
         )
 
@@ -224,7 +228,10 @@ async def test_create_account_duplicate_name_records_no_mutation_event() -> None
     service = AccountWriteService(session, org_id)
 
     with pytest.raises(AccountWriteServiceError):
-        await service.create_account(name="Acme", context=AccountWriteContext(source="api"))
+        await service.create_account(
+            AccountCreateCommand(name="Acme"),
+            context=AccountWriteContext(source="api"),
+        )
 
     assert _events(session) == []
 

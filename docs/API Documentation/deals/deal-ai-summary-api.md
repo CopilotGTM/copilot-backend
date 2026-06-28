@@ -92,8 +92,8 @@ Required
 | `total`          | integer        | Total count of active deals (excludes soft-deleted)  |
 | `by_status`      | object         | Count grouped by deal status                         |
 | `by_pipeline`    | object         | Count grouped by pipeline name                       |
-| `total_amount`   | number \| null | Sum of all deal amounts (null if no amounts)         |
-| `average_amount` | number \| null | Average deal amount (null if no amounts)             |
+| `total_amount`   | number \| null | Sum of all non-null deal amounts (`0` is preserved; `null` only when no deal has an amount) |
+| `average_amount` | number \| null | Average of non-null deal amounts (`0` is preserved; `null` only when no deal has an amount) |
 
 ### Notes
 

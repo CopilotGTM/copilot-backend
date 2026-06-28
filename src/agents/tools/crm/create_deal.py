@@ -52,7 +52,7 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _parse_close_date(value: str | None) -> datetime | None:
+def _parse_expected_close_date(value: str | None) -> datetime | None:
     cleaned = _clean_optional(value)
     if cleaned is None:
         return None
@@ -61,7 +61,7 @@ def _parse_close_date(value: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(normalized)
     except ValueError:
-        logger.warning("create_deal_direct: invalid close_date: %s", value)
+        logger.warning("create_deal_direct: invalid expected_close_date: %s", value)
         return None
 
 
@@ -73,6 +73,15 @@ def _created_deal_result(deal: Any) -> dict[str, Any]:
         "pipeline_name": deal.pipeline_name,
         "stage_name": deal.stage_name,
     }
+
+    if getattr(deal, "pipeline_id", None):
+        result["pipeline_id"] = str(deal.pipeline_id)
+    if getattr(deal, "stage_id", None):
+        result["stage_id"] = str(deal.stage_id)
+    if getattr(deal, "owner_id", None):
+        result["owner_user_id"] = str(deal.owner_id)
+    if getattr(deal, "company_id", None):
+        result["company_id"] = str(deal.company_id)
 
     message = f"Created deal **{deal.name}**"
     if deal.pipeline_name and deal.stage_name:
@@ -261,7 +270,7 @@ async def create_deal_form(
     amount: float | None = None,
     currency: str | None = None,
     description: str | None = None,
-    close_date: str | None = None,
+    expected_close_date: str | None = None,
     priority: str | None = None,
     account_name: str | None = None,
     account_domain: str | None = None,
@@ -342,7 +351,9 @@ async def create_deal_form(
                     default_pipeline_id = str(p.pipeline_id)
                     default_pipeline_name = p.name
 
-            # Get first stage of default pipeline for preview display
+            # Preview cards need a concrete stage label even before the user
+            # submits the form; use the first configured stage as the same
+            # fallback the write service applies during creation.
             if default_pipeline_id:
                 stage_stmt = (
                     select(
@@ -380,7 +391,7 @@ async def create_deal_form(
         {"title": "Amount", "value": amount_display},
         {"title": "Pipeline", "value": default_pipeline_name or em},
         {"title": "Stage", "value": default_stage_name or em},
-        {"title": "Close Date", "value": close_date or em},
+        {"title": "Expected Close Date", "value": expected_close_date or em},
         {
             "title": "Priority",
             "value": (priority or em).capitalize() if priority else em,
@@ -416,7 +427,7 @@ async def create_deal_form(
         "amount": amount,
         "currency": (currency or "USD").upper(),
         "description": description or "",
-        "close_date": close_date or "",
+        "expected_close_date": expected_close_date or "",
         "priority": priority or "",
         "account_name": account_name or "",
         "account_domain": account_domain or "",
@@ -483,7 +494,7 @@ async def create_deal_form(
             _slack_field("Amount", amount_display),
             _slack_field("Pipeline", default_pipeline_name or em),
             _slack_field("Stage", default_stage_name or em),
-            _slack_field("Close Date", close_date or em),
+            _slack_field("Expected Close Date", expected_close_date or em),
             _slack_field("Priority", (priority or em).capitalize() if priority else em),
             _slack_field("Account", account_name or em),
             _slack_field("Domain", account_domain or em),
@@ -602,7 +613,7 @@ async def create_deal_direct(
     amount: float | None = None,
     currency: str | None = None,
     description: str | None = None,
-    close_date: str | None = None,
+    expected_close_date: str | None = None,
     priority: str | None = None,
     account_name: str | None = None,
     account_domain: str | None = None,
@@ -640,7 +651,7 @@ async def create_deal_direct(
 
     optional_fields = {
         "description": _clean_optional(description),
-        "close_date": _parse_close_date(close_date),
+        "expected_close_date": _parse_expected_close_date(expected_close_date),
         "priority": _clean_optional(priority),
     }
     for field, value in optional_fields.items():
@@ -705,7 +716,7 @@ def create_create_deal(
         amount: float | None = None,
         currency: str | None = None,
         description: str | None = None,
-        close_date: str | None = None,
+        expected_close_date: str | None = None,
         priority: str | None = None,
         account_name: str | None = None,
         account_domain: str | None = None,
@@ -725,7 +736,7 @@ def create_create_deal(
             amount: Deal amount to pre-fill (e.g. 50000)
             currency: Currency code to pre-fill (e.g. "USD", "EUR"). Defaults to USD.
             description: Deal description to pre-fill
-            close_date: Expected close date to pre-fill (YYYY-MM-DD format)
+            expected_close_date: Expected close date to pre-fill (YYYY-MM-DD format)
             priority: Priority level to pre-fill ("low", "medium", "high")
             account_name: Account/company name to pre-fill
             account_domain: Account website domain to pre-fill (e.g. "acme.com")
@@ -754,7 +765,7 @@ def create_create_deal(
                 "amount": amount,
                 "currency": currency,
                 "description": description,
-                "close_date": close_date,
+                "expected_close_date": expected_close_date,
                 "priority": priority,
                 "account_name": account_name,
                 "account_domain": account_domain,

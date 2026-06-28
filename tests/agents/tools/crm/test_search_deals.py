@@ -23,11 +23,31 @@ def mock_context() -> MagicMock:
     return ctx
 
 
-def _make_deal(deal_id: str, name: str, company: str | None = None) -> MagicMock:
+def _make_deal(
+    deal_id: str,
+    name: str,
+    company: str | None = None,
+    company_id: str | None = "33333333-3333-3333-3333-333333333333",
+    amount: float | None = 50000.0,
+    predicted_amount: float | None = 25000.0,
+    currency: str | None = "USD",
+    stage_id: str | None = "44444444-4444-4444-4444-444444444444",
+    stage_name: str | None = "Negotiation",
+    pipeline_id: str | None = "55555555-5555-5555-5555-555555555555",
+    pipeline_name: str | None = "Sales",
+) -> MagicMock:
     deal = MagicMock()
     deal.deal_id = UUID(deal_id)
     deal.name = name
+    deal.company_id = UUID(company_id) if company_id else None
     deal.company_name = company
+    deal.amount = amount
+    deal.predicted_amount = predicted_amount
+    deal.currency = currency
+    deal.stage_id = UUID(stage_id) if stage_id else None
+    deal.stage_name = stage_name
+    deal.pipeline_id = UUID(pipeline_id) if pipeline_id else None
+    deal.pipeline_name = pipeline_name
     return deal
 
 
@@ -76,7 +96,15 @@ class TestSearchDeals:
         assert len(result) == 1
         assert result[0]["deal_id"] == "22222222-2222-2222-2222-222222222222"
         assert result[0]["name"] == "Acme Deal"
+        assert result[0]["company_id"] == "33333333-3333-3333-3333-333333333333"
         assert result[0]["company_name"] == "Acme Corp"
+        assert result[0]["amount"] == 50000.0
+        assert result[0]["predicted_amount"] == 25000.0
+        assert result[0]["currency"] == "USD"
+        assert result[0]["stage_id"] == "44444444-4444-4444-4444-444444444444"
+        assert result[0]["stage_name"] == "Negotiation"
+        assert result[0]["pipeline_id"] == "55555555-5555-5555-5555-555555555555"
+        assert result[0]["pipeline_name"] == "Sales"
 
     @pytest.mark.asyncio
     async def test_no_matches_returns_empty_list(self, mock_context: MagicMock) -> None:

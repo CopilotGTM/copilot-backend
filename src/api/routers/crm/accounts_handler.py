@@ -38,6 +38,7 @@ from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
     AccountReadServiceError,
     AccountWriteContext,
     AccountWriteServiceError,
@@ -47,6 +48,9 @@ from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_read_service import (
     ActivityFeedReadService,
     ActivityFeedReadServiceError,
+)
+from src.workers.deal_worker.utils.account_research_dispatch import (
+    dispatch_account_research_async,
 )
 
 logger = get_logger("accounts_handler")
@@ -216,14 +220,18 @@ async def create_account(
     """Create a new internal CRM account and commit the API-owned transaction."""
     try:
         result = await service.create_account(
-            name=body.name,
-            domain=body.domain,
-            website=body.website,
-            industry=body.industry,
-            linkedin_url=body.linkedin_url,
+            AccountCreateCommand(
+                name=body.name,
+                domain=body.domain,
+                website=body.website,
+                industry=body.industry,
+                linkedin_url=body.linkedin_url,
+            ),
             context=AccountWriteContext(
                 source="api",
                 actor_user_id=user_ids.user_id,
+                actor_name=getattr(user_ids, "user_name", None),
+                actor_email=getattr(user_ids, "user_email", None),
                 created_via="accounts_app",
                 duplicate_scope="strict_org",
             ),
@@ -233,6 +241,26 @@ async def create_account(
         await service.session.commit()
 
         company = result.account
+        company_id = getattr(company, "company_id", None)
+        if company_id:
+            try:
+                await dispatch_account_research_async(
+                    organisation_id=user_ids.organisation_id,
+                    company_id=company_id,
+                    user_id=user_ids.user_id,
+                    trigger="account_created",
+                )
+            except Exception:
+                logger.warning(
+                    "Account research dispatch failed after account create",
+                    extra={
+                        "event": "account_research_dispatch_failed",
+                        "organisation_id": str(user_ids.organisation_id),
+                        "company_id": str(company_id),
+                    },
+                    exc_info=True,
+                )
+
         item = AccountListItem(
             **company.model_dump(),
             contact_count=0,

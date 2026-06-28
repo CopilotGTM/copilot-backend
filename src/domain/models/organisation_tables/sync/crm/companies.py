@@ -6,15 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Index,
-    Integer,
-    Numeric,
-    text,
-)
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -109,6 +101,35 @@ class CRMCompany(SyncedRecordMixin, table=True):
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent time this company was observed during sync.",
+    )
+    last_researched_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time account enrichment was attempted.",
+    )
+    company_enrichment: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text(EMPTY_JSONB_SQL),
+        ),
+        description="Structured company enrichment from providers such as Apollo.",
+    )
+    company_enrichment_source: str | None = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+        description="Provider or workflow that last populated structured company enrichment.",
+    )
+    company_enriched_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time structured company enrichment completed.",
+    )
+    account_summary: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Short sales-facing account summary.",
     )
     # Payloads
     properties: dict[str, Any] = Field(

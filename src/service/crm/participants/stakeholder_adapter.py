@@ -59,8 +59,10 @@ def participant_to_stakeholder_detail_dict(
             if contact and contact.mobile_phone
             else participant.phone_number
         ),
-        "linkedin_url": _contact_linkedin_url(contact) or participant.linkedin_url,
-        "external_links": _contact_external_links(contact) or participant.external_links,
+        "linkedin_url": _contact_linkedin_url(contact)
+        or getattr(participant, "linkedin_url", None),
+        "external_links": _contact_external_links(contact)
+        or getattr(participant, "external_links", None),
         "stance": participant.stance,
         "decision_power": participant.decision_power,
         "motivation": participant.motivation,

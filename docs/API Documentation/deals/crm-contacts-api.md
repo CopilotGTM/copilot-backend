@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-04-06
+> Last Updated: 2026-06-27
 
 ---
 
@@ -121,20 +121,20 @@ The HTTP status code is set on the response (not inside the JSON body). Always c
 
 ## Data Relationships
 
-### Contact → Account (Explicit FK + Domain Matching)
+### Contact -> Account (Stored FK + Domain Matching)
 
-Contacts are linked to accounts via two mechanisms. The **explicit FK** takes precedence over domain matching:
+Contacts are linked to accounts via two mechanisms. The **stored FK** takes precedence over domain matching:
 
-1. **Explicit `company_id` FK** (stored on `CRMContact`): Set via the create or update endpoint. When present, the contact is directly linked to the referenced `CRMCompany` record.
+1. **Stored `company_id` FK** (stored on `CRMContact`): Set during contact create by email-domain account resolution, or later through the update endpoint or a dedicated account-linking flow. When present, the contact is directly linked to the referenced `CRMCompany` record.
 2. **Email domain matching** (fallback): When `company_id` is `null`, the system extracts the email domain and matches it against `CRMCompany.domain` at query time.
 
 ```
 Contact (company_id: "d3b07384-...")
-  → direct FK lookup → Account (id: "d3b07384-...")     ← explicit link (preferred)
+  -> direct FK lookup -> Account (id: "d3b07384-...")     <- stored link (preferred)
 
 Contact (company_id: null, email: "john@acme.com")
-  → extract domain → "acme.com" → match CRMCompany.domain
-  → Account (domain: "acme.com")                        ← fallback
+  -> extract domain -> "acme.com" -> match CRMCompany.domain
+  -> Account (domain: "acme.com")                        <- fallback
 ```
 
 This means:
@@ -142,7 +142,7 @@ This means:
 - `company.id` in the list response is either the **stored FK** (when set) or **resolved at query time** from email domain matching.
 - `company.domain` comes from the matched account when available, otherwise the contact email domain is used as display context.
 - If no account is linked or matched, the list may still return a `company` object with the contact's company string/domain context; otherwise `company` is `null`.
-- When `company_id` is explicitly set during create/update, `company_name` is auto-resolved from the linked account for legacy create/update responses. Detail responses expose the account through nested `company`.
+- When `company_id` is set during update/linking, `company_name` is auto-resolved from the linked account for legacy mutation responses. Detail responses expose the account through nested `company`.
 
 ### Contact → Deals (via Deal Participant)
 
@@ -333,11 +333,32 @@ export interface ContactProfileEnrichment {
   data: Record<string, unknown>;
 }
 
+export interface ContactDetailFieldDefinition {
+  key: string;                        // Field path in ContactDetail, e.g. "company.name"
+  label: string;                      // Display label for Get Details
+  data_type: string;                  // string, email, phone, url, uuid, datetime, boolean, object, etc.
+  order: number;                      // Ascending display order
+  section: string;                    // contact, account, owner, location, activity, research, enrichment
+  filter_control: string;             // text, select, date_range, boolean, link, people, etc.
+  editable: boolean;                  // Whether normal inline edit is allowed
+  patch_field: keyof UpdateContactRequest | null;
+  edit_control: string | null;        // text, email, phone, url, account_picker, textarea, etc.
+  edit_policy:
+    | "always"
+    | "set_if_empty"
+    | "set_once"
+    | "advanced_override"
+    | "read_only"
+    | "related_entity";
+  locked_reason?: string | null;      // Why the field is read-only in normal UI
+}
+
 /**
  * Page-ready contact detail returned by GET /contacts/{contact_id}.
  * The response is flat for contact fields and nests only real related objects.
  */
 export interface ContactDetail {
+  detail_field_definitions: ContactDetailFieldDefinition[];
   contact_id: UUID;
   first_name: string | null;
   last_name: string | null;
@@ -406,15 +427,42 @@ export interface ContactsPage {
 }
 
 /**
+ * Lightweight contact picker item returned by GET /contacts/search.
+ */
+export interface ContactSearchItem {
+  contact_id: UUID;
+  full_name: string | null;
+  email: string | null;
+  job_title: string | null;
+  company: ContactListCompany | null;
+  match_type:
+    | "exact_email"
+    | "additional_email"
+    | "email_prefix"
+    | "exact_name"
+    | "name_prefix"
+    | "name"
+    | "company"
+    | "other";
+}
+
+/**
+ * Cursor page for contact picker/typeahead search.
+ */
+export interface ContactSearchPage {
+  items: ContactSearchItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+/**
  * Request to create a new contact.
  */
 export interface CreateContactRequest {
   email: string;                      // Required. Primary email (auto-lowercased, trimmed)
-  name: string;                       // Required. Full name (auto-split into first/last)
-  job_title?: string | null;
-  phone?: string | null;
-  linkedin_url?: string | null;
-  company_id?: UUID | null;           // Explicit account link. Validates account exists. Auto-resolves company_name.
+  name?: string | null;               // Optional. Full name when already known
+  job_title?: string | null;          // Optional. Job title when already known
+  linkedin_url?: string | null;       // Optional. LinkedIn profile URL when already known
 }
 
 /**
@@ -497,13 +545,12 @@ function getContactDisplayName(contact: ContactListItem): string {
 }
 ```
 
-### Frontend Utility: Check if Contact is Enrichable
+### Frontend Utility: Check if Manual Enrich is Available
 
 ```ts
 /**
- * Contact enrichment requires the contact to be linked to at least one deal
- * via an approved contact participant. Use deal_count from list or deal_involvement
- * from detail to check.
+ * Manual legacy enrichment requires a deal participant. Contacts created through
+ * POST /contacts are researched automatically when eligible, independent of deals.
  */
 function isEnrichable(contact: ContactListItem): boolean {
   return contact.deal_count > 0;
@@ -603,6 +650,114 @@ Paginated contact list with computed `deal_count`, `source`, nested `company`, a
 
 ---
 
+### 1a. Search Contacts
+
+```http
+GET /users/crm/contacts/search
+```
+
+Lightweight contact picker/typeahead endpoint. Use this for add-to-deal pickers, browse search, and any general contact UI where company-name matches are useful. It does not return `total_count`; clients should use `next_cursor` for infinite scroll.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `q` | string | — | Any string | Search by primary email, additional emails, full name, or company name |
+| `limit` | integer | `20` | `1–50` | Maximum contacts per cursor page |
+| `cursor` | string | — | Opaque cursor | Cursor from the previous response |
+| `company_id` | UUID | — | Valid UUID | Restrict results to contacts with this stored account link |
+
+#### Ranking
+
+Results are deterministic and ranked by match quality:
+
+1. Exact primary email
+2. Exact additional email
+3. Primary email prefix
+4. Exact full name
+5. Name prefix
+6. Name contains or company-name match
+7. Other matched fields
+
+Contact creation still performs its own duplicate-email check, so search endpoints are UX helpers, not the uniqueness boundary.
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Contacts search results retrieved",
+  "data": {
+    "items": [
+      {
+        "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "full_name": "Sam Altman",
+        "email": "sam@openai.com",
+        "job_title": "CEO",
+        "company": {
+          "id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
+          "name": "OpenAI",
+          "domain": "openai.com"
+        },
+        "match_type": "additional_email"
+      }
+    ],
+    "next_cursor": "eyJyYW5rIjoxLCJuYW1lIjoic2FtIGFsdG1hbiIsImNvbnRhY3RfaWQiOiJhMWIyYzNkNC1lNWY2LTc4OTAtYWJjZC1lZjEyMzQ1Njc4OTAifQ==",
+    "has_more": true
+  }
+}
+```
+
+#### Frontend Usage
+
+- Debounce user input before calling this endpoint.
+- Reset `cursor` whenever `q` or `company_id` changes.
+- Fetch the next page when the dropdown scroll nears the end and `has_more` is `true`.
+- For contact creation, use `/contacts/search/create-candidates` instead so company-name matches do not hide the create action.
+
+---
+
+### 1b. Search Contact Create Candidates
+
+```http
+GET /users/crm/contacts/search/create-candidates
+```
+
+Strict contact identity search for the create-contact flow. This endpoint searches only person identity fields and intentionally does **not** search `company_name`.
+
+#### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `q` | string | — | Any string | Search by primary email, additional emails, or full name |
+| `limit` | integer | `20` | `1–50` | Maximum contacts per cursor page |
+| `cursor` | string | — | Opaque cursor | Cursor from the previous response |
+
+#### Ranking
+
+Results are deterministic and ranked by identity match quality:
+
+1. Exact primary email
+2. Exact additional email
+3. Primary email prefix
+4. Exact full name
+5. Name prefix
+6. Name contains
+7. Other matched fields
+
+Use this endpoint before `POST /contacts` when the UI wants to show possible duplicates. For valid email input with no exact match, show a create-contact action; `POST /contacts` still rejects duplicate primary emails if another request creates the contact first.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Invalid cursor"` | Cursor cannot be decoded or does not match the expected shape |
+| `401` | `"Invalid or missing user credentials."` | Missing or invalid Bearer token |
+| `429` | `"Too many requests (per-minute limit exceeded)"` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
 ### 2. Create Contact
 
 ```http
@@ -610,6 +765,7 @@ POST /users/crm/contacts
 ```
 
 Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalised (lowercased, trimmed) and checked for uniqueness within the organisation.
+After the contact transaction commits, the API queues asynchronous contact research for eligible business-email contacts. Research runs outside the request path, so contact creation still succeeds if queue dispatch fails.
 
 #### Request Headers
 
@@ -623,11 +779,11 @@ Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalis
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
 | `email` | string | **Yes** | Non-empty, must contain `@` | Primary email (auto-lowercased, trimmed) |
-| `name` | string | **Yes** | Non-empty | Full name (auto-split into first/last) |
-| `job_title` | string | No | — | Job title |
-| `phone` | string | No | — | Phone number |
-| `linkedin_url` | string | No | — | LinkedIn profile URL |
-| `company_id` | UUID | No | Must reference an existing account | Explicit account link. When provided, validates the account exists and auto-resolves `company_name` from the linked account. |
+| `name` | string | No | Non-empty when provided | Full name when already known. If omitted, name fields remain `null`; clients can use email as a display fallback. |
+| `job_title` | string | No | Non-empty when provided | Job title when already known. |
+| `linkedin_url` | string | No | Non-empty when provided | LinkedIn profile URL when already known. |
+
+Unknown fields are rejected. Contact creation no longer accepts `phone` or account-link fields such as `company_id`, `account_id`, `account_name`, or `account_domain`.
 
 #### Auto-Resolution Behaviours
 
@@ -638,18 +794,33 @@ Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalis
 | `"John Doe"` | `"John"` | `"Doe"` |
 | `"John Michael Doe"` | `"John"` | `"Michael Doe"` |
 | `"Madonna"` | `"Madonna"` | `null` |
+| omitted | `null` | `null` |
 
-**Account linking (`company_id`):**
+**Account linking:**
 
-Account linking is **explicit only** — there is no silent auto-linking from the email domain. The frontend dropdown handles account suggestion via `GET /accounts/suggest?email_domain=...` before the create request, so if the user wants to link, they pass `company_id` explicitly.
+Create contact does not accept account inputs from the caller. The backend uses the email domain to resolve or create an internal CRM account through `AccountWriteService`, then stores `company_id` and `company_name` on the contact when a single account is available.
 
-- If `company_id` is provided → service validates the account exists in the organisation and auto-resolves `company_name` from the linked account. Returns `404` if the account does not exist.
-- If `company_id` is **not** provided → contact is created with `company_id = null` and `company_name = null`. The contact is unlinked.
-
-**Domain matching as runtime fallback:** When `company_id` is `null`, list/detail endpoints fall back to email domain matching for **display purposes only**. List/detail responses expose this as nested `company.id`; it is a read-time fallback and never writes to the FK column.
+- If one active account exists with the email domain, the contact is linked to it.
+- If no account exists with the email domain, an account is created with `name = domain` and `domain = domain`, then the contact is linked to it.
+- If multiple accounts match the same domain or the email has no usable domain, the contact is created without an account link.
 
 **Integration auto-creation:**
 If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is automatically created on first contact creation. This is idempotent.
+
+**Async contact research:**
+
+After commit, `POST /contacts` attempts to enqueue `contact_research.process_job`.
+
+- Free/personal email providers and their subdomains are skipped.
+- Business subdomains are preserved, e.g. `buyer@test.hackme.com` researches against `test.hackme.com`.
+- Provider enrichment writes structured profile fields and `profile_enrichment` first.
+- A no-tool summary step writes `contact_research` only after provider data exists.
+- If summary generation fails, structured enrichment remains saved.
+- Queue dispatch failure is logged and does not change the `201` response.
+
+**Async account enrichment from contact-created accounts:**
+
+When contact creation creates a new internal CRM account from the contact email domain, the API also attempts to enqueue `account_research.process_job` for that new account after the same commit. Existing matched accounts are not re-enriched from this path.
 
 #### Example Request
 
@@ -657,8 +828,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 {
   "email": "john@acme.com",
   "name": "John Doe",
-  "job_title": "VP Engineering",
-  "phone": "+1-555-0101",
+  "job_title": "VP Sales",
   "linkedin_url": "https://linkedin.com/in/johndoe"
 }
 ```
@@ -667,8 +837,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 
 ```json
 {
-  "email": "jane@example.com",
-  "name": "Jane Smith"
+  "email": "jane@example.com"
 }
 ```
 
@@ -684,10 +853,10 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
     "last_name": "Doe",
     "full_name": "John Doe",
     "email": "john@acme.com",
-    "job_title": "VP Engineering",
-    "phone": "+1-555-0101",
-    "company_name": "Acme Corp",
-    "company_id": null,
+    "job_title": "VP Sales",
+    "phone": null,
+    "company_name": "acme.com",
+    "company_id": "d3b07384-d9a0-4c62-bfe9-123456789abc",
     "company_domain": null,
     "lifecycle_stage": null,
     "owner_name": null,
@@ -699,15 +868,14 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 }
 ```
 
-**Note:** `company_id` and `company_domain` are `null` in the create response when they are not resolved during the write. List/detail endpoints resolve account display context at query time through nested `company`. `company_name` may be populated via auto-resolution.
+**Note:** `company_domain` is not recomputed in the create response. List/detail endpoints expose richer account context through nested `company`.
 
 #### Error Responses
 
 | HTTP Status | `message` | When |
 |-------------|-----------|------|
-| `404` | `"Account not found"` | `company_id` provided but no matching account exists in this organisation |
 | `409` | `"A contact with email 'john@acme.com' already exists"` | Non-deleted contact with same email (case-insensitive) |
-| `422` | Pydantic validation error | Missing `email` or `name`, or invalid field types |
+| `422` | Pydantic validation error | Missing `email`, invalid field types, or removed fields such as `phone` or `company_id` |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
@@ -734,6 +902,34 @@ Page-ready contact detail for the contact overview page. The response includes f
   "status": "SUCCESS",
   "message": "Contact retrieved",
   "data": {
+    "detail_field_definitions": [
+      {
+        "key": "full_name",
+        "label": "Name",
+        "data_type": "string",
+        "order": 1,
+        "section": "contact",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "full_name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      },
+      {
+        "key": "job_title",
+        "label": "Job title",
+        "data_type": "string",
+        "order": 2,
+        "section": "contact",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "job_title",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      }
+    ],
     "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "first_name": "John",
     "last_name": "Doe",
@@ -825,13 +1021,160 @@ Page-ready contact detail for the contact overview page. The response includes f
 
 **Notes:**
 
-- `deal_count` equals the length of `deal_involvement` array
+- `detail_field_definitions` is the ordered metadata for the contact "Get Details" panel. Use `order` ascending and hide null/empty field values by default.
+- `detail_field_definitions[].key` is a dotted path into `ContactDetail` for nested fields such as `company.name`, `owner.email`, or `research_summary.summary`.
+- `deal_count` equals the length of `deal_involvement` array. Keep it as a top-level summary metric near the related-deals section; it is intentionally not repeated in `detail_field_definitions`.
+- Contact detail does not return `pipeline_value`. Pipeline value belongs to account/deal rollups, not the contact "Get Details" scalar field map.
 - `relationship_role` comes from the contact participant's `relationship_role`
 - `deal_involvement` is intentionally compact for the contact right panel. It requires one participant-to-deal join and does not include stakeholder fields such as `stance`, `decision_power`, `temperature`, or research.
 - `company` is resolved using explicit account linkage first, then email-domain matching for display fallback.
 - `linkedin_url` is returned from the top-level contact profile field, with a legacy `properties.linkedin_url` fallback.
 - `research_summary.summary` comes from contact-level research (`crm_contacts.contact_research`).
 - `profile_enrichment.data` contains structured provider/enrichment data and may be an empty object.
+
+#### Ordered Get Details Metadata
+
+The backend returns the following predefined field definitions in `detail_field_definitions`.
+The frontend should render by `order` ascending. Fields with no value can be hidden in the default view.
+`deal_count` and `pipeline_value` are not included in this metadata: `deal_count` is already represented by `deal_involvement`, and contact detail has no `pipeline_value` field.
+
+| Order | `key` | Label | `data_type` | `filter_control` | `editable` | `patch_field` | `edit_control` | `edit_policy` |
+|---:|---|---|---|---|---|---|---|---|
+| 1 | `full_name` | Name | `string` | `text` | true | `full_name` | `text` | `always` |
+| 2 | `job_title` | Job title | `string` | `text` | true | `job_title` | `text` | `always` |
+| 3 | `email` | Email | `email` | `email` | dynamic | `email` | `email` | `set_if_empty` |
+| 4 | `additional_emails` | Additional emails | `array<email>` | `chips` | false | null | null | `read_only` |
+| 5 | `phone` | Phone | `phone` | `phone` | true | `phone` | `phone` | `always` |
+| 6 | `mobile_phone` | Mobile | `phone` | `phone` | true | `mobile_phone` | `phone` | `always` |
+| 7 | `linkedin_url` | LinkedIn | `url` | `link` | dynamic | `linkedin_url` | `url` | `set_if_empty` |
+| 8 | `website` | Website | `url` | `link` | false | null | null | `read_only` |
+| 9 | `lifecycle_stage` | Lifecycle stage | `string` | `select` | false | null | null | `read_only` |
+| 10 | `lead_status` | Lead status | `string` | `select` | false | null | null | `read_only` |
+| 11 | `marketing_status` | Marketing status | `string` | `select` | false | null | null | `read_only` |
+| 12 | `source` | Source | `string` | `select` | false | null | null | `read_only` |
+| 13 | `company.id` | Account ID | `uuid` | `link` | dynamic | `company_id` | `account_picker` | `set_once` |
+| 14 | `company.name` | Account | `string` | `account_link` | false | null | null | `related_entity` |
+| 15 | `company.domain` | Account domain | `string` | `text` | false | null | null | `related_entity` |
+| 16 | `company.website` | Account website | `url` | `link` | false | null | null | `related_entity` |
+| 17 | `company.industry` | Account industry | `string` | `select` | false | null | null | `related_entity` |
+| 18 | `company.linkedin_url` | Account LinkedIn | `url` | `link` | false | null | null | `related_entity` |
+| 19 | `company.country` | Account country | `string` | `select` | false | null | null | `related_entity` |
+| 20 | `owner.id` | Owner ID | `uuid` | `link` | false | null | null | `read_only` |
+| 21 | `owner.name` | Owner | `string` | `people` | false | null | null | `read_only` |
+| 22 | `owner.email` | Owner email | `email` | `email` | false | null | null | `read_only` |
+| 23 | `address` | Address | `string` | `text` | false | null | null | `read_only` |
+| 24 | `city` | City | `string` | `select` | false | null | null | `read_only` |
+| 25 | `state` | State | `string` | `select` | false | null | null | `read_only` |
+| 26 | `postal_code` | Postal code | `string` | `text` | false | null | null | `read_only` |
+| 27 | `country` | Country | `string` | `select` | false | null | null | `read_only` |
+| 28 | `timezone` | Timezone | `string` | `select` | false | null | null | `read_only` |
+| 29 | `last_contacted_at` | Last contacted | `datetime` | `date_range` | false | null | null | `read_only` |
+| 30 | `last_activity_at` | Last activity | `datetime` | `date_range` | false | null | null | `read_only` |
+| 31 | `source_created_at` | CRM created date | `datetime` | `date_range` | false | null | null | `read_only` |
+| 32 | `source_modified_at` | CRM modified date | `datetime` | `date_range` | false | null | null | `read_only` |
+| 33 | `research_summary.summary` | Research summary | `markdown` | `text` | false | null | null | `read_only` |
+| 34 | `research_summary.last_researched_at` | Last researched | `datetime` | `date_range` | false | null | null | `read_only` |
+| 35 | `profile_enrichment.is_enriched` | Profile enriched | `boolean` | `boolean` | false | null | null | `read_only` |
+| 36 | `profile_enrichment.source` | Enrichment source | `string` | `select` | false | null | null | `read_only` |
+| 37 | `profile_enrichment.enriched_at` | Enriched at | `datetime` | `date_range` | false | null | null | `read_only` |
+| 38 | `profile_enrichment.data` | Enrichment data | `object` | `advanced` | false | null | null | `read_only` |
+
+#### Contact Editability Policy
+
+Enterprise CRM systems usually separate field visibility from field editability. Field-level security
+and property permissions decide who can edit a field, while system fields and calculated/enrichment
+fields are commonly read-only or governed. Salesforce documents field-level security as the place
+to control field access, HubSpot supports property-level restrictions, and Dataverse has column-level
+security for sensitive fields. Apply the same idea here: `filter_control` is for list/detail filtering;
+editability belongs beside it in field metadata, not inside filters.
+
+Research references used for this policy:
+[Salesforce FieldPermissions](https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/sforce_api_objects_fieldpermissions.htm),
+[HubSpot CRM properties](https://developers.hubspot.com/docs/api-reference/crm-properties-v3/guide),
+and [Microsoft Dataverse column-level security](https://learn.microsoft.com/en-us/power-platform/admin/field-level-security).
+
+Returned metadata shape:
+
+```json
+{
+  "key": "linkedin_url",
+  "label": "LinkedIn",
+  "data_type": "url",
+  "order": 7,
+  "section": "contact",
+  "filter_control": "link",
+  "editable": true,
+  "patch_field": "linkedin_url",
+  "edit_control": "url",
+  "edit_policy": "set_if_empty",
+  "locked_reason": "Existing LinkedIn URL is treated as verified profile identity."
+}
+```
+
+Do not add a separate frontend-only editability map long term. The scalable contract is one metadata
+array per detail page where each field has display, filter, and edit hints.
+
+##### Sales-Rep Editing Principles
+
+- Sales reps should be able to correct obvious profile gaps that block outreach: missing name, title,
+  phone, mobile phone, LinkedIn URL, and account link.
+- Identity fields should be protected once set. Email and account linkage drive dedupe, stakeholder
+  matching, activity matching, and account routing, so normal inline edit should not rewrite them.
+- Verified enrichment should be preserved. If a LinkedIn URL or enrichment field exists from a trusted
+  enrichment/source workflow, show it as locked in normal edit mode. Offer a separate "request correction"
+  or advanced override flow later if product wants that.
+- Related entity fields are edited on their own records. `company.name`, `company.domain`, owner fields,
+  deal involvement, and research/enrichment metadata should not be patched through contact update.
+- Backend remains the trust boundary. The frontend may hide controls, but `PATCH /contacts/{id}` must
+  continue enforcing identity rules.
+
+##### Current PATCH Behavior vs Recommended UI Policy
+
+| Detail key | PATCH field | Current backend behavior | Recommended normal UI policy | Reason |
+|---|---|---|---|---|
+| `full_name` | `full_name` | Editable | Editable | Reps often know the correct display name. |
+| `first_name` / `last_name` | `first_name`, `last_name` | Editable, not shown as primary detail rows | Editable only in an expanded name editor | Preserve simple display while allowing clean name fixes. |
+| `job_title` | `job_title` | Editable | Editable | Title changes are common and useful for sales context. |
+| `email` | `email` | Set only when current email is null; changing existing email returns `400` | Set if empty only | Email is an identity/dedupe key and matching input. |
+| `additional_emails` | none | Read-only through current contact PATCH | Read-only until a dedicated secondary-email flow exists | Needs dedupe and primary/secondary semantics. |
+| `phone` | `phone` | Editable | Editable | Low-risk outreach field. |
+| `mobile_phone` | `mobile_phone` | Editable | Editable | Low-risk outreach field. |
+| `linkedin_url` | `linkedin_url` | Set only when current LinkedIn URL is null; changing or clearing an existing URL returns `400` | Set if empty by default; lock existing values in normal UI | Treat profile URL as identity. Existing verified/enriched value should not be casually overwritten. |
+| `website` | none in `UpdateContactRequest` | Ignored by PATCH if sent through typed API clients | Read-only for now | Low sales value on a person record; use account website. |
+| `lifecycle_stage` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only until lifecycle workflow is defined | Lifecycle changes should be governed. |
+| `lead_status` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only until sales-status workflow is defined | Avoid unsourced qualification churn. |
+| `marketing_status` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only | Subscription/marketing consent should be governed. |
+| `company.id` / `company.name` | `company_id` | `company_id` can be set once if null, contact has email, and account exists; cannot unlink/change | Set once via account picker; then read-only | Account link affects routing and rollups. Company name edits belong to account API. |
+| `company.domain`, `company.website`, `company.industry`, `company.linkedin_url`, `company.country` | none | Read-only through contact PATCH | Related entity | Edit through account detail/update APIs. |
+| `owner.*` | none | Read-only through contact PATCH | Read-only until assignment API exists | Owner changes need assignment/audit semantics. |
+| Location fields: `address`, `city`, `state`, `postal_code`, `country`, `timezone` | same field names | Accepted by current write service if sent, though not listed as primary update fields | Editable only after product confirms sales value | Useful in some CRMs, but noisy for normal rep workflows. |
+| Activity/system dates | none | Read-only | Read-only | Generated from CRM sync/activity systems. |
+| `research_summary.*` | none | Read-only through contact PATCH | Read-only | AI/research output, not manually patched profile data. |
+| `profile_enrichment.*` | none | Read-only through contact PATCH | Read-only | Provider/enrichment output; manual edits should go to first-class contact fields. |
+| `deal_involvement[]` | none | Managed by add-to-deal/participant APIs | Related entity | Use `POST /contacts/{contact_id}/add-to-deal` and stakeholder APIs. |
+
+##### Proposed `edit_policy` Values
+
+| Value | Meaning | Contact examples |
+|---|---|---|
+| `always` | Inline edit can be shown whenever user has contact edit permission | `full_name`, `job_title`, `phone`, `mobile_phone` |
+| `set_if_empty` | Show edit when the current value is null/empty; lock normal edit after a value exists | `email`, `linkedin_url` |
+| `set_once` | Can be selected once, then cannot be changed/unlinked in normal flow | `company.id` via `company_id` |
+| `advanced_override` | Hide from normal edit; future admin/audited override only | Existing verified `linkedin_url`, if product wants correction flow |
+| `read_only` | Never editable through contact PATCH | sync dates, research, enrichment, owner fields today |
+| `related_entity` | Navigate to another API/page to edit | account fields, deal involvement |
+
+##### LinkedIn URL Recommendation
+
+For sales reps, missing LinkedIn blocks research and outreach, so filling it should be easy. Replacing an
+existing LinkedIn URL is different: it can break identity matching and overwrite enrichment. The recommended
+UI policy is:
+
+1. If `linkedin_url` is null: show inline "Add LinkedIn" and PATCH `linkedin_url`.
+2. If `linkedin_url` exists: show it as a link, not a normal text input.
+3. If the rep says it is wrong: use a future explicit correction flow with a reason, audit event, and ideally
+   source confidence comparison. Until that exists, normal UI should not offer overwrite and the backend
+   rejects normal overwrite/clear requests.
 
 #### Error Responses
 
@@ -864,6 +1207,9 @@ CONTACT`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
 | `start_date` | datetime | - | ISO 8601 | Include activities at/after this time |
 | `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
 | `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
+
+Contact lifecycle cards may use `source_type` values `CONTACT_CREATED`,
+`CONTACT_ENRICHMENT_TRIGGERED`, and `CONTACT_ENRICHMENT_COMPLETED`.
 
 #### Success Response (200)
 
@@ -910,7 +1256,7 @@ All fields optional. Only include fields to update.
 | `job_title` | string | — | Job title |
 | `phone` | string | — | Phone number |
 | `mobile_phone` | string | — | Mobile phone number |
-| `linkedin_url` | string | — | LinkedIn URL (stored in `properties` JSONB, not a top-level column) |
+| `linkedin_url` | string | Can only be set when currently null | LinkedIn URL stored as a first-class contact profile field. Changing or clearing an existing URL returns `400`. |
 | `company_name` | string | — | Company name string |
 | `company_id` | UUID | Must reference an existing account, contact must not already be linked, contact must have an email | Explicit account link — **set once**. When set, validates the account exists and updates `company_name` from the account. |
 
@@ -933,6 +1279,15 @@ All fields optional. Only include fields to update.
 | `null` (no email) | Send duplicate email | `409` — email already exists on another contact |
 | Has existing email | Send `email` in body | `400` — cannot change an existing email |
 | Has existing email | Omit `email` from body | No change (other fields update normally) |
+
+**LinkedIn URL field rules:**
+
+| Contact's current LinkedIn URL | Action | Result |
+|-------------------------------|--------|--------|
+| `null` | Send `linkedin_url` in body | LinkedIn URL is set |
+| Has existing LinkedIn URL | Send a different `linkedin_url` | `400` — cannot change an existing LinkedIn URL |
+| Has existing LinkedIn URL | Send `linkedin_url: null` | `400` — cannot change an existing LinkedIn URL |
+| Has existing LinkedIn URL | Omit `linkedin_url` from body | No change (other fields update normally) |
 
 **Frontend implementation:**
 
@@ -1000,11 +1355,13 @@ Returns the updated legacy `ContactMutationItem`. `deal_count` is `0`, `company_
 POST /users/crm/contacts/{contact_id}/enrich
 ```
 
-Trigger research enrichment for a contact. Enrichment piggybacks on the **stakeholder research pipeline**, which requires the contact to be linked to at least one deal via an approved contact participant.
+Trigger legacy manual enrichment for a contact. This manual endpoint still piggybacks on the stakeholder research pipeline and requires a deal participant.
+
+Contacts created through `POST /contacts` do **not** need this endpoint for first-pass research. The create route automatically queues contact-scoped research after commit when the email domain is eligible.
 
 #### Prerequisites
 
-The contact must have at least one approved contact participant record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
+For this manual endpoint, the contact must have at least one approved contact participant record (i.e., be added to a deal). If not, the endpoint returns a success response with a message indicating the prerequisite.
 
 #### Path Parameters
 
@@ -1216,24 +1573,16 @@ The dropdown should display **account name + domain** (and optionally industry) 
 
 1. **`company_id` is set once** — never changes, never unlinks. The backend enforces this on PATCH.
 2. **Email is a precondition** — you cannot link an account to a contact that has no email. If `contact.email` is null, the dropdown must be disabled with a message like "Add an email address before linking an account."
-3. **No silent auto-linking** — the backend will NOT auto-link based on email domain. If the user wants the link, the frontend must explicitly send `company_id`.
-4. **Display fallback** — for unlinked contacts (`company_id = null`), list/detail responses may still return nested `company.id` from email-domain matching for display purposes only. Do not treat nested `company.id` alone as proof of a stored account link.
+3. **Create resolves account by email domain** — `POST /contacts` does not accept account fields, but the backend resolves or creates an account from the email domain and links it when unambiguous.
+4. **Display fallback** — for older or ambiguous unlinked contacts (`company_id = null`), list/detail responses may still return nested `company.id` from email-domain matching for display purposes only. Do not treat nested `company.id` alone as proof of a stored account link.
 
 ### Flow A: Creating a new contact
 
 ```
-1. User fills in name + email
-2. When email looks complete (basic regex):
-   → GET /accounts/suggest?email_domain=acme.com
-3. Dropdown shows:
-   - Suggested: "Acme Corp — acme.com" (NOT pre-selected)
-   - Search input
-4. User can:
-   - Click suggested → selects it
-   - Type to search → GET /accounts/search?q=...
-   - Click "Create new account" → POST /accounts inline
-   - Skip → leaves dropdown empty
-5. Submit → POST /contacts with company_id (or without)
+1. User enters email, and optionally name
+2. Submit → POST /contacts with email and optional name only
+3. Backend resolves or creates an account from the email domain when possible
+4. Response returns `company_id` and `company_name` when a stored account link was created
 ```
 
 ### Flow B: Adding an account to an existing contact
@@ -1284,7 +1633,7 @@ const canOpenAccountPicker = contact.email !== null;
 | `GET /users/crm/accounts/suggest?email_domain=...` | Auto-suggest based on email domain |
 | `GET /users/crm/accounts/search?q=...&cursor=...` | Cursor search accounts by name/domain/website for dropdowns |
 | `POST /users/crm/accounts` | Create a new account inline |
-| `POST /users/crm/contacts` (with `company_id`) | Create contact with account link |
+| `POST /users/crm/contacts` | Create contact and resolve/create an account from email domain when possible |
 | `PATCH /users/crm/contacts/{id}` (with `company_id`) | Link an existing contact (one-time) |
 
 ---
@@ -1303,7 +1652,7 @@ Consolidated reference of all error responses across all endpoints.
 | `400` | `"Contact must have an email address before being added to a deal..."` | Add to deal | Contact has no email |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
 | `404` | `"Contact not found"` | Get detail, Update, Enrich, Add to deal | Contact doesn't exist or is deleted |
-| `404` | `"Account not found"` | Create, Update | `company_id` references a non-existent account |
+| `404` | `"Account not found"` | Update | `company_id` references a non-existent account |
 | `409` | `"A contact with email '...' already exists"` | Create, Update | Duplicate email (case-insensitive) |
 | `422` | Pydantic validation error | Create, Update, Add to deal | Invalid request body |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
@@ -1331,7 +1680,7 @@ Consolidated reference of all error responses across all endpoints.
 
 ### Service Layer
 
-**Classes:** `ContactReadService`, `ContactWriteService`, and `ContactDealLinkService` under `src/service/crm/contacts/`. `ContactsAccessService` remains as a compatibility facade for older callers.
+**Classes:** `ContactReadService`, `ContactWriteService`, and `ContactDealLinkService` under `src/service/crm/contacts/`.
 
 - Receives `org_session` and `organisation_id` at construction
 - All queries filter by `organisation_id` and `is_deleted = False`
@@ -1340,7 +1689,8 @@ Consolidated reference of all error responses across all endpoints.
   - Batch-resolved `integration_type` for `source` annotation
   - Nested `company` resolved from stored FK first, with email domain matching as display fallback
   - Nested `owner` built from contact owner metadata
-- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; accepts optional `company_id` to set explicit account link
+- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; the canonical command accepts required `email` plus optional `name`, `job_title`, and `linkedin_url`
+- `create_contact()` does not accept `phone` or caller-supplied account-link fields; account resolution is derived from email domain through `AccountWriteService`
 - `update_contact()` accepts `company_id` to link/unlink accounts; validates account exists when non-null
 - `update_contact()` handles `linkedin_url` as a top-level contact profile field
 - `add_contact_to_deal()` delegates to `DealParticipantService` for centralized participant creation and duplicate detection
@@ -1370,18 +1720,19 @@ def _split_name(full_name: str) -> tuple[str, str | None]:
 
 ### Enrichment Pipeline Architecture
 
-Contact enrichment flows through the stakeholder research pipeline:
+Contacts created through this API use the contact research pipeline:
 
 ```
-POST /contacts/{id}/enrich
-  → Find an approved contact participant for this contact
-    → dispatch_stakeholder_research_async()
-      → Creates a deal_job in the deal_worker
-        → Runs stakeholder research agent
-          → Updates contact_research, research_status on CRMContact
+POST /contacts
+  → commit CRMContact
+    → dispatch_contact_research_async()
+      → creates a contact_research DealJobs row
+        → contact_research.process_job
+          → provider enrichment writes structured CRMContact fields
+          → no-tool summary agent writes contact_research when provider data exists
 ```
 
-This means enrichment requires a stakeholder linkage. A standalone contact research pipeline (independent of deals) is planned for a future phase.
+This automatic path does not require a stakeholder or deal linkage. Stakeholder-specific enrichment paths can migrate to the same contact-first pipeline later.
 
 ### Duplicate Detection
 

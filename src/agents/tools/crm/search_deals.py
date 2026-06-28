@@ -1,7 +1,7 @@
 """Search Deals Tool - Quick lookup by name or company name.
 
-This tool provides fast deal search functionality for agents. It returns
-minimal data (deal_id, name, company_name) optimized for quick lookups.
+This tool provides fast deal search functionality for agents. It returns compact
+deal rows with identity, value, stage, pipeline, and company context.
 
 USE CASE:
 When a user mentions a deal by name (e.g., "Tell me about the Acme deal"),
@@ -10,6 +10,10 @@ use this tool first to find the deal_id, then use get_deal_details for full info
 RETURNS:
 - deal_id: UUID of the deal
 - name: Deal name
+- amount / predicted_amount / currency: Deal value context
+- stage_id / stage_name: Current stage context
+- pipeline_id / pipeline_name: Current pipeline context
+- company_id: UUID of the associated company/account
 - company_name: Associated company name
 
 SECURITY BOUNDARIES (immutable, from context):
@@ -44,7 +48,7 @@ async def search_deals(
 ) -> list[dict[str, Any]]:
     """Quick search for deals by name or company name.
 
-    Returns minimal data (deal_id, name, company_name) for fast lookup.
+    Returns compact data for fast lookup and disambiguation.
     Use this to find deal IDs, then use get_deal_details for full info.
 
     SECURITY BOUNDARIES (from context, immutable):
@@ -56,7 +60,7 @@ async def search_deals(
         limit: Maximum results (default: 10, max: 20)
 
     Returns:
-        List of deal dictionaries with deal_id, name, company_name.
+        List of deal dictionaries with identity, value, stage, pipeline, and company context.
     """
     organisation_id = context.organisation_id
 
@@ -102,6 +106,16 @@ async def search_deals(
                 {
                     "deal_id": str(deal.deal_id),
                     "name": deal.name,
+                    "amount": float(deal.amount) if deal.amount is not None else None,
+                    "predicted_amount": float(deal.predicted_amount)
+                    if deal.predicted_amount is not None
+                    else None,
+                    "currency": deal.currency,
+                    "stage_id": str(deal.stage_id) if deal.stage_id else None,
+                    "stage_name": deal.stage_name,
+                    "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
+                    "pipeline_name": deal.pipeline_name,
+                    "company_id": str(deal.company_id) if deal.company_id else None,
                     "company_name": deal.company_name,
                 }
             )
@@ -126,7 +140,7 @@ def create_search_deals(
         """Quick search for deals by name or company name.
 
         Use this tool first when the user mentions a deal by name.
-        Returns deal_id, name, and company_name for matching deals.
+        Returns deal identity, value, stage, pipeline, and company context for matching deals.
         Then use get_deal_details to get full information.
 
         Args:

@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from src.agents.tools.crm.update_deal_fields import _deal_context_fields
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
@@ -76,8 +77,22 @@ def create_update_deal_lifecycle(
             return _result("failed", "Lifecycle action is required.")
         if action not in SUPPORTED_ACTIONS:
             return _result("skipped", f"Lifecycle action '{action}' is not supported.")
+        if action == "move_stage" and not stage_id:
+            return _result("failed", "stage_id is required for move_stage.")
+        if action == "close_won":
+            closed_reason = None
+        elif isinstance(closed_reason, str):
+            closed_reason = closed_reason.strip() or None
         if action == "close_lost" and not closed_reason:
             return _result("skipped", "closed_reason is required for close_lost.")
+
+        try:
+            # Validate proposed lifecycle payload before approval so operators
+            # only review values that could actually be applied.
+            parsed_stage_id = UUID(stage_id) if stage_id else None
+            parsed_close_date = datetime.fromisoformat(close_date) if close_date else None
+        except ValueError:
+            return _result("failed", "Invalid stage_id or close_date format.")
 
         policy_field = "outcome" if action in {"close_won", "close_lost"} else "stage_id"
         # Close/reopen operations change state invariants for a deal; classify first
@@ -106,14 +121,6 @@ def create_update_deal_lifecycle(
                 },
             )
 
-        try:
-            # Parse IDs/dates before opening write locks to fail fast on bad input
-            # and avoid useless session churn.
-            parsed_stage_id = UUID(stage_id) if stage_id else None
-            parsed_close_date = datetime.fromisoformat(close_date) if close_date else None
-        except ValueError:
-            return _result("failed", "Invalid stage_id or close_date format.")
-
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
         # Keep lifecycle mutation atomic: mutate then commit, rollback on all
         # error paths to avoid mixed outcome state.
@@ -127,8 +134,6 @@ def create_update_deal_lifecycle(
                 )
                 try:
                     if action == "move_stage":
-                        if not parsed_stage_id:
-                            return _result("failed", "stage_id is required for move_stage.")
                         deal = await service.move_stage(context.deal_id, parsed_stage_id)
                     elif action == "close_won":
                         deal = await service.close_deal(
@@ -158,7 +163,7 @@ def create_update_deal_lifecycle(
                         "Deal lifecycle updated.",
                         deal_id=str(deal.deal_id),
                         lifecycle_action=action,
-                    )
+                    ) | _deal_context_fields(deal)
                 except DealWriteServiceError as exc:
                     await org_session.rollback()
                     return _result("failed", exc.message)

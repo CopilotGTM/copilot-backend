@@ -8,7 +8,6 @@ writes can participate in larger deal or API transactions.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -17,15 +16,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-from src.domain.models.organisation_tables.sync.integration_models import (
-    IntegrationScope,
-    IntegrationType,
-    KnowledgeIntegration,
-)
 from src.service.crm.accounts.contracts import (
+    AccountCreateCommand,
     AccountWriteContext,
     AccountWriteResult,
     AccountWriteServiceError,
+)
+from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+    InternalCRMSetupService,
 )
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
@@ -34,10 +35,11 @@ from src.service.crm.mutations.contracts import (
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import AccountMutationPolicy
-
-_DOMAIN_PROTOCOL_RE = re.compile(r"^https?://", re.IGNORECASE)
-_DOMAIN_WWW_RE = re.compile(r"^www\.", re.IGNORECASE)
-_COMPANY_NAME_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+from src.service.crm.utils.account import (
+    clean_optional_string,
+    normalize_account_domain,
+    normalize_company_name,
+)
 
 
 class AccountWriteService:
@@ -48,40 +50,11 @@ class AccountWriteService:
         self.session = session
         self.organisation_id = organisation_id
         self._mutation_events = CRMMutationEventService(session, organisation_id)
-
-    @staticmethod
-    def _clean_string(value: str | None) -> str | None:
-        """Normalize optional user/provider text before duplicate comparisons."""
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
-
-    @staticmethod
-    def _normalize_domain(domain: str | None) -> str | None:
-        """Return the canonical domain key used for account duplicate checks."""
-        if not domain or not domain.strip():
-            return None
-        d = domain.strip()
-        d = _DOMAIN_PROTOCOL_RE.sub("", d)
-        d = _DOMAIN_WWW_RE.sub("", d)
-        d = d.split("/")[0].split("?")[0].split("#")[0]
-        return d.lower() or None
-
-    @staticmethod
-    def normalize_company_name(value: str | None) -> str | None:
-        """Return the normalized name key used for safe exact account matching."""
-        cleaned = AccountWriteService._clean_string(value)
-        if not cleaned:
-            return None
-        cleaned = cleaned.lower()
-        cleaned = _COMPANY_NAME_NON_ALNUM_RE.sub(" ", cleaned)
-        cleaned = " ".join(cleaned.split())
-        return cleaned or None
+        self._projection = ActivityFeedProjectionService(session, organisation_id)
 
     async def find_accounts_by_domain(self, domain: str) -> list[CRMCompany]:
         """Return active accounts whose normalized domain exactly matches."""
-        normalized = self._normalize_domain(domain)
+        normalized = normalize_account_domain(domain)
         if not normalized:
             return []
         c = cast(Any, CRMCompany).__table__.c
@@ -113,15 +86,14 @@ class AccountWriteService:
 
     async def create_account(
         self,
-        name: str | None,
+        command: AccountCreateCommand,
         *,
         context: AccountWriteContext | None = None,
-        **kwargs: Any,
     ) -> AccountWriteResult:
         """Create an internal CRM account after tenant-scoped duplicate checks."""
-        cleaned_name = self._clean_string(name)
-        raw_domain = kwargs.get("domain") or kwargs.get("website")
-        normalized = self._normalize_domain(raw_domain)
+        cleaned_name = clean_optional_string(command.name)
+        raw_domain = command.domain or command.website
+        normalized = normalize_account_domain(raw_domain)
         if not cleaned_name and not normalized:
             raise AccountWriteServiceError(
                 "Account name, domain, or website is required",
@@ -150,32 +122,24 @@ class AccountWriteService:
                     status_code=409,
                     data={"company_id": str(existing_by_name.company_id)},
                 )
-        integration = await self._get_or_create_internal_integration(context)
+        integration = await InternalCRMSetupService(
+            self.session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_or_create_internal_integration()
+        owner_id = (
+            context.actor_user_id
+            if context and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
+            else None
+        )
 
-        allowed_fields = {
-            "domain",
-            "website",
-            "description",
-            "industry",
-            "company_type",
-            "lifecycle_stage",
-            "owner_email",
-            "owner_name",
-            "owner_id",
-            "number_of_employees",
-            "annual_revenue",
-            "phone",
-            "city",
-            "state",
-            "country",
-            "address",
-            "postal_code",
-            "timezone",
-            "linkedin_url",
+        company_kwargs: dict[str, Any] = {
+            "domain": command.domain,
+            "website": clean_optional_string(command.website),
+            "industry": clean_optional_string(command.industry),
+            "linkedin_url": clean_optional_string(command.linkedin_url),
         }
-        # Ignore unknown fields at the service boundary so API/agent callers can
-        # pass richer payloads without accidentally writing unsupported columns.
-        company_kwargs: dict[str, Any] = {k: v for k, v in kwargs.items() if k in allowed_fields}
+        company_kwargs = {key: value for key, value in company_kwargs.items() if value is not None}
         if normalized:
             company_kwargs["domain"] = normalized
 
@@ -184,6 +148,11 @@ class AccountWriteService:
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
             name=cleaned_name or normalized,
+            owner_id=owner_id,
+            owner_name=clean_optional_string(context.actor_name) if owner_id and context else None,
+            owner_email=clean_optional_string(context.actor_email)
+            if owner_id and context
+            else None,
             synced_at=datetime.now(UTC),
             is_deleted=False,
             **company_kwargs,
@@ -191,8 +160,57 @@ class AccountWriteService:
         self.session.add(company)
         await self.session.flush()
         await self.session.refresh(company)
+        await self._projection.upsert_account_created(company)
         await self._record_account_create_event(company, context=context)
         return AccountWriteResult(account=company, created=True, matched_by="created")
+
+    async def resolve_or_create_account_for_contact_email(
+        self,
+        email: str,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> CRMCompany | None:
+        """Resolve one account by contact email domain, creating it when absent."""
+        result = await self.resolve_or_create_account_for_contact_email_with_result(
+            email,
+            context=context,
+        )
+        return result.account if result else None
+
+    async def resolve_or_create_account_for_contact_email_with_result(
+        self,
+        email: str,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> AccountWriteResult | None:
+        """Resolve one account by email domain and preserve whether it was created."""
+        domain = AccountDomainResolutionService.derive_safe_domain_from_email(email)
+        if not domain:
+            return None
+
+        matches = await self.find_accounts_by_domain(domain)
+        if len(matches) == 1:
+            return AccountWriteResult(account=matches[0], created=False, matched_by="domain")
+        if len(matches) > 1:
+            return None
+
+        try:
+            result = await self.create_account(
+                AccountCreateCommand(name=domain, domain=domain),
+                context=context,
+            )
+        except AccountWriteServiceError as exc:
+            if exc.status_code == 409 and exc.data and exc.data.get("company_id"):
+                retry_matches = await self.find_accounts_by_domain(domain)
+                if len(retry_matches) == 1:
+                    return AccountWriteResult(
+                        account=retry_matches[0],
+                        created=False,
+                        matched_by="domain",
+                    )
+                return None
+            raise
+        return result
 
     async def update_account(
         self,
@@ -219,9 +237,9 @@ class AccountWriteService:
         website_update_provided = "website" in updates
         candidate_domain = None
         if domain_update_provided:
-            candidate_domain = self._normalize_domain(updates.get("domain"))
+            candidate_domain = normalize_account_domain(updates.get("domain"))
         elif website_update_provided:
-            candidate_domain = self._normalize_domain(updates.get("website"))
+            candidate_domain = normalize_account_domain(updates.get("website"))
 
         if candidate_domain:
             duplicate_stmt = select(CRMCompany).where(
@@ -272,7 +290,7 @@ class AccountWriteService:
             if field not in allowed_fields:
                 continue
             if field == "domain":
-                value = self._normalize_domain(value)
+                value = normalize_account_domain(value)
             setattr(company, field, value)
 
         if website_update_provided and not domain_update_provided and candidate_domain:
@@ -322,15 +340,15 @@ class AccountWriteService:
         linkedin_provided = "linkedin_url" in account_payload
         industry_provided = "industry" in account_payload
         country_provided = "country" in account_payload
-        name = self._clean_string(account_payload.get("name"))
-        domain = self._normalize_domain(
+        name = clean_optional_string(account_payload.get("name"))
+        domain = normalize_account_domain(
             account_payload.get("domain") or account_payload.get("website")
         )
-        website = self._clean_string(account_payload.get("website"))
-        linkedin_url = self._clean_string(account_payload.get("linkedin_url"))
-        industry = self._clean_string(account_payload.get("industry"))
-        country = self._clean_string(account_payload.get("country"))
-        normalized_name = self.normalize_company_name(name)
+        website = clean_optional_string(account_payload.get("website"))
+        linkedin_url = clean_optional_string(account_payload.get("linkedin_url"))
+        industry = clean_optional_string(account_payload.get("industry"))
+        country = clean_optional_string(account_payload.get("country"))
+        normalized_name = normalize_company_name(name)
 
         if not domain:
             if not name:
@@ -476,7 +494,7 @@ class AccountWriteService:
         if source_company.integration_id == integration_id:
             return source_company
 
-        domain = self._normalize_domain(source_company.domain or source_company.website)
+        domain = normalize_account_domain(source_company.domain or source_company.website)
         if domain:
             # Domain is the preferred copy-dedupe key so reconnects and imports
             # reuse the same internal account instead of cloning provider rows.
@@ -491,7 +509,7 @@ class AccountWriteService:
             if matched_company:
                 return matched_company
 
-        normalized_name = self.normalize_company_name(source_company.name)
+        normalized_name = normalize_company_name(source_company.name)
         if normalized_name:
             # If the source lacks a domain, use a single exact normalized-name
             # match. Ambiguous name matches fall through to a new copied account.
@@ -606,37 +624,3 @@ class AccountWriteService:
             actor_user_id=context.actor_user_id,
             source_label=context.source_label,
         )
-
-    async def _get_or_create_internal_integration(
-        self, context: AccountWriteContext | None = None
-    ) -> KnowledgeIntegration:
-        """Return the internal CRM integration used to own manually created accounts."""
-        _ = context
-        ki = cast(Any, KnowledgeIntegration).__table__.c
-        stmt = select(KnowledgeIntegration).where(
-            ki.organisation_id == self.organisation_id,
-            ki.integration_type == IntegrationType.INTERNAL_CRM.value,
-        )
-        res = await self.session.execute(stmt)
-        integration = res.scalars().first()
-        if integration:
-            return integration
-
-        # Preserve the historical automated sentinel for setup-created internal
-        # integrations; the API actor is captured in AccountWriteContext for
-        # later audit events, not as the integration creator.
-        integration = KnowledgeIntegration(
-            organisation_id=self.organisation_id,
-            created_by_user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            created_by_admin=False,
-            integration_type=IntegrationType.INTERNAL_CRM,
-            integration_scope=IntegrationScope.ORGANIZATION,
-            name="Copilot CRM",
-            credentials={},
-            connection_metadata={"source": "internal_crm", "internal": True},
-            is_active=True,
-        )
-        self.session.add(integration)
-        await self.session.flush()
-        await self.session.refresh(integration)
-        return integration
