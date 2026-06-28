@@ -33,6 +33,7 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.contacts.contracts import ContactWriteContext
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.participants.errors import StakeholdersServiceError
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
@@ -264,6 +265,75 @@ class StakeholderWriteService:
         )
         self.session.add(participant)
         return participant
+
+    async def _ensure_internal_contact_from_selected_contact(
+        self,
+        contact: CRMContact,
+        *,
+        internal_integration_id: UUID,
+    ) -> CRMContact:
+        """Return an internal CRM contact for a selected stakeholder contact."""
+        if contact.integration_id == internal_integration_id:
+            return contact
+
+        email_normalized = contact.email.lower().strip() if contact.email else None
+        if email_normalized:
+            stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.integration_id) == internal_integration_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(CRMContact.email) == email_normalized,
+            )
+            result = await self.session.execute(stmt)
+            existing = result.scalars().first()
+            if existing:
+                return existing
+
+        now = datetime.now(UTC)
+        copied_contact = CRMContact(
+            organisation_id=self.organisation_id,
+            integration_id=internal_integration_id,
+            first_name=contact.first_name,
+            last_name=contact.last_name,
+            full_name=(
+                contact.full_name
+                or " ".join(filter(None, [contact.first_name, contact.last_name]))
+                or None
+            ),
+            job_title=contact.job_title,
+            company_name=contact.company_name,
+            company_id=None,
+            email=email_normalized,
+            additional_emails=list(contact.additional_emails or []),
+            phone=contact.phone,
+            mobile_phone=contact.mobile_phone,
+            website=contact.website,
+            linkedin_url=contact.linkedin_url,
+            city=contact.city,
+            state=contact.state,
+            postal_code=contact.postal_code,
+            country=contact.country,
+            timezone=contact.timezone,
+            source_created_at=now,
+            source_modified_at=now,
+            synced_at=now,
+            last_seen_at=now,
+            properties={
+                **(contact.properties or {}),
+                "source": "internal_crm",
+                "created_via": "stakeholder_add_contacts",
+                "copied_from_contact_id": str(contact.contact_id),
+                "copied_from_integration_id": str(contact.integration_id),
+                **(
+                    {"copied_from_company_id": str(contact.company_id)}
+                    if contact.company_id
+                    else {}
+                ),
+            },
+        )
+        self.session.add(copied_contact)
+        await self.session.flush()
+        return copied_contact
 
     async def _find_contact_participant(
         self,
@@ -830,6 +900,7 @@ class StakeholderWriteService:
         existing_contact_ids = {
             row.related_local_id for row in existing_rows if row.related_local_id
         }
+        internal_integration_id: UUID | None = None
 
         for contact_id in contact_ids:
             contact = contacts_map.get(contact_id)
@@ -852,7 +923,8 @@ class StakeholderWriteService:
 
             # De-duplicate by email first because it is the matching key in all
             # discovery and dedupe paths.
-            if contact.email.lower() in existing_emails:
+            contact_email_normalized = contact.email.lower().strip()
+            if contact_email_normalized in existing_emails:
                 skipped.append(
                     SkippedContact(
                         contact_id=contact_id,
@@ -871,6 +943,18 @@ class StakeholderWriteService:
                     )
                 )
                 continue
+
+            if internal_integration_id is None:
+                setup_result = await InternalCRMSetupService(
+                    self.session,
+                    self.organisation_id,
+                    self.user_id,
+                ).setup_internal_crm(commit=False)
+                internal_integration_id = setup_result.integration.integration_id
+            contact = await self._ensure_internal_contact_from_selected_contact(
+                contact,
+                internal_integration_id=internal_integration_id,
+            )
 
             # Build a name from CRM contact fields so created rows always include a
             # human-friendly identifier when possible.
@@ -917,7 +1001,7 @@ class StakeholderWriteService:
             added.append(self._participant_detail(participant, contact=contact))
 
             # Track for response - add email to existing set
-            existing_emails.add(contact.email.lower())
+            existing_emails.add(contact.email.lower().strip())
             existing_contact_ids.add(contact_id)
 
         await self._finish_write()

@@ -291,7 +291,7 @@ async def test_create_deal_records_initial_core_fields_without_update_semantics(
                 "amount": 25000,
                 "currency": "USD",
                 "priority": "high",
-                "expected_close_date": "2026-07-31",
+                "expected_close_date": datetime(2026, 7, 31, tzinfo=UTC),
             }
         )
 

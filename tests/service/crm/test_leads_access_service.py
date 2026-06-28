@@ -66,3 +66,40 @@ async def test_copy_participants_to_deal_dedupes_contact_identity() -> None:
     assert participants[0].related_local_id == contact_id
     assert participants[0].related_email == "ada@example.com"
     assert getattr(participants[0], "properties", None) is None
+
+
+@pytest.mark.asyncio
+async def test_copy_participants_to_deal_preserves_email_only_contact() -> None:
+    session = _FakeOrgSession()
+    organisation_id = uuid4()
+    lead_id = uuid4()
+    service = LeadsAccessService(
+        org_session=session,
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+        master_session=SimpleNamespace(),
+    )
+
+    copied_count = await service._copy_participants_to_deal(
+        lead_participants=[
+            SimpleNamespace(
+                lead_id=lead_id,
+                participant_id=uuid4(),
+                participant_type=CRMParticipantType.CONTACT,
+                relationship_role="decision_maker",
+                related_local_id=None,
+                name="Grace Hopper",
+                email=" Grace@Example.com ",
+            )
+        ],
+        deal_id=uuid4(),
+        deal_integration_id=uuid4(),
+    )
+
+    assert copied_count == 1
+    participants = [obj for obj in session.added if isinstance(obj, CRMDealParticipant)]
+    assert len(participants) == 1
+    assert participants[0].participant_type == CRMParticipantType.CONTACT
+    assert participants[0].related_local_id is None
+    assert participants[0].related_name == "Grace Hopper"
+    assert participants[0].related_email == "grace@example.com"

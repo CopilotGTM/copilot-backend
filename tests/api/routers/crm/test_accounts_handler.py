@@ -282,6 +282,76 @@ async def test_update_account_commits_session_after_service_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_account_accepts_all_advertised_profile_fields() -> None:
+    user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    company_id = uuid4()
+    company = SimpleNamespace(model_dump=lambda: _company_payload())
+    service = SimpleNamespace(
+        session=SimpleNamespace(commit=AsyncMock()),
+        update_account=AsyncMock(return_value=company),
+    )
+
+    response = await update_account(
+        company_id=company_id,
+        response=FastAPIResponse(),
+        body=UpdateAccountRequest(
+            name="Acme Corp",
+            domain="acme.com",
+            website="https://acme.com",
+            industry="Software",
+            lifecycle_stage="customer",
+            company_type="Private",
+            description="Account description",
+            number_of_employees=250,
+            annual_revenue=50000000.0,
+            phone="+1-555-0100",
+            linkedin_url="https://linkedin.com/company/acme",
+            address="123 Main St",
+            city="Pune",
+            state="Maharashtra",
+            postal_code="411001",
+            country="IN",
+            timezone="Asia/Kolkata",
+        ),
+        user_ids=user_ids,
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    service.update_account.assert_awaited_once_with(
+        company_id,
+        {
+            "name": "Acme Corp",
+            "domain": "acme.com",
+            "website": "https://acme.com",
+            "industry": "Software",
+            "lifecycle_stage": "customer",
+            "company_type": "Private",
+            "description": "Account description",
+            "number_of_employees": 250,
+            "annual_revenue": 50000000.0,
+            "phone": "+1-555-0100",
+            "linkedin_url": "https://linkedin.com/company/acme",
+            "address": "123 Main St",
+            "city": "Pune",
+            "state": "Maharashtra",
+            "postal_code": "411001",
+            "country": "IN",
+            "timezone": "Asia/Kolkata",
+        },
+        context=AccountWriteContext(
+            source="api",
+            actor_user_id=user_ids.user_id,
+            created_via="accounts_app",
+            duplicate_scope="strict_org",
+        ),
+    )
+    service.session.commit.assert_awaited_once()
+    assert response.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
 async def test_search_accounts_returns_cursor_page() -> None:
     account_id = uuid4()
     service = SimpleNamespace(
@@ -431,6 +501,39 @@ async def test_get_account_detail_returns_compact_contacts_and_summary_placehold
     assert response.status == "SUCCESS"
     assert response.data is not None
     dumped = response.data.model_dump()
+    detail_fields = dumped["detail_field_definitions"]
+    fields_by_key = {field["key"]: field for field in detail_fields}
+    assert [field["order"] for field in detail_fields] == list(range(1, 25))
+    assert "contact_count" not in fields_by_key
+    assert "deal_count" not in fields_by_key
+    assert "pipeline_value" not in fields_by_key
+    assert fields_by_key["name"] == {
+        "key": "name",
+        "label": "Account name",
+        "data_type": "string",
+        "order": 1,
+        "section": "account",
+        "filter_control": "text",
+        "editable": True,
+        "patch_field": "name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": None,
+    }
+    assert fields_by_key["owner.id"] == {
+        "key": "owner.id",
+        "label": "Owner ID",
+        "data_type": "uuid",
+        "order": 9,
+        "section": "owner",
+        "filter_control": "link",
+        "editable": False,
+        "patch_field": None,
+        "edit_control": None,
+        "edit_policy": "assignment_action",
+        "locked_reason": "Use an account owner assignment action.",
+    }
+    assert fields_by_key["account_summary.content"]["edit_policy"] == "generated"
     assert dumped["account_summary"] == {
         "status": "not_available",
         "content": None,

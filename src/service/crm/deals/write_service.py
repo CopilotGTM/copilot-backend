@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldDataType
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -35,12 +34,46 @@ from src.service.crm.internal.deal_participant_service import DealParticipantSer
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 from src.service.crm.mutations.policies import DealMutationPolicy
+from src.service.crm.participants.contracts import ParticipantServiceError
 from src.service.crm.utils.account import normalize_account_domain, normalize_company_name
 
 logger = get_logger(__name__)
 
 _CONTACT_NAME_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
-_CUSTOM_KEY_INVALID_RE = re.compile(r"[^a-z0-9_]+")
+_DEAL_UPDATE_ALLOWED_FIELDS = {
+    "name",
+    "amount",
+    "currency",
+    "source_created_at",
+    "expected_close_date",
+    "description",
+    "deal_type",
+    "priority",
+    "lead_source",
+    "probability",
+    "forecast_category",
+    "custom_properties",
+}
+_DEAL_CREATE_ALLOWED_FIELDS = _DEAL_UPDATE_ALLOWED_FIELDS | {
+    "pipeline_id",
+    "stage_id",
+    "owner_user_id",
+    "account",
+    "team_members",
+    "contact_participants",
+    "primary_contact_name",
+    "primary_contact_email",
+    "created_via",
+}
+_DEAL_CREATE_DEDICATED_ACTION_FIELDS = {
+    "close_date",
+    "deal_status",
+    "closed_won_at",
+    "closed_lost_at",
+    "closed_reason",
+    "crm_url",
+    "last_activity_at",
+}
 
 
 class DealWriteService:
@@ -122,9 +155,133 @@ class DealWriteService:
     ) -> dict[str, dict[str, Any]]:
         changed_fields: dict[str, dict[str, Any]] = {}
         for field_name, old_value in old_values.items():
-            if change := changed_field(old_value, getattr(obj, field_name)):
+            if change := changed_field(old_value, getattr(obj, field_name, None)):
                 changed_fields[field_name] = change
         return changed_fields
+
+    @staticmethod
+    def _validate_amount(value: Any) -> None:
+        if value is None:
+            return
+        try:
+            is_negative = value < 0
+        except TypeError as exc:
+            raise DealWriteServiceError("Deal amount must be a number", status_code=400) from exc
+        if is_negative:
+            raise DealWriteServiceError("Deal amount cannot be negative", status_code=400)
+
+    @staticmethod
+    def _normalize_currency(value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise DealWriteServiceError("Deal currency must be a 3-letter code", status_code=400)
+        currency = value.strip().upper()
+        if len(currency) != 3:
+            raise DealWriteServiceError("Deal currency must be a 3-letter code", status_code=400)
+        return currency
+
+    @staticmethod
+    def _validate_probability(value: Any) -> None:
+        if value is None:
+            return
+        try:
+            in_range = 0 <= value <= 100
+        except TypeError as exc:
+            raise DealWriteServiceError(
+                "Deal probability must be a number",
+                status_code=400,
+            ) from exc
+        if not in_range:
+            raise DealWriteServiceError(
+                "Deal probability must be between 0 and 100",
+                status_code=400,
+            )
+
+    @staticmethod
+    def _validate_datetime_field(field_name: str, value: Any) -> None:
+        if value is not None and not isinstance(value, datetime):
+            raise DealWriteServiceError(f"{field_name} must be a datetime", status_code=400)
+
+    @staticmethod
+    def _validate_uuid_field(field_name: str, value: Any) -> None:
+        if value is not None and not isinstance(value, UUID):
+            raise DealWriteServiceError(f"Invalid {field_name}", status_code=400)
+
+    @staticmethod
+    def _validate_string_field(field_name: str, value: Any) -> None:
+        if value is not None and not isinstance(value, str):
+            raise DealWriteServiceError(f"{field_name} must be a string", status_code=400)
+
+    @staticmethod
+    def _validate_email_field(field_name: str, value: Any) -> None:
+        DealWriteService._validate_string_field(field_name, value)
+        if value is None:
+            return
+        cleaned = DealWriteService._clean_string(value)
+        if cleaned is None:
+            return
+        local, separator, domain = cleaned.partition("@")
+        if (
+            not local
+            or not separator
+            or not domain
+            or "@" in domain
+            or any(ch.isspace() for ch in cleaned)
+            or "." not in domain
+            or not all(part for part in domain.split("."))
+        ):
+            raise DealWriteServiceError(f"{field_name} must be a valid email", status_code=400)
+
+    def _validate_account_payload_fields(self, account_payload: Any) -> None:
+        if account_payload is None:
+            return
+        if not isinstance(account_payload, dict):
+            raise DealWriteServiceError("account must be an object", status_code=400)
+        if "company_id" in account_payload:
+            self._validate_uuid_field("account.company_id", account_payload["company_id"])
+        for field_name in (
+            "name",
+            "domain",
+            "website",
+            "linkedin_url",
+            "industry",
+            "country",
+        ):
+            if field_name in account_payload:
+                self._validate_string_field(field_name, account_payload[field_name])
+
+    def _validate_deal_create_relationship_payloads(self, payload: dict[str, Any]) -> None:
+        self._validate_account_payload_fields(payload.get("account"))
+        self._validate_string_field("primary_contact_name", payload.get("primary_contact_name"))
+        self._validate_email_field("primary_contact_email", payload.get("primary_contact_email"))
+
+        team_members = payload.get("team_members")
+        if team_members is not None:
+            if not isinstance(team_members, list):
+                raise DealWriteServiceError("team_members must be a list", status_code=400)
+            for member in team_members:
+                if not isinstance(member, dict):
+                    raise DealWriteServiceError(
+                        "team_members entries must be objects", status_code=400
+                    )
+                if not isinstance(member.get("user_id"), UUID):
+                    raise DealWriteServiceError("Invalid team_members.user_id", status_code=400)
+                self._validate_string_field("team_members.role", member.get("role"))
+
+        contact_participants = payload.get("contact_participants")
+        if contact_participants is not None:
+            if not isinstance(contact_participants, list):
+                raise DealWriteServiceError("contact_participants must be a list", status_code=400)
+            for participant in contact_participants:
+                if not isinstance(participant, dict):
+                    raise DealWriteServiceError(
+                        "contact_participants entries must be objects", status_code=400
+                    )
+                if not isinstance(participant.get("contact_id"), UUID):
+                    raise DealWriteServiceError(
+                        "Invalid contact_participants.contact_id", status_code=400
+                    )
 
     async def create_deal(
         self,
@@ -144,6 +301,46 @@ class DealWriteService:
             DealWriteServiceError: If validation fails or internal CRM not configured
         """
         write_context = context or self._write_context()
+        dedicated_action_fields = sorted(set(payload) & _DEAL_CREATE_DEDICATED_ACTION_FIELDS)
+        if dedicated_action_fields:
+            raise DealWriteServiceError(
+                f"Use dedicated deal actions for fields: {', '.join(dedicated_action_fields)}",
+                status_code=400,
+            )
+        unsupported_fields = sorted(set(payload) - _DEAL_CREATE_ALLOWED_FIELDS)
+        if unsupported_fields:
+            raise DealWriteServiceError(
+                "Unsupported deal create fields: " + ", ".join(unsupported_fields),
+                status_code=400,
+            )
+
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise DealWriteServiceError("Deal name is required", status_code=400)
+        payload["name"] = name.strip()
+
+        self._validate_amount(payload.get("amount"))
+
+        if "currency" in payload:
+            payload["currency"] = self._normalize_currency(payload["currency"])
+
+        self._validate_probability(payload.get("probability"))
+        if "expected_close_date" in payload:
+            self._validate_datetime_field("expected_close_date", payload["expected_close_date"])
+        if "source_created_at" in payload:
+            self._validate_datetime_field("source_created_at", payload["source_created_at"])
+        if "pipeline_id" in payload:
+            self._validate_uuid_field("pipeline_id", payload["pipeline_id"])
+        if "stage_id" in payload:
+            self._validate_uuid_field("stage_id", payload["stage_id"])
+        if "owner_user_id" in payload:
+            self._validate_uuid_field("owner_user_id", payload["owner_user_id"])
+        self._validate_deal_create_relationship_payloads(payload)
+
+        if "custom_properties" in payload and payload["custom_properties"] is not None:
+            payload["custom_properties"] = await self._validate_custom_properties(
+                payload["custom_properties"]
+            )
 
         # Deals created through this writer must belong to the internal CRM
         # integration; external provider deals stay read-only elsewhere.
@@ -159,11 +356,6 @@ class DealWriteService:
         # Validate and get pipeline + stage
         raw_pipeline_id = payload.get("pipeline_id")
         raw_stage_id = payload.get("stage_id")
-
-        if raw_pipeline_id is not None and not isinstance(raw_pipeline_id, UUID):
-            raise DealWriteServiceError("Invalid pipeline_id", status_code=400)
-        if raw_stage_id is not None and not isinstance(raw_stage_id, UUID):
-            raise DealWriteServiceError("Invalid stage_id", status_code=400)
 
         pipeline_id = raw_pipeline_id
         stage_id = raw_stage_id
@@ -206,10 +398,6 @@ class DealWriteService:
         now = datetime.now(UTC)
         deal_id = uuid4()
 
-        # Resolve deal_status: use provided value or default to OPEN
-        deal_status_raw = payload.get("deal_status")
-        deal_status = CRMDealStatus(deal_status_raw) if deal_status_raw else CRMDealStatus.OPEN
-
         # Build properties dict: merge base properties with any custom properties
         created_via = payload.get("created_via", write_context.source)
         properties: dict[str, Any] = {"is_internal_crm": True, "created_via": created_via}
@@ -228,18 +416,18 @@ class DealWriteService:
             pipeline_name=pipeline.name,
             stage_id=stage_id,
             stage_name=stage.name,
-            deal_status=deal_status,
+            deal_status=CRMDealStatus.OPEN,
             probability=payload.get("probability"),
             forecast_category=payload.get("forecast_category"),
             owner_id=None,
             owner_name=None,
             owner_email=None,
-            close_date=payload.get("close_date"),
+            close_date=None,
             expected_close_date=payload.get("expected_close_date"),
-            closed_won_at=payload.get("closed_won_at"),
-            closed_lost_at=payload.get("closed_lost_at"),
-            closed_reason=payload.get("closed_reason"),
-            crm_url=payload.get("crm_url"),
+            closed_won_at=None,
+            closed_lost_at=None,
+            closed_reason=None,
+            crm_url=None,
             description=payload.get("description"),
             deal_type=payload.get("deal_type"),
             priority=payload.get("priority"),
@@ -249,7 +437,7 @@ class DealWriteService:
             source_created_at=payload.get("source_created_at") or now,
             stage_entered_at=now,
             stage_updated_at=now,
-            last_activity_at=payload.get("last_activity_at"),
+            last_activity_at=None,
             source_modified_at=now,
             synced_at=now,
             last_seen_at=now,
@@ -260,7 +448,10 @@ class DealWriteService:
         await self.session.flush()
         if crm_user is not None:
             self._owners.apply_owner(deal=deal, crm_user=crm_user)
-            await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
+            try:
+                await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
+            except ParticipantServiceError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
         # Stage history starts at creation time so later analytics can compute
         # stage dwell time without special-casing the first stage.
@@ -349,18 +540,36 @@ class DealWriteService:
         if not payload:
             raise DealWriteServiceError("No fields to update", status_code=400)
 
+        unsupported_fields = sorted(set(payload) - _DEAL_UPDATE_ALLOWED_FIELDS)
+        if unsupported_fields:
+            raise DealWriteServiceError(
+                "Use dedicated deal actions for fields: " + ", ".join(unsupported_fields),
+                status_code=400,
+            )
+
+        if "name" in payload:
+            name = payload["name"]
+            if not isinstance(name, str) or not name.strip():
+                raise DealWriteServiceError("Deal name cannot be empty", status_code=400)
+            payload["name"] = name.strip()
+        if "amount" in payload:
+            self._validate_amount(payload["amount"])
+        if "currency" in payload:
+            payload["currency"] = self._normalize_currency(payload["currency"])
+        if "probability" in payload:
+            self._validate_probability(payload["probability"])
+        if "expected_close_date" in payload:
+            self._validate_datetime_field("expected_close_date", payload["expected_close_date"])
+        if "source_created_at" in payload:
+            self._validate_datetime_field("source_created_at", payload["source_created_at"])
+
         deal = await self._load_internal_deal(deal_id)
         tracked_fields = [
             "name",
             "amount",
             "currency",
-            "deal_status",
-            "close_date",
+            "source_created_at",
             "expected_close_date",
-            "closed_won_at",
-            "closed_lost_at",
-            "closed_reason",
-            "crm_url",
             "description",
             "deal_type",
             "priority",
@@ -374,6 +583,7 @@ class DealWriteService:
         # Only explicit payload keys are applied; omitted nullable fields must
         # preserve their existing value while provided nulls clear the field.
         updated = False
+        validated_custom_properties: dict[str, Any] | None = None
         if "name" in payload:
             deal.name = payload["name"]
             updated = True
@@ -383,35 +593,11 @@ class DealWriteService:
         if "currency" in payload:
             deal.currency = payload["currency"]
             updated = True
-        if "deal_status" in payload:
-            deal_status_raw = payload["deal_status"]
-            deal.deal_status = (
-                CRMDealStatus(deal_status_raw) if deal_status_raw else CRMDealStatus.OPEN
-            )
-            updated = True
-        if "close_date" in payload:
-            deal.close_date = payload["close_date"]
-            updated = True
         if "expected_close_date" in payload:
             deal.expected_close_date = payload["expected_close_date"]
             updated = True
-        if "closed_won_at" in payload:
-            deal.closed_won_at = payload["closed_won_at"]
-            updated = True
-        if "closed_lost_at" in payload:
-            deal.closed_lost_at = payload["closed_lost_at"]
-            updated = True
-        if "closed_reason" in payload:
-            deal.closed_reason = payload["closed_reason"]
-            updated = True
-        if "crm_url" in payload:
-            deal.crm_url = payload["crm_url"]
-            updated = True
         if "source_created_at" in payload:
             deal.source_created_at = payload["source_created_at"]
-            updated = True
-        if "last_activity_at" in payload:
-            deal.last_activity_at = payload["last_activity_at"]
             updated = True
         if "description" in payload:
             deal.description = payload["description"]
@@ -433,13 +619,19 @@ class DealWriteService:
             updated = True
         if "custom_properties" in payload and payload["custom_properties"] is not None:
             custom_props = payload["custom_properties"]
-            validated_custom = (
+            validated_custom_properties = (
                 custom_props
                 if skip_custom_validation
                 else await self._validate_custom_properties(custom_props)
             )
             # New dict so SQLAlchemy detects the JSONB column change.
-            deal.properties = {**(deal.properties or {}), **validated_custom}
+            updated_properties = {**(deal.properties or {})}
+            for key, value in validated_custom_properties.items():
+                if value is None:
+                    updated_properties.pop(key, None)
+                else:
+                    updated_properties[key] = value
+            deal.properties = updated_properties
             updated = True
 
         if not updated:
@@ -454,13 +646,9 @@ class DealWriteService:
         deal.properties = {**(deal.properties or {}), "updated_via": write_context.source}
 
         changed_fields = self._collect_changed_fields(old_values=old_values, obj=deal)
-        if "custom_properties" in payload and payload["custom_properties"] is not None:
-            for key, new_value in (deal.properties or {}).items():
-                if key == "updated_via":
-                    continue
-                if (key in old_properties or key in payload["custom_properties"]) and (
-                    change := changed_field(old_properties.get(key), new_value)
-                ):
+        if validated_custom_properties is not None:
+            for key, new_value in validated_custom_properties.items():
+                if change := changed_field(old_properties.get(key), new_value):
                     changed_fields[f"custom_properties.{key}"] = change
 
         await self.session.flush()
@@ -480,126 +668,6 @@ class DealWriteService:
     ) -> dict[str, Any]:
         """Validate custom field keys/types before writing to deal properties."""
         return await self._custom_fields.validate_custom_properties(custom_properties)
-
-    def _coerce_custom_value(
-        self,
-        *,
-        key: str,
-        value: Any,
-        data_type: CRMCustomFieldDataType,
-    ) -> Any:
-        if value is None:
-            return None
-
-        try:
-            if data_type == CRMCustomFieldDataType.TEXT:
-                return str(value).strip()
-            if data_type == CRMCustomFieldDataType.INTEGER:
-                if isinstance(value, bool):
-                    raise ValueError
-                return int(value)
-            if data_type == CRMCustomFieldDataType.NUMBER:
-                if isinstance(value, bool):
-                    raise ValueError
-                return float(value)
-            if data_type == CRMCustomFieldDataType.BOOLEAN:
-                return self._parse_boolean(value)
-            if data_type == CRMCustomFieldDataType.DATE:
-                return self._parse_date(value)
-            if data_type == CRMCustomFieldDataType.DATETIME:
-                return self._parse_datetime(value)
-            if data_type == CRMCustomFieldDataType.CURRENCY:
-                return self._parse_currency(value)
-            if data_type == CRMCustomFieldDataType.SELECT:
-                return str(value).strip()
-            if data_type == CRMCustomFieldDataType.MULTISELECT:
-                if isinstance(value, list):
-                    return [str(item).strip() for item in value if str(item).strip()]
-                return [part.strip() for part in str(value).split(",") if part.strip()]
-        except (TypeError, ValueError) as exc:
-            raise DealWriteServiceError(
-                f"Invalid value for custom field '{key}' ({data_type.value})",
-                status_code=400,
-            ) from exc
-
-        return value
-
-    @staticmethod
-    def _parse_boolean(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        normalized = str(value).strip().lower()
-        if normalized in {"true", "1", "yes", "y"}:
-            return True
-        if normalized in {"false", "0", "no", "n"}:
-            return False
-        raise ValueError("Invalid boolean value")
-
-    @staticmethod
-    def _parse_date(value: Any) -> str:
-        if isinstance(value, datetime):
-            return value.date().isoformat()
-        if isinstance(value, date):
-            return value.isoformat()
-
-        raw = str(value).strip()
-        if not raw:
-            raise ValueError("Empty date")
-
-        normalized = raw.replace("Z", "+00:00")
-        try:
-            return datetime.fromisoformat(normalized).date().isoformat()
-        except ValueError:
-            return date.fromisoformat(raw).isoformat()
-
-    @staticmethod
-    def _parse_datetime(value: Any) -> str:
-        if isinstance(value, datetime):
-            parsed = value
-        elif isinstance(value, date):
-            parsed = datetime.combine(value, datetime.min.time(), tzinfo=UTC)
-        else:
-            raw = str(value).strip()
-            if not raw:
-                raise ValueError("Empty datetime")
-
-            normalized = raw.replace("Z", "+00:00")
-            try:
-                parsed = datetime.fromisoformat(normalized)
-            except ValueError:
-                from dateutil import parser as date_parser  # type: ignore[import-untyped]
-
-                parsed = date_parser.parse(raw)
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.isoformat()
-
-    @staticmethod
-    def _parse_currency(value: Any) -> float:
-        raw = str(value).strip()
-        if not raw:
-            raise ValueError("Empty currency")
-        normalized = re.sub(r"[$€£¥₹]", "", raw)
-        normalized = re.sub(r"(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])", "", normalized.upper())
-        normalized = normalized.replace(",", "").replace(" ", "")
-        if not normalized:
-            raise ValueError("Invalid currency")
-        return float(normalized)
-
-    @staticmethod
-    def _normalize_custom_key(value: Any) -> str:
-        raw = str(value).strip().lower()
-        if raw.startswith("custom_"):
-            raw = raw[7:]
-        normalized = _CUSTOM_KEY_INVALID_RE.sub("_", raw)
-        normalized = re.sub(r"_+", "_", normalized).strip("_")
-        if not normalized or not re.match(r"^[a-z][a-z0-9_]{1,62}$", normalized):
-            raise DealWriteServiceError(
-                f"Invalid custom field key '{value}'",
-                status_code=400,
-            )
-        return normalized
 
     async def delete_deal(
         self,
@@ -664,6 +732,7 @@ class DealWriteService:
         Raises:
             DealWriteServiceError: If deal or stage not found, or validation fails
         """
+        self._validate_uuid_field("stage_id", stage_id)
         deal = await self._load_internal_deal(deal_id)
 
         # Verify stage belongs to same integration and pipeline
@@ -707,6 +776,7 @@ class DealWriteService:
                 if stage_state == CRMDealStatus.WON.value:
                     deal.closed_won_at = closed_at
                     deal.closed_lost_at = None
+                    deal.closed_reason = None
                 else:
                     deal.closed_lost_at = closed_at
                     deal.closed_won_at = None
@@ -724,6 +794,7 @@ class DealWriteService:
                     and self._normalize_stage_state(current_status) != CRMDealStatus.OPEN.value
                 ):
                     deal.deal_status = CRMDealStatus.OPEN
+                    deal.close_date = None
                     deal.closed_won_at = None
                     deal.closed_lost_at = None
                     deal.properties = {
@@ -773,10 +844,16 @@ class DealWriteService:
         context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Close an internal deal as won/lost and record closure metadata."""
+        if not isinstance(outcome, str):
+            raise DealWriteServiceError("outcome must be 'won' or 'lost'", status_code=400)
+        self._validate_datetime_field("close_date", close_date)
+        self._validate_uuid_field("stage_id", stage_id)
+
         normalized_outcome = outcome.strip().lower()
+        normalized_closed_reason = closed_reason.strip() if isinstance(closed_reason, str) else None
         if normalized_outcome not in {CRMDealStatus.WON.value, CRMDealStatus.LOST.value}:
             raise DealWriteServiceError("outcome must be 'won' or 'lost'", status_code=400)
-        if normalized_outcome == CRMDealStatus.LOST.value and not closed_reason:
+        if normalized_outcome == CRMDealStatus.LOST.value and not normalized_closed_reason:
             raise DealWriteServiceError(
                 "closed_reason is required when outcome is 'lost'",
                 status_code=400,
@@ -817,11 +894,11 @@ class DealWriteService:
         if normalized_outcome == CRMDealStatus.WON.value:
             deal.closed_won_at = final_close_at
             deal.closed_lost_at = None
-            deal.closed_reason = closed_reason
+            deal.closed_reason = None
         else:
             deal.closed_lost_at = final_close_at
             deal.closed_won_at = None
-            deal.closed_reason = closed_reason
+            deal.closed_reason = normalized_closed_reason
 
         deal.properties = {
             **(deal.properties or {}),
@@ -852,6 +929,7 @@ class DealWriteService:
         context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Reopen a closed internal deal and move it to an open stage."""
+        self._validate_uuid_field("stage_id", stage_id)
         deal = await self._load_internal_deal(deal_id)
         if not deal.pipeline_id:
             raise DealWriteServiceError("Deal has no pipeline", status_code=500)
@@ -859,6 +937,7 @@ class DealWriteService:
             "stage_id": deal.stage_id,
             "stage_name": deal.stage_name,
             "deal_status": deal.deal_status,
+            "close_date": deal.close_date,
             "closed_won_at": deal.closed_won_at,
             "closed_lost_at": deal.closed_lost_at,
             "closed_reason": deal.closed_reason,
@@ -877,6 +956,7 @@ class DealWriteService:
         )
 
         deal.deal_status = CRMDealStatus.OPEN
+        deal.close_date = None
         deal.closed_won_at = None
         deal.closed_lost_at = None
         if clear_closed_reason:
@@ -967,6 +1047,7 @@ class DealWriteService:
         Raises:
             DealWriteServiceError: If deal or user not found, or validation fails
         """
+        self._validate_uuid_field("owner_user_id", owner_user_id)
         deal = await self._load_internal_deal(deal_id)
 
         crm_user = None
@@ -985,9 +1066,15 @@ class DealWriteService:
             return deal
 
         if crm_user is not None:
-            await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
+            try:
+                await self._owners.sync_owner_participant(deal=deal, crm_user=crm_user)
+            except ParticipantServiceError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
         else:
-            await self._owners.clear_owner_participants(deal=deal)
+            try:
+                await self._owners.clear_owner_participants(deal=deal)
+            except ParticipantServiceError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
         now = datetime.now(UTC)
         deal.source_modified_at = now
@@ -1018,8 +1105,26 @@ class DealWriteService:
         context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Update the account snapshot/link for one internal CRM deal."""
-        if not account_payload or not any(account_payload.values()):
+        if not account_payload:
             raise DealWriteServiceError("No account fields to update", status_code=400)
+        if "company_id" in account_payload:
+            self._validate_uuid_field("company_id", account_payload["company_id"])
+        for identity_field in ("name", "domain"):
+            if identity_field in account_payload and account_payload[identity_field] is None:
+                raise DealWriteServiceError(
+                    f"{identity_field} cannot be cleared",
+                    status_code=400,
+                )
+        for field_name in (
+            "name",
+            "domain",
+            "website",
+            "linkedin_url",
+            "industry",
+            "country",
+        ):
+            if field_name in account_payload:
+                self._validate_string_field(field_name, account_payload[field_name])
 
         deal = await self._load_internal_deal(deal_id)
         now = datetime.now(UTC)
@@ -1027,6 +1132,10 @@ class DealWriteService:
             "company_id": deal.company_id,
             "company_name": deal.company_name,
             "company_domain": deal.company_domain,
+            "company_industry": getattr(deal, "company_industry", None),
+            "company_website": getattr(deal, "company_website", None),
+            "company_linkedin_url": getattr(deal, "company_linkedin_url", None),
+            "company_country": getattr(deal, "company_country", None),
         }
 
         # Auto-derive domain from website — domain is never sent by the frontend.
@@ -1038,6 +1147,8 @@ class DealWriteService:
         # Preserve existing company name when only domain/other fields are updated
         if "name" not in account_payload and deal.company_name:
             account_payload["name"] = deal.company_name
+        if "domain" not in account_payload and deal.company_domain:
+            account_payload["domain"] = deal.company_domain
 
         # Carry over existing company fields so they aren't lost when
         # the domain change creates or links to a different company record.
@@ -1101,11 +1212,15 @@ class DealWriteService:
         *,
         primary_contact_name: str | None,
         primary_contact_email: str | None,
+        clear_primary_contact: bool = False,
         company_name: str | None = None,
         context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Update primary contact for an internal CRM deal."""
-        if not primary_contact_name and not primary_contact_email:
+        self._validate_string_field("primary_contact_name", primary_contact_name)
+        self._validate_email_field("primary_contact_email", primary_contact_email)
+        self._validate_string_field("company_name", company_name)
+        if not clear_primary_contact and not primary_contact_name and not primary_contact_email:
             raise DealWriteServiceError("No primary contact fields to update", status_code=400)
 
         deal = await self._load_internal_deal(deal_id)
@@ -1115,6 +1230,26 @@ class DealWriteService:
             "primary_contact_name": deal.primary_contact_name,
             "primary_contact_email": deal.primary_contact_email,
         }
+        if clear_primary_contact:
+            await self._clear_primary_contact_participants(deal, now)
+            deal.primary_contact_id = None
+            deal.primary_contact_name = None
+            deal.primary_contact_email = None
+            deal.source_modified_at = now
+            deal.synced_at = now
+            deal.last_seen_at = now
+            self.session.add(deal)
+            logger.info("Cleared primary contact for internal CRM deal %s", deal.deal_id)
+            await self._record_mutation_event(
+                deal=deal,
+                event_type="crm.deal.primary_contact_changed",
+                operation="update_primary_contact",
+                changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
+                summary="Cleared deal primary contact",
+                context=context,
+            )
+            return deal
+
         contact, fallback_name, fallback_email = await self._upsert_contact_from_primary(
             primary_contact_name=primary_contact_name,
             primary_contact_email=primary_contact_email,
@@ -1125,6 +1260,7 @@ class DealWriteService:
         if contact:
             await self._replace_primary_contact_participant(deal, contact, now)
         else:
+            await self._clear_primary_contact_participants(deal, now)
             deal.primary_contact_id = None
             if fallback_name:
                 deal.primary_contact_name = fallback_name
@@ -1145,6 +1281,23 @@ class DealWriteService:
             context=context,
         )
         return deal
+
+    async def _clear_primary_contact_participants(self, deal: CRMDeal, now: datetime) -> None:
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_primary_contact).is_(True),
+            col(CRMDealParticipant.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        for participant in result.scalars().all():
+            participant.is_deleted = True
+            participant.source_modified_at = now
+            participant.synced_at = now
+            participant.last_seen_at = now
+            self.session.add(participant)
 
     async def _apply_account_and_team(
         self,
@@ -1345,6 +1498,7 @@ class DealWriteService:
         deal.company_id = company.company_id
         deal.company_name = company.name
         deal.company_domain = company.domain
+        self._sync_deal_company_profile_for_response(deal=deal, company=company)
         deal.source_modified_at = now
         deal.synced_at = now
         deal.last_seen_at = now
@@ -1410,11 +1564,21 @@ class DealWriteService:
         if deal.company_domain != company.domain:
             deal.company_domain = company.domain
             changed = True
+        self._sync_deal_company_profile_for_response(deal=deal, company=company)
         if changed:
             deal.source_modified_at = now
             deal.synced_at = now
             deal.last_seen_at = now
             self.session.add(deal)
+
+    @staticmethod
+    def _sync_deal_company_profile_for_response(*, deal: CRMDeal, company: CRMCompany) -> None:
+        # copilotgtm: These are response-only attrs; the durable company profile
+        # remains owned by CRMCompany and full detail reads still join that row.
+        deal.company_industry = getattr(company, "industry", None)
+        deal.company_website = getattr(company, "website", None)
+        deal.company_linkedin_url = getattr(company, "linkedin_url", None)
+        deal.company_country = getattr(company, "country", None)
 
     async def _replace_primary_contact_participant(
         self,
@@ -1683,6 +1847,7 @@ class DealWriteService:
 
     async def _load_internal_deal(self, deal_id: UUID) -> CRMDeal:
         """Load and verify a deal belongs to this org and is internal CRM."""
+        self._validate_uuid_field("deal_id", deal_id)
         deal = await self.session.get(CRMDeal, deal_id)
         if not deal or deal.organisation_id != self.organisation_id:
             raise DealWriteServiceError("Deal not found", status_code=404)

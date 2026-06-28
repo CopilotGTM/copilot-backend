@@ -110,7 +110,7 @@ provider raw payloads
 OAuth/auth fields
 ```
 
-`properties` and `metrics` are intentionally excluded from account mutation V1 because they can become large provider/enrichment dumping grounds. If account research later needs eventing, add explicit account enrichment columns or a curated `account_research` payload policy instead of storing arbitrary JSON changes in the mutation ledger.
+`properties` and `metrics` are intentionally excluded from account mutation V1 because they can become large provider/enrichment dumping grounds. If account research later needs eventing, add explicit account enrichment columns or a curated `account_summary` payload policy instead of storing arbitrary JSON changes in the mutation ledger.
 
 ## Create Flow
 

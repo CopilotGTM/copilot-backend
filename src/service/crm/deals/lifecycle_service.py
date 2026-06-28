@@ -35,7 +35,7 @@ class DealLifecycleService:
         elif status == CRMDealStatus.LOST:
             deal.closed_lost_at = now
             deal.closed_won_at = None
-        deal.closed_reason = closed_reason
+        deal.closed_reason = closed_reason if status == CRMDealStatus.LOST else None
 
         changed_fields: dict[str, dict[str, Any]] = {}
         for name, old, new in (

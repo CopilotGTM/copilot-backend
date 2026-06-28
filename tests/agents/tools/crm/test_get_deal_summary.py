@@ -30,11 +30,17 @@ def _make_deal(summary_data: dict | None = None) -> MagicMock:
     deal = MagicMock()
     deal.deal_id = UUID(DEAL_ID)
     deal.name = "Acme Deal"
+    deal.company_id = UUID("33333333-3333-3333-3333-333333333333")
     deal.company_name = "Acme Corp"
     deal.amount = 50000.0
+    deal.predicted_amount = 25000.0
     deal.currency = "USD"
     deal.deal_status = "open"
+    deal.forecast_category = "Commit"
+    deal.stage_id = UUID("44444444-4444-4444-4444-444444444444")
     deal.stage_name = "Negotiation"
+    deal.pipeline_id = UUID("55555555-5555-5555-5555-555555555555")
+    deal.pipeline_name = "Sales"
     deal.deal_summary_data = summary_data
     return deal
 
@@ -122,6 +128,21 @@ class TestGetDealSummary:
         assert result["amount"] is None
 
     @pytest.mark.asyncio
+    async def test_zero_amount_is_preserved(self, mock_context: MagicMock) -> None:
+        deal = _make_deal(summary_data={"executive_summary": "No value yet"})
+        deal.amount = 0
+
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=deal))
+        )
+
+        result = await get_deal_summary(DEAL_ID, context=mock_context)
+
+        assert result is not None
+        assert result["amount"] == 0.0
+
+    @pytest.mark.asyncio
     async def test_db_error_returns_none(self, mock_context: MagicMock) -> None:
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
@@ -142,7 +163,13 @@ class TestGetDealSummary:
         result = await get_deal_summary(DEAL_ID, context=mock_context)
 
         assert result is not None
+        assert result["company_id"] == "33333333-3333-3333-3333-333333333333"
         assert result["company_name"] == "Acme Corp"
         assert result["currency"] == "USD"
+        assert result["predicted_amount"] == 25000.0
         assert result["deal_status"] == "open"
+        assert result["forecast_category"] == "Commit"
+        assert result["stage_id"] == "44444444-4444-4444-4444-444444444444"
         assert result["stage_name"] == "Negotiation"
+        assert result["pipeline_id"] == "55555555-5555-5555-5555-555555555555"
+        assert result["pipeline_name"] == "Sales"

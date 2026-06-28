@@ -2,7 +2,7 @@
 
 > Version: 1.3
 > Base URL: `/users/crm`
-> Last Updated: 2026-02-10
+> Last Updated: 2026-06-27
 
 ---
 
@@ -13,10 +13,24 @@ This document defines the API contracts for CRM Deal operations. **Frontend deve
 ### Internal vs External CRM Deals
 
 All deal response objects include an `is_internal` boolean field:
-- **Internal CRM deals** (`is_internal: true`): Created and managed within the platform. These deals are fully editable - users can update, move stages, assign owners, and delete them.
+- **Internal CRM deals** (`is_internal: true`): Created and managed within the platform. These deals are editable through field-specific endpoints: inline PATCH for core fields, stage/lifecycle actions for status changes, owner assignment for routing, account/contact actions for relationships, and delete for soft removal.
 - **External CRM deals** (`is_internal: false`): Synced from external CRM systems (HubSpot, Salesforce). These deals are read-only and cannot be modified through the API.
 
 **Frontend Implementation**: Use the `is_internal` field to conditionally show edit/delete buttons and actions. Only enable these for internal deals.
+
+### Write Request Validation
+
+All JSON write request bodies in this API are strict. Unknown fields are rejected
+with `422` instead of being ignored. Send only the fields listed for the target
+endpoint; for example, do not send `deal_status` to create/update endpoints,
+`stage_name` to the stage action, or `owner_name` to the owner assignment action.
+
+Successful create/update/action endpoints return `DealWriteResponse`. It includes
+the refreshed core deal fields needed to update a list row or detail header without
+guessing locally. It does not include full detail-only objects such as
+`detail_field_definitions`, `deal_team`, `deal_summary_data`, or
+`custom_column_definitions`; fetch `GET /users/crm/deals/{deal_id}` for the full
+detail view.
 
 ### Identifier Contract
 
@@ -24,6 +38,400 @@ CRM API payloads expose canonical local IDs such as `deal_id`, `company_id`,
 `contact_id`, `pipeline_id`, `stage_id`, and `owner_id`. Provider identifiers from
 HubSpot, Salesforce, or migration imports are stored in `crm_source_object_mappings`
 and are not part of canonical deal API responses.
+
+### Ownership and Account Profile Semantics
+
+- Deal owner means the CRM user currently responsible for driving the deal, not
+  necessarily the user who created the row.
+- `owner_user_id` in write payloads maps to the deal's resolved `owner_id`.
+  Display with `owner_details` / `owner_name` / `owner_email`.
+- `company_id`, `company_name`, and `company_domain` are deal association
+  snapshots stored on the deal.
+- `company_industry`, `company_website`, `company_linkedin_url`, and
+  `company_country` are account profile fields from the linked CRM company row.
+  They are returned on deal detail/write responses for convenience, but the
+  durable source is the account/company record.
+
+### Frontend Migration Checklist
+
+Use this checklist when updating the deal UI:
+
+- Add `predicted_amount` to deal list, search, and write-response handling.
+- Add `stage_id` and `pipeline_id` to deal list/search rows; use these IDs for
+  filter preselection and stage actions, not labels.
+- Treat `DealWriteResponse` as the canonical response for create, inline update,
+  stage/lifecycle, owner, account, primary-contact, and delete actions.
+- Render predefined deal detail rows from `detail_field_definitions`; do not
+  hardcode the order or editability.
+- For custom fields, render controls from `custom_column_definitions` and patch
+  via `custom_columns.<key>`.
+- Keep `associated_contact_count`, `associated_company_count`, and `note_count`
+  as top-level summary values, not Get Details rows.
+- Route edits by `edit_policy`: `always` -> inline PATCH, `stage_action` ->
+  stage endpoint, `owner_assignment` -> owner endpoint, `account_action` ->
+  account endpoint, `primary_contact_action` -> primary-contact endpoint.
+
+---
+
+## Frontend TypeScript Contracts
+
+```ts
+type UUID = string;
+type ISODate = string;
+
+export interface DealOwnerDetail {
+  owner_id: UUID | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface DealTeamMember {
+  participant_id: UUID | null;
+  user_id: UUID | null;
+  name: string | null;
+  email: string | null;
+  role: string;
+}
+
+export interface DealCustomColumnDefinition {
+  key: string;
+  label: string;
+  data_type:
+    | "text"
+    | "number"
+    | "integer"
+    | "boolean"
+    | "date"
+    | "datetime"
+    | "currency"
+    | "percentage"
+    | "select"
+    | "multiselect"
+    | "formula"
+    | string;
+  required: boolean;
+  options: Record<string, unknown>;
+  validation: Record<string, unknown>;
+  currency_code: string | null;
+  currency_symbol: string | null;
+  editable: boolean;
+  patch_field: `custom_columns.${string}` | null;
+  edit_control: string | null;
+  edit_policy: "custom_columns" | "formula" | "read_only";
+  locked_reason: string | null;
+}
+
+export interface DealJobResponse {
+  job_id: UUID | null;
+  job_type: string;
+  status: string;
+}
+
+export interface DealSummaryJobsStatus {
+  deal_summary: DealJobResponse | null;
+  stakeholder_processing: DealJobResponse[];
+}
+
+export interface DealImportJobStatus {
+  job_id: UUID;
+  job_type: "deal_import";
+  status: string;
+  stream_url: string;
+}
+
+export interface DealListItem {
+  deal_id: UUID;
+  name: string | null;
+  amount: number | null;
+  predicted_amount: number | null;
+  currency: string | null;
+  currency_symbol: string | null;
+  deal_status: string;
+  probability: number | null;
+  close_date: ISODate | null;
+  expected_close_date: ISODate | null;
+  stage_id: UUID | null;
+  stage_name: string | null;
+  stage_label: string | null;
+  pipeline_id: UUID | null;
+  pipeline_name: string | null;
+  pipeline_label: string | null;
+  owner_details: DealOwnerDetail[];
+  company_id: UUID | null;
+  company_name: string | null;
+  company_domain: string | null;
+  deal_health: string | null;
+  deal_health_reason: string | null;
+  deal_team: DealTeamMember[];
+  is_internal: boolean;
+  created_at: ISODate;
+  updated_at: ISODate;
+  synced_at: ISODate;
+}
+
+export interface DealsPage {
+  items: DealListItem[];
+  active_import_job: DealImportJobStatus | null;
+  page: number;
+  limit: number;
+  total_count: number;
+  total_pages: number;
+}
+
+export interface DealSearchItem {
+  deal_id: UUID;
+  name: string | null;
+  amount: number | null;
+  predicted_amount: number | null;
+  currency: string | null;
+  currency_symbol: string | null;
+  deal_status: string | null;
+  stage_id: UUID | null;
+  stage_name: string | null;
+  pipeline_id: UUID | null;
+  pipeline_name: string | null;
+  company_id: UUID | null;
+  company_name: string | null;
+  company_domain: string | null;
+  owner_details: DealOwnerDetail[];
+  is_internal: boolean;
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+export interface DealSearchPage {
+  items: DealSearchItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface DealDetailFieldDefinition {
+  key: string;
+  label: string;
+  data_type: string;
+  order: number;
+  section:
+    | "core"
+    | "value"
+    | "ai"
+    | "ownership"
+    | "account"
+    | "contact"
+    | "timeline"
+    | "process"
+    | string;
+  filter_control: string;
+  editable: boolean;                  // True only when this field can be inline-edited on internal CRM deals
+  patch_field: keyof DealUpdateRequest | null;
+  edit_control: string | null;
+  edit_policy:
+    | "always"
+    | "stage_action"
+    | "owner_assignment"
+    | "participants_action"
+    | "account_action"
+    | "primary_contact_action"
+    | "generated"
+    | "lifecycle_action"
+    | "system"
+    | "read_only";
+  locked_reason: string | null;
+}
+
+export interface DealAccountInput {
+  company_id?: UUID | null;
+  name?: string | null;
+  domain?: string | null;
+  website?: string | null;
+  linkedin_url?: string | null;
+  industry?: string | null;
+  country?: string | null;
+}
+
+export interface DealTeamMemberInput {
+  user_id: UUID;
+  role?: string | null;
+}
+
+export interface DealContactParticipantInput {
+  contact_id: UUID;
+}
+
+export interface DealCreateRequest {
+  name: string;
+  amount?: number | null;
+  currency?: string | null;
+  pipeline_id?: UUID | null;
+  stage_id?: UUID | null;
+  owner_user_id?: UUID | null;
+  source_created_at?: ISODate | null;
+  expected_close_date?: ISODate | null;
+  description?: string | null;
+  deal_type?: string | null;
+  priority?: string | null;
+  lead_source?: string | null;
+  probability?: number | null;
+  forecast_category?: string | null;
+  custom_columns?: Record<string, unknown>;
+  custom_properties?: Record<string, unknown>; // Deprecated alias for custom_columns
+  account?: DealAccountInput | null;
+  team_members?: DealTeamMemberInput[] | null;
+  contact_participants?: DealContactParticipantInput[] | null;
+  primary_contact_name?: string | null;
+  primary_contact_email?: string | null;
+}
+
+export interface DealUpdateRequest {
+  name?: string;
+  amount?: number | null;
+  currency?: string | null;
+  source_created_at?: ISODate | null;
+  expected_close_date?: ISODate | null;
+  description?: string | null;
+  deal_type?: string | null;
+  priority?: string | null;
+  lead_source?: string | null;
+  probability?: number | null;
+  forecast_category?: string | null;
+  custom_columns?: Record<string, unknown>;
+  custom_properties?: Record<string, unknown>; // Deprecated alias for custom_columns
+}
+
+export interface DealPrimaryContactUpdateRequest {
+  primary_contact_name?: string | null;
+  primary_contact_email?: string | null;
+}
+
+export interface DealCloseRequest {
+  outcome: "won" | "lost";
+  closed_reason?: string | null;
+  close_date?: ISODate | null;
+  stage_id?: UUID | null;
+}
+
+export interface DealReopenRequest {
+  stage_id?: UUID | null;
+  clear_closed_reason?: boolean;
+}
+
+export interface DealStageMoveRequest {
+  stage_id: UUID;
+}
+
+export interface DealOwnerAssignRequest {
+  owner_user_id: UUID | null;
+}
+
+export interface DealWriteResponse {
+  deal_id: UUID;
+  name: string | null;
+  amount: number | null;
+  predicted_amount: number | null;
+  currency: string | null;
+  currency_symbol: string | null;
+  pipeline_id: UUID | null;
+  pipeline_name: string | null;
+  pipeline_label: string | null;
+  stage_id: UUID | null;
+  stage_name: string | null;
+  stage_label: string | null;
+  deal_status: string;
+  probability: number | null;
+  forecast_category: string | null;
+  owner_user_id: UUID | null;
+  owner_name: string | null;
+  owner_email: string | null;
+  owner_details: DealOwnerDetail[];
+  is_internal: boolean;
+  company_id: UUID | null;
+  company_name: string | null;
+  company_domain: string | null;
+  company_industry: string | null;
+  company_website: string | null;
+  company_linkedin_url: string | null;
+  company_country: string | null;
+  primary_contact_id: UUID | null;
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  source_created_at: ISODate | null;
+  close_date: ISODate | null;
+  expected_close_date: ISODate | null;
+  closed_won_at: ISODate | null;
+  closed_lost_at: ISODate | null;
+  closed_reason: string | null;
+  stage_entered_at: ISODate | null;
+  stage_updated_at: ISODate | null;
+  deal_type: string | null;
+  priority: string | null;
+  lead_source: string | null;
+  description: string | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+  synced_at: ISODate | null;
+}
+
+export interface DealDetail {
+  detail_field_definitions: DealDetailFieldDefinition[];
+  deal_id: UUID;
+  name: string | null;
+  amount: number | null;
+  currency: string | null;
+  currency_symbol: string | null;
+  predicted_amount: number | null;
+  deal_status: string;
+  probability: number | null;
+  forecast_category: string | null;
+  stage_id: UUID | null;
+  stage_name: string | null;
+  stage_label: string | null;
+  pipeline_id: UUID | null;
+  pipeline_name: string | null;
+  pipeline_label: string | null;
+  source_created_at: ISODate | null;
+  close_date: ISODate | null;
+  expected_close_date: ISODate | null;
+  closed_won_at: ISODate | null;
+  closed_lost_at: ISODate | null;
+  last_activity_at: ISODate | null;
+  stage_entered_at: ISODate | null;
+  stage_updated_at: ISODate | null;
+  deal_age_days: number | null;
+  owner_details: DealOwnerDetail[];
+  deal_team: DealTeamMember[];
+  company_id: UUID | null;
+  company_name: string | null;
+  company_domain: string | null;
+  company_industry: string | null;
+  company_website: string | null;
+  company_linkedin_url: string | null;
+  company_country: string | null;
+  primary_contact_id: UUID | null;
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  deal_type: string | null;
+  priority: string | null;
+  lead_source: string | null;
+  closed_reason: string | null;
+  crm_url: string | null;
+  description: string | null;
+  deal_health: string | null;
+  deal_health_reason: string | null;
+  is_internal: boolean;
+  custom_columns: Record<string, unknown> | null;
+  custom_column_definitions: DealCustomColumnDefinition[] | null;
+  time_tracked: string | null;
+  source_modified_at: ISODate | null;
+  last_seen_at: ISODate | null;
+  associated_contact_count: number | null;
+  associated_company_count: number | null;
+  note_count: number | null;
+  deal_summary_data: Record<string, unknown> | null;
+  active_deal_jobs: DealSummaryJobsStatus | null;
+  created_at: ISODate;
+  updated_at: ISODate;
+  synced_at: ISODate;
+}
+```
 
 ---
 
@@ -52,20 +460,31 @@ POST /users/crm/deals
 | `owner_user_id` | UUID | No | Valid user UUID from `/users/crm/users` | Deal owner |
 | `amount` | number | No | >= 0 | Deal value |
 | `currency` | string | No | 3-char ISO code (USD, INR) | Currency code |
-| `close_date` | string | No | ISO 8601 datetime | Target close date |
+| `source_created_at` | string | No | ISO 8601 datetime | Deal start / CRM-created date. Defaults to current timestamp when omitted |
 | `expected_close_date` | string | No | ISO 8601 datetime | Forecasted close date |
 | `deal_type` | string | No | Max 128 chars | "New Business", "Renewal", "Expansion", "Upsell" |
 | `priority` | string | No | Max 64 chars | "High", "Medium", "Low" |
 | `lead_source` | string | No | Max 128 chars | "Inbound", "Outbound", "Referral", etc. |
+| `probability` | number | No | 0-100 | Win probability (%) |
+| `forecast_category` | string | No | Max 64 chars | Forecast bucket (Pipeline / Best Case / Commit / Closed) |
+| `custom_columns` | object | No | non-empty object; keys must exist in custom field definitions; omit instead of sending `null` or `{}` | Public custom field write payload keyed by custom field key. Use the exact key from `custom_column_definitions[].key` / `patch_field`; `custom_` prefix stripping is only a compatibility fallback |
+| `custom_properties` | object | No | same as `custom_columns`; cannot conflict when both are sent | Deprecated alias for `custom_columns` kept for older clients |
 | `description` | string | No | - | Deal notes/description |
 | `account` | object | No | - | Optional account details captured at deal creation |
+| `account.company_id` | UUID | No | Existing internal CRM company UUID | Link an existing company instead of creating from account details |
 | `account.name` | string | No | - | Company/account name (optional if domain provided) |
 | `account.domain` | string | No | - | Company domain (required to create/link company) |
 | `account.website` | string | No | - | Company website URL (optional) |
+| `account.industry` | string | No | - | Company industry (optional) |
+| `account.country` | string | No | - | Company country/geography (optional) |
 | `account.linkedin_url` | string | No | - | Company LinkedIn URL (optional) |
 | `team_members` | array | No | - | Internal team members to attach as participants |
 | `team_members[].user_id` | UUID | Yes | Valid user UUID from `/users/crm/users` | Internal team member |
 | `team_members[].role` | string | No | Max 128 chars | Team role label (e.g., "SE", "CSM") |
+| `contact_participants` | array | No | - | Existing CRM contacts to attach as deal stakeholders |
+| `contact_participants[].contact_id` | UUID | Yes | Existing CRM contact UUID | Contact to add as a stakeholder |
+| `primary_contact_name` | string | No | - | Primary contact display name snapshot |
+| `primary_contact_email` | string | No | Valid email string | Primary contact email snapshot |
 
 ### Example Request
 
@@ -77,23 +496,37 @@ POST /users/crm/deals
   "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "amount": 50000,
   "currency": "USD",
-  "close_date": "2026-03-15T00:00:00Z",
+  "source_created_at": "2026-01-22T10:00:00Z",
   "expected_close_date": "2026-03-31T00:00:00Z",
   "deal_type": "New Business",
   "priority": "High",
   "lead_source": "Inbound",
+  "probability": 10,
+  "forecast_category": "Pipeline",
+  "custom_columns": {
+    "our_revenue_inr": 25000000
+  },
   "description": "Enterprise deal for 100 seats",
   "account": {
     "name": "Acme Corp",
     "domain": "acme.com",
-    "linkedin_url": "https://www.linkedin.com/company/acme"
+    "linkedin_url": "https://www.linkedin.com/company/acme",
+    "industry": "Manufacturing",
+    "country": "United States"
   },
   "team_members": [
     {
       "user_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
       "role": "SE"
     }
-  ]
+  ],
+  "contact_participants": [
+    {
+      "contact_id": "8b7f5f3b-0e3e-4a5c-a7e5-5f31cb0a1e13"
+    }
+  ],
+  "primary_contact_name": "Jane Buyer",
+  "primary_contact_email": "jane@acme.com"
 }
 ```
 
@@ -109,11 +542,36 @@ POST /users/crm/deals
 
 - If `account.domain` is provided, the system will create or link an internal CRM company
   and attach it to the deal.
+- If `account.company_id` is provided, the deal is linked to that existing company. If the
+  selected company came from an external provider, the backend copies it into the internal
+  CRM integration before linking it to the deal.
 - If `account.domain` is missing but `account.name` is provided, the deal will store
   `company_name` without creating a company record.
 - `team_members` are added as internal CRM participants (`participant_type = user`).
+- `contact_participants` are existing CRM contacts added as stakeholders after the deal
+  is created. The create route owns this follow-up so each accepted participant can
+  trigger stakeholder processing jobs and auto-research exactly once. If a selected
+  contact came from an external CRM integration, it is copied into the internal CRM
+  integration before the stakeholder participant is created.
+- Contact participant duplicate checks use normalized email identity (trimmed lowercase)
+  before creating or copying contact records. If a selected contact resolves to an
+  email already active on the deal, it is returned in `skipped` instead of creating
+  another stakeholder or processing job.
+- `primary_contact_name` and `primary_contact_email` set the deal's primary-contact
+  snapshot during creation. For later changes, use
+  `PATCH /users/crm/deals/{deal_id}/primary-contact`.
+- `custom_columns` follows the same validation as update: unknown keys and formula
+  custom fields are rejected, and values are type-checked against active internal deal
+  custom field definitions before the deal is created. Omit `custom_columns` when
+  not setting custom fields; explicit `null` and `{}` are rejected. `custom_properties`
+  is still accepted as a deprecated alias, but the two fields must match if both are
+  sent. Keys must normalize to a non-empty custom field key. Keys are normalized before
+  validation, so duplicate normalized keys such as `our_revenue` and
+  `custom_our_revenue` are rejected.
 
 ### Success Response (201)
+
+`data` uses the full `DealWriteResponse` contract above.
 
 ```json
 {
@@ -123,17 +581,35 @@ POST /users/crm/deals
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
     "amount": 50000,
+    "predicted_amount": 5000,
     "currency": "USD",
+    "currency_symbol": "$",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "pipeline_name": "Default Pipeline",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "stage_name": "Qualification",
     "deal_status": "open",
-    "owner_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "probability": 10,
+    "forecast_category": "Pipeline",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     "owner_name": "John Doe",
     "owner_email": "john@example.com",
-    "close_date": "2026-03-15T00:00:00Z",
+    "owner_details": [
+      {
+        "owner_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "name": "John Doe",
+        "email": "john@example.com"
+      }
+    ],
+    "is_internal": true,
+    "source_created_at": "2026-01-22T10:00:00Z",
+    "close_date": null,
     "expected_close_date": "2026-03-31T00:00:00Z",
+    "closed_won_at": null,
+    "closed_lost_at": null,
+    "closed_reason": null,
+    "stage_entered_at": "2026-01-22T10:00:00Z",
+    "stage_updated_at": "2026-01-22T10:00:00Z",
     "deal_type": "New Business",
     "priority": "High",
     "lead_source": "Inbound",
@@ -141,7 +617,16 @@ POST /users/crm/deals
     "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
-    "created_at": "2026-01-22T10:00:00Z"
+    "company_industry": "Manufacturing",
+    "company_website": null,
+    "company_linkedin_url": "https://www.linkedin.com/company/acme",
+    "company_country": "United States",
+    "primary_contact_id": null,
+    "primary_contact_name": null,
+    "primary_contact_email": null,
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T10:00:00Z",
+    "synced_at": "2026-01-22T10:00:00Z"
   }
 }
 ```
@@ -153,7 +638,7 @@ POST /users/crm/deals
 | 400 | Validation error | Missing required field or invalid value |
 | 404 | Pipeline/Stage not found | Invalid pipeline_id or stage_id |
 | 409 | Internal CRM not configured | Org doesn't have internal CRM setup |
-| 422 | Validation error | Field validation failed (details in response) |
+| 422 | Validation error | Field validation failed or request included unsupported fields |
 | 500 | Internal server error | Unexpected error |
 
 ---
@@ -166,7 +651,7 @@ POST /users/crm/deals
 GET /users/crm/deals/search
 ```
 
-Lightweight cursor search for deal pickers and typeahead. This endpoint searches only deal identity fields: `name` and `company_name`. It does not return `total_count`; use `next_cursor` and `has_more` for infinite scroll.
+Lightweight cursor search for deal pickers and typeahead. This endpoint searches only deal identity fields: `name` and `company_name`. It does not return `total_count`; use `next_cursor` and `has_more` for infinite scroll. Cursor ordering uses a trimmed lowercase deal name, or trimmed lowercase company name when the deal name is blank.
 
 ### Query Parameters
 
@@ -178,6 +663,8 @@ Lightweight cursor search for deal pickers and typeahead. This endpoint searches
 
 ### Success Response (200)
 
+`data` uses the `DealSearchPage` contract above.
+
 ```json
 {
   "status": "SUCCESS",
@@ -188,10 +675,13 @@ Lightweight cursor search for deal pickers and typeahead. This endpoint searches
         "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
         "name": "Acme Corp - Enterprise License",
         "amount": 50000,
+        "predicted_amount": 5000,
         "currency": "USD",
         "currency_symbol": "$",
         "deal_status": "open",
+        "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         "stage_name": "Qualification",
+        "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
         "pipeline_name": "Default Pipeline",
         "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
         "company_name": "Acme Corp",
@@ -203,6 +693,7 @@ Lightweight cursor search for deal pickers and typeahead. This endpoint searches
             "email": "john@example.com"
           }
         ],
+        "is_internal": true,
         "created_at": "2026-01-22T10:00:00Z",
         "updated_at": "2026-01-22T10:00:00Z"
       }
@@ -234,11 +725,15 @@ GET /users/crm/deals
 | `owner_ids` | array[uuid] | - | Filter by internal owner IDs from `/users/crm/deals/owners` (not page-scoped) |
 | `min_amount` | number | - | Minimum deal amount |
 | `max_amount` | number | - | Maximum deal amount |
-| `min_close_date` | string | - | Minimum close date (ISO 8601) |
-| `max_close_date` | string | - | Maximum close date (ISO 8601) |
+| `min_close_date` | string | - | Minimum actual close date (ISO 8601). Closed deals only, because open deals have `close_date = null`. |
+| `max_close_date` | string | - | Maximum actual close date (ISO 8601). Closed deals only, because open deals have `close_date = null`. |
+| `min_expected_close_date` | string | - | Minimum expected/forecast close date (ISO 8601). Use this for open-pipeline forecast filtering. |
+| `max_expected_close_date` | string | - | Maximum expected/forecast close date (ISO 8601). Use this for open-pipeline forecast filtering. |
 | `q` | string | - | Case-insensitive search by deal name or company name |
 
 ### Success Response (200)
+
+`data` uses the `DealsPage` contract above.
 
 ```json
 {
@@ -251,10 +746,19 @@ GET /users/crm/deals
         "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
         "name": "Acme Corp - Enterprise License",
         "amount": 50000,
+        "predicted_amount": 5000,
         "currency": "USD",
         "currency_symbol": "$",
-        "stage_name": "Qualification",
         "deal_status": "open",
+        "probability": 10,
+        "close_date": "2026-03-15T00:00:00Z",
+        "expected_close_date": "2026-03-31T00:00:00Z",
+        "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        "stage_name": "Qualification",
+        "stage_label": "Qualification",
+        "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+        "pipeline_name": "Default Pipeline",
+        "pipeline_label": "Default Pipeline",
         "owner_details": [
           {
             "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
@@ -262,9 +766,16 @@ GET /users/crm/deals
             "email": "john@example.com"
           }
         ],
-        "close_date": "2026-03-15T00:00:00Z",
+        "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+        "company_name": "Acme Corp",
+        "company_domain": "acme.com",
+        "deal_health": "ON_TRACK",
+        "deal_health_reason": "Recent meeting activity and healthy stage progression",
+        "deal_team": [],
         "is_internal": true,
-        "created_at": "2026-01-22T10:00:00Z"
+        "created_at": "2026-01-22T10:00:00Z",
+        "updated_at": "2026-01-22T12:00:00Z",
+        "synced_at": "2026-01-23T09:30:00Z"
       }
     ],
     "page": 1,
@@ -281,7 +792,13 @@ GET /users/crm/deals
 |-------|------|-------------|
 | `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
 | `owner_details` | array | Owner list (typically 0..1). Use `owner_id` for filtering and linking. |
+| `stage_id` / `pipeline_id` | UUID \| null | Stable identifiers for the current stage and pipeline. Use these for preselecting filters and stage actions. |
+| `stage_label` / `pipeline_label` | string \| null | Display labels for the current stage and pipeline. |
+| `company_id` / `company_name` / `company_domain` | UUID/string \| null | Linked account identifiers shown in the list row and searchable by company name. |
+| `deal_health` / `deal_health_reason` | string \| null | AI-assessed health summary extracted from deal summary data when available. |
+| `deal_team` | array | Internal deal team members attached as participants. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`). Frontend should use this for icon/amount decoration. |
+| `updated_at` / `synced_at` | datetime | Row freshness and provider sync timestamps. |
 | `active_import_job` | object \| null | Reserved for the future import rebuild. Always `null` while CSV import is disabled. |
 
 ---
@@ -308,6 +825,8 @@ GET /users/crm/deals/{deal_id}
 
 ### Success Response (200)
 
+`data` uses the `DealDetail` contract above.
+
 ```json
 {
   "status": "SUCCESS",
@@ -321,8 +840,10 @@ GET /users/crm/deals/{deal_id}
     "predicted_amount": 5000,
     "probability": 10,
     "forecast_category": "Commit",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "pipeline_name": "Default Pipeline",
     "pipeline_label": "Default Pipeline",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "stage_name": "Qualification",
     "stage_label": "Qualification",
     "deal_status": "open",
@@ -334,10 +855,14 @@ GET /users/crm/deals/{deal_id}
       }
     ],
     "deal_team": [],
+    "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "company_industry": "Manufacturing",
+    "company_website": "https://acme.com",
+    "company_linkedin_url": "https://www.linkedin.com/company/acme",
     "company_country": "United States",
+    "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
     "primary_contact_name": "Jane Buyer",
     "primary_contact_email": "jane@acme.com",
     "close_date": "2026-03-15T00:00:00Z",
@@ -372,7 +897,12 @@ GET /users/crm/deals/{deal_id}
         "options": {},
         "validation": {},
         "currency_code": "INR",
-        "currency_symbol": "₹"
+        "currency_symbol": "₹",
+        "editable": true,
+        "patch_field": "custom_columns.our_revenue_inr",
+        "edit_control": "currency",
+        "edit_policy": "custom_columns",
+        "locked_reason": null
       },
       {
         "key": "target_go_live_date",
@@ -382,7 +912,40 @@ GET /users/crm/deals/{deal_id}
         "options": {},
         "validation": {},
         "currency_code": null,
-        "currency_symbol": null
+        "currency_symbol": null,
+        "editable": true,
+        "patch_field": "custom_columns.target_go_live_date",
+        "edit_control": "datetime",
+        "edit_policy": "custom_columns",
+        "locked_reason": null
+      }
+    ],
+    "detail_field_definitions": [
+      {
+        "key": "name",
+        "label": "Deal name",
+        "data_type": "string",
+        "order": 1,
+        "section": "core",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      },
+      {
+        "key": "owner_details",
+        "label": "Owner",
+        "data_type": "array",
+        "order": 12,
+        "section": "ownership",
+        "filter_control": "people",
+        "editable": false,
+        "patch_field": null,
+        "edit_control": null,
+        "edit_policy": "owner_assignment",
+        "locked_reason": "Use the deal owner assignment action."
       }
     ],
     "source_modified_at": "2026-01-23T09:30:00Z",
@@ -424,10 +987,12 @@ GET /users/crm/deals/{deal_id}
 |-------|------|-------------|
 | `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
 | `custom_columns` | object \| null | For internal CRM deals, includes imported custom key/value metadata. With `include_empty_custom_columns=true`, active custom keys are included even when values are `null`. |
-| `custom_column_definitions` | array \| null | Active custom field metadata for internal deals. Use `data_type` to render controls; for `currency` fields use `currency_code` + `currency_symbol`. |
+| `custom_column_definitions` | array \| null | Active custom field metadata for internal deals. Use `data_type` to render controls; for `currency` fields use `currency_code` + `currency_symbol`. Use `editable`, `patch_field`, `edit_control`, and `edit_policy` to drive custom-field editing. |
+| `detail_field_definitions` | array | Ordered metadata for predefined Get Details fields. Use this as the source of truth for display order and inline editability. Custom fields are described by `custom_column_definitions`. |
 | `owner_details` | array | Canonical owner payload. Use this list (0..1 for internal CRM) instead of legacy single-owner fields. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`) for consistent detail rendering. |
-| `company_country` | string \| null | Country/geography of the associated company. Populated from the linked CRM company record. |
+| `company_industry` / `company_website` / `company_linkedin_url` / `company_country` | string \| null | Account profile values populated from the linked CRM company record. These are not `CRMDeal` columns. |
+| `associated_contact_count` / `associated_company_count` / `note_count` | number \| null | Top-level relationship/provider metrics. Display near relationship sections; do not duplicate as Get Details scalar rows. |
 | `source_modified_at` / `last_seen_at` / `synced_at` | datetime | System read-only sync metadata for advanced view and troubleshooting. |
 | `active_deal_jobs` | object \| null | Active deal-level jobs for reconnect. `stakeholder_processing` contains active `deal_email_rematch`, `deal_calendar_rematch`, and `stakeholder_sync` jobs created by stakeholder add. |
 
@@ -435,6 +1000,38 @@ GET /users/crm/deals/{deal_id}
 post-stakeholder-create processing is running. Use it to restore a deal-level
 banner after a page reload. Stakeholder research is not included here; it is
 returned on stakeholder detail as `active_research_job`.
+
+### Deal Detail Metadata
+
+- `detail_field_definitions` is the ordered metadata for predefined deal fields in the "Get Details" panel.
+- `detail_field_definitions[].editable: true` means the field is accepted by `PATCH /users/crm/deals/{deal_id}` using `patch_field` when `is_internal` is also `true`. External CRM deals stay read-only.
+- Owner, stage/status, account, primary-contact, lifecycle, participant, generated, and system fields use `edit_policy` to point the frontend to the correct dedicated action or explain why the value is locked.
+- `custom_columns` are intentionally not repeated in `detail_field_definitions`; render individual custom field controls from `custom_column_definitions`.
+- `custom_column_definitions[].editable: true` means patch `custom_columns` using the returned `patch_field` path, for example `custom_columns.our_revenue_inr`.
+- Formula custom fields return `edit_policy: "formula"` and are read-only; the write endpoint rejects formula updates.
+- `deal_summary_data` and `active_deal_jobs` are intentionally not metadata rows because they are structured sections, not scalar Get Details fields.
+
+Edit policy meanings:
+
+| `edit_policy` | Meaning | Endpoint |
+|---|---|---|
+| `always` | Inline edit is allowed for internal CRM deals. | `PATCH /users/crm/deals/{deal_id}` |
+| `stage_action` | Stage/status changes must move through pipeline stage logic. | `POST /users/crm/deals/{deal_id}/stage` |
+| `owner_assignment` | Owner changes affect routing/audit and must validate a CRM user. | `POST /users/crm/deals/{deal_id}/owner` |
+| `participants_action` | Internal team changes are participant mutations, not scalar deal edits. | Participant APIs |
+| `account_action` | Account fields are snapshots from the linked account/company. | `PATCH /users/crm/deals/{deal_id}/account` |
+| `primary_contact_action` | Primary contact fields update the contact relationship snapshot. | `PATCH /users/crm/deals/{deal_id}/primary-contact` |
+| `lifecycle_action` | Closed/won/lost fields must use close/reopen flows. | `POST /users/crm/deals/{deal_id}/close` or `/reopen` |
+| `generated` | Generated from deal analysis. | Read-only |
+| `system` | Computed or provider/system-managed value. | Read-only |
+| `read_only` | Returned for display only. | Read-only |
+
+The predefined field metadata currently contains these keys in order.
+Top-level count metrics such as `associated_contact_count`,
+`associated_company_count`, and `note_count` remain response fields but are not
+repeated as Get Details metadata rows:
+
+`name`, `deal_status`, `stage_name`, `pipeline_name`, `amount`, `currency`, `predicted_amount`, `probability`, `forecast_category`, `deal_health`, `deal_health_reason`, `owner_details`, `deal_team`, `company_name`, `company_domain`, `company_industry`, `company_website`, `company_linkedin_url`, `company_country`, `primary_contact_name`, `primary_contact_email`, `source_created_at`, `close_date`, `expected_close_date`, `closed_won_at`, `closed_lost_at`, `deal_age_days`, `last_activity_at`, `stage_entered_at`, `stage_updated_at`, `deal_type`, `priority`, `lead_source`, `closed_reason`, `crm_url`, `description`.
 
 ---
 
@@ -506,13 +1103,15 @@ PATCH /users/crm/deals/{deal_id}
 ### Request Body
 
 **All fields are optional** - only include fields you want to update. Omitted fields remain unchanged.
+Unknown fields are rejected with `422`; do not send lifecycle, owner, stage, account, primary-contact, generated, or system fields to this endpoint.
+`name` must be a non-empty string when provided; omit it to keep the existing name.
 
 | Field | Type | Validation | Description |
 |-------|------|------------|-------------|
 | `name` | string | 1-500 chars, non-empty | Deal name |
 | `amount` | number | >= 0 | Deal value (can be null) |
 | `currency` | string | 3-char ISO code (USD, INR) | Currency code |
-| `close_date` | string | ISO 8601 datetime | Target close date |
+| `source_created_at` | string | ISO 8601 datetime | Deal start / CRM created date |
 | `expected_close_date` | string | ISO 8601 datetime | Forecasted close date |
 | `deal_type` | string | Max 128 chars | "New Business", "Renewal", "Expansion", "Upsell" |
 | `priority` | string | Max 64 chars | "High", "Medium", "Low" |
@@ -520,25 +1119,38 @@ PATCH /users/crm/deals/{deal_id}
 | `description` | string | - | Deal notes/description |
 | `probability` | number | 0-100 | Win probability (%) |
 | `forecast_category` | string | Max 64 chars | Forecast bucket (Pipeline / Best Case / Commit / Closed) |
-| `custom_properties` | object | keys must exist in custom field definitions | Custom field values keyed by custom field key (`custom_` prefix accepted and normalized) |
+| `custom_columns` | object | non-empty object; keys must exist in custom field definitions; omit instead of sending `null` or `{}` | Public custom field write payload keyed by custom field key. Use the exact key from `custom_column_definitions[].key` / `patch_field`; `custom_` prefix stripping is only a compatibility fallback. Send a field value as `null` to clear that stored custom value. |
+| `custom_properties` | object | same as `custom_columns`; cannot conflict when both are sent | Deprecated alias for `custom_columns` kept for older clients |
 
-**Note**: To update `pipeline_id`, `stage_id`, or `owner_user_id`, use the dedicated endpoints below.
-`source_created_at`, `last_activity_at`, and `crm_url` are read-only and returned by deal detail API.
+**Note**: To update `pipeline_id`, `stage_id`, `owner_user_id`, or actual `close_date`, use the dedicated endpoints below.
+`last_activity_at` and `crm_url` are read-only and returned by the deal detail API.
 Use `POST /users/crm/deals/{deal_id}/close` to set close outcome and `closed_reason`.
 
 **Custom field validation**:
 - Unknown custom keys are rejected (`400`).
 - Formula custom fields are read-only in this endpoint.
 - Values are type-checked against field definitions.
-- Supported custom field types include `text`, `number`, `integer`, `boolean`, `date`, `datetime`, and `currency` (plus select/multiselect/formula where applicable).
+- Keys must resolve to a non-empty custom field key. The backend first matches
+  the exact active definition key, then falls back to the legacy prefix-stripped
+  form for old clients.
+- Duplicate normalized keys such as `our_revenue` and `custom_our_revenue` are
+  rejected to avoid ambiguous writes.
+- Omit `custom_columns` when not updating custom fields; explicit `null` and `{}` are rejected.
+- Send `custom_columns.<key>: null` to clear a stored custom field value. Detail responses still show active custom keys with `null` when `include_empty_custom_columns=true`.
+- `custom_properties` is still accepted as a deprecated alias, but the two fields must match if both are sent.
+- Supported custom field types include `text`, `number`, `integer`, `boolean`, `date`, `datetime`, `currency`, and `percentage` (plus select/multiselect/formula where applicable).
+- Numeric custom fields (`integer`, `number`, `currency`, `percentage`) reject JSON booleans; send numeric values or numeric strings instead.
+- `integer` custom fields reject fractional values.
+- `percentage` custom fields must resolve to a number from `0` through `100`.
+- `boolean` custom fields accept JSON booleans, standard true/false strings (`true`, `false`, `yes`, `no`, `y`, `n`), and numeric `0` or `1`; other numeric values are rejected.
 
 ### Example Request
 
-Update only amount and close date:
+Update only amount and expected close date:
 ```json
 {
   "amount": 75000,
-  "close_date": "2026-04-15T00:00:00Z"
+  "expected_close_date": "2026-04-15T00:00:00Z"
 }
 ```
 
@@ -548,16 +1160,22 @@ Update all editable fields:
   "name": "Acme Corp - Enterprise Plus",
   "amount": 75000,
   "currency": "USD",
-  "close_date": "2026-04-15T00:00:00Z",
+  "source_created_at": "2026-01-22T10:00:00Z",
   "expected_close_date": "2026-04-30T00:00:00Z",
   "deal_type": "Expansion",
   "priority": "High",
   "lead_source": "Inbound",
+  "probability": 65,
+  "forecast_category": "Commit",
   "description": "Upgraded to enterprise plus tier with 200 seats"
 }
 ```
 
 ### Success Response (200)
+
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the commonly inspected updated fields; nullable account/contact snapshot fields
+are still present as defined by `DealWriteResponse`.
 
 ```json
 {
@@ -566,10 +1184,33 @@ Update all editable fields:
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise Plus",
+    "amount": 75000,
+    "predicted_amount": 48750,
+    "currency": "USD",
+    "currency_symbol": "$",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "pipeline_name": "Default Pipeline",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "stage_name": "Qualification",
     "deal_status": "open",
+    "probability": 65,
+    "forecast_category": "Commit",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "owner_name": "John Doe",
+    "owner_email": "john@example.com",
+    "is_internal": true,
+    "source_created_at": "2026-01-22T10:00:00Z",
+    "close_date": "2026-04-15T00:00:00Z",
+    "expected_close_date": "2026-04-30T00:00:00Z",
+    "closed_won_at": null,
+    "closed_lost_at": null,
+    "closed_reason": null,
+    "stage_entered_at": "2026-01-22T10:00:00Z",
+    "stage_updated_at": "2026-01-22T10:00:00Z",
+    "deal_type": "Expansion",
+    "priority": "High",
+    "lead_source": "Inbound",
+    "description": "Upgraded to enterprise plus tier with 200 seats",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-22T15:30:00Z"
   }
@@ -583,7 +1224,7 @@ Update all editable fields:
 | 400 | No fields to update | Request body is empty or contains no valid fields |
 | 404 | Deal not found | Invalid deal_id or deal doesn't belong to org |
 | 409 | External CRM deals are read-only | Tried to edit a deal synced from HubSpot/Salesforce (`is_internal: false`) |
-| 422 | Validation error | Field validation failed (details in response) |
+| 422 | Validation error | Field validation failed or request included unsupported fields such as `deal_status`, `stage_id`, `owner_user_id`, `close_date`, `closed_reason`, `crm_url`, or `last_activity_at` |
 | 500 | Internal server error | Unexpected error |
 
 ---
@@ -627,6 +1268,9 @@ POST /users/crm/deals/{deal_id}/stage
 
 ### Success Response (200)
 
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the stage/lifecycle fields that change during this action.
+
 ```json
 {
   "status": "SUCCESS",
@@ -636,7 +1280,13 @@ POST /users/crm/deals/{deal_id}/stage
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9",
+    "stage_name": "Proposal",
     "deal_status": "open",
+    "closed_won_at": null,
+    "closed_lost_at": null,
+    "closed_reason": null,
+    "stage_entered_at": "2026-01-22T15:45:00Z",
+    "stage_updated_at": "2026-01-22T15:45:00Z",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-22T15:45:00Z"
@@ -648,7 +1298,9 @@ POST /users/crm/deals/{deal_id}/stage
 If the target stage has `stage_state: "won"` or `stage_state: "lost"`, the deal lifecycle
 is closed and `deal_status` becomes `won` or `lost`. If the target stage has
 `stage_state: "open"` and the deal was closed, the deal is reopened and `deal_status`
-becomes `open`.
+becomes `open`; `close_date`, `closed_won_at`, and `closed_lost_at` are cleared.
+Moving a previously lost deal into a won stage also clears the old `closed_reason`
+so a won deal does not retain stale loss-reason text.
 
 ### Error Responses
 
@@ -675,8 +1327,8 @@ POST /users/crm/deals/{deal_id}/close
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `outcome` | enum | **Yes** | `won` or `lost` |
-| `closed_reason` | string | Conditionally required | Required when `outcome=lost` |
+| `outcome` | enum | **Yes** | `won` or `lost`; values are trimmed and case-normalized |
+| `closed_reason` | string | Conditionally required | Required when `outcome=lost`; ignored and cleared when `outcome=won` |
 | `close_date` | string | No | ISO 8601 datetime; defaults to current time |
 | `stage_id` | UUID | No | Optional explicit closed stage; must match outcome state |
 
@@ -684,8 +1336,7 @@ POST /users/crm/deals/{deal_id}/close
 
 ```json
 {
-  "outcome": "won",
-  "closed_reason": "Signed annual contract"
+  "outcome": "won"
 }
 ```
 
@@ -700,6 +1351,9 @@ POST /users/crm/deals/{deal_id}/close
 
 ### Success Response (200)
 
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the lifecycle fields that change during this action.
+
 ```json
 {
   "status": "SUCCESS",
@@ -709,13 +1363,23 @@ POST /users/crm/deals/{deal_id}/close
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9",
+    "stage_name": "Closed Won",
     "deal_status": "won",
+    "close_date": "2026-02-10T16:15:00Z",
+    "closed_won_at": "2026-02-10T16:15:00Z",
+    "closed_lost_at": null,
+    "closed_reason": null,
+    "stage_entered_at": "2026-02-10T16:15:00Z",
+    "stage_updated_at": "2026-02-10T16:15:00Z",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-02-10T16:15:00Z"
   }
 }
 ```
+
+Won deals always return `closed_reason: null`. The field is for lost-deal reason
+text only; closing a previously lost deal as won clears stale loss-reason text.
 
 ### Error Responses
 
@@ -755,6 +1419,9 @@ POST /users/crm/deals/{deal_id}/reopen
 
 ### Success Response (200)
 
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the reopened lifecycle fields.
+
 ```json
 {
   "status": "SUCCESS",
@@ -764,13 +1431,23 @@ POST /users/crm/deals/{deal_id}/reopen
     "name": "Acme Corp - Enterprise License",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "stage_name": "Qualification",
     "deal_status": "open",
+    "close_date": null,
+    "closed_won_at": null,
+    "closed_lost_at": null,
+    "closed_reason": null,
+    "stage_entered_at": "2026-02-10T16:20:00Z",
+    "stage_updated_at": "2026-02-10T16:20:00Z",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-02-10T16:20:00Z"
   }
 }
 ```
+
+Reopening always clears `close_date`, `closed_won_at`, and `closed_lost_at`.
+`closed_reason` is preserved unless `clear_closed_reason` is `true`.
 
 ### Error Responses
 
@@ -829,11 +1506,14 @@ Clear owner (unassign):
 
 ### Success Response (200)
 
+`data` uses the full `DealWriteResponse` contract above. The examples below show
+the owner field being assigned or cleared.
+
 Assigned:
 ```json
 {
   "status": "SUCCESS",
-  "message": "Deal owner assigned successfully",
+  "message": "Deal owner updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
@@ -841,6 +1521,8 @@ Assigned:
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     "deal_status": "open",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "owner_name": "John Doe",
+    "owner_email": "john@example.com",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-22T15:50:00Z"
   }
@@ -851,16 +1533,19 @@ Cleared:
 ```json
 {
   "status": "SUCCESS",
-  "message": "Deal owner cleared successfully",
+  "message": "Deal owner updated successfully",
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "owner_user_id": null,
+    "owner_name": null,
+    "owner_email": null,
     ...
   }
 }
 ```
 
 **Note**: On first owner assignment, if no CRM users exist, the system auto-syncs all org users to CRM (MVP behavior).
+Owner assignment updates the deal owner snapshot (`owner_user_id`, `owner_name`, `owner_email`) and the internal `owner` participant projection in the same transaction. If the participant projection rejects the change, the endpoint returns that 4xx/409 validation status instead of a generic server error.
 
 ### Error Responses
 
@@ -886,18 +1571,39 @@ PATCH /users/crm/deals/{deal_id}/account
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | No | Company/account name |
-| `domain` | string | No | Company domain (recommended; used to create/link company) |
-| `website` | string | No | Company website URL |
-| `linkedin_url` | string | No | Company LinkedIn URL |
-| `industry` | string | No | Company industry classification |
-| `country` | string | No | Company country/geography |
+| `company_id` | UUID | No | Existing CRM company UUID. Links this deal to that account; external-provider accounts are copied into the internal CRM before linking. |
+| `name` | string | No | Company/account name. Cannot be cleared with `null`; omit when unchanged. |
+| `domain` | string | No | Company domain (recommended; used to create/link company). Cannot be cleared with `null`; omit when unchanged. |
+| `website` | string \| null | No | Company website URL. Send `null` to clear it on the linked account. |
+| `linkedin_url` | string \| null | No | Company LinkedIn URL. Send `null` to clear it on the linked account. |
+| `industry` | string \| null | No | Company industry classification. Send `null` to clear it on the linked account. |
+| `country` | string \| null | No | Company country/geography. Send `null` to clear it on the linked account. |
 
 ### Behavior
 
+- At least one account field must be provided. Blank strings are rejected with `422`.
 - If `domain` (or `website`) is provided, the system creates or links a company by domain
   and attaches it to the deal.
+- If `company_id` is provided, the deal is linked to that existing company. If the selected
+  company came from an external provider, the backend copies it into the internal CRM before linking.
 - If only `name` is provided, the deal stores `company_name` without creating a company record.
+- If the deal is already linked to an account, profile fields such as `website`,
+  `linkedin_url`, `industry`, and `country` can be sent as `null` to clear them.
+  Account identity fields `name` and `domain` must be non-empty strings when sent.
+- Deal account-change mutation events include visible account snapshot changes:
+  `company_id`, `company_name`, `company_domain`, `company_industry`, `company_website`,
+  `company_linkedin_url`, and `company_country`.
+
+Frontend field mapping from `detail_field_definitions`:
+
+| Detail field | Send to this endpoint as |
+|--------------|--------------------------|
+| `company_name` | `name` |
+| `company_domain` | `domain` |
+| `company_website` | `website` |
+| `company_linkedin_url` | `linkedin_url` |
+| `company_industry` | `industry` |
+| `company_country` | `country` |
 
 ### Example Request
 
@@ -911,6 +1617,9 @@ PATCH /users/crm/deals/{deal_id}/account
 
 ### Success Response (200)
 
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the account snapshot fields that change during this action.
+
 ```json
 {
   "status": "SUCCESS",
@@ -918,12 +1627,25 @@ PATCH /users/crm/deals/{deal_id}/account
   "data": {
     "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
     "name": "Acme Corp - Enterprise License",
+    "amount": 50000,
+    "currency": "USD",
+    "currency_symbol": "$",
     "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "pipeline_name": "Default Pipeline",
     "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "stage_name": "Qualification",
     "deal_status": "open",
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "is_internal": true,
+    "owner_name": "John Doe",
+    "owner_email": "john@example.com",
+    "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
+    "company_industry": "Manufacturing",
+    "company_website": "https://acme.com",
+    "company_linkedin_url": "https://www.linkedin.com/company/acme",
+    "company_country": "United States",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-23T11:00:00Z"
   }
@@ -946,12 +1668,29 @@ PATCH /users/crm/deals/{deal_id}/primary-contact
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `primary_contact_name` | string | No | Display name for primary contact |
-| `primary_contact_email` | string | No | Email for primary contact (recommended) |
+| `primary_contact_name` | string \| null | No | Display name for primary contact. Send `null` with `primary_contact_email: null` to clear the primary contact. |
+| `primary_contact_email` | string \| null | No | Valid email for primary contact (recommended). Send `null` with `primary_contact_name: null` to clear the primary contact. |
 
-At least one of the two fields must be provided.
+At least one of the two fields must be provided with a non-empty value, unless both
+fields are explicitly sent as `null` to clear the primary contact. Blank strings are
+rejected. A single null field without the other null field is also rejected.
+When the backend cannot resolve the supplied name/email to one unique internal contact,
+it stores the provided name/email as the deal snapshot and clears the previous primary
+contact participant link so `primary_contact_id` and participant state do not point at
+an older contact.
+
+Clear primary contact:
+```json
+{
+  "primary_contact_name": null,
+  "primary_contact_email": null
+}
+```
 
 ### Success Response (200)
+
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the primary-contact and account context fields most relevant to this action.
 
 ```json
 {
@@ -966,6 +1705,9 @@ At least one of the two fields must be provided.
     "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
+    "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
+    "primary_contact_name": "Jane Buyer",
+    "primary_contact_email": "jane@acme.com",
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-02-10T10:30:00Z"
   }
@@ -997,6 +1739,9 @@ DELETE /users/crm/deals/{deal_id}
 | Authorization | Yes | Bearer {token} |
 
 ### Success Response (200)
+
+`data` uses the full `DealWriteResponse` contract above. The example below shows
+the deletion status fields.
 
 ```json
 {
@@ -1098,6 +1843,9 @@ GET /users/crm/users?q={search}&limit=20
 GET /users/crm/deals/owners?limit=200&q={search}
 ```
 
+`q` searches owner name, email, or owner UUID. Leading/trailing whitespace is
+ignored, and blank search values are treated the same as no search term.
+
 Optional `owner_ids` query values hydrate selected owners even if they do not match
 the current search term or fall outside the first `limit` results:
 
@@ -1129,9 +1877,11 @@ Use `owner_id` values from this endpoint with the `owner_ids` filter in `GET /us
 GET /users/crm/deals/owners/me
 ```
 
-Returns CRM deal-owner rows that match the authenticated app user by app user ID
-or email. Frontend should use this endpoint to preselect `owner_ids` on Deals
-page load when the product wants a personal owner view by default.
+Returns CRM deal-owner rows that match the authenticated app user by app user ID,
+CRM user ID, or normalized email. Email matching is trimmed and case-insensitive,
+so provider-padded owner emails still resolve. Frontend should use this endpoint
+to preselect `owner_ids` on Deals page load when the product wants a personal
+owner view by default.
 
 **Response:**
 ```json
@@ -1221,15 +1971,17 @@ GET /users/crm/pipelines?include_stages=true
 6. **Stage selection**: Use stage_id from `/pipelines?include_stages=true`
 7. **Optional fields**: Don't send `null` for optional fields - omit them entirely
 8. **Account + Team**: Use `account` + `team_members` to capture company + internal team
-   in one request. Company is created/linked only when `account.domain` is supplied.
+   in one request. Company is linked when `account.company_id` is supplied, otherwise
+   created/linked from `account.domain` when available.
 9. **Owner filter options**: Use `/users/crm/deals/owners` and filter by `owner_ids`; do not derive options from the current page.
 10. **Close flow**: Use `POST /users/crm/deals/{deal_id}/close` and
     `POST /users/crm/deals/{deal_id}/reopen` when you need explicit close/reopen
     controls. Stage picker moves through `POST /users/crm/deals/{deal_id}/stage`
     also update lifecycle when the selected stage has `stage_state` `won`, `lost`,
     or `open`.
-11. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code).
-12. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
+11. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
+12. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code). Use `editable=false` / `edit_policy=formula` to lock formula fields.
+13. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
 
 ---
 
@@ -1314,10 +2066,10 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 
 1. Expanded `GET /users/crm/deals/{deal_id}` response to include broader deal, timeline, association, and system metadata.
 2. Added `include_empty_custom_columns` query parameter behavior to detail docs.
-3. Extended `PATCH /users/crm/deals/{deal_id}` contract with additional core fields and `custom_properties`.
+3. Extended `PATCH /users/crm/deals/{deal_id}` contract with additional core fields and custom field writes (`custom_columns`; legacy alias `custom_properties`).
 4. Added new endpoint: `PATCH /users/crm/deals/{deal_id}/primary-contact`.
 5. Documented custom field update validation behavior for interactive deal edits.
-6. Restricted `PATCH /users/crm/deals/{deal_id}` to disallow editing `source_created_at` and `last_activity_at` (read-only timeline fields).
+6. Restricted `PATCH /users/crm/deals/{deal_id}` to disallow editing `last_activity_at` (read-only timeline field); `source_created_at` is accepted as the deal start/CRM-created date.
 7. Added dedicated lifecycle endpoints: `POST /users/crm/deals/{deal_id}/close` and `POST /users/crm/deals/{deal_id}/reopen`.
 8. Moved `closed_reason` handling out of generic update and into the dedicated close flow.
 9. Added `currency_symbol` to deal list/detail responses so frontend can render currency icons without hardcoded defaults.

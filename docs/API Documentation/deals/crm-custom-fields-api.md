@@ -2,7 +2,7 @@
 
 > Version: 2.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-04-09
+> Last Updated: 2026-06-27
 
 ---
 
@@ -13,7 +13,7 @@ CRM deals have two kinds of fields:
 - **Standard fields** — built into the schema (name, amount, close date, owner, …). These are present on every deal in every organisation.
 - **Custom columns** — defined per organisation to track domain-specific data (for example "Priority", "Implementation Effort %", "Renewal Risk Score"). Each organisation manages its own list.
 
-This API powers the **Settings → Custom Columns** page where users create, rename, and remove their organisation's custom columns. The same definitions are also consumed by the bulk-CSV-import flow (which has its own service in the backend) and by every deal-list / deal-detail view that needs to render the column values.
+This API powers the **Settings → Custom Columns** page where users create, rename, and remove their organisation's custom columns. The same definitions are also consumed by the deal detail view through `custom_column_definitions`; `GET /users/crm/deals/{deal_id}` returns the per-deal `custom_columns` values. The standard deal list/search responses are intentionally lightweight and do not include custom values.
 
 A custom column has two name fields you should understand before reading the rest of this doc:
 
@@ -37,7 +37,7 @@ This API is for **internally-managed** custom columns. Externally-synced fields 
 
 | API | Relationship | Documentation |
 |-----|-------------|---------------|
-| **CRM Deals** | Deals carry custom column values inside `properties` JSONB; the deal list/detail endpoints render them using definitions from this API | `crm-deals-api.md` |
+| **CRM Deals** | Deals carry custom column values inside `properties` JSONB; deal detail returns `custom_columns` and `custom_column_definitions` using definitions from this API | `crm-deals-api.md` |
 | **CRM Deals Import** | CSV import uses a separate (bulk-flavoured) service to auto-create custom column definitions when an import sees an unrecognised `custom_*` column | `crm-deals-import-api.md` |
 | **CRM Pipelines** | Standard pipeline/stage fields, separate from custom columns | `crm-pipelines-api.md` |
 
@@ -135,21 +135,21 @@ Deal (CRMDeal)
                   ↑ keyed by field.key, not field_id
 ```
 
-When the deal list view renders the "Priority" column, it joins the deal's `properties.priority` value against the active custom column definition for that key, and displays the latter's `label`.
+When the deal detail view renders the "Priority" column, it reads `custom_columns.priority` and the matching active definition for that key, then displays the definition's `label`.
 
 ### Rename behaviour (this is the most important section)
 
-A custom column can be renamed by `PATCH`-ing its `label`. This changes the display name everywhere — instantly, for every deal and every list view — **without touching any deal data**. The reason:
+A custom column can be renamed by `PATCH`-ing its `label`. This changes the display name everywhere the definition is used — instantly, for every deal detail view — **without touching any deal data**. The reason:
 
 - Deal values are stored under `properties.<key>`. The key is `priority`, not `Priority`.
 - The `label` is read from the definition row at display time, not stored on each deal.
-- When you change the label from `"Priority"` to `"Deal Priority"`, the next list-view fetch joins against the (renamed) definition and shows the new label automatically.
+- When you change the label from `"Priority"` to `"Deal Priority"`, the next detail fetch uses the renamed definition and shows the new label automatically.
 
 This is unlike pipelines/stages, which carry denormalized snapshot fields on `crm_deals` and require an explicit propagation step on rename. Custom columns have no snapshot fields, so the API has nothing to propagate.
 
 Two consequences worth highlighting for the frontend:
 
-1. **You don't need to invalidate the deals query cache** after a custom column rename — but you DO need to invalidate the **definitions** cache so the new label gets pulled. The deal rows themselves are unchanged.
+1. **You don't need to rewrite deal data** after a custom column rename — but you DO need to invalidate the **definitions/detail** cache so the new label gets pulled. The deal rows themselves are unchanged.
 2. **The `key` is fixed forever after creation.** There is no API path to change it. If you got the key wrong at create time, the only fix is to delete and re-create.
 
 ### Immutable fields
@@ -209,6 +209,13 @@ The value type a column accepts. Set at creation time, immutable afterward.
 | `select` | Single value from a fixed list | string | **Requires** `options.values` (non-empty list of strings) |
 | `multiselect` | Multiple values from a fixed list | array of strings | **Requires** `options.values` |
 | `formula` | Computed value derived from other columns | (computed) | **Requires** `formula` payload; cannot reference itself; all referenced keys must already exist |
+
+Deal create/update value coercion:
+
+- Numeric custom fields (`integer`, `number`, `currency`, `percentage`) reject JSON booleans.
+- `integer` accepts whole numbers and whole-number strings only; fractional values are rejected.
+- `percentage` must resolve to a number from `0` through `100`.
+- `boolean` accepts JSON booleans, standard true/false strings (`true`, `false`, `yes`, `no`, `y`, `n`), and numeric `0` or `1`; other numeric values are rejected.
 
 ### `entity_type`
 
@@ -656,7 +663,7 @@ All fields optional. Only send what you want to change. The schema does **not** 
 }
 ```
 
-After this request, every deal list view will show "Deal Priority" as the column header on its next refetch. No deal rows are touched.
+After this request, every deal detail view that uses `custom_column_definitions` will show "Deal Priority" on its next refetch. No deal rows are touched.
 
 #### Example Request — update select options
 
@@ -925,8 +932,8 @@ The frontend should:
    > 7 deals currently have a value for "Priority". To delete the column, you need to remove its value from those deals first.
    >
    > [Show the 7 deals →]   [Cancel]
-3. The "Show the 7 deals" button should navigate to the deals list filtered by `properties->priority IS NOT NULL` (or whatever the deals API supports for filtering by custom column presence).
-4. After the user clears the values, they can come back and retry the delete.
+3. The "Show the 7 deals" button should use a future custom-column usage endpoint or a backend-supported custom-field filter when one exists. The current standard deal list API does not support filtering by custom-column presence.
+4. After the user clears the values through `PATCH /users/crm/deals/{deal_id}` with `custom_columns.<key>: null`, they can come back and retry the delete.
 
 This protects users from accidental data loss while giving them a clear path to clean up.
 
@@ -1018,7 +1025,7 @@ This is why the `key` is the load-bearing identifier and the `label` is purely d
 ```python
 # How a value gets written (simplified)
 props: dict[str, Any] = {}
-for key, raw_value in request.custom_properties.items():
+for key, raw_value in request.custom_columns.items():
     definition = custom_fields_by_key.get(key)
     props[key] = self._coerce_custom_value(key=key, raw_value=raw_value, definition=definition)
 deal.properties = props

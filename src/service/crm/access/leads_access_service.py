@@ -216,6 +216,10 @@ class LeadsAccessService:
             deal = await deal_service.create_deal(self._build_deal_payload_from_lead(lead, payload))
         except DealWriteServiceError as exc:
             raise LeadsAccessServiceError(exc.message, exc.status_code) from exc
+        deal.properties = {
+            **(deal.properties or {}),
+            "converted_from_lead_id": str(lead.lead_id),
+        }
 
         copied_count = await self._copy_participants_to_deal(
             lead_participants=participants,
@@ -330,11 +334,9 @@ class LeadsAccessService:
             "primary_contact_name": lead.full_name,
             "primary_contact_email": lead.email,
             "created_via": "lead_conversion",
-            "custom_properties": {
-                **(payload.get("custom_properties") or {}),
-                "converted_from_lead_id": str(lead.lead_id),
-            },
         }
+        if payload.get("custom_properties"):
+            deal_payload["custom_properties"] = payload["custom_properties"]
         if lead.company_name or lead.company_domain or lead.company_website or lead.industry:
             deal_payload["account"] = {
                 "name": lead.company_name,
@@ -368,13 +370,16 @@ class LeadsAccessService:
         now = datetime.now(UTC)
         seen_identities: set[tuple[str, str]] = set()
         for participant in lead_participants:
-            if participant.related_local_id is None:
-                continue
             participant_type = CRMParticipantType(self._enum_value(participant.participant_type))
+            related_email = self._normalize_email(participant.email)
+            if participant.related_local_id is None and not (
+                participant_type == CRMParticipantType.CONTACT and related_email
+            ):
+                continue
             identity_key = self._deal_participant_identity_key(
                 participant_type=participant_type,
                 related_local_id=participant.related_local_id,
-                email=participant.email,
+                email=related_email,
             )
             if identity_key in seen_identities:
                 continue
@@ -388,7 +393,7 @@ class LeadsAccessService:
                     relationship_role=participant.relationship_role,
                     related_local_id=participant.related_local_id,
                     related_name=participant.name,
-                    related_email=self._normalize_email(participant.email),
+                    related_email=related_email,
                     synced_at=now,
                     source_modified_at=now,
                     last_seen_at=now,

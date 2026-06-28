@@ -621,6 +621,55 @@ async def test_update_contact_stores_linkedin_url_in_profile_column_without_comm
 
 
 @pytest.mark.asyncio
+async def test_update_contact_rejects_existing_linkedin_url_change() -> None:
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+        linkedin_url="https://linkedin.com/in/jane",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+
+    service = ContactWriteService(session, org_id)
+
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.update_contact(
+            contact.contact_id,
+            {"linkedin_url": "https://linkedin.com/in/jane-new"},
+        )
+
+    assert exc.value.status_code == 400
+    assert contact.linkedin_url == "https://linkedin.com/in/jane"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_contact_rejects_existing_linkedin_url_clear() -> None:
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+        linkedin_url="https://linkedin.com/in/jane",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+
+    service = ContactWriteService(session, org_id)
+
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.update_contact(contact.contact_id, {"linkedin_url": None})
+
+    assert exc.value.status_code == 400
+    assert contact.linkedin_url == "https://linkedin.com/in/jane"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_update_contact_actor_context_does_not_overwrite_owner() -> None:
     org_id = uuid4()
     original_owner_id = uuid4()

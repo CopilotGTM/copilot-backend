@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-26
+> Last Updated: 2026-06-27
 
 ---
 
@@ -333,11 +333,32 @@ export interface ContactProfileEnrichment {
   data: Record<string, unknown>;
 }
 
+export interface ContactDetailFieldDefinition {
+  key: string;                        // Field path in ContactDetail, e.g. "company.name"
+  label: string;                      // Display label for Get Details
+  data_type: string;                  // string, email, phone, url, uuid, datetime, boolean, object, etc.
+  order: number;                      // Ascending display order
+  section: string;                    // contact, account, owner, location, activity, research, enrichment
+  filter_control: string;             // text, select, date_range, boolean, link, people, etc.
+  editable: boolean;                  // Whether normal inline edit is allowed
+  patch_field: keyof UpdateContactRequest | null;
+  edit_control: string | null;        // text, email, phone, url, account_picker, textarea, etc.
+  edit_policy:
+    | "always"
+    | "set_if_empty"
+    | "set_once"
+    | "advanced_override"
+    | "read_only"
+    | "related_entity";
+  locked_reason?: string | null;      // Why the field is read-only in normal UI
+}
+
 /**
  * Page-ready contact detail returned by GET /contacts/{contact_id}.
  * The response is flat for contact fields and nests only real related objects.
  */
 export interface ContactDetail {
+  detail_field_definitions: ContactDetailFieldDefinition[];
   contact_id: UUID;
   first_name: string | null;
   last_name: string | null;
@@ -881,6 +902,34 @@ Page-ready contact detail for the contact overview page. The response includes f
   "status": "SUCCESS",
   "message": "Contact retrieved",
   "data": {
+    "detail_field_definitions": [
+      {
+        "key": "full_name",
+        "label": "Name",
+        "data_type": "string",
+        "order": 1,
+        "section": "contact",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "full_name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      },
+      {
+        "key": "job_title",
+        "label": "Job title",
+        "data_type": "string",
+        "order": 2,
+        "section": "contact",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "job_title",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      }
+    ],
     "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "first_name": "John",
     "last_name": "Doe",
@@ -972,13 +1021,160 @@ Page-ready contact detail for the contact overview page. The response includes f
 
 **Notes:**
 
-- `deal_count` equals the length of `deal_involvement` array
+- `detail_field_definitions` is the ordered metadata for the contact "Get Details" panel. Use `order` ascending and hide null/empty field values by default.
+- `detail_field_definitions[].key` is a dotted path into `ContactDetail` for nested fields such as `company.name`, `owner.email`, or `research_summary.summary`.
+- `deal_count` equals the length of `deal_involvement` array. Keep it as a top-level summary metric near the related-deals section; it is intentionally not repeated in `detail_field_definitions`.
+- Contact detail does not return `pipeline_value`. Pipeline value belongs to account/deal rollups, not the contact "Get Details" scalar field map.
 - `relationship_role` comes from the contact participant's `relationship_role`
 - `deal_involvement` is intentionally compact for the contact right panel. It requires one participant-to-deal join and does not include stakeholder fields such as `stance`, `decision_power`, `temperature`, or research.
 - `company` is resolved using explicit account linkage first, then email-domain matching for display fallback.
 - `linkedin_url` is returned from the top-level contact profile field, with a legacy `properties.linkedin_url` fallback.
 - `research_summary.summary` comes from contact-level research (`crm_contacts.contact_research`).
 - `profile_enrichment.data` contains structured provider/enrichment data and may be an empty object.
+
+#### Ordered Get Details Metadata
+
+The backend returns the following predefined field definitions in `detail_field_definitions`.
+The frontend should render by `order` ascending. Fields with no value can be hidden in the default view.
+`deal_count` and `pipeline_value` are not included in this metadata: `deal_count` is already represented by `deal_involvement`, and contact detail has no `pipeline_value` field.
+
+| Order | `key` | Label | `data_type` | `filter_control` | `editable` | `patch_field` | `edit_control` | `edit_policy` |
+|---:|---|---|---|---|---|---|---|---|
+| 1 | `full_name` | Name | `string` | `text` | true | `full_name` | `text` | `always` |
+| 2 | `job_title` | Job title | `string` | `text` | true | `job_title` | `text` | `always` |
+| 3 | `email` | Email | `email` | `email` | dynamic | `email` | `email` | `set_if_empty` |
+| 4 | `additional_emails` | Additional emails | `array<email>` | `chips` | false | null | null | `read_only` |
+| 5 | `phone` | Phone | `phone` | `phone` | true | `phone` | `phone` | `always` |
+| 6 | `mobile_phone` | Mobile | `phone` | `phone` | true | `mobile_phone` | `phone` | `always` |
+| 7 | `linkedin_url` | LinkedIn | `url` | `link` | dynamic | `linkedin_url` | `url` | `set_if_empty` |
+| 8 | `website` | Website | `url` | `link` | false | null | null | `read_only` |
+| 9 | `lifecycle_stage` | Lifecycle stage | `string` | `select` | false | null | null | `read_only` |
+| 10 | `lead_status` | Lead status | `string` | `select` | false | null | null | `read_only` |
+| 11 | `marketing_status` | Marketing status | `string` | `select` | false | null | null | `read_only` |
+| 12 | `source` | Source | `string` | `select` | false | null | null | `read_only` |
+| 13 | `company.id` | Account ID | `uuid` | `link` | dynamic | `company_id` | `account_picker` | `set_once` |
+| 14 | `company.name` | Account | `string` | `account_link` | false | null | null | `related_entity` |
+| 15 | `company.domain` | Account domain | `string` | `text` | false | null | null | `related_entity` |
+| 16 | `company.website` | Account website | `url` | `link` | false | null | null | `related_entity` |
+| 17 | `company.industry` | Account industry | `string` | `select` | false | null | null | `related_entity` |
+| 18 | `company.linkedin_url` | Account LinkedIn | `url` | `link` | false | null | null | `related_entity` |
+| 19 | `company.country` | Account country | `string` | `select` | false | null | null | `related_entity` |
+| 20 | `owner.id` | Owner ID | `uuid` | `link` | false | null | null | `read_only` |
+| 21 | `owner.name` | Owner | `string` | `people` | false | null | null | `read_only` |
+| 22 | `owner.email` | Owner email | `email` | `email` | false | null | null | `read_only` |
+| 23 | `address` | Address | `string` | `text` | false | null | null | `read_only` |
+| 24 | `city` | City | `string` | `select` | false | null | null | `read_only` |
+| 25 | `state` | State | `string` | `select` | false | null | null | `read_only` |
+| 26 | `postal_code` | Postal code | `string` | `text` | false | null | null | `read_only` |
+| 27 | `country` | Country | `string` | `select` | false | null | null | `read_only` |
+| 28 | `timezone` | Timezone | `string` | `select` | false | null | null | `read_only` |
+| 29 | `last_contacted_at` | Last contacted | `datetime` | `date_range` | false | null | null | `read_only` |
+| 30 | `last_activity_at` | Last activity | `datetime` | `date_range` | false | null | null | `read_only` |
+| 31 | `source_created_at` | CRM created date | `datetime` | `date_range` | false | null | null | `read_only` |
+| 32 | `source_modified_at` | CRM modified date | `datetime` | `date_range` | false | null | null | `read_only` |
+| 33 | `research_summary.summary` | Research summary | `markdown` | `text` | false | null | null | `read_only` |
+| 34 | `research_summary.last_researched_at` | Last researched | `datetime` | `date_range` | false | null | null | `read_only` |
+| 35 | `profile_enrichment.is_enriched` | Profile enriched | `boolean` | `boolean` | false | null | null | `read_only` |
+| 36 | `profile_enrichment.source` | Enrichment source | `string` | `select` | false | null | null | `read_only` |
+| 37 | `profile_enrichment.enriched_at` | Enriched at | `datetime` | `date_range` | false | null | null | `read_only` |
+| 38 | `profile_enrichment.data` | Enrichment data | `object` | `advanced` | false | null | null | `read_only` |
+
+#### Contact Editability Policy
+
+Enterprise CRM systems usually separate field visibility from field editability. Field-level security
+and property permissions decide who can edit a field, while system fields and calculated/enrichment
+fields are commonly read-only or governed. Salesforce documents field-level security as the place
+to control field access, HubSpot supports property-level restrictions, and Dataverse has column-level
+security for sensitive fields. Apply the same idea here: `filter_control` is for list/detail filtering;
+editability belongs beside it in field metadata, not inside filters.
+
+Research references used for this policy:
+[Salesforce FieldPermissions](https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/sforce_api_objects_fieldpermissions.htm),
+[HubSpot CRM properties](https://developers.hubspot.com/docs/api-reference/crm-properties-v3/guide),
+and [Microsoft Dataverse column-level security](https://learn.microsoft.com/en-us/power-platform/admin/field-level-security).
+
+Returned metadata shape:
+
+```json
+{
+  "key": "linkedin_url",
+  "label": "LinkedIn",
+  "data_type": "url",
+  "order": 7,
+  "section": "contact",
+  "filter_control": "link",
+  "editable": true,
+  "patch_field": "linkedin_url",
+  "edit_control": "url",
+  "edit_policy": "set_if_empty",
+  "locked_reason": "Existing LinkedIn URL is treated as verified profile identity."
+}
+```
+
+Do not add a separate frontend-only editability map long term. The scalable contract is one metadata
+array per detail page where each field has display, filter, and edit hints.
+
+##### Sales-Rep Editing Principles
+
+- Sales reps should be able to correct obvious profile gaps that block outreach: missing name, title,
+  phone, mobile phone, LinkedIn URL, and account link.
+- Identity fields should be protected once set. Email and account linkage drive dedupe, stakeholder
+  matching, activity matching, and account routing, so normal inline edit should not rewrite them.
+- Verified enrichment should be preserved. If a LinkedIn URL or enrichment field exists from a trusted
+  enrichment/source workflow, show it as locked in normal edit mode. Offer a separate "request correction"
+  or advanced override flow later if product wants that.
+- Related entity fields are edited on their own records. `company.name`, `company.domain`, owner fields,
+  deal involvement, and research/enrichment metadata should not be patched through contact update.
+- Backend remains the trust boundary. The frontend may hide controls, but `PATCH /contacts/{id}` must
+  continue enforcing identity rules.
+
+##### Current PATCH Behavior vs Recommended UI Policy
+
+| Detail key | PATCH field | Current backend behavior | Recommended normal UI policy | Reason |
+|---|---|---|---|---|
+| `full_name` | `full_name` | Editable | Editable | Reps often know the correct display name. |
+| `first_name` / `last_name` | `first_name`, `last_name` | Editable, not shown as primary detail rows | Editable only in an expanded name editor | Preserve simple display while allowing clean name fixes. |
+| `job_title` | `job_title` | Editable | Editable | Title changes are common and useful for sales context. |
+| `email` | `email` | Set only when current email is null; changing existing email returns `400` | Set if empty only | Email is an identity/dedupe key and matching input. |
+| `additional_emails` | none | Read-only through current contact PATCH | Read-only until a dedicated secondary-email flow exists | Needs dedupe and primary/secondary semantics. |
+| `phone` | `phone` | Editable | Editable | Low-risk outreach field. |
+| `mobile_phone` | `mobile_phone` | Editable | Editable | Low-risk outreach field. |
+| `linkedin_url` | `linkedin_url` | Set only when current LinkedIn URL is null; changing or clearing an existing URL returns `400` | Set if empty by default; lock existing values in normal UI | Treat profile URL as identity. Existing verified/enriched value should not be casually overwritten. |
+| `website` | none in `UpdateContactRequest` | Ignored by PATCH if sent through typed API clients | Read-only for now | Low sales value on a person record; use account website. |
+| `lifecycle_stage` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only until lifecycle workflow is defined | Lifecycle changes should be governed. |
+| `lead_status` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only until sales-status workflow is defined | Avoid unsourced qualification churn. |
+| `marketing_status` | none in `UpdateContactRequest` | Not exposed in typed update request | Read-only | Subscription/marketing consent should be governed. |
+| `company.id` / `company.name` | `company_id` | `company_id` can be set once if null, contact has email, and account exists; cannot unlink/change | Set once via account picker; then read-only | Account link affects routing and rollups. Company name edits belong to account API. |
+| `company.domain`, `company.website`, `company.industry`, `company.linkedin_url`, `company.country` | none | Read-only through contact PATCH | Related entity | Edit through account detail/update APIs. |
+| `owner.*` | none | Read-only through contact PATCH | Read-only until assignment API exists | Owner changes need assignment/audit semantics. |
+| Location fields: `address`, `city`, `state`, `postal_code`, `country`, `timezone` | same field names | Accepted by current write service if sent, though not listed as primary update fields | Editable only after product confirms sales value | Useful in some CRMs, but noisy for normal rep workflows. |
+| Activity/system dates | none | Read-only | Read-only | Generated from CRM sync/activity systems. |
+| `research_summary.*` | none | Read-only through contact PATCH | Read-only | AI/research output, not manually patched profile data. |
+| `profile_enrichment.*` | none | Read-only through contact PATCH | Read-only | Provider/enrichment output; manual edits should go to first-class contact fields. |
+| `deal_involvement[]` | none | Managed by add-to-deal/participant APIs | Related entity | Use `POST /contacts/{contact_id}/add-to-deal` and stakeholder APIs. |
+
+##### Proposed `edit_policy` Values
+
+| Value | Meaning | Contact examples |
+|---|---|---|
+| `always` | Inline edit can be shown whenever user has contact edit permission | `full_name`, `job_title`, `phone`, `mobile_phone` |
+| `set_if_empty` | Show edit when the current value is null/empty; lock normal edit after a value exists | `email`, `linkedin_url` |
+| `set_once` | Can be selected once, then cannot be changed/unlinked in normal flow | `company.id` via `company_id` |
+| `advanced_override` | Hide from normal edit; future admin/audited override only | Existing verified `linkedin_url`, if product wants correction flow |
+| `read_only` | Never editable through contact PATCH | sync dates, research, enrichment, owner fields today |
+| `related_entity` | Navigate to another API/page to edit | account fields, deal involvement |
+
+##### LinkedIn URL Recommendation
+
+For sales reps, missing LinkedIn blocks research and outreach, so filling it should be easy. Replacing an
+existing LinkedIn URL is different: it can break identity matching and overwrite enrichment. The recommended
+UI policy is:
+
+1. If `linkedin_url` is null: show inline "Add LinkedIn" and PATCH `linkedin_url`.
+2. If `linkedin_url` exists: show it as a link, not a normal text input.
+3. If the rep says it is wrong: use a future explicit correction flow with a reason, audit event, and ideally
+   source confidence comparison. Until that exists, normal UI should not offer overwrite and the backend
+   rejects normal overwrite/clear requests.
 
 #### Error Responses
 
@@ -1060,7 +1256,7 @@ All fields optional. Only include fields to update.
 | `job_title` | string | — | Job title |
 | `phone` | string | — | Phone number |
 | `mobile_phone` | string | — | Mobile phone number |
-| `linkedin_url` | string | — | LinkedIn URL (stored in `properties` JSONB, not a top-level column) |
+| `linkedin_url` | string | Can only be set when currently null | LinkedIn URL stored as a first-class contact profile field. Changing or clearing an existing URL returns `400`. |
 | `company_name` | string | — | Company name string |
 | `company_id` | UUID | Must reference an existing account, contact must not already be linked, contact must have an email | Explicit account link — **set once**. When set, validates the account exists and updates `company_name` from the account. |
 
@@ -1083,6 +1279,15 @@ All fields optional. Only include fields to update.
 | `null` (no email) | Send duplicate email | `409` — email already exists on another contact |
 | Has existing email | Send `email` in body | `400` — cannot change an existing email |
 | Has existing email | Omit `email` from body | No change (other fields update normally) |
+
+**LinkedIn URL field rules:**
+
+| Contact's current LinkedIn URL | Action | Result |
+|-------------------------------|--------|--------|
+| `null` | Send `linkedin_url` in body | LinkedIn URL is set |
+| Has existing LinkedIn URL | Send a different `linkedin_url` | `400` — cannot change an existing LinkedIn URL |
+| Has existing LinkedIn URL | Send `linkedin_url: null` | `400` — cannot change an existing LinkedIn URL |
+| Has existing LinkedIn URL | Omit `linkedin_url` from body | No change (other fields update normally) |
 
 **Frontend implementation:**
 

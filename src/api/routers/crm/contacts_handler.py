@@ -39,6 +39,7 @@ from src.api.schemas.crm_contact_models import (
     ContactsPage,
     CreateContactRequest,
     UpdateContactRequest,
+    contact_detail_field_definitions,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
@@ -446,6 +447,7 @@ async def get_contact_detail(
             )
 
         data = ContactDetail(
+            detail_field_definitions=contact_detail_field_definitions(contact),
             contact_id=contact.contact_id,
             first_name=contact.first_name,
             last_name=contact.last_name,

@@ -33,6 +33,17 @@ _CURSOR_NAME_KEY = "name"
 _CURSOR_ID_KEY = "deal_id"
 
 
+def _deal_search_cursor_name_key(name: str | None, company_name: str | None) -> str:
+    return ((name or "").strip() or (company_name or "").strip()).lower()
+
+
+def _normalize_deal_search_query(q: str | None) -> str | None:
+    if q is None:
+        return None
+    value = q.strip().lower()
+    return value or None
+
+
 def _encode_deal_search_cursor(name_key: str | None, deal_id: UUID) -> str:
     payload = {
         _CURSOR_NAME_KEY: (name_key or "").strip().lower(),
@@ -112,6 +123,8 @@ class DealReadService:
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
         max_close_date: datetime | None = None,
+        min_expected_close_date: datetime | None = None,
+        max_expected_close_date: datetime | None = None,
         q: str | None = None,
     ) -> tuple[list[CRMDeal], int]:
         """List deals with pagination and filters.
@@ -124,8 +137,10 @@ class DealReadService:
             owner_ids: Optional list of internal owner IDs to filter
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
-            min_close_date: Optional minimum close date
-            max_close_date: Optional maximum close date
+            min_close_date: Optional minimum actual close date
+            max_close_date: Optional maximum actual close date
+            min_expected_close_date: Optional minimum forecast close date
+            max_expected_close_date: Optional maximum forecast close date
             q: Optional search query for deal name (case-insensitive)
 
         Returns:
@@ -141,6 +156,7 @@ class DealReadService:
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
         )
+        search_query = _normalize_deal_search_query(q)
 
         # Apply filters
         if statuses:
@@ -165,9 +181,15 @@ class DealReadService:
         if max_close_date:
             stmt = stmt.where(c.close_date <= max_close_date)
 
-        if q:
+        if min_expected_close_date:
+            stmt = stmt.where(c.expected_close_date >= min_expected_close_date)
+
+        if max_expected_close_date:
+            stmt = stmt.where(c.expected_close_date <= max_expected_close_date)
+
+        if search_query:
             # Case-insensitive search on deal name and company name
-            like_expr = f"%{q.lower()}%"
+            like_expr = f"%{search_query}%"
             stmt = stmt.where(or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr)))
 
         if page < 1:
@@ -202,8 +224,14 @@ class DealReadService:
         if max_close_date:
             count_stmt = count_stmt.where(c.close_date <= max_close_date)
 
-        if q:
-            like_expr = f"%{q.lower()}%"
+        if min_expected_close_date:
+            count_stmt = count_stmt.where(c.expected_close_date >= min_expected_close_date)
+
+        if max_expected_close_date:
+            count_stmt = count_stmt.where(c.expected_close_date <= max_expected_close_date)
+
+        if search_query:
+            like_expr = f"%{search_query}%"
             count_stmt = count_stmt.where(
                 or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr))
             )
@@ -236,14 +264,17 @@ class DealReadService:
     ) -> tuple[list[CRMDeal], str | None]:
         """Return lightweight deal rows for picker and browse search."""
         c = cast(Any, CRMDeal).__table__.c
-        name_key = func.lower(func.coalesce(c.name, c.company_name, ""))
+        name_key = func.lower(
+            func.coalesce(func.nullif(func.trim(c.name), ""), func.trim(c.company_name), "")
+        )
 
         filters = [
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
         ]
-        if q and q.strip():
-            like_expr = f"%{q.strip().lower()}%"
+        search_query = _normalize_deal_search_query(q)
+        if search_query:
+            like_expr = f"%{search_query}%"
             filters.append(or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr)))
 
         if cursor:
@@ -269,7 +300,10 @@ class DealReadService:
         next_cursor = None
         if has_more and items:
             last = items[-1]
-            next_cursor = _encode_deal_search_cursor(last.name or last.company_name, last.deal_id)
+            next_cursor = _encode_deal_search_cursor(
+                _deal_search_cursor_name_key(last.name, last.company_name),
+                last.deal_id,
+            )
 
         return items, next_cursor
 
@@ -283,6 +317,8 @@ class DealReadService:
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
         max_close_date: datetime | None = None,
+        min_expected_close_date: datetime | None = None,
+        max_expected_close_date: datetime | None = None,
         q: str | None = None,
     ) -> list[CRMDeal]:
         """Retrieve all deals without pagination (capped at max_results).
@@ -297,8 +333,10 @@ class DealReadService:
             owner_ids: Optional list of internal owner IDs to filter
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
-            min_close_date: Optional minimum close date
-            max_close_date: Optional maximum close date
+            min_close_date: Optional minimum actual close date
+            max_close_date: Optional maximum actual close date
+            min_expected_close_date: Optional minimum forecast close date
+            max_expected_close_date: Optional maximum forecast close date
             q: Optional search query for deal name (case-insensitive)
 
         Returns:
@@ -313,6 +351,7 @@ class DealReadService:
                 c.organisation_id == self.organisation_id,
                 c.is_deleted.is_(False),
             )
+            search_query = _normalize_deal_search_query(q)
 
             # Apply filters (same logic as list_deals)
             if statuses:
@@ -337,9 +376,15 @@ class DealReadService:
             if max_close_date:
                 stmt = stmt.where(c.close_date <= max_close_date)
 
-            if q:
-                like_expr = f"%{q.lower()}%"
-                stmt = stmt.where(c.name.ilike(like_expr))
+            if min_expected_close_date:
+                stmt = stmt.where(c.expected_close_date >= min_expected_close_date)
+
+            if max_expected_close_date:
+                stmt = stmt.where(c.expected_close_date <= max_expected_close_date)
+
+            if search_query:
+                like_expr = f"%{search_query}%"
+                stmt = stmt.where(or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr)))
 
             # Order by created_at DESC for consistent results
             stmt = stmt.order_by(
@@ -457,7 +502,9 @@ class DealReadService:
                     "entered_at": row.entered_at,
                     "exited_at": row.exited_at,
                     "duration_days": duration_days,
-                    "amount_at_stage": float(row.amount_at_stage) if row.amount_at_stage else None,
+                    "amount_at_stage": (
+                        float(row.amount_at_stage) if row.amount_at_stage is not None else None
+                    ),
                     "probability_at_stage": row.probability_at_stage,
                     "source": row.source,
                 }
@@ -577,8 +624,12 @@ class DealReadService:
             amount_res = await self.org_session.execute(amount_stmt)
             amount_row = amount_res.one_or_none()
 
-            total_amount = float(amount_row[0]) if amount_row and amount_row[0] else None
-            average_amount = float(amount_row[1]) if amount_row and amount_row[1] else None
+            total_amount = (
+                float(amount_row[0]) if amount_row and amount_row[0] is not None else None
+            )
+            average_amount = (
+                float(amount_row[1]) if amount_row and amount_row[1] is not None else None
+            )
 
             return {
                 "total": total,
@@ -717,14 +768,15 @@ class DealReadService:
                     }
 
             stmt = base_stmt
-            if q:
-                like_expr = f"%{q.lower()}%"
+            owner_query = q.strip().lower() if q else None
+            if owner_query:
+                like_expr = f"%{owner_query}%"
                 conditions = [
                     c.owner_name.ilike(like_expr),
                     c.owner_email.ilike(like_expr),
                 ]
                 with contextlib.suppress(TypeError, ValueError):
-                    conditions.append(c.owner_id == UUID(q))
+                    conditions.append(c.owner_id == UUID(owner_query))
                 stmt = stmt.where(or_(*conditions))
 
             if selected_owner_ids:
@@ -765,10 +817,14 @@ class DealReadService:
 
             crm_user_conditions = [crm_user_columns.user_id == user_id]
             owner_conditions = [deal_columns.owner_id == user_id]
-            if user_email:
-                email_lower = user_email.lower()
-                crm_user_conditions.append(func.lower(crm_user_columns.email) == email_lower)
-                owner_conditions.append(func.lower(deal_columns.owner_email) == email_lower)
+            email_lower = user_email.strip().lower() if user_email else None
+            if email_lower:
+                crm_user_conditions.append(
+                    func.lower(func.trim(crm_user_columns.email)) == email_lower
+                )
+                owner_conditions.append(
+                    func.lower(func.trim(deal_columns.owner_email)) == email_lower
+                )
 
             crm_user_id_stmt = select(crm_user_columns.user_id).where(
                 crm_user_columns.organisation_id == self.organisation_id,

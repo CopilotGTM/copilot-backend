@@ -250,7 +250,7 @@ class TestCreateDealConfirmation:
             amount=99000,
             currency="EUR",
             description="Desc text",
-            close_date="2026-12-31",
+            expected_close_date="2026-12-31",
             priority="high",
             account_name="FullCorp",
             account_domain="fullcorp.com",
@@ -268,10 +268,14 @@ class TestCreateDealConfirmation:
         assert facts_dict["Name"] == "Full Deal"
         assert "99,000" in facts_dict["Amount"]
         assert "EUR" in facts_dict["Amount"]
-        assert facts_dict["Close Date"] == "2026-12-31"
+        assert facts_dict["Expected Close Date"] == "2026-12-31"
         assert facts_dict["Priority"] == "High"
         assert facts_dict["Account"] == "FullCorp"
         assert facts_dict["Description"] == "Desc text"
+
+        confirm_action = card_content["actions"][0]
+        assert confirm_action["data"]["expected_close_date"] == "2026-12-31"
+        assert "close_date" not in confirm_action["data"]
 
     @pytest.mark.asyncio
     @patch("src.agents.tools.crm.create_deal.TeamsBotService")

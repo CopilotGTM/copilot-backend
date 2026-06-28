@@ -4,25 +4,40 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
 
 
-class DealParticipantCreateItem(BaseModel):
+class _StrictParticipantWriteModel(BaseModel):
+    """Base class for participant write payloads that rejects unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DealParticipantCreateItem(_StrictParticipantWriteModel):
     """Participant entry to attach to a deal."""
 
     participant_type: CRMParticipantType
     related_id: UUID
     relationship_role: str | None = None
 
+    @field_validator("relationship_role")
+    @classmethod
+    def normalize_role(cls, v: str | None) -> str | None:
+        """Trim optional relationship roles before creating participant rows."""
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
 
-class DealParticipantsCreateRequest(BaseModel):
+
+class DealParticipantsCreateRequest(_StrictParticipantWriteModel):
     """Request payload to add participants to a deal."""
 
-    participants: list[DealParticipantCreateItem] = Field(default_factory=list)
+    participants: list[DealParticipantCreateItem] = Field(min_length=1)
 
 
-class DealParticipantUpdateRequest(BaseModel):
+class DealParticipantUpdateRequest(_StrictParticipantWriteModel):
     """Request payload to update a participant role."""
 
     relationship_role: str | None = None
@@ -30,6 +45,7 @@ class DealParticipantUpdateRequest(BaseModel):
     @field_validator("relationship_role")
     @classmethod
     def normalize_role(cls, v: str | None) -> str | None:
+        """Trim role updates while preserving explicit null clears."""
         if v is None:
             return None
         value = v.strip()

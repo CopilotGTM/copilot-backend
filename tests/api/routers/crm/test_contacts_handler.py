@@ -569,6 +569,72 @@ async def test_get_contact_detail_returns_page_ready_contract() -> None:
     )
 
     dumped = result.data.model_dump()  # type: ignore[union-attr]
+    detail_fields = dumped["detail_field_definitions"]
+    assert detail_fields[0] == {
+        "key": "full_name",
+        "label": "Name",
+        "data_type": "string",
+        "order": 1,
+        "section": "contact",
+        "filter_control": "text",
+        "editable": True,
+        "patch_field": "full_name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": None,
+    }
+    fields_by_key = {field["key"]: field for field in detail_fields}
+    assert fields_by_key["email"] == {
+        "key": "email",
+        "label": "Email",
+        "data_type": "email",
+        "order": 3,
+        "section": "contact",
+        "filter_control": "email",
+        "editable": False,
+        "patch_field": "email",
+        "edit_control": "email",
+        "edit_policy": "set_if_empty",
+        "locked_reason": "Existing email is used for dedupe and activity matching.",
+    }
+    assert fields_by_key["linkedin_url"] == {
+        "key": "linkedin_url",
+        "label": "LinkedIn",
+        "data_type": "url",
+        "order": 7,
+        "section": "contact",
+        "filter_control": "link",
+        "editable": False,
+        "patch_field": "linkedin_url",
+        "edit_control": "url",
+        "edit_policy": "set_if_empty",
+        "locked_reason": "Existing LinkedIn URL is treated as verified profile identity.",
+    }
+    assert fields_by_key["company.id"] == {
+        "key": "company.id",
+        "label": "Account ID",
+        "data_type": "uuid",
+        "order": 13,
+        "section": "account",
+        "filter_control": "link",
+        "editable": False,
+        "patch_field": "company_id",
+        "edit_control": "account_picker",
+        "edit_policy": "set_once",
+        "locked_reason": "Account link is set once and cannot be changed from contact detail.",
+    }
+    assert [field["key"] for field in detail_fields[:5]] == [
+        "full_name",
+        "job_title",
+        "email",
+        "additional_emails",
+        "phone",
+    ]
+    assert "deal_count" not in fields_by_key
+    assert "pipeline_value" not in fields_by_key
+    assert [field["order"] for field in detail_fields] == sorted(
+        field["order"] for field in detail_fields
+    )
     assert dumped["company"] == {
         "id": company_id,
         "name": "LemonEdge",
@@ -607,3 +673,49 @@ async def test_get_contact_detail_returns_page_ready_contract() -> None:
     assert "stakeholder_summary" not in dumped
     assert "stance" not in dumped["deal_involvement"][0]
     assert "decision_power" not in dumped["deal_involvement"][0]
+
+
+@pytest.mark.asyncio
+async def test_get_contact_detail_allows_safe_missing_identity_fields_to_be_set() -> None:
+    org_id = uuid4()
+    contact_id = uuid4()
+    now = datetime(2026, 6, 20, 15, 45, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        full_name="Unknown Buyer",
+        email=None,
+        linkedin_url=None,
+        company_id=None,
+        created_at=now,
+        updated_at=now,
+        synced_at=now,
+    )
+    service = _FakeContactDetailService(
+        {
+            "contact": contact,
+            "source": "manual",
+            "company": None,
+            "owner": None,
+            "deals": [],
+        }
+    )
+
+    result = await get_contact_detail(
+        contact_id=contact_id,
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        _rl_read=None,
+    )
+
+    fields_by_key = {
+        field["key"]: field
+        for field in result.data.model_dump()["detail_field_definitions"]  # type: ignore[union-attr]
+    }
+    assert fields_by_key["email"]["editable"] is True
+    assert fields_by_key["email"]["locked_reason"] is None
+    assert fields_by_key["linkedin_url"]["editable"] is True
+    assert fields_by_key["linkedin_url"]["locked_reason"] is None
+    assert fields_by_key["company.id"]["editable"] is False
+    assert fields_by_key["company.id"]["locked_reason"] == "Add an email before linking an account."

@@ -11,7 +11,7 @@ import pytest
 from fastapi import Response as FastAPIResponse
 from fastapi.testclient import TestClient
 from src.api.routers.crm import deals_handler as deals_handler_module
-from src.api.schemas.crm_deal_write_models import DealCreateRequest
+from src.api.schemas.crm_deal_write_models import DealCreateRequest, DealUpdateRequest
 from src.api.schemas.crm_models import DealsListParams
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 
@@ -20,6 +20,97 @@ from tests.api.routers.crm.conftest import (
     FakeDealJob,
     create_deal,
 )
+
+
+def test_deal_write_response_includes_updated_business_fields() -> None:
+    """Write endpoints should return the fields a refreshed row/detail needs."""
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        amount=125000.0,
+        predicted_amount=81250.0,
+        currency="inr",
+        probability=65.0,
+        forecast_category="Commit",
+        pipeline_id=uuid4(),
+        pipeline_name="Enterprise",
+        pipeline_label="Enterprise Pipeline",
+        stage_id=uuid4(),
+        stage_name="Proposal",
+        stage_label="Proposal Stage",
+        deal_status=CRMDealStatus.OPEN,
+        owner_id=uuid4(),
+        owner_name="Ada Owner",
+        owner_email="ada@example.com",
+        company_id=uuid4(),
+        company_name="Acme Corp",
+        company_domain="acme.com",
+        company_industry="Manufacturing",
+        company_website="https://acme.com",
+        company_linkedin_url="https://linkedin.com/company/acme",
+        company_country="United States",
+        primary_contact_id=uuid4(),
+        primary_contact_name="Jane Buyer",
+        primary_contact_email="jane@acme.com",
+        source_created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        close_date=datetime(2026, 3, 1, tzinfo=UTC),
+        expected_close_date=datetime(2026, 3, 15, tzinfo=UTC),
+        closed_won_at=datetime(2026, 3, 2, tzinfo=UTC),
+        closed_lost_at=None,
+        closed_reason="Signed annual agreement",
+        stage_entered_at=datetime(2026, 2, 1, tzinfo=UTC),
+        stage_updated_at=datetime(2026, 2, 2, tzinfo=UTC),
+        description="Enterprise expansion",
+        deal_type="Expansion",
+        priority="High",
+        lead_source="Referral",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+        synced_at=datetime(2026, 1, 2, 1, tzinfo=UTC),
+    )
+
+    response = deals_handler_module._map_deal_write_response(deal).model_dump()
+
+    assert response["amount"] == 125000.0
+    assert response["predicted_amount"] == 81250.0
+    assert response["currency"] == "INR"
+    assert response["currency_symbol"] == "₹"
+    assert response["deal_status"] == "open"
+    assert response["probability"] == 65.0
+    assert response["forecast_category"] == "Commit"
+    assert response["pipeline_name"] == "Enterprise"
+    assert response["pipeline_label"] == "Enterprise Pipeline"
+    assert response["stage_name"] == "Proposal"
+    assert response["stage_label"] == "Proposal Stage"
+    assert response["owner_user_id"] == deal.owner_id
+    assert response["owner_name"] == "Ada Owner"
+    assert response["owner_email"] == "ada@example.com"
+    assert response["owner_details"] == [
+        {
+            "owner_id": deal.owner_id,
+            "name": "Ada Owner",
+            "email": "ada@example.com",
+        }
+    ]
+    assert response["is_internal"] is True
+    assert response["company_industry"] == "Manufacturing"
+    assert response["company_website"] == "https://acme.com"
+    assert response["company_linkedin_url"] == "https://linkedin.com/company/acme"
+    assert response["company_country"] == "United States"
+    assert response["primary_contact_id"] == deal.primary_contact_id
+    assert response["primary_contact_name"] == "Jane Buyer"
+    assert response["primary_contact_email"] == "jane@acme.com"
+    assert response["source_created_at"] == datetime(2026, 1, 1, tzinfo=UTC)
+    assert response["closed_won_at"] == datetime(2026, 3, 2, tzinfo=UTC)
+    assert response["closed_lost_at"] is None
+    assert response["closed_reason"] == "Signed annual agreement"
+    assert response["stage_entered_at"] == datetime(2026, 2, 1, tzinfo=UTC)
+    assert response["stage_updated_at"] == datetime(2026, 2, 2, tzinfo=UTC)
+    assert response["deal_type"] == "Expansion"
+    assert response["priority"] == "High"
+    assert response["lead_source"] == "Referral"
+    assert response["description"] == "Enterprise expansion"
+    assert response["synced_at"] == datetime(2026, 1, 2, 1, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -66,7 +157,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     )
     dispatch_research = AsyncMock(return_value=None)
 
-    class FakeStakeholdersService:
+    class FakeStakeholderWriteService:
         def __init__(self, session_arg, organisation_id, actor_user_id):
             assert session_arg is session
             assert organisation_id == write_service.organisation_id
@@ -92,8 +183,8 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
 
     monkeypatch.setattr(
         deals_handler_module,
-        "StakeholdersService",
-        FakeStakeholdersService,
+        "StakeholderWriteService",
+        FakeStakeholderWriteService,
     )
     monkeypatch.setattr(
         deals_handler_module,
@@ -135,9 +226,154 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         deal_id=deal.deal_id,
         user_id=write_service.actor_user_id,
     )
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
     session.refresh.assert_awaited_once_with(deal)
+    create_payload = write_service.create_deal.await_args.args[0]
+    assert "contact_participants" not in create_payload
     assert response.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_create_deal_accepts_primary_contact_snapshot() -> None:
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        deal_status="open",
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        primary_contact_name="Jane Buyer",
+        primary_contact_email="jane@acme.com",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    session = SimpleNamespace(
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    write_service = SimpleNamespace(
+        session=session,
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+        create_deal=AsyncMock(return_value=deal),
+    )
+
+    response = await deals_handler_module.create_deal(
+        request=DealCreateRequest(
+            name="Acme Deal",
+            primary_contact_name="  Jane Buyer  ",
+            primary_contact_email=" jane@acme.com ",
+        ),
+        response=FastAPIResponse(),
+        service=write_service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    write_service.create_deal.assert_awaited_once()
+    payload = write_service.create_deal.await_args.args[0]
+    assert payload["primary_contact_name"] == "Jane Buyer"
+    assert payload["primary_contact_email"] == "jane@acme.com"
+    assert response.status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
+    monkeypatch,
+) -> None:
+    contact_id = uuid4()
+    participant_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        deal_status="open",
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    session = SimpleNamespace(
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    write_service = SimpleNamespace(
+        session=session,
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+        create_deal=AsyncMock(return_value=deal),
+    )
+    stakeholder_service = SimpleNamespace(
+        add_contacts_as_stakeholders=AsyncMock(
+            return_value=SimpleNamespace(
+                total_added=1,
+                added=[SimpleNamespace(participant_id=participant_id)],
+            )
+        ),
+    )
+    dispatch_research = AsyncMock(return_value=None)
+
+    class FakeStakeholderWriteService:
+        def __init__(self, *_args):
+            pass
+
+        async def add_contacts_as_stakeholders(self, deal_id, contact_ids):
+            return await stakeholder_service.add_contacts_as_stakeholders(deal_id, contact_ids)
+
+    class FailingStakeholderJobVisibilityService:
+        def __init__(self, *_args):
+            pass
+
+        async def create_stakeholder_processing_jobs(self, _deal_id, _stakeholder_id):
+            raise RuntimeError("job visibility failed")
+
+    monkeypatch.setattr(
+        deals_handler_module,
+        "StakeholderWriteService",
+        FakeStakeholderWriteService,
+    )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "StakeholderJobVisibilityService",
+        FailingStakeholderJobVisibilityService,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "_dispatch_auto_stakeholder_research",
+        dispatch_research,
+        raising=False,
+    )
+
+    response = await deals_handler_module.create_deal(
+        request=DealCreateRequest(
+            name="Acme Deal",
+            contact_participants=[{"contact_id": str(contact_id)}],
+        ),
+        response=FastAPIResponse(),
+        service=write_service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status == "SUCCESS"
+    assert response.data.deal_id == deal.deal_id
+    session.refresh.assert_awaited_once_with(deal)
+    session.rollback.assert_awaited_once()
+    dispatch_research.assert_awaited_once_with(
+        organisation_id=write_service.organisation_id,
+        participant_id=participant_id,
+        deal_id=deal.deal_id,
+        user_id=write_service.actor_user_id,
+    )
 
 
 # =============================================================================
@@ -304,6 +540,105 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     assert item["owner_details"][0]["name"] == "John Sales"
 
 
+def test_list_deals_search_matches_company_name(client: TestClient, deals_dependency_overrides):
+    """Router test fake should mirror production q search across deal and company names."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deals_service.add_deal(create_deal(org_id, name="Renewal", company_name="Acme Corp"))
+    deals_service.add_deal(create_deal(org_id, name="Unrelated", company_name="Globex"))
+
+    resp = client.get("/users/crm/deals", params={"q": " acme "})
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["data"]["items"]
+    assert [item["company_name"] for item in items] == ["Acme Corp"]
+
+
+def test_list_deals_filters_by_expected_close_date(client: TestClient, deals_dependency_overrides):
+    """Forecast close-date filters should use expected_close_date, not actual close_date."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="July Forecast",
+            expected_close_date=datetime(2026, 7, 15, tzinfo=UTC),
+            close_date=None,
+        )
+    )
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="August Forecast",
+            expected_close_date=datetime(2026, 8, 15, tzinfo=UTC),
+            close_date=None,
+        )
+    )
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Actually Closed In July",
+            expected_close_date=datetime(2026, 8, 15, tzinfo=UTC),
+            close_date=datetime(2026, 7, 10, tzinfo=UTC),
+        )
+    )
+
+    resp = client.get(
+        "/users/crm/deals",
+        params={
+            "min_expected_close_date": "2026-07-01T00:00:00Z",
+            "max_expected_close_date": "2026-07-31T23:59:59Z",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = [item["name"] for item in resp.json()["data"]["items"]]
+    assert names == ["July Forecast"]
+
+
+def test_search_deals_http_uses_seeded_fake_service(client: TestClient, deals_dependency_overrides):
+    """The HTTP search route should work with the standard deals dependency fake."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deals_service.add_deal(create_deal(org_id, name="Renewal", company_name="Acme Corp"))
+    deals_service.add_deal(create_deal(org_id, name="Unrelated", company_name="Globex"))
+
+    resp = client.get("/users/crm/deals/search", params={"q": "acme", "limit": 20})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["has_more"] is False
+    assert data["next_cursor"] is None
+    assert [item["company_name"] for item in data["items"]] == ["Acme Corp"]
+
+
+def test_search_deals_http_cursor_returns_next_page(client: TestClient, deals_dependency_overrides):
+    """The HTTP search fake should support the same forward cursor flow as production."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deals_service.add_deal(create_deal(org_id, name="Acme Alpha", company_name="Acme"))
+    deals_service.add_deal(create_deal(org_id, name="Acme Beta", company_name="Acme"))
+
+    first = client.get("/users/crm/deals/search", params={"q": "acme", "limit": 1})
+    assert first.status_code == 200, first.text
+    first_data = first.json()["data"]
+    assert [item["name"] for item in first_data["items"]] == ["Acme Alpha"]
+    assert first_data["has_more"] is True
+    assert first_data["next_cursor"]
+
+    second = client.get(
+        "/users/crm/deals/search",
+        params={"q": "acme", "limit": 1, "cursor": first_data["next_cursor"]},
+    )
+    assert second.status_code == 200, second.text
+    second_data = second.json()["data"]
+    assert [item["name"] for item in second_data["items"]] == ["Acme Beta"]
+    assert second_data["has_more"] is False
+    assert second_data["next_cursor"] is None
+
+
 @pytest.mark.asyncio
 async def test_list_deals_default_includes_crm_only_owner_deals(
     fake_deals_service, test_user_ids, monkeypatch
@@ -337,6 +672,8 @@ async def test_list_deals_default_includes_crm_only_owner_deals(
             max_amount=None,
             min_close_date=None,
             max_close_date=None,
+            min_expected_close_date=None,
+            max_expected_close_date=None,
             q=None,
         ),
         service=fake_deals_service,
@@ -348,16 +685,69 @@ async def test_list_deals_default_includes_crm_only_owner_deals(
 
 
 @pytest.mark.asyncio
-async def test_search_deals_returns_cursor_page() -> None:
+async def test_list_deals_includes_stage_and_pipeline_ids(
+    fake_deals_service, test_user_ids, monkeypatch
+):
+    """List rows should include stable IDs needed for filters and stage actions."""
+    org_id = test_user_ids["organisation_id"]
+    stage_id = uuid4()
+    pipeline_id = uuid4()
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Pipeline Action Deal",
+            predicted_amount=42000.0,
+            stage_id=stage_id,
+            pipeline_id=pipeline_id,
+        )
+    )
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        AsyncMock(return_value={}),
+    )
+
+    result = await deals_handler_module.list_deals(
+        response=FastAPIResponse(),
+        params=DealsListParams(
+            limit=40,
+            page=1,
+            statuses=None,
+            pipeline_ids=None,
+            owner_ids=None,
+            min_amount=None,
+            max_amount=None,
+            min_close_date=None,
+            max_close_date=None,
+            min_expected_close_date=None,
+            max_expected_close_date=None,
+            q=None,
+        ),
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.data.items[0].predicted_amount == 42000.0
+    assert result.data.items[0].stage_id == stage_id
+    assert result.data.items[0].pipeline_id == pipeline_id
+
+
+@pytest.mark.asyncio
+async def test_search_deals_returns_cursor_page(mocker) -> None:
     deal_id = uuid4()
+    integration_id = uuid4()
     now = datetime.now(UTC)
     deal = SimpleNamespace(
         deal_id=deal_id,
+        integration_id=integration_id,
         name="Acme Renewal",
         amount=25000.0,
+        predicted_amount=12500.0,
         currency="usd",
         deal_status="open",
+        stage_id=uuid4(),
         stage_name="Negotiation",
+        pipeline_id=uuid4(),
         pipeline_name="Sales",
         company_id=uuid4(),
         company_name="Acme",
@@ -368,7 +758,15 @@ async def test_search_deals_returns_cursor_page() -> None:
         created_at=now,
         updated_at=now,
     )
-    service = SimpleNamespace(search_deals=AsyncMock(return_value=([deal], "next-token")))
+    service = SimpleNamespace(
+        search_deals=AsyncMock(return_value=([deal], "next-token")),
+        session=object(),
+        organisation_id=uuid4(),
+    )
+    integration_types_mock = mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
 
     result = await deals_handler_module.search_deals(
         response=FastAPIResponse(),
@@ -383,9 +781,41 @@ async def test_search_deals_returns_cursor_page() -> None:
     assert result.status == "SUCCESS"
     assert result.data is not None
     assert result.data.items[0].deal_id == deal_id
+    assert result.data.items[0].predicted_amount == 12500.0
     assert result.data.items[0].currency == "USD"
+    assert result.data.items[0].stage_id == deal.stage_id
+    assert result.data.items[0].pipeline_id == deal.pipeline_id
+    assert result.data.items[0].is_internal is True
     assert result.data.next_cursor == "next-token"
     assert result.data.has_more is True
+    integration_types_mock.assert_awaited_once_with(
+        service.session,
+        service.organisation_id,
+        {integration_id},
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_deals_invalid_cursor_returns_service_status() -> None:
+    service = SimpleNamespace(
+        search_deals=AsyncMock(
+            side_effect=deals_handler_module.DealReadServiceError("Invalid cursor", 400)
+        )
+    )
+    response = FastAPIResponse()
+
+    result = await deals_handler_module.search_deals(
+        response=response,
+        q="acme",
+        limit=20,
+        cursor="not-a-cursor",
+        service=service,
+        _rl_read=None,
+    )
+
+    assert result.status == "ERROR"
+    assert result.message == "Invalid cursor"
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -428,6 +858,34 @@ async def test_list_deal_owners_hydrates_selected_owner_outside_search(
     owner_ids = {owner.owner_id for owner in owners}
     assert selected_owner_id in owner_ids
     assert any(owner.name == "Search Match" for owner in owners)
+
+
+@pytest.mark.asyncio
+async def test_list_deal_owners_trims_search_in_router_fake(fake_deals_service, test_user_ids):
+    org_id = test_user_ids["organisation_id"]
+    owner_id = uuid4()
+
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Whitespace Search Deal",
+            owner_id=owner_id,
+            owner_name="Search Match",
+            owner_email="match@example.com",
+        )
+    )
+
+    result = await deals_handler_module.list_deal_owners(
+        response=FastAPIResponse(),
+        limit=200,
+        q="  match  ",
+        owner_ids=None,
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert [owner.owner_id for owner in result.data.items] == [owner_id]
 
 
 @pytest.mark.asyncio
@@ -480,6 +938,37 @@ async def test_get_current_user_deal_owners_resolves_preselect_owner_ids(
     assert result.status == "SUCCESS"
     owner_ids = {owner.owner_id for owner in result.data.items}
     assert owner_ids == {id_owner_id, email_owner_id}
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_deal_owners_trims_user_email(fake_deals_service, test_user_ids):
+    org_id = test_user_ids["organisation_id"]
+    current_user_id = test_user_ids["user_id"]
+    email_owner_id = uuid4()
+
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Owner Email Match",
+            owner_id=email_owner_id,
+            owner_name="Email Bridge Owner",
+            owner_email="test@example.com",
+        )
+    )
+
+    result = await deals_handler_module.get_current_user_deal_owners(
+        response=FastAPIResponse(),
+        user_ids=SimpleNamespace(
+            user_id=current_user_id,
+            organisation_id=org_id,
+            user_email=" Test@Example.com ",
+        ),
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert [owner.owner_id for owner in result.data.items] == [email_owner_id]
 
 
 def test_list_deals_returns_currency_symbol_and_normalized_code(
@@ -594,11 +1083,34 @@ def test_deals_stats_success(client: TestClient, deals_dependency_overrides):
     body = resp.json()
     data = body["data"]
     assert data["total"] == 3
-    # Status key is the enum value (e.g., "open" or "OPEN")
-    assert data["by_status"].get("OPEN", data["by_status"].get("open", 0)) == 2
-    assert data["by_status"].get("WON", data["by_status"].get("won", 0)) == 1
+    assert data["by_status"] == {"open": 2, "won": 1}
     assert data["total_amount"] == 60000
     assert data["average_amount"] == 20000
+
+
+@pytest.mark.asyncio
+async def test_deals_stats_normalizes_enum_status_keys() -> None:
+    """Stats should expose the same lowercase status values as deal rows."""
+    service = SimpleNamespace(
+        get_deals_stats=AsyncMock(
+            return_value={
+                "total": 2,
+                "by_status": {CRMDealStatus.OPEN: 1, CRMDealStatus.WON: 1},
+                "by_pipeline": {},
+                "total_amount": 1000.0,
+                "average_amount": 500.0,
+            }
+        )
+    )
+
+    result = await deals_handler_module.get_deals_stats(
+        response=FastAPIResponse(),
+        service=service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.data.by_status == {"open": 1, "won": 1}
 
 
 def test_deals_stats_by_pipeline(client: TestClient, deals_dependency_overrides):
@@ -639,8 +1151,202 @@ def test_get_deal_success(client: TestClient, deals_dependency_overrides):
     data = body["data"]
     assert data["name"] == "Test Deal"
     assert str(data["deal_id"]) == str(deal.deal_id)
+    assert data["deal_status"] == "open"
     assert data["currency"] == "USD"
     assert data["currency_symbol"] == "$"
+
+
+@pytest.mark.asyncio
+async def test_get_deal_returns_detail_field_definitions():
+    """Deal detail should advertise the ordered Get Details field/edit contract."""
+    org_id = uuid4()
+    deal = create_deal(org_id, name="Metadata Deal")
+    service = SimpleNamespace(
+        session=None,
+        organisation_id=org_id,
+        get_deal_by_id=AsyncMock(return_value=deal),
+        get_deal_team_members_batch=AsyncMock(return_value={}),
+        get_company_by_id=AsyncMock(return_value=None),
+    )
+    job_service = SimpleNamespace(get_active_deal_jobs_status=AsyncMock(return_value=None))
+
+    result = await deals_handler_module.get_deal(
+        deal_id=deal.deal_id,
+        response=FastAPIResponse(),
+        service=service,
+        deal_job_service=job_service,
+        include_empty_custom_columns=True,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    data = result.data.model_dump()
+    detail_fields = data["detail_field_definitions"]
+    fields_by_key = {field["key"]: field for field in detail_fields}
+
+    assert [field["order"] for field in detail_fields] == list(range(1, 37))
+    assert "custom_columns" not in fields_by_key
+    assert "deal_summary_data" not in fields_by_key
+    assert "active_deal_jobs" not in fields_by_key
+    assert "associated_contact_count" not in fields_by_key
+    assert "associated_company_count" not in fields_by_key
+    assert "note_count" not in fields_by_key
+    assert fields_by_key["name"] == {
+        "key": "name",
+        "label": "Deal name",
+        "data_type": "string",
+        "order": 1,
+        "section": "core",
+        "filter_control": "text",
+        "editable": True,
+        "patch_field": "name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": None,
+    }
+    assert fields_by_key["owner_details"]["editable"] is False
+    assert fields_by_key["owner_details"]["edit_policy"] == "owner_assignment"
+    assert fields_by_key["stage_name"]["edit_policy"] == "stage_action"
+    assert fields_by_key["close_date"]["editable"] is False
+    assert fields_by_key["close_date"]["patch_field"] is None
+    assert fields_by_key["close_date"]["edit_policy"] == "lifecycle_action"
+    assert fields_by_key["company_name"]["edit_policy"] == "account_action"
+    assert fields_by_key["primary_contact_name"]["edit_policy"] == "primary_contact_action"
+    assert fields_by_key["deal_health"]["edit_policy"] == "generated"
+
+
+@pytest.mark.asyncio
+async def test_deal_detail_field_edit_policies_match_write_contracts():
+    """Every predefined detail field should advertise the correct write path."""
+    org_id = uuid4()
+    deal = create_deal(org_id, name="Metadata Deal")
+    service = SimpleNamespace(
+        session=None,
+        organisation_id=org_id,
+        get_deal_by_id=AsyncMock(return_value=deal),
+        get_deal_team_members_batch=AsyncMock(return_value={}),
+        get_company_by_id=AsyncMock(return_value=None),
+    )
+    job_service = SimpleNamespace(get_active_deal_jobs_status=AsyncMock(return_value=None))
+
+    result = await deals_handler_module.get_deal(
+        deal_id=deal.deal_id,
+        response=FastAPIResponse(),
+        service=service,
+        deal_job_service=job_service,
+        include_empty_custom_columns=True,
+        _rl_read=None,
+    )
+
+    fields_by_key = {
+        field["key"]: field
+        for field in result.data.model_dump()["detail_field_definitions"]  # type: ignore[union-attr]
+    }
+
+    assert {key for key, field in fields_by_key.items() if field["edit_policy"] == "always"} == set(
+        DealUpdateRequest.model_fields
+    ) - {"custom_properties", "custom_columns"}
+    assert {
+        key for key, field in fields_by_key.items() if field["edit_policy"] == "account_action"
+    } == {
+        "company_name",
+        "company_domain",
+        "company_industry",
+        "company_website",
+        "company_linkedin_url",
+        "company_country",
+    }
+    assert {
+        key
+        for key, field in fields_by_key.items()
+        if field["edit_policy"] == "primary_contact_action"
+    } == {"primary_contact_name", "primary_contact_email"}
+    assert {
+        key for key, field in fields_by_key.items() if field["edit_policy"] == "stage_action"
+    } == {"deal_status", "stage_name", "pipeline_name"}
+    assert {
+        key for key, field in fields_by_key.items() if field["edit_policy"] == "lifecycle_action"
+    } == {"close_date", "closed_won_at", "closed_lost_at", "closed_reason"}
+    assert {key for key, field in fields_by_key.items() if field["edit_policy"] == "system"} == {
+        "predicted_amount",
+        "deal_age_days",
+        "last_activity_at",
+        "stage_entered_at",
+        "stage_updated_at",
+        "crm_url",
+    }
+
+
+def test_deal_update_request_accepts_all_advertised_inline_fields() -> None:
+    """Inline-editable deal fields must match the public PATCH request model."""
+    editable_patch = {
+        "name": "Updated deal",
+        "amount": 75000.0,
+        "currency": "inr",
+        "source_created_at": datetime(2026, 3, 10, 0, 0, 0, tzinfo=UTC),
+        "expected_close_date": datetime(2026, 4, 15, 0, 0, 0, tzinfo=UTC),
+        "description": "Updated context",
+        "deal_type": "Expansion",
+        "priority": "High",
+        "lead_source": "Referral",
+        "probability": 65,
+        "forecast_category": "Commit",
+    }
+
+    request = DealUpdateRequest(**editable_patch)
+    dumped = request.model_dump(exclude_unset=True)
+
+    assert set(dumped) == set(editable_patch)
+    assert dumped["currency"] == "INR"
+
+
+def test_normalize_deal_status_returns_schema_safe_default() -> None:
+    """Deal response models require a non-null status even for sparse rows."""
+    assert deals_handler_module._normalize_deal_status(None) == "open"
+
+
+@pytest.mark.asyncio
+async def test_update_deal_primary_contact_passes_explicit_clear_intent() -> None:
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        deal_status="open",
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        primary_contact_id=None,
+        primary_contact_name=None,
+        primary_contact_email=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    service = SimpleNamespace(
+        update_primary_contact=AsyncMock(return_value=deal),
+        session=SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
+    )
+
+    result = await deals_handler_module.update_deal_primary_contact(
+        deal_id=deal.deal_id,
+        request=deals_handler_module.DealPrimaryContactUpdateRequest(
+            primary_contact_name=None,
+            primary_contact_email=None,
+        ),
+        response=FastAPIResponse(),
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    service.update_primary_contact.assert_awaited_once_with(
+        deal_id=deal.deal_id,
+        primary_contact_name=None,
+        primary_contact_email=None,
+        clear_primary_contact=True,
+    )
 
 
 def test_get_deal_returns_expanded_detail_fields(client: TestClient, deals_dependency_overrides):
@@ -914,6 +1620,42 @@ def test_get_deal_includes_custom_column_definitions_with_types(
     assert definitions["custom_budget"]["currency_symbol"] == "₹"
 
 
+def test_map_custom_field_definitions_includes_edit_metadata() -> None:
+    """Custom field definitions should say how each custom value can be edited."""
+    mapped = deals_handler_module._map_custom_field_definitions(  # noqa: SLF001
+        [
+            SimpleNamespace(
+                key="custom_budget",
+                label="Budget",
+                data_type="currency",
+                required=False,
+                options={},
+                validation={},
+            ),
+            SimpleNamespace(
+                key="custom_margin",
+                label="Margin",
+                data_type="formula",
+                required=False,
+                options={},
+                validation={},
+            ),
+        ],
+        deal_currency_code="INR",
+    )
+
+    definitions = {item.key: item.model_dump() for item in mapped}
+    assert definitions["custom_budget"]["editable"] is True
+    assert definitions["custom_budget"]["patch_field"] == "custom_columns.custom_budget"
+    assert definitions["custom_budget"]["edit_control"] == "currency"
+    assert definitions["custom_budget"]["edit_policy"] == "custom_columns"
+    assert definitions["custom_budget"]["locked_reason"] is None
+    assert definitions["custom_margin"]["editable"] is False
+    assert definitions["custom_margin"]["patch_field"] is None
+    assert definitions["custom_margin"]["edit_policy"] == "formula"
+    assert definitions["custom_margin"]["locked_reason"] == "Formula custom fields are read-only."
+
+
 def test_get_deal_omits_custom_columns_for_external(
     client: TestClient, deals_dependency_overrides, mocker
 ):
@@ -968,6 +1710,77 @@ def test_get_deal_with_company_industry(client: TestClient, deals_dependency_ove
     body = resp.json()
     data = body["data"]
     assert data["company_industry"] == "Technology"
+
+
+def test_get_deal_uses_deal_company_profile_snapshot_when_company_lookup_misses(
+    client: TestClient, deals_dependency_overrides
+):
+    """Deal detail should not drop profile fields already present on the deal snapshot."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deal = create_deal(
+        org_id,
+        name="Snapshot Company Deal",
+        company_id=uuid4(),
+        company_name="Acme Corp",
+        company_domain="acme.com",
+        company_industry="Manufacturing",
+        company_website="https://acme.com",
+        company_linkedin_url="https://linkedin.com/company/acme",
+        company_country="United States",
+    )
+    deals_service.add_deal(deal)
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["company_industry"] == "Manufacturing"
+    assert data["company_website"] == "https://acme.com"
+    assert data["company_linkedin_url"] == "https://linkedin.com/company/acme"
+    assert data["company_country"] == "United States"
+
+
+def test_get_deal_company_row_nulls_override_stale_deal_profile_snapshot(
+    client: TestClient, deals_dependency_overrides
+):
+    """Linked account clears should not be hidden by older deal snapshot values."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    company_id = uuid4()
+
+    deals_service.add_company(
+        FakeCompany(
+            company_id=company_id,
+            organisation_id=org_id,
+            name="Acme Corp",
+            domain="acme.com",
+            industry=None,
+            website=None,
+            linkedin_url=None,
+            country=None,
+        )
+    )
+    deal = create_deal(
+        org_id,
+        name="Cleared Company Deal",
+        company_id=company_id,
+        company_name="Acme Corp",
+        company_domain="acme.com",
+        company_industry="Old Industry",
+        company_website="https://old.example",
+        company_linkedin_url="https://linkedin.com/company/old",
+        company_country="Old Country",
+    )
+    deals_service.add_deal(deal)
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["company_industry"] is None
+    assert data["company_website"] is None
+    assert data["company_linkedin_url"] is None
+    assert data["company_country"] is None
 
 
 def test_get_deal_with_summary_data(client: TestClient, deals_dependency_overrides):
@@ -1098,38 +1911,6 @@ def test_get_deal_age_calculation(client: TestClient, deals_dependency_overrides
     body = resp.json()
     data = body["data"]
     assert data["deal_age_days"] == 10
-
-
-# =============================================================================
-# POST /process-meetings - Trigger Meeting Processing Tests
-# =============================================================================
-
-
-def test_process_meetings_success(client: TestClient, deals_dependency_overrides, mocker):
-    """Test successfully triggering meeting processing."""
-    mocker.patch(
-        "src.api.routers.crm.deals_handler.send_deal_task_async",
-        return_value="mock-task-id",
-    )
-
-    resp = client.post("/users/crm/process-meetings")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "SUCCESS"
-    assert body["data"]["task_id"] == "mock-task-id"
-
-
-def test_process_meetings_celery_error(client: TestClient, deals_dependency_overrides, mocker):
-    """Test meeting processing when celery fails."""
-    mocker.patch(
-        "src.api.routers.crm.deals_handler.send_deal_task_async",
-        side_effect=Exception("Celery connection failed"),
-    )
-
-    resp = client.post("/users/crm/process-meetings")
-    assert resp.status_code == 500, resp.text
-    body = resp.json()
-    assert body["status"] == "ERROR"
 
 
 # =============================================================================

@@ -310,6 +310,11 @@ class ContactWriteService:
 
         if "linkedin_url" in updates:
             linkedin_url = updates.pop("linkedin_url")
+            if contact.linkedin_url and linkedin_url != contact.linkedin_url:
+                raise ContactWriteServiceError(
+                    "Cannot change an existing LinkedIn URL",
+                    status_code=400,
+                )
             if change := ContactMutationPolicy.changed_field(
                 "linkedin_url", contact.linkedin_url, linkedin_url
             ):

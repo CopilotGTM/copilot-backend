@@ -13,6 +13,14 @@ Lead `status = "converted"` is reserved for
 `POST /users/crm/leads/{lead_id}/convert`. Authenticated lead create/update and
 private ingestion reject `converted` because conversion must also stamp
 `converted_deal_id` and `converted_at`.
+Lead conversion stores the source lead link as system metadata on the created
+deal (`properties.converted_from_lead_id`). It is not sent as
+`custom_properties`, so conversion does not require a matching deal custom field
+definition.
+Lead participants are copied to the created deal when they have a linked local
+record ID or, for contact participants, an email address. Email-only contacts are
+preserved as deal contact participants, and the response's
+`copied_participant_count` reports how many participant rows were copied.
 
 Canonical lead APIs do not expose or accept provider external IDs. Provider and
 migration identities for leads and lead participants are stored in

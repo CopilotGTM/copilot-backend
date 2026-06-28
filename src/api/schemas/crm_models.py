@@ -65,6 +65,7 @@ class DealListItem(BaseModel):
     deal_id: UUID
     name: str | None
     amount: float | None
+    predicted_amount: float | None = None
     currency: str | None
     currency_symbol: str | None = Field(
         None, description="Display symbol derived from currency code (for example $, ₹)."
@@ -73,8 +74,10 @@ class DealListItem(BaseModel):
     probability: float | None
     close_date: datetime | None
     expected_close_date: datetime | None = None
+    stage_id: UUID | None = None
     stage_name: str | None
     stage_label: str | None
+    pipeline_id: UUID | None = None
     pipeline_name: str | None
     pipeline_label: str | None
     owner_details: list[DealOwnerDetail] = Field(
@@ -138,15 +141,22 @@ class DealSearchItem(BaseModel):
     deal_id: UUID
     name: str | None
     amount: float | None
+    predicted_amount: float | None = None
     currency: str | None
     currency_symbol: str | None = None
     deal_status: str | None
+    stage_id: UUID | None = None
     stage_name: str | None
+    pipeline_id: UUID | None = None
     pipeline_name: str | None
     company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
     owner_details: list[DealOwnerDetail] = Field(default_factory=list)
+    is_internal: bool = Field(
+        ...,
+        description="True if this deal is from internal CRM and can be edited.",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -191,6 +201,183 @@ class DealCustomColumnDefinition(BaseModel):
     currency_symbol: str | None = Field(
         None, description="Currency symbol resolved from currency_code (for example $, ₹)."
     )
+    editable: bool = Field(
+        False,
+        description=(
+            "True when this custom field can be edited through custom_columns "
+            "on internal CRM deals."
+        ),
+    )
+    patch_field: str | None = Field(
+        None,
+        description="PATCH path for custom field edits, for example custom_columns.custom_key.",
+    )
+    edit_control: str | None = Field(None, description="Frontend edit control hint")
+    edit_policy: str = Field(
+        "read_only",
+        description="custom_columns for editable custom fields, formula/read_only otherwise.",
+    )
+    locked_reason: str | None = Field(None, description="Reason shown when editing is locked")
+
+
+class DealDetailFieldDefinition(BaseModel):
+    """Frontend metadata for rendering one predefined deal detail field."""
+
+    key: str = Field(..., description="Dotted or top-level path in DealDetail")
+    label: str = Field(..., description="Display label")
+    data_type: str = Field(..., description="Frontend data type")
+    order: int = Field(..., description="Sort order for Get Details rendering")
+    section: str = Field(..., description="Logical detail section")
+    filter_control: str = Field(..., description="Frontend filter/control hint")
+    editable: bool = Field(
+        False,
+        description=(
+            "True when PATCH /deals/{deal_id} accepts it for internal CRM deals. "
+            "External CRM deals remain read-only through is_internal=false."
+        ),
+    )
+    patch_field: str | None = Field(None, description="PATCH field for inline edits")
+    edit_control: str | None = Field(None, description="Inline edit control hint")
+    edit_policy: str = Field("read_only", description="Why or how this field can be edited")
+    locked_reason: str | None = Field(None, description="Reason shown when editing is locked")
+
+
+_DEAL_DETAIL_FIELD_ROWS: tuple[tuple[str, str, str, int, str, str], ...] = (
+    ("name", "Deal name", "string", 1, "core", "text"),
+    ("deal_status", "Status", "enum", 2, "core", "select"),
+    ("stage_name", "Stage", "string", 3, "core", "select"),
+    ("pipeline_name", "Pipeline", "string", 4, "core", "select"),
+    ("amount", "Amount", "number", 5, "value", "currency"),
+    ("currency", "Currency", "string", 6, "value", "select"),
+    ("predicted_amount", "Predicted amount", "number", 7, "value", "currency"),
+    ("probability", "Probability", "number", 8, "value", "percent"),
+    ("forecast_category", "Forecast category", "string", 9, "value", "select"),
+    ("deal_health", "Deal health", "enum", 10, "ai", "select"),
+    ("deal_health_reason", "Health reason", "string", 11, "ai", "long_text"),
+    ("owner_details", "Owner", "array", 12, "ownership", "people"),
+    ("deal_team", "Internal team", "array", 13, "ownership", "people"),
+    ("company_name", "Account", "string", 14, "account", "account"),
+    ("company_domain", "Account domain", "string", 15, "account", "domain"),
+    ("company_industry", "Industry", "string", 16, "account", "select"),
+    ("company_website", "Website", "url", 17, "account", "link"),
+    ("company_linkedin_url", "Company LinkedIn", "url", 18, "account", "link"),
+    ("company_country", "Account country", "string", 19, "account", "select"),
+    ("primary_contact_name", "Primary contact", "string", 20, "contact", "contact"),
+    ("primary_contact_email", "Primary contact email", "email", 21, "contact", "email"),
+    ("source_created_at", "CRM created date", "datetime", 22, "timeline", "date_range"),
+    ("close_date", "Close date", "datetime", 23, "timeline", "date_range"),
+    ("expected_close_date", "Expected close date", "datetime", 24, "timeline", "date_range"),
+    ("closed_won_at", "Won date", "datetime", 25, "timeline", "date_range"),
+    ("closed_lost_at", "Lost date", "datetime", 26, "timeline", "date_range"),
+    ("deal_age_days", "Deal age", "integer", 27, "timeline", "number"),
+    ("last_activity_at", "Last activity", "datetime", 28, "timeline", "date_range"),
+    ("stage_entered_at", "Stage entered", "datetime", 29, "timeline", "date_range"),
+    ("stage_updated_at", "Stage updated", "datetime", 30, "timeline", "date_range"),
+    ("deal_type", "Deal type", "string", 31, "process", "select"),
+    ("priority", "Priority", "string", 32, "process", "select"),
+    ("lead_source", "Lead source", "string", 33, "process", "select"),
+    ("closed_reason", "Closed reason", "string", 34, "process", "long_text"),
+    ("crm_url", "CRM link", "url", 35, "process", "link"),
+    ("description", "Description", "string", 36, "process", "long_text"),
+)
+
+_INLINE_EDITABLE_DEAL_FIELDS = {
+    "name",
+    "amount",
+    "currency",
+    "probability",
+    "forecast_category",
+    "source_created_at",
+    "expected_close_date",
+    "deal_type",
+    "priority",
+    "lead_source",
+    "description",
+}
+_DEAL_EDIT_CONTROLS = {
+    "name": "text",
+    "amount": "currency",
+    "currency": "select",
+    "probability": "percent",
+    "forecast_category": "select",
+    "source_created_at": "datetime",
+    "expected_close_date": "datetime",
+    "deal_type": "select",
+    "priority": "select",
+    "lead_source": "select",
+    "description": "textarea",
+}
+_DEAL_STAGE_FIELDS = {"deal_status", "stage_name", "pipeline_name"}
+_DEAL_ACCOUNT_FIELDS = {
+    "company_name",
+    "company_domain",
+    "company_industry",
+    "company_website",
+    "company_linkedin_url",
+    "company_country",
+}
+_DEAL_PRIMARY_CONTACT_FIELDS = {"primary_contact_name", "primary_contact_email"}
+_DEAL_GENERATED_FIELDS = {"deal_health", "deal_health_reason"}
+_DEAL_LIFECYCLE_FIELDS = {"close_date", "closed_won_at", "closed_lost_at", "closed_reason"}
+_DEAL_SYSTEM_FIELDS = {
+    "predicted_amount",
+    "deal_age_days",
+    "last_activity_at",
+    "stage_entered_at",
+    "stage_updated_at",
+    "crm_url",
+}
+
+
+def _deal_edit_metadata(key: str) -> tuple[bool, str | None, str | None, str, str | None]:
+    if key in _INLINE_EDITABLE_DEAL_FIELDS:
+        return True, key, _DEAL_EDIT_CONTROLS.get(key), "always", None
+    if key in _DEAL_STAGE_FIELDS:
+        return False, None, None, "stage_action", "Use the deal stage/lifecycle action."
+    if key == "owner_details":
+        return False, None, None, "owner_assignment", "Use the deal owner assignment action."
+    if key == "deal_team":
+        return False, None, None, "participants_action", "Use deal participant actions."
+    if key in _DEAL_ACCOUNT_FIELDS:
+        return False, None, None, "account_action", "Use the deal account update action."
+    if key in _DEAL_PRIMARY_CONTACT_FIELDS:
+        return (
+            False,
+            None,
+            None,
+            "primary_contact_action",
+            "Use the deal primary-contact update action.",
+        )
+    if key in _DEAL_GENERATED_FIELDS:
+        return False, None, None, "generated", "Generated by deal analysis."
+    if key in _DEAL_LIFECYCLE_FIELDS:
+        return False, None, None, "lifecycle_action", "Use close or reopen actions."
+    if key in _DEAL_SYSTEM_FIELDS:
+        return False, None, None, "system", "System-managed value."
+    return False, None, None, "read_only", "Read-only deal detail."
+
+
+def deal_detail_field_definitions() -> list[DealDetailFieldDefinition]:
+    """Return ordered predefined deal detail metadata for the Get Details panel."""
+    definitions: list[DealDetailFieldDefinition] = []
+    for key, label, data_type, order, section, filter_control in _DEAL_DETAIL_FIELD_ROWS:
+        editable, patch_field, edit_control, edit_policy, locked_reason = _deal_edit_metadata(key)
+        definitions.append(
+            DealDetailFieldDefinition(
+                key=key,
+                label=label,
+                data_type=data_type,
+                order=order,
+                section=section,
+                filter_control=filter_control,
+                editable=editable,
+                patch_field=patch_field,
+                edit_control=edit_control,
+                edit_policy=edit_policy,
+                locked_reason=locked_reason,
+            )
+        )
+    return definitions
 
 
 class DealDetail(BaseModel):
@@ -288,6 +475,13 @@ class DealDetail(BaseModel):
         description=(
             "Active custom field definitions for internal CRM deals. "
             "Frontend should use data_type to render date/datetime/currency controls."
+        ),
+    )
+    detail_field_definitions: list[DealDetailFieldDefinition] = Field(
+        default_factory=deal_detail_field_definitions,
+        description=(
+            "Ordered metadata for predefined deal detail fields. "
+            "Custom fields continue to use custom_column_definitions."
         ),
     )
 
@@ -868,4 +1062,6 @@ class DealsListParams(NamedTuple):
     max_amount: float | None
     min_close_date: datetime | None
     max_close_date: datetime | None
+    min_expected_close_date: datetime | None
+    max_expected_close_date: datetime | None
     q: str | None

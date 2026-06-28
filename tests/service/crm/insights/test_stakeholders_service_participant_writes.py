@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
+from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 
@@ -262,3 +264,111 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
     assert result.added[0].linkedin_url == "https://linkedin.com/in/contact-buyer"
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
     assert not session.committed
+
+
+@pytest.mark.asyncio
+async def test_add_contacts_as_stakeholders_dedupes_whitespace_padded_email() -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=uuid4(),
+        email=" Buyer@Example.com ",
+        full_name="Buyer",
+    )
+    existing_participant = _participant(
+        org_id=org_id,
+        deal_id=deal_id,
+        integration_id=integration_id,
+        email="buyer@example.com",
+    )
+    session = _WriteSession(
+        [
+            _FakeResult(scalars=[contact]),
+            _FakeResult(scalars=[existing_participant]),
+        ]
+    )
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    result = await service.add_contacts_as_stakeholders(deal_id, [contact.contact_id])
+
+    assert result.total_added == 0
+    assert result.total_skipped == 1
+    assert result.skipped[0].contact_id == contact.contact_id
+    assert result.skipped[0].reason == "Stakeholder with this email already exists"
+    assert session.added == []
+    assert not session.committed
+
+
+@pytest.mark.asyncio
+async def test_add_contacts_as_stakeholders_copies_external_contact_to_internal_crm(
+    monkeypatch,
+) -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    external_integration_id = uuid4()
+    internal_integration_id = uuid4()
+    external_contact_id = uuid4()
+    external_contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=external_integration_id,
+        contact_id=external_contact_id,
+        email="buyer@example.com",
+        full_name="Buyer User",
+        job_title="VP Sales",
+        company_name="External Co",
+        company_id=uuid4(),
+        phone="+1 555-0101",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+    session = _WriteSession(
+        [
+            _FakeResult(scalars=[external_contact]),
+            _FakeResult(scalars=[]),
+            _FakeResult(scalars=[]),
+        ]
+    )
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+    captured_contact_ids: list[UUID | None] = []
+
+    class FakeInternalCRMSetupService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def setup_internal_crm(self, *, commit: bool):
+            assert commit is False
+            return SimpleNamespace(
+                integration=SimpleNamespace(integration_id=internal_integration_id)
+            )
+
+    async def fake_ensure_participant(**kwargs) -> CRMDealParticipant:
+        captured_contact_ids.append(kwargs["contact_id"])
+        return _participant(
+            org_id=org_id,
+            deal_id=deal_id,
+            integration_id=internal_integration_id,
+            contact_id=kwargs["contact_id"],
+            email=kwargs["email"],
+        )
+
+    monkeypatch.setattr(
+        stakeholder_write_module,
+        "InternalCRMSetupService",
+        FakeInternalCRMSetupService,
+        raising=False,
+    )
+    service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+
+    result = await service.add_contacts_as_stakeholders(deal_id, [external_contact_id])
+
+    copied_contacts = [obj for obj in session.added if isinstance(obj, CRMContact)]
+    assert result.total_added == 1
+    assert len(copied_contacts) == 1
+    assert copied_contacts[0].contact_id != external_contact_id
+    assert copied_contacts[0].integration_id == internal_integration_id
+    assert copied_contacts[0].company_name == "External Co"
+    assert copied_contacts[0].company_id is None
+    assert copied_contacts[0].properties["copied_from_contact_id"] == str(external_contact_id)
+    assert captured_contact_ids == [copied_contacts[0].contact_id]

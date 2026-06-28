@@ -166,7 +166,7 @@ class CreateDealEditFormHandler(BaseFormHandler):
         amount_val = form_data.get("amount")
         currency_val = form_data.get("currency", "USD")
         description_val = form_data.get("description", "")
-        close_date_val = form_data.get("close_date", "")
+        expected_close_date_val = form_data.get("expected_close_date", "")
         priority_val = form_data.get("priority", "")
         account_name_val = form_data.get("account_name", "")
         account_domain_val = form_data.get("account_domain", "")
@@ -224,10 +224,10 @@ class CreateDealEditFormHandler(BaseFormHandler):
         fields.extend(
             [
                 FormField(
-                    id="close_date",
+                    id="expected_close_date",
                     label="Expected Close Date",
                     field_type="date",
-                    value=close_date_val or None,
+                    value=expected_close_date_val or None,
                 ),
                 FormField(
                     id="priority",

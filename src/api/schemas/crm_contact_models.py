@@ -1,3 +1,11 @@
+"""CRM contact API schemas and field metadata.
+
+Contact list/detail responses combine canonical CRMContact fields with compact
+account, owner, and deal involvement snapshots. The detail field metadata tells
+clients which fields are directly editable and which must be changed on related
+records or by enrichment workflows.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -60,6 +68,188 @@ class ContactProfileEnrichment(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContactDetailFieldDefinition(BaseModel):
+    """Frontend display metadata for predefined contact detail fields."""
+
+    key: str
+    label: str
+    data_type: str
+    order: int
+    section: str
+    filter_control: str
+    editable: bool
+    patch_field: str | None
+    edit_control: str | None
+    edit_policy: str
+    locked_reason: str | None = None
+
+
+_CONTACT_DETAIL_FIELD_ROWS = (
+    ("full_name", "Name", "string", 1, "contact", "text"),
+    ("job_title", "Job title", "string", 2, "contact", "text"),
+    ("email", "Email", "email", 3, "contact", "email"),
+    ("additional_emails", "Additional emails", "array<email>", 4, "contact", "chips"),
+    ("phone", "Phone", "phone", 5, "contact", "phone"),
+    ("mobile_phone", "Mobile", "phone", 6, "contact", "phone"),
+    ("linkedin_url", "LinkedIn", "url", 7, "contact", "link"),
+    ("website", "Website", "url", 8, "contact", "link"),
+    ("lifecycle_stage", "Lifecycle stage", "string", 9, "contact", "select"),
+    ("lead_status", "Lead status", "string", 10, "contact", "select"),
+    ("marketing_status", "Marketing status", "string", 11, "contact", "select"),
+    ("source", "Source", "string", 12, "contact", "select"),
+    ("company.id", "Account ID", "uuid", 13, "account", "link"),
+    ("company.name", "Account", "string", 14, "account", "account_link"),
+    ("company.domain", "Account domain", "string", 15, "account", "text"),
+    ("company.website", "Account website", "url", 16, "account", "link"),
+    ("company.industry", "Account industry", "string", 17, "account", "select"),
+    ("company.linkedin_url", "Account LinkedIn", "url", 18, "account", "link"),
+    ("company.country", "Account country", "string", 19, "account", "select"),
+    ("owner.id", "Owner ID", "uuid", 20, "owner", "link"),
+    ("owner.name", "Owner", "string", 21, "owner", "people"),
+    ("owner.email", "Owner email", "email", 22, "owner", "email"),
+    ("address", "Address", "string", 23, "location", "text"),
+    ("city", "City", "string", 24, "location", "select"),
+    ("state", "State", "string", 25, "location", "select"),
+    ("postal_code", "Postal code", "string", 26, "location", "text"),
+    ("country", "Country", "string", 27, "location", "select"),
+    ("timezone", "Timezone", "string", 28, "location", "select"),
+    ("last_contacted_at", "Last contacted", "datetime", 29, "activity", "date_range"),
+    ("last_activity_at", "Last activity", "datetime", 30, "activity", "date_range"),
+    ("source_created_at", "CRM created date", "datetime", 31, "activity", "date_range"),
+    ("source_modified_at", "CRM modified date", "datetime", 32, "activity", "date_range"),
+    ("research_summary.summary", "Research summary", "markdown", 33, "research", "text"),
+    (
+        "research_summary.last_researched_at",
+        "Last researched",
+        "datetime",
+        34,
+        "research",
+        "date_range",
+    ),
+    ("profile_enrichment.is_enriched", "Profile enriched", "boolean", 35, "enrichment", "boolean"),
+    ("profile_enrichment.source", "Enrichment source", "string", 36, "enrichment", "select"),
+    (
+        "profile_enrichment.enriched_at",
+        "Enriched at",
+        "datetime",
+        37,
+        "enrichment",
+        "date_range",
+    ),
+    ("profile_enrichment.data", "Enrichment data", "object", 38, "enrichment", "advanced"),
+)
+
+
+_ALWAYS_EDITABLE_CONTACT_FIELDS = {
+    "full_name": ("full_name", "text"),
+    "job_title": ("job_title", "text"),
+    "phone": ("phone", "phone"),
+    "mobile_phone": ("mobile_phone", "phone"),
+}
+
+_RELATED_ENTITY_FIELDS = {
+    "company.name",
+    "company.domain",
+    "company.website",
+    "company.industry",
+    "company.linkedin_url",
+    "company.country",
+    "deal_involvement",
+}
+
+
+def _contact_field_edit_metadata(key: str, contact: Any | None) -> dict[str, Any]:
+    if key in _ALWAYS_EDITABLE_CONTACT_FIELDS:
+        patch_field, edit_control = _ALWAYS_EDITABLE_CONTACT_FIELDS[key]
+        return {
+            "editable": True,
+            "patch_field": patch_field,
+            "edit_control": edit_control,
+            "edit_policy": "always",
+            "locked_reason": None,
+        }
+
+    if key == "email":
+        email = getattr(contact, "email", None) if contact is not None else None
+        return {
+            "editable": email is None,
+            "patch_field": "email",
+            "edit_control": "email",
+            "edit_policy": "set_if_empty",
+            "locked_reason": None
+            if email is None
+            else "Existing email is used for dedupe and activity matching.",
+        }
+
+    if key == "linkedin_url":
+        linkedin_url = getattr(contact, "linkedin_url", None) if contact is not None else None
+        return {
+            "editable": linkedin_url is None,
+            "patch_field": "linkedin_url",
+            "edit_control": "url",
+            "edit_policy": "set_if_empty",
+            "locked_reason": None
+            if linkedin_url is None
+            else "Existing LinkedIn URL is treated as verified profile identity.",
+        }
+
+    if key == "company.id":
+        email = getattr(contact, "email", None) if contact is not None else None
+        company_id = getattr(contact, "company_id", None) if contact is not None else None
+        return {
+            "editable": company_id is None and email is not None,
+            "patch_field": "company_id",
+            "edit_control": "account_picker",
+            "edit_policy": "set_once",
+            "locked_reason": None
+            if company_id is None and email is not None
+            else (
+                "Add an email before linking an account."
+                if company_id is None
+                else "Account link is set once and cannot be changed from contact detail."
+            ),
+        }
+
+    if key in _RELATED_ENTITY_FIELDS:
+        return {
+            "editable": False,
+            "patch_field": None,
+            "edit_control": None,
+            "edit_policy": "related_entity",
+            "locked_reason": "Edit this on the related record.",
+        }
+
+    return {
+        "editable": False,
+        "patch_field": None,
+        "edit_control": None,
+        "edit_policy": "read_only",
+        "locked_reason": "Read-only field.",
+    }
+
+
+def contact_detail_field_definitions(
+    contact: Any | None = None,
+) -> list[ContactDetailFieldDefinition]:
+    """Return ordered metadata for predefined contact detail fields.
+
+    Email and LinkedIn editability depends on the current contact because those
+    identifiers are set-once values used for dedupe and activity matching.
+    """
+    return [
+        ContactDetailFieldDefinition(
+            key=key,
+            label=label,
+            data_type=data_type,
+            order=order,
+            section=section,
+            filter_control=filter_control,
+            **_contact_field_edit_metadata(key, contact),
+        )
+        for key, label, data_type, order, section, filter_control in _CONTACT_DETAIL_FIELD_ROWS
+    ]
+
+
 class ContactListItem(BaseModel):
     """Single contact in a list response."""
 
@@ -111,6 +301,10 @@ class ContactMutationItem(BaseModel):
 class ContactDetail(BaseModel):
     """Page-ready contact detail including research and compact deal involvement."""
 
+    detail_field_definitions: list[ContactDetailFieldDefinition] = Field(
+        default_factory=contact_detail_field_definitions,
+        description="Ordered frontend metadata for the predefined contact Get Details fields.",
+    )
     contact_id: UUID
     first_name: str | None
     last_name: str | None
@@ -160,6 +354,8 @@ class ContactsPage(BaseModel):
 
 
 class ContactSearchItem(BaseModel):
+    """Contact search suggestion shown in contact pickers."""
+
     contact_id: UUID
     full_name: str | None
     email: str | None
@@ -169,6 +365,8 @@ class ContactSearchItem(BaseModel):
 
 
 class ContactSearchPage(BaseModel):
+    """Cursor page of contact search suggestions."""
+
     items: list[ContactSearchItem]
     next_cursor: str | None = None
     has_more: bool = False

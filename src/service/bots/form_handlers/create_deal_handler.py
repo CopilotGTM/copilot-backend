@@ -62,7 +62,7 @@ class CreateDealFormHandler(BaseFormHandler):
 
         currency = (form_data.get("currency") or "USD").strip().upper()
         description = (form_data.get("description") or "").strip() or None
-        close_date_str = form_data.get("close_date")
+        expected_close_date_str = form_data.get("expected_close_date")
         priority = (form_data.get("priority") or "").strip() or None
         account_name = (form_data.get("account_name") or "").strip() or None
         account_domain = (form_data.get("account_domain") or "").strip() or None
@@ -87,15 +87,18 @@ class CreateDealFormHandler(BaseFormHandler):
             except (ValueError, IndexError):
                 logger.warning("create_deal_handler: invalid stage value: %s", stage_raw)
 
-        # Parse close date
-        close_date = None
-        if close_date_str:
-            from datetime import date
+        # Parse forecast close date for open-pipeline planning.
+        expected_close_date = None
+        if expected_close_date_str:
+            from datetime import datetime
 
             try:
-                close_date = date.fromisoformat(close_date_str)
+                expected_close_date = datetime.fromisoformat(expected_close_date_str)
             except ValueError:
-                logger.warning("create_deal_handler: invalid close_date: %s", close_date_str)
+                logger.warning(
+                    "create_deal_handler: invalid expected_close_date: %s",
+                    expected_close_date_str,
+                )
 
         organisation_id_str = form_data.get("organisation_id", "")
 
@@ -140,7 +143,8 @@ class CreateDealFormHandler(BaseFormHandler):
             except OrganisationPolicyDeniedError as exc:
                 return FormHandlerResult(success=False, message=exc.message)
 
-            # Create the deal
+            # Form submission is the point where a preview becomes a CRM write;
+            # keep the service imports local so read-only form handlers stay light.
             from src.service.crm.deals.contracts import DealWriteServiceError
             from src.service.crm.deals.write_service import DealWriteService
 
@@ -159,7 +163,7 @@ class CreateDealFormHandler(BaseFormHandler):
                             "amount": amount,
                             "currency": currency,
                             "description": description,
-                            "close_date": close_date,
+                            "expected_close_date": expected_close_date,
                             "priority": priority,
                             "owner_user_id": user.user_id,
                         }

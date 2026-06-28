@@ -58,7 +58,7 @@ answer different questions.
   "contact_count": 5,
   "deal_count": 2,
   "pipeline_value": 75000.0,
-  "account_research": {
+  "account_summary": {
     "status": "not_available",
     "content": null,
     "last_researched_at": null
@@ -137,9 +137,9 @@ answers "what opportunities exist under this account?"
 
 Do not force one shared deal DTO for both contexts.
 
-### Account Research
+### Account Summary
 
-Use a stable object so the frontend can build the main content area before account research storage
+Use a stable object so the frontend can build the main content area before account summary storage
 is fully implemented:
 
 ```json
@@ -150,10 +150,10 @@ is fully implemented:
 }
 ```
 
-When durable account research storage is added, map:
+When durable account summary storage is added, map:
 
 - `status`: `not_available`, `pending`, `in_progress`, `completed`, or `failed`
-- `content`: markdown account research
+- `content`: markdown account summary
 - `last_researched_at`: last completed research timestamp
 
 Until then, return the stable object with null content rather than adding fake text or relying on
@@ -184,13 +184,13 @@ All account, contact, and deal queries must filter by `organisation_id` and excl
    - Keep `contact_id`, `full_name`, `email`, and `job_title`.
    - Keep `AccountContactItem.deal_count` for the standalone account contacts endpoint.
 
-2. Add an account research wrapper schema.
-   - Suggested name: `AccountResearchSummary`.
+2. Add an account summary wrapper schema.
+   - Suggested name: `AccountSummary`.
    - Fields: `status`, `content`, `last_researched_at`.
    - Default value for current implementation:
 
 ```python
-AccountResearchSummary(
+AccountSummary(
     status="not_available",
     content=None,
     last_researched_at=None,
@@ -198,7 +198,7 @@ AccountResearchSummary(
 ```
 
 3. Update `AccountDetail`.
-   - Include `account_research: AccountResearchSummary`.
+   - Include `account_summary: AccountSummary`.
    - Keep `contacts` and `deals` as separate arrays.
    - Use `AccountDetailContactItem` for compact account detail contacts.
    - Keep inherited account fields and `owner` from `AccountListItem`.
@@ -207,11 +207,11 @@ AccountResearchSummary(
    - Continue verifying account ownership before loading children.
    - Return compact contacts without `deal_count`.
    - Return account commercial deal summaries as today.
-   - Add stable `account_research` object.
+   - Add stable `account_summary` object.
 
 5. Update `accounts_handler.get_account_detail()`.
    - Stop passing contact `deal_count`.
-   - Pass through `account_research`.
+   - Pass through `account_summary`.
    - Keep the endpoint response model as `GenericResponse[AccountDetail]`.
 
 6. Update docs after implementation.
@@ -225,7 +225,7 @@ Add focused tests before implementation:
 - `GET /users/crm/accounts/{company_id}` returns compact contacts without `deal_count`.
 - `GET /users/crm/accounts/{company_id}` returns account deals with amount, currency, status,
   stage, and owner.
-- `GET /users/crm/accounts/{company_id}` returns `account_research.status = "not_available"` and
+- `GET /users/crm/accounts/{company_id}` returns `account_summary.status = "not_available"` and
   null content when no research storage exists.
 - Cross-organization or deleted accounts still return `404`.
 - Account detail service keeps `pipeline_value` computed from open deals only.

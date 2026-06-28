@@ -32,9 +32,11 @@ def _make_deal_row() -> MagicMock:
     row.deal_id = UUID(DEAL_ID)
     row.name = "Acme Deal"
     row.company_name = "Acme Corp"
+    row.stage_id = UUID("66666666-6666-6666-6666-666666666666")
     row.stage_name = "Negotiation"
     row.stage_label = "Negotiation"
     row.stage_entered_at = datetime(2026, 2, 10)
+    row.pipeline_id = UUID("77777777-7777-7777-7777-777777777777")
     row.pipeline_name = "Main Pipeline"
     row.pipeline_label = "Main Pipeline"
     return row
@@ -143,6 +145,7 @@ class TestGetDealChangeHistory:
         assert len(result["stage_changes"]) == 1
 
         change = result["stage_changes"][0]
+        assert change["stage_id"] == "44444444-4444-4444-4444-444444444444"
         assert change["stage_name"] == "Negotiation"
         assert change["stage_state"] == "OPEN"
         assert change["is_closed"] is False
@@ -191,6 +194,25 @@ class TestGetDealChangeHistory:
 
         assert result is not None
         assert result["stage_changes"][0]["elapsed_days"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_zero_amount_at_stage_is_preserved(self, mock_context: MagicMock) -> None:
+        deal_row = _make_deal_row()
+        history_row = _make_history_row(amount_at_stage=0)
+
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(
+            side_effect=[
+                MagicMock(one_or_none=MagicMock(return_value=deal_row)),
+                MagicMock(all=MagicMock(return_value=[history_row])),
+                MagicMock(all=MagicMock(return_value=[])),
+            ]
+        )
+
+        result = await get_deal_change_history(DEAL_ID, context=mock_context)
+
+        assert result is not None
+        assert result["stage_changes"][0]["amount_at_stage"] == 0.0
 
     @pytest.mark.asyncio
     async def test_none_elapsed_seconds(self, mock_context: MagicMock) -> None:
@@ -251,8 +273,10 @@ class TestGetDealChangeHistory:
         result = await get_deal_change_history(DEAL_ID, context=mock_context)
 
         assert result is not None
+        assert result["current_stage"]["stage_id"] == "66666666-6666-6666-6666-666666666666"
         assert result["current_stage"]["name"] == "Negotiation"
         assert result["current_stage"]["entered_at"] == "2026-02-10T00:00:00"
+        assert result["current_pipeline"]["pipeline_id"] == "77777777-7777-7777-7777-777777777777"
         assert result["current_pipeline"]["name"] == "Main Pipeline"
 
     @pytest.mark.asyncio

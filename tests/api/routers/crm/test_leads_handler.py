@@ -181,6 +181,32 @@ class FakeLeadsAccessService:
         }
 
 
+def _iter_route_dependencies(dependencies):
+    for dependency in dependencies:
+        yield dependency
+        yield from _iter_route_dependencies(getattr(dependency, "dependencies", []))
+
+
+def _install_lead_route_overrides(app, *, user_override, service_override, rate_limit_override):
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[get_current_user] = user_override
+    app.dependency_overrides[get_leads_access_service] = service_override
+    app.dependency_overrides[rate_limit_user_read] = rate_limit_override
+    app.dependency_overrides[rate_limit_user_write] = rate_limit_override
+    for route in app.routes:
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        for dependency in _iter_route_dependencies(dependant.dependencies):
+            call = getattr(dependency, "call", None)
+            if (
+                getattr(call, "__module__", None) == "src.api.dependencies.crm_write_guard"
+                and getattr(call, "__name__", None) == "dependency"
+            ):
+                app.dependency_overrides[call] = rate_limit_override
+    return original_overrides
+
+
 def test_create_and_get_lead(client: TestClient, test_user_ids):
     """Create a lead through the public router endpoint and read it back."""
     service = FakeLeadsAccessService(test_user_ids["organisation_id"])
@@ -201,10 +227,12 @@ def test_create_and_get_lead(client: TestClient, test_user_ids):
 
     from src.infra.utils.app_state import fastapp as app
 
-    app.dependency_overrides[get_current_user] = _override_user
-    app.dependency_overrides[get_leads_access_service] = _override_service
-    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
-    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    original_overrides = _install_lead_route_overrides(
+        app,
+        user_override=_override_user,
+        service_override=_override_service,
+        rate_limit_override=_override_rate_limit,
+    )
     try:
         create_resp = client.post(
             "/users/crm/leads",
@@ -223,7 +251,7 @@ def test_create_and_get_lead(client: TestClient, test_user_ids):
         assert data["email"] == "jane@example.com"
         assert data["participants"] == []
     finally:
-        app.dependency_overrides = {}
+        app.dependency_overrides = original_overrides
 
 
 def test_add_lead_participant(client: TestClient, test_user_ids):
@@ -248,10 +276,12 @@ def test_add_lead_participant(client: TestClient, test_user_ids):
 
     from src.infra.utils.app_state import fastapp as app
 
-    app.dependency_overrides[get_current_user] = _override_user
-    app.dependency_overrides[get_leads_access_service] = _override_service
-    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
-    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    original_overrides = _install_lead_route_overrides(
+        app,
+        user_override=_override_user,
+        service_override=_override_service,
+        rate_limit_override=_override_rate_limit,
+    )
     try:
         resp = client.post(
             f"/users/crm/leads/{lead.lead_id}/participants",
@@ -268,7 +298,7 @@ def test_add_lead_participant(client: TestClient, test_user_ids):
         assert data["email"] == "jane@example.com"
         assert data["relationship_role"] == "primary_contact"
     finally:
-        app.dependency_overrides = {}
+        app.dependency_overrides = original_overrides
 
 
 def test_convert_lead_to_deal(client: TestClient, test_user_ids):
@@ -294,10 +324,12 @@ def test_convert_lead_to_deal(client: TestClient, test_user_ids):
 
     from src.infra.utils.app_state import fastapp as app
 
-    app.dependency_overrides[get_current_user] = _override_user
-    app.dependency_overrides[get_leads_access_service] = _override_service
-    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
-    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    original_overrides = _install_lead_route_overrides(
+        app,
+        user_override=_override_user,
+        service_override=_override_service,
+        rate_limit_override=_override_rate_limit,
+    )
     try:
         resp = client.post(
             f"/users/crm/leads/{lead.lead_id}/convert",
@@ -314,7 +346,7 @@ def test_convert_lead_to_deal(client: TestClient, test_user_ids):
         assert data["converted_deal_id"] == str(lead.converted_deal_id)
         assert data["copied_participant_count"] == 1
     finally:
-        app.dependency_overrides = {}
+        app.dependency_overrides = original_overrides
 
 
 def test_create_and_update_lead_request_models_reject_converted_status():
@@ -337,6 +369,15 @@ def test_convert_lead_payload_carries_lead_owner_when_not_overridden(test_user_i
     payload = LeadsAccessService._build_deal_payload_from_lead(lead, {})
 
     assert payload["owner_user_id"] == test_user_ids["user_id"]
+
+
+def test_convert_lead_payload_keeps_conversion_metadata_out_of_custom_fields(test_user_ids):
+    """Conversion metadata must not require a matching deal custom field definition."""
+    lead = FakeLead(test_user_ids["organisation_id"])
+
+    payload = LeadsAccessService._build_deal_payload_from_lead(lead, {})
+
+    assert "custom_properties" not in payload
 
 
 @pytest.mark.asyncio

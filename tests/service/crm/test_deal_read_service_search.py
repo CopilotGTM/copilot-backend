@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.service.crm.deals.read_service import DealReadService
+from src.service.crm.deals.read_service import DealReadService, _decode_deal_search_cursor
 
 
 class _FakeScalarResult:
     def __init__(self, rows: list[object]):
         self._rows = rows
 
+    def scalar(self):
+        return self._rows[0] if self._rows else None
+
     def scalars(self):
         return self
 
     def all(self):
         return self._rows
+
+    def one_or_none(self):
+        return self._rows[0] if self._rows else None
 
 
 class _FakeSession:
@@ -54,3 +61,253 @@ async def test_search_deals_searches_deal_name_and_company_name() -> None:
     where_sql = str(session.statements[0].whereclause)
     assert "crm_deals.name" in where_sql
     assert "crm_deals.company_name" in where_sql
+
+
+@pytest.mark.asyncio
+async def test_search_deals_orders_blank_names_by_company_name() -> None:
+    """Cursor sort key should match the cursor fallback for blank deal names."""
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    first = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="",
+        company_name="Acme",
+        created_at=now,
+        updated_at=now,
+    )
+    second = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="Beta Renewal",
+        company_name="Beta",
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeSession([[first, second]])
+
+    rows, next_cursor = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_deals(limit=1)
+
+    assert rows == [first]
+    assert next_cursor is not None
+    cursor_name, cursor_deal_id = _decode_deal_search_cursor(next_cursor)
+    assert cursor_name == "acme"
+    assert cursor_deal_id == first.deal_id
+    statement_sql = str(session.statements[0])
+    assert "nullif" in statement_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_search_deals_cursor_sort_trims_company_name_fallback() -> None:
+    """The DB sort key must match the encoded cursor key for provider-padded names."""
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="",
+        company_name="  Acme  ",
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeSession([[deal]])
+
+    _rows, next_cursor = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_deals(limit=1)
+
+    assert next_cursor is None
+    statement_sql = str(session.statements[0]).lower()
+    assert "trim(crm_deals.company_name)" in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_list_deals_ignores_blank_search_query() -> None:
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="Acme Renewal",
+        company_name="Acme",
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeSession([[1], [deal]])
+
+    rows, total_count = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deals(q="   ")
+
+    assert rows == [deal]
+    assert total_count == 1
+    statement_sql = str(session.statements[1].whereclause)
+    count_sql = str(session.statements[0].whereclause)
+    assert "crm_deals.name" not in statement_sql
+    assert "crm_deals.company_name" not in statement_sql
+    assert "crm_deals.name" not in count_sql
+    assert "crm_deals.company_name" not in count_sql
+
+
+@pytest.mark.asyncio
+async def test_list_deals_filters_by_expected_close_date_range() -> None:
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="Forecasted Renewal",
+        expected_close_date=datetime(2026, 7, 15, tzinfo=UTC),
+        close_date=None,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeSession([[1], [deal]])
+
+    rows, total_count = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deals(
+        min_expected_close_date=datetime(2026, 7, 1, tzinfo=UTC),
+        max_expected_close_date=datetime(2026, 7, 31, tzinfo=UTC),
+    )
+
+    assert rows == [deal]
+    assert total_count == 1
+    statement_sql = str(session.statements[1].whereclause)
+    count_sql = str(session.statements[0].whereclause)
+    assert "crm_deals.expected_close_date" in statement_sql
+    assert "crm_deals.close_date" not in statement_sql
+    assert "crm_deals.expected_close_date" in count_sql
+    assert "crm_deals.close_date" not in count_sql
+
+
+@pytest.mark.asyncio
+async def test_get_all_deals_searches_company_name_like_list_deals() -> None:
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="Renewal",
+        company_name="Acme",
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeSession([[deal]])
+
+    rows = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).get_all_deals(q=" acme ")
+
+    assert rows == [deal]
+    statement_sql = str(session.statements[0].whereclause)
+    assert "crm_deals.name" in statement_sql
+    assert "crm_deals.company_name" in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_get_deals_stats_preserves_zero_amount_aggregates() -> None:
+    organisation_id = uuid4()
+    session = _FakeSession([[1], [], [], [(0, 0)]])
+
+    stats = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).get_deals_stats()
+
+    assert stats["total_amount"] == 0.0
+    assert stats["average_amount"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_deal_stage_history_preserves_zero_amount_at_stage() -> None:
+    organisation_id = uuid4()
+    history_id = uuid4()
+    stage_id = uuid4()
+    entered_at = datetime.now(UTC)
+    session = _FakeSession(
+        [
+            [
+                SimpleNamespace(
+                    history_id=history_id,
+                    stage_id=stage_id,
+                    from_stage_id=None,
+                    entered_at=entered_at,
+                    exited_at=entered_at,
+                    amount_at_stage=0,
+                    probability_at_stage=None,
+                    source="manual",
+                    stage_name="Discovery",
+                    stage_label="Discovery",
+                )
+            ]
+        ]
+    )
+
+    history = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).get_deal_stage_history(uuid4())
+
+    assert history[0]["amount_at_stage"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_resolve_current_user_deal_owners_trims_email_identity() -> None:
+    organisation_id = uuid4()
+    session = _FakeSession([[]])
+
+    await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).resolve_current_user_deal_owners(
+        user_id=uuid4(),
+        user_email=" Test@Example.com ",
+    )
+
+    statement_sql = str(session.statements[0]).lower()
+    assert "trim(crm_users.email)" in statement_sql
+    assert "trim(crm_deals.owner_email)" in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_list_deal_owners_trims_search_query() -> None:
+    organisation_id = uuid4()
+    session = _FakeSession([[]])
+
+    await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deal_owners(q=" Jane ")
+
+    compiled = session.statements[0].compile()
+    assert "%jane%" in compiled.params.values()
+    assert "% jane %" not in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_list_deal_owners_ignores_blank_search_query() -> None:
+    organisation_id = uuid4()
+    session = _FakeSession([[]])
+
+    await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deal_owners(q="   ")
+
+    where_sql = str(session.statements[0].whereclause)
+    assert "owner_name" not in where_sql
+    assert "owner_email" not in where_sql

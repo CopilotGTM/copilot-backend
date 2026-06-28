@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-26
+> Last Updated: 2026-06-27
 
 ---
 
@@ -14,8 +14,8 @@ Accounts represent CRM companies/organisations that your deals and contacts belo
 
 All account records include an implicit origin via their `integration_id`:
 
-- **Internal accounts** (created via this API): Owned by the `INTERNAL_CRM` integration. Fully editable — users can update all fields, trigger enrichment, and manage relationships.
-- **CRM-synced accounts** (imported from HubSpot, Salesforce, etc.): Owned by the corresponding CRM integration. Editable through this API (updates are local only — they do **not** sync back to the external CRM).
+- **Internal accounts** (created via this API): Owned by the `INTERNAL_CRM` integration. Profile and location fields are editable through this API; owner assignment should use a dedicated assignment action when added.
+- **CRM-synced accounts** (imported from HubSpot, Salesforce, etc.): Owned by the corresponding CRM integration. Editable through this API for local CopilotGTM state only — updates do **not** sync back to the external CRM.
 
 **Frontend Implementation**: Use the local `company_id` to render and navigate accounts. Provider identifiers are stored in `crm_source_object_mappings` and are not part of canonical account API payloads.
 
@@ -254,11 +254,29 @@ export interface AccountSummary {
 }
 
 /**
+ * Frontend display and edit metadata for predefined account detail fields.
+ */
+export interface AccountDetailFieldDefinition {
+  key: string;                        // Dotted path into AccountDetail
+  label: string;
+  data_type: string;
+  order: number;
+  section: string;
+  filter_control: string;
+  editable: boolean;
+  patch_field: keyof UpdateAccountRequest | null;
+  edit_control: string | null;
+  edit_policy: "always" | "assignment_action" | "generated" | "read_only";
+  locked_reason: string | null;
+}
+
+/**
  * Full account detail returned by GET /accounts/{company_id}.
  * Extends AccountListItem with description, location, account summary,
  * and nested compact contacts + deals arrays.
  */
 export interface AccountDetail extends AccountListItem {
+  detail_field_definitions: AccountDetailFieldDefinition[];
   description: string | null;
   company_type: string | null;        // e.g., "Private", "Public", "Subsidiary"
   address: string | null;
@@ -371,11 +389,19 @@ export interface UpdateAccountRequest {
   domain?: string | null;             // Auto-normalised if provided
   website?: string | null;
   industry?: string | null;
+  lifecycle_stage?: string | null;
+  company_type?: string | null;
   description?: string | null;
   phone?: string | null;
   linkedin_url?: string | null;
   number_of_employees?: number | null;
   annual_revenue?: number | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+  country?: string | null;
+  timezone?: string | null;
 }
 
 /**
@@ -757,6 +783,34 @@ Full account detail including account fields, generated account research summary
   "status": "SUCCESS",
   "message": "Account detail retrieved successfully",
   "data": {
+    "detail_field_definitions": [
+      {
+        "key": "name",
+        "label": "Account name",
+        "data_type": "string",
+        "order": 1,
+        "section": "account",
+        "filter_control": "text",
+        "editable": true,
+        "patch_field": "name",
+        "edit_control": "text",
+        "edit_policy": "always",
+        "locked_reason": null
+      },
+      {
+        "key": "owner.id",
+        "label": "Owner ID",
+        "data_type": "uuid",
+        "order": 9,
+        "section": "owner",
+        "filter_control": "link",
+        "editable": false,
+        "patch_field": null,
+        "edit_control": null,
+        "edit_policy": "assignment_action",
+        "locked_reason": "Use an account owner assignment action."
+      }
+    ],
     "company_id": "d3b07384-d9a1-4e3b-8c1a-1f2e3d4c5b6a",
     "name": "Acme Corp",
     "domain": "acme.com",
@@ -833,7 +887,46 @@ Full account detail including account fields, generated account research summary
 }
 ```
 
+**Account detail metadata:**
+
+- `detail_field_definitions` is the ordered metadata for the account "Get Details" panel. Use `order` ascending and hide null/empty optional scalar values by default.
+- `detail_field_definitions[].key` is a dotted path into `AccountDetail` for nested fields such as `owner.email` or `account_summary.content`.
+- `patch_field` is present only when inline editing should call `PATCH /users/crm/accounts/{company_id}`.
+- `contact_count`, `deal_count`, and `pipeline_value` remain top-level account summary values, but they are intentionally not repeated in `detail_field_definitions`; the same detail response already includes compact `contacts` and `deals` arrays for the relationship sections.
+- Owner fields are read-only in this contract. `owner_id` means the currently responsible CRM user, not necessarily the creator, and should be changed through a dedicated owner assignment action that validates the target user and updates `owner_id`, `owner_name`, and `owner_email` together.
+
 **Note:** `contact_count` and `deal_count` in the detail response reflect the actual lengths of the `contacts` and `deals` arrays. `pipeline_value` is the sum of `amount` from deals where `deal_status = "open"` only (won/lost/closed deals are excluded). Per-contact deal counts are intentionally not included in account detail contacts; use the standalone account contacts endpoint or contact detail when that relationship context is needed.
+
+#### Get Details Field Definitions
+
+The backend returns the following predefined field definitions in `detail_field_definitions`.
+
+| Order | Key | Label | Section | Data type | Filter control | Editable | Patch field | Edit control | Edit policy |
+|---:|---|---|---|---|---|---|---|---|---|
+| 1 | `name` | Account name | account | string | text | Yes | `name` | text | always |
+| 2 | `domain` | Domain | account | string | domain | Yes | `domain` | domain | always |
+| 3 | `website` | Website | account | url | link | Yes | `website` | url | always |
+| 4 | `industry` | Industry | account | string | select | Yes | `industry` | text | always |
+| 5 | `lifecycle_stage` | Lifecycle stage | account | string | select | Yes | `lifecycle_stage` | select | always |
+| 6 | `company_type` | Company type | account | string | select | Yes | `company_type` | text | always |
+| 7 | `description` | Description | account | string | long_text | Yes | `description` | textarea | always |
+| 8 | `is_active` | Active | account | boolean | boolean | No | — | — | read_only |
+| 9 | `owner.id` | Owner ID | owner | uuid | link | No | — | — | assignment_action |
+| 10 | `owner.name` | Owner | owner | string | people | No | — | — | assignment_action |
+| 11 | `owner.email` | Owner email | owner | email | email | No | — | — | assignment_action |
+| 12 | `number_of_employees` | Employees | metrics | integer | number | Yes | `number_of_employees` | number | always |
+| 13 | `annual_revenue` | Annual revenue | metrics | number | currency | Yes | `annual_revenue` | currency | always |
+| 14 | `phone` | Phone | contact | phone | phone | Yes | `phone` | phone | always |
+| 15 | `linkedin_url` | LinkedIn | contact | url | link | Yes | `linkedin_url` | url | always |
+| 16 | `address` | Address | location | string | text | Yes | `address` | text | always |
+| 17 | `city` | City | location | string | select | Yes | `city` | text | always |
+| 18 | `state` | State | location | string | select | Yes | `state` | text | always |
+| 19 | `postal_code` | Postal code | location | string | text | Yes | `postal_code` | text | always |
+| 20 | `country` | Country | location | string | select | Yes | `country` | text | always |
+| 21 | `timezone` | Timezone | location | string | select | Yes | `timezone` | timezone | always |
+| 22 | `account_summary.status` | Summary status | research | enum | status | No | — | — | generated |
+| 23 | `account_summary.content` | Account summary | research | markdown | text | No | — | — | generated |
+| 24 | `account_summary.last_researched_at` | Last researched | research | datetime | date_range | No | — | — | generated |
 
 #### Error Responses
 
@@ -913,11 +1006,45 @@ All fields optional. Only include fields to update.
 | `domain` | string | — | Domain (auto-normalised) |
 | `website` | string | — | Website URL |
 | `industry` | string | — | Industry classification |
+| `lifecycle_stage` | string | — | Lifecycle stage |
+| `company_type` | string | — | Company type/segment |
 | `description` | string | — | Company description |
 | `phone` | string | — | Phone number |
 | `linkedin_url` | string | — | LinkedIn URL |
 | `number_of_employees` | integer | — | Employee count |
 | `annual_revenue` | number | — | Annual revenue (decimal) |
+| `address` | string | — | Street address |
+| `city` | string | — | City |
+| `state` | string | — | State/region |
+| `postal_code` | string | — | Postal/ZIP code |
+| `country` | string | — | Country |
+| `timezone` | string | — | Account timezone |
+
+#### Account Editability Policy
+
+Inline editing should use `detail_field_definitions` from `GET /users/crm/accounts/{company_id}` as the source of truth.
+
+Editable through this PATCH endpoint:
+
+| Field | How it works |
+|---|---|
+| `name` | Updates account display name. |
+| `domain` | Normalised before storage. Duplicate active domains in the same organisation return `409`. Changing it can change domain-matched contacts for this account. |
+| `website` | Updates website. When `domain` is omitted, the backend also derives and stores `domain` from `website` if possible. |
+| `industry`, `lifecycle_stage`, `company_type` | Updates segmentation/profile fields. |
+| `description` | Updates account description/notes. |
+| `number_of_employees`, `annual_revenue` | Updates firmographic metrics stored on the account. |
+| `phone`, `linkedin_url` | Updates company contact/social fields. |
+| `address`, `city`, `state`, `postal_code`, `country`, `timezone` | Updates account location fields. |
+
+Read-only in account detail:
+
+| Field group | Reason |
+|---|---|
+| `owner.id`, `owner.name`, `owner.email` | Owner is the currently responsible CRM user. Reassignment should validate the target org user and update owner ID/name/email together through a dedicated assignment action. |
+| `is_active` | Provider/internal active flag, not a profile edit field. |
+| `contact_count`, `deal_count`, `pipeline_value` | Top-level account summary values, not Get Details rows. Use `contacts` and `deals` arrays in the same detail response for the relationship sections. |
+| `account_summary.*` | Generated by account research/enrichment. |
 
 #### Example Request
 
@@ -1151,7 +1278,8 @@ Consolidated reference of all error responses across all endpoints.
 - `AccountReadService.list_accounts()` uses correlated subqueries for `contact_count`, `deal_count`, `pipeline_value` to avoid N+1
 - `AccountReadService.search_accounts()` is a lightweight cursor search for pickers; it returns no totals or aggregate metrics
 - `AccountWriteService.create_account()` requires at least one of `name`, `domain`, or `website`, checks domain uniqueness when a domain or website is supplied, falls back to exact name duplicate checks for name-only creates, derives `name` from the normalised domain when missing, and auto-creates `INTERNAL_CRM` integration if missing
-- `update_account()` normalises domain if provided, derives domain from `website` when `domain` is omitted, rejects duplicate domains owned by another account, and only updates allowed fields (ignores unknown fields)
+- Public `PATCH /accounts/{company_id}` accepts the editable account detail fields advertised in `detail_field_definitions`: profile, firmographic, social, and location fields.
+- `update_account()` normalises domain if provided, derives domain from `website` when `domain` is omitted, rejects duplicate domains owned by another account, and only updates allowed service fields (ignores unknown fields)
 - Domain normalisation strips protocol (`https://`), `www.` prefix, paths, query strings, and lowercases
 
 ### Domain Matching SQL Pattern

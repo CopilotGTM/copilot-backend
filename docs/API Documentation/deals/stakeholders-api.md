@@ -184,6 +184,7 @@ export interface StakeholderDetail {
   name: string | null;
   job_title: string | null;
   phone_number: string | null;          // Phone number as provided by CRM or user (stored as-is)
+  linkedin_url: string | null;          // First-class LinkedIn profile URL, when known
   external_links: StakeholderLink[] | null;
 
   // AI-Inferred Engagement Attributes
@@ -273,6 +274,7 @@ export interface UpdateStakeholderRequest {
   name?: string | null;
   job_title?: string | null;
   phone_number?: string | null;
+  linkedin_url?: string | null;
   department?: string | null;
   stance?: StakeholderStance;
   decision_power?: DecisionPower;
@@ -361,6 +363,7 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
         "name": "Jane Doe",
         "job_title": "Director of IT, Information Technology",
         "phone_number": "+1-555-987-6543",
+        "linkedin_url": "https://linkedin.com/in/janedoe",
         "external_links": [
           {
             "platform": "linkedin",
@@ -377,7 +380,8 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
         "last_contact_at": "2024-11-08T14:00:00Z",
         "temperature": "WARM",
         "source": "CRM",
-        "approval_status": "APPROVED"
+        "approval_status": "APPROVED",
+        "active_research_job": null
       }
     ]
   }
@@ -631,6 +635,7 @@ The request body includes UI metadata to help frontend developers build appropri
   "name": "John Smith",
   "job_title": "CTO",
   "phone_number": "+1 (555) 123-4567",
+  "linkedin_url": "https://www.linkedin.com/in/johnsmith",
   "stance": "SUPPORTER",
   "decision_power": "DECISION_MAKER",
   "department": "Technology",
@@ -665,6 +670,7 @@ Fields are categorized to help frontend build appropriate UI:
 | `name` | string | null | Full name (strongly recommended) | Text input |
 | `job_title` | string | null | Job title | Text input |
 | `phone_number` | string | null | Phone number (stored as-is, no formatting) | Text input |
+| `linkedin_url` | string | null | LinkedIn profile URL | URL input |
 | `stance` | enum | UNKNOWN | Attitude toward solution | Select dropdown |
 | `decision_power` | enum | UNKNOWN | Role in buying process | Select dropdown |
 
@@ -725,6 +731,7 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
       "name": "John Smith",
       "job_title": "CTO",
       "phone_number": "+1 (555) 123-4567",
+      "linkedin_url": "https://www.linkedin.com/in/johnsmith",
       "stance": "SUPPORTER",
       "decision_power": "DECISION_MAKER",
       "motivation": "Looking to modernize their tech stack",
@@ -793,6 +800,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
     "name": "John Smith",
     "job_title": "CTO",
     "phone_number": "+1 (555) 123-4567",
+    "linkedin_url": "https://www.linkedin.com/in/johnsmith",
     "stance": "SUPPORTER",
     "decision_power": "DECISION_MAKER"
   }'
@@ -845,7 +853,7 @@ related activity when the jobs complete.
 ## 5. Edit Stakeholder
 
 Partially updates an existing stakeholder for a deal. Only fields included in the request are changed.
-Profile fields (`name`, `job_title`, `phone_number`, `department`,
+Profile fields (`name`, `job_title`, `phone_number`, `linkedin_url`, `department`,
 `external_links`) update `crm_contacts` first when the participant is linked to a
 contact, then refresh the participant snapshot. Deal-specific fields (`stance`,
 `decision_power`, `motivation`, `pain_points`) update only the participant row.
@@ -870,6 +878,7 @@ PATCH /{deal_id}/stakeholders/{participant_id}
   "name": "Jane Updated",
   "job_title": "Director of Engineering",
   "phone_number": "+44 20 7946 0958",
+  "linkedin_url": "https://www.linkedin.com/in/jane-updated",
   "motivation": "Accelerate engineering delivery"
 }
 ```
@@ -881,6 +890,7 @@ PATCH /{deal_id}/stakeholders/{participant_id}
 | `name` | string \| null | Stakeholder name |
 | `job_title` | string \| null | Job title |
 | `phone_number` | string \| null | Phone number (stored as-is) |
+| `linkedin_url` | string \| null | LinkedIn profile URL |
 | `department` | string \| null | Department |
 | `stance` | enum | Stakeholder stance |
 | `decision_power` | enum | Buying-role classification |
@@ -901,6 +911,7 @@ PATCH /{deal_id}/stakeholders/{participant_id}
     "name": "Jane Updated",
     "job_title": "Director of Engineering",
     "phone_number": "+44 20 7946 0958",
+    "linkedin_url": "https://www.linkedin.com/in/jane-updated",
     "source": "MANUAL",
     "approval_status": "APPROVED"
   }
@@ -971,6 +982,7 @@ Returns `StakeholderFullDetail` with engagement history.
     "name": "Jane Doe",
     "job_title": "Director of IT",
     "phone_number": "+1-555-987-6543",
+    "linkedin_url": "https://linkedin.com/in/janedoe",
     "department": "Information Technology",
     "external_links": [
       {

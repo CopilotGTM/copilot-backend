@@ -32,7 +32,7 @@ def form_data() -> dict:
         "amount": 50000,
         "currency": "USD",
         "description": "A big deal",
-        "close_date": "2026-06-15",
+        "expected_close_date": "2026-06-15",
         "priority": "high",
         "account_name": "Acme Corp",
         "account_domain": "acme.com",
@@ -346,7 +346,8 @@ class TestCreateDealEditHandlerHappyPath:
         assert inputs["amount"]["value"] == 50000
         assert inputs["currency"]["value"] == "USD"
         assert inputs["description"]["value"] == "A big deal"
-        assert inputs["close_date"]["value"] == "2026-06-15"
+        assert inputs["expected_close_date"]["value"] == "2026-06-15"
+        assert "close_date" not in inputs
         assert inputs["account_name"]["value"] == "Acme Corp"
         assert inputs["account_domain"]["value"] == "acme.com"
 

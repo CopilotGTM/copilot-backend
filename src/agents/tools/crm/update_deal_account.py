@@ -12,6 +12,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
+from src.agents.tools.crm.update_deal_fields import _deal_context_fields
+from src.api.schemas.crm_deal_write_models import DealAccountUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
@@ -22,7 +26,7 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
-ALLOWED_ACCOUNT_FIELDS = {"website", "domain", "linkedin_url", "industry"}
+ALLOWED_ACCOUNT_FIELDS = {"name", "domain", "website", "linkedin_url", "industry", "country"}
 
 
 def _result(
@@ -73,11 +77,26 @@ def create_update_deal_account(
         unsupported = sorted(set(account) - ALLOWED_ACCOUNT_FIELDS)
         if unsupported:
             return _result("skipped", f"Account fields are not supported: {', '.join(unsupported)}")
+        try:
+            normalized_account = DealAccountUpdateRequest(**account).model_dump(exclude_unset=True)
+        except ValidationError as exc:
+            error = exc.errors()[0] if exc.errors() else {"msg": "Invalid account field payload."}
+            return _result("failed", str(error["msg"]))
+
+        effective_account = (
+            normalized_account
+            if directly_requested
+            else {field: value for field, value in normalized_account.items() if value is not None}
+        )
+        if not effective_account:
+            return _result("skipped", "No new value was provided for the update.")
 
         approval_fields: dict[str, Any] = {}
         # Validate every requested field before writing so mixed requests fail in
         # one coherent response instead of applying partial updates.
-        for field, new_value in account.items():
+        for field, new_value in effective_account.items():
+            if new_value is None:
+                continue
             decision = classify_deal_update_policy(
                 action="update_deal_account",
                 field=field,
@@ -114,14 +133,14 @@ def create_update_deal_account(
                 # Guard write consistency by committing only after the service
                 # mutation succeeds; rollback every failure path.
                 try:
-                    deal = await service.update_account(context.deal_id, account)
+                    deal = await service.update_account(context.deal_id, effective_account)
                     await org_session.commit()
                     return _result(
                         "applied",
                         "Deal account updated.",
-                        applied_fields=account,
+                        applied_fields=effective_account,
                         deal_id=str(deal.deal_id),
-                    )
+                    ) | _deal_context_fields(deal)
                 except DealWriteServiceError as exc:
                     await org_session.rollback()
                     return _result("failed", exc.message)

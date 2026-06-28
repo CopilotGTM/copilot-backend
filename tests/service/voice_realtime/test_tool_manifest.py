@@ -63,6 +63,25 @@ def test_create_deal_voice_schema_is_available_for_direct_write() -> None:
     assert schema["description"].startswith("Create a new CRM deal")
     assert schema["parameters"]["required"] == ["name"]
     assert "amount" in schema["parameters"]["properties"]
+    assert "expected_close_date" in schema["parameters"]["properties"]
+    assert (
+        "Expected close date"
+        in schema["parameters"]["properties"]["expected_close_date"]["description"]
+    )
+
+
+def test_list_deals_voice_schema_supports_expected_close_date_sort() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.LIST_DEALS.value]
+    properties = schema["parameters"]["properties"]
+    sort_by = schema["parameters"]["properties"]["sort_by"]
+    assert "expected_close_date" in sort_by["enum"]
+    assert "close_date" in sort_by["enum"]
+    assert "min_close_date" in properties
+    assert "max_close_date" in properties
+    assert "min_expected_close_date" in properties
+    assert "max_expected_close_date" in properties
 
 
 def test_create_task_voice_schema_is_available_for_direct_write() -> None:

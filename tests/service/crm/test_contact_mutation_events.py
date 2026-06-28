@@ -239,24 +239,23 @@ async def test_update_contact_linkedin_url_is_profile_audit_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_contact_linkedin_url_clear_is_audited() -> None:
+async def test_update_contact_existing_linkedin_url_clear_records_no_mutation_event() -> None:
     org_id = uuid4()
     contact = _contact(org_id, linkedin_url="https://linkedin.com/in/buyer")
     session = _ContactSession(existing_contact=contact)
     service = ContactWriteService(session, org_id)
 
-    await service.update_contact(
-        contact.contact_id,
-        {"linkedin_url": None},
-        context=ContactWriteContext(source="api", actor_user_id=uuid4()),
-    )
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.update_contact(
+            contact.contact_id,
+            {"linkedin_url": None},
+            context=ContactWriteContext(source="api", actor_user_id=uuid4()),
+        )
 
     events = _mutation_events(session)
-    assert contact.linkedin_url is None
-    assert len(events) == 1
-    assert events[0].changed_fields == {
-        "linkedin_url": {"old": "https://linkedin.com/in/buyer", "new": None}
-    }
+    assert exc.value.status_code == 400
+    assert contact.linkedin_url == "https://linkedin.com/in/buyer"
+    assert events == []
 
 
 @pytest.mark.asyncio
