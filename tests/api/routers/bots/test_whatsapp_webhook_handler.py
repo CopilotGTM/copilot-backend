@@ -105,9 +105,7 @@ def test_post_webhook_rejects_missing_signature(client: TestClient, monkeypatch)
     assert response.status_code == 401
 
 
-def test_post_webhook_schedules_processing_for_valid_signature(
-    client: TestClient, monkeypatch
-) -> None:
+def test_post_webhook_processes_before_returning_success(client: TestClient, monkeypatch) -> None:
     from src.api.routers.bots import whatsapp_webhook_handler
 
     monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
@@ -121,15 +119,10 @@ def test_post_webhook_schedules_processing_for_valid_signature(
         def set(self, *args, **kwargs):
             return True
 
+    processed = []
+
     async def fake_process(self, payload):
-        return None
-
-    scheduled = []
-
-    def fake_create_task(coro):
-        scheduled.append(coro)
-        coro.close()
-        return object()
+        processed.append(payload)
 
     monkeypatch.setattr(whatsapp_webhook_handler, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
@@ -138,7 +131,6 @@ def test_post_webhook_schedules_processing_for_valid_signature(
         fake_process,
         raising=True,
     )
-    monkeypatch.setattr(whatsapp_webhook_handler.asyncio, "create_task", fake_create_task)
 
     body = json.dumps(_payload()).encode("utf-8")
     response = client.post(
@@ -148,7 +140,7 @@ def test_post_webhook_schedules_processing_for_valid_signature(
     )
 
     assert response.status_code == 200
-    assert len(scheduled) == 1
+    assert processed == [_payload()]
 
 
 def test_post_webhook_uses_configured_dedupe_ttl(client: TestClient, monkeypatch) -> None:
@@ -170,21 +162,15 @@ def test_post_webhook_uses_configured_dedupe_ttl(client: TestClient, monkeypatch
             captured["kwargs"] = kwargs
             return True
 
-    async def fake_process(self, payload):
-        return None
-
-    def fake_create_task(coro):
-        coro.close()
-        return object()
+    process_mock = AsyncMock(return_value=None)
 
     monkeypatch.setattr(whatsapp_webhook_handler, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
         whatsapp_webhook_handler.WhatsAppBotService,
         "process_webhook",
-        fake_process,
+        process_mock,
         raising=True,
     )
-    monkeypatch.setattr(whatsapp_webhook_handler.asyncio, "create_task", fake_create_task)
 
     body = json.dumps(_payload()).encode("utf-8")
     response = client.post(
@@ -195,6 +181,7 @@ def test_post_webhook_uses_configured_dedupe_ttl(client: TestClient, monkeypatch
 
     assert response.status_code == 200
     assert captured["kwargs"]["ex"] == 42
+    assert process_mock.await_count == 1
 
 
 def test_post_webhook_ignores_duplicate_message_ids(client: TestClient, monkeypatch) -> None:

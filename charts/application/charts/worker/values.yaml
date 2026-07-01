@@ -50,13 +50,13 @@ resources:
 
 probes:
   enabled: true
-  initialDelaySeconds: 30
+  initialDelaySeconds: 60
   periodSeconds: 30
-  timeoutSeconds: 10
-  failureThreshold: 3
-  readinessInitialDelaySeconds: 10
+  timeoutSeconds: 20
+  failureThreshold: 4
+  readinessInitialDelaySeconds: 30
   readinessPeriodSeconds: 30
-  readinessFailureThreshold: 2
+  readinessFailureThreshold: 3
 
 # GPU Configuration (optional)
 # Enable GPU support for workers that require GPU resources
