@@ -41,6 +41,20 @@ spec:
         {{- toYaml .Values.gpu.tolerations | nindent 8 }}
       {{- end }}
       {{- end }}
+      {{- $workerApp := "src.workers.knowledge_worker.celery_app:app" }}
+      {{- if contains "knowledge" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.knowledge_worker.celery_app:app" }}
+      {{- else if contains "organization" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.organization_worker.celery_app:app" }}
+      {{- else if contains "integration" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.integrations_worker.celery_app:app" }}
+      {{- else if contains "deal" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.deal_worker.celery_app:app" }}
+      {{- else if contains "attachments" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
+      {{- else if contains "chat" .Values.config.queueName }}
+      {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -48,21 +62,7 @@ spec:
           command:
             - "celery"
             - "-A"
-            {{- if contains "knowledge" .Values.config.queueName }}
-            - "src.workers.knowledge_worker.celery_app:app"
-            {{- else if contains "organization" .Values.config.queueName }}
-            - "src.workers.organization_worker.celery_app:app"
-            {{- else if contains "integration" .Values.config.queueName }}
-            - "src.workers.integrations_worker.celery_app:app"
-            {{- else if contains "deal" .Values.config.queueName }}
-            - "src.workers.deal_worker.celery_app:app"
-            {{- else if contains "attachments" .Values.config.queueName }}
-            - "src.workers.chat_worker.celery_app:app"
-            {{- else if contains "chat" .Values.config.queueName }}
-            - "src.workers.chat_worker.celery_app:app"
-            {{- else }}
-            - "src.workers.knowledge_worker.celery_app:app"
-            {{- end }}
+            - {{ $workerApp | quote }}
             {{- if .Values.config.beatMode }}
             # Celery Beat scheduler mode - uses schedule from app config
             - "beat"
@@ -121,21 +121,31 @@ spec:
               value: {{ ($memoryLogging.minDeltaMb | default 0) | quote }}
             {{- end }}
           {{- end }}
-          {{- if and .Values.shutdown.enabled (not .Values.config.beatMode) }}
-          {{- $workerApp := "src.workers.knowledge_worker.celery_app:app" }}
-          {{- if contains "knowledge" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.knowledge_worker.celery_app:app" }}
-          {{- else if contains "organization" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.organization_worker.celery_app:app" }}
-          {{- else if contains "integration" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.integrations_worker.celery_app:app" }}
-          {{- else if contains "deal" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.deal_worker.celery_app:app" }}
-          {{- else if contains "attachments" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
-          {{- else if contains "chat" .Values.config.queueName }}
-          {{- $workerApp = "src.workers.chat_worker.celery_app:app" }}
+          {{- if and (.Values.probes.enabled | default true) (not .Values.config.beatMode) }}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  celery -A {{ $workerApp }} inspect ping --destination "celery@$HOSTNAME" --timeout={{ .Values.probes.timeoutSeconds | default 10 }} >/dev/null
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.probes.periodSeconds | default 30 }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds | default 10 }}
+            failureThreshold: {{ .Values.probes.failureThreshold | default 3 }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  celery -A {{ $workerApp }} inspect ping --destination "celery@$HOSTNAME" --timeout={{ .Values.probes.timeoutSeconds | default 10 }} >/dev/null
+            initialDelaySeconds: {{ .Values.probes.readinessInitialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.probes.readinessPeriodSeconds | default 30 }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds | default 10 }}
+            failureThreshold: {{ .Values.probes.readinessFailureThreshold | default 2 }}
           {{- end }}
+          {{- if and .Values.shutdown.enabled (not .Values.config.beatMode) }}
           {{- $drainQueues := list .Values.config.queueName }}
           {{- if .Values.config.additionalQueues }}
           {{- $drainQueues = concat $drainQueues .Values.config.additionalQueues }}

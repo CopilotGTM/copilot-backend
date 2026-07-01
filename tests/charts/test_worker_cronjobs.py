@@ -17,10 +17,10 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _render_worker_cronjobs() -> list[dict]:
+def _render_all_manifests(values_file: str = "charts/application/values-dev.yaml") -> list[dict]:
     helm_path = shutil.which("helm")
     if helm_path is None:
-        msg = "helm must be installed to render worker cronjobs"
+        msg = "helm must be installed to render worker manifests"
         raise RuntimeError(msg)
 
     result = subprocess.run(  # noqa: S603 - fixed helm binary path and static arguments
@@ -32,36 +32,7 @@ def _render_worker_cronjobs() -> list[dict]:
             "-f",
             "charts/application/values.yaml",
             "-f",
-            "charts/application/values-dev.yaml",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [
-        doc
-        for doc in yaml.safe_load_all(result.stdout)
-        if isinstance(doc, dict) and doc.get("kind") == "CronJob"
-    ]
-
-
-def _render_all_manifests() -> list[dict]:
-    helm_path = shutil.which("helm")
-    if helm_path is None:
-        msg = "helm must be installed to render worker cronjobs"
-        raise RuntimeError(msg)
-
-    result = subprocess.run(  # noqa: S603 - fixed helm binary path and static arguments
-        [
-            helm_path,
-            "template",
-            "copilot-backend",
-            "charts/application",
-            "-f",
-            "charts/application/values.yaml",
-            "-f",
-            "charts/application/values-dev.yaml",
+            values_file,
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -71,9 +42,17 @@ def _render_all_manifests() -> list[dict]:
     return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
 
 
+def _render_worker_cronjobs(values_file: str = "charts/application/values-dev.yaml") -> list[dict]:
+    return [doc for doc in _render_all_manifests(values_file) if doc.get("kind") == "CronJob"]
+
+
+def _render_prod_worker_cronjobs() -> list[dict]:
+    return _render_worker_cronjobs("charts/application/values-prod.yaml")
+
+
 def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
     """Assert integrations CronJob keeps strict production restart and deadline settings."""
-    cronjobs = _render_worker_cronjobs()
+    cronjobs = _render_prod_worker_cronjobs()
     deal_messages = next(
         doc
         for doc in cronjobs
@@ -127,7 +106,7 @@ def test_microsoft_graph_subscription_renewal_cronjob_renders_dispatch_contract(
 
 def test_hubspot_core_incremental_cronjob_renders_dispatch_contract() -> None:
     """Assert HubSpot incremental polling is deployed as a hardened integrations CronJob."""
-    cronjobs = _render_worker_cronjobs()
+    cronjobs = _render_prod_worker_cronjobs()
     incremental = next(
         doc
         for doc in cronjobs
@@ -149,7 +128,7 @@ def test_hubspot_core_incremental_cronjob_renders_dispatch_contract() -> None:
 
 def test_hubspot_delete_reconciliation_cronjob_renders_dispatch_contract() -> None:
     """Assert slow HubSpot delete reconciliation is deployed as an integrations CronJob."""
-    cronjobs = _render_worker_cronjobs()
+    cronjobs = _render_prod_worker_cronjobs()
     reconciliation = next(
         doc
         for doc in cronjobs
@@ -171,7 +150,7 @@ def test_hubspot_delete_reconciliation_cronjob_renders_dispatch_contract() -> No
 
 def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     """Assert deal-mapping and attachment CronJobs still render hardened settings."""
-    cronjobs = _render_worker_cronjobs()
+    cronjobs = _render_prod_worker_cronjobs()
     deal_mapping = next(
         doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-deal-mapping"
     )
@@ -275,9 +254,45 @@ def test_dev_chat_worker_renders_memory_guardrails() -> None:
 
     container = deployment["spec"]["template"]["spec"]["containers"][0]
 
-    assert "--concurrency=3" in container["command"]
+    assert "--concurrency=1" in container["command"]
     assert "--max-tasks-per-child=25" in container["command"]
     assert "--max-memory-per-child=700000" in container["command"]
+
+
+def test_worker_deployments_render_celery_events_and_health_probes() -> None:
+    """Workers must be observable and restarted when Celery stops answering control traffic."""
+    manifests = _render_all_manifests()
+    deployments = [
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"].endswith("-worker")
+        and "beat" not in doc["metadata"]["name"]
+    ]
+
+    assert {doc["metadata"]["name"] for doc in deployments} == {
+        "copilot-backend-chat-worker",
+        "copilot-backend-deal-worker",
+        "copilot-backend-integrations-worker",
+        "copilot-backend-knowledge-extract-worker",
+        "copilot-backend-knowledge-upload-worker",
+        "copilot-backend-organization-worker",
+    }
+
+    for deployment in deployments:
+        name = deployment["metadata"]["name"]
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        command = container["command"]
+        joined_liveness = " ".join(container["livenessProbe"]["exec"]["command"])
+        joined_readiness = " ".join(container["readinessProbe"]["exec"]["command"])
+
+        assert "-E" in command, name
+        assert "celery -A" in joined_liveness, name
+        assert "inspect ping" in joined_liveness, name
+        assert "celery@$HOSTNAME" in joined_liveness, name
+        assert "celery -A" in joined_readiness, name
+        assert "inspect ping" in joined_readiness, name
+        assert "celery@$HOSTNAME" in joined_readiness, name
 
 
 def test_chat_worker_prestop_drains_all_consumed_queues() -> None:
