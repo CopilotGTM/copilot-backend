@@ -103,11 +103,6 @@ class AgentConfig:
     DEAL_UPDATE_TIMEOUT: int = int(os.getenv("AGENT_DEAL_UPDATE_TIMEOUT", "600"))
 
     # Stakeholder Research Agent — researches individual stakeholders via Apollo + LinkedIn
-    STAKEHOLDER_RESEARCH_MODEL: str = os.getenv("AGENT_STAKEHOLDER_RESEARCH_MODEL", "gpt-5-mini")
-    STAKEHOLDER_RESEARCH_DEBUG: bool = (
-        os.getenv("AGENT_STAKEHOLDER_RESEARCH_DEBUG", "false").lower() == "true"
-    )
-    STAKEHOLDER_RESEARCH_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_RESEARCH_TIMEOUT", "120"))
 
     # Contact Research Summary Agent — turns provider enrichment into short UI copy
     CONTACT_RESEARCH_SUMMARY_MODEL: str = os.getenv(
@@ -211,11 +206,6 @@ class AgentConfig:
             "TRANSCRIPT_COMPRESSION_MODEL",
             "TRANSCRIPT_COMPRESSION_DEBUG",
             "TRANSCRIPT_COMPRESSION_TIMEOUT",
-        ),
-        "stakeholder_research_agent": (
-            "STAKEHOLDER_RESEARCH_MODEL",
-            "STAKEHOLDER_RESEARCH_DEBUG",
-            "STAKEHOLDER_RESEARCH_TIMEOUT",
         ),
         "contact_research_summary_agent": (
             "CONTACT_RESEARCH_SUMMARY_MODEL",

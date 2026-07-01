@@ -3,7 +3,7 @@
 The public task name still says "stakeholder sync", but the canonical deal-person
 state is now `CRMDealParticipant`. This service normalizes contact participants,
 links them to durable contacts, rejects internal participants, and queues
-stakeholder research without writing the old stakeholder table.
+contact research without writing the old stakeholder table.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class StakeholderSyncService:
         self._suppress_research_dispatch = suppress_research_dispatch
         self._org_sync_batch_size = max(1, org_sync_batch_size)
         self._internal_domains: set[str] | None = None
-        self._pending_research: list[tuple[UUID, UUID]] = []
+        self._pending_research: list[UUID] = []
 
     @staticmethod
     def _normalize_email(email: str) -> str:
@@ -333,24 +333,24 @@ class StakeholderSyncService:
                 session.add(participant)
                 result.updated += 1
 
-            if await self._needs_contact_research(session, participant):
-                self._pending_research.append((participant.participant_id, deal.deal_id))
+            if contact_id := await self._contact_id_needing_research(session, participant):
+                self._pending_research.append(contact_id)
                 result.created += 1
 
         return result
 
-    async def _needs_contact_research(
+    async def _contact_id_needing_research(
         self,
         session: AsyncSession,
         participant: CRMDealParticipant,
-    ) -> bool:
-        """Return whether a participant still needs contact-owned research.
+    ) -> UUID | None:
+        """Return the linked contact id when contact-owned research is missing.
 
         The linked CRMContact is authoritative after the contact-owned research
         migration; unlinked placeholders do not carry enough identity to run.
         """
         if not participant.related_local_id:
-            return False
+            return None
 
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
@@ -360,8 +360,10 @@ class StakeholderSyncService:
         result = await session.execute(stmt)
         contact = result.scalar_one_or_none()
         if not contact:
-            return True
-        return not contact.contact_research and not contact.last_researched_at
+            return None
+        if contact.contact_research or contact.last_researched_at:
+            return None
+        return contact.contact_id
 
     async def _load_deal(self, session: AsyncSession, deal_id: UUID) -> CRMDeal | None:
         deal_participants_rel = cast(Any, CRMDeal.participants)
@@ -384,27 +386,26 @@ class StakeholderSyncService:
             self._pending_research.clear()
             return
         try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
+            from src.workers.deal_worker.utils.contact_research_dispatch import (
+                dispatch_contact_research_async,
             )
 
-            for stakeholder_id, deal_id in self._pending_research:
+            for contact_id in self._pending_research:
                 try:
-                    await dispatch_stakeholder_research_async(
+                    await dispatch_contact_research_async(
                         organisation_id=self.organisation_id,
-                        stakeholder_id=stakeholder_id,
-                        deal_id=deal_id,
+                        contact_id=contact_id,
+                        trigger="stakeholder_sync",
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s",
-                        stakeholder_id,
+                        "Failed to dispatch research for contact %s",
+                        contact_id,
                         exc_info=True,
                         extra={
-                            "event": "stakeholder_sync_research_dispatch_failed",
+                            "event": "stakeholder_sync_contact_research_dispatch_failed",
                             "organisation_id": str(self.organisation_id),
-                            "stakeholder_id": str(stakeholder_id),
-                            "deal_id": str(deal_id),
+                            "contact_id": str(contact_id),
                         },
                     )
         finally:

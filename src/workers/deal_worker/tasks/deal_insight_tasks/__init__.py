@@ -33,11 +33,6 @@ from src.workers.deal_worker.tasks.deal_insight_tasks.risk_blocker_extraction_ta
 from src.workers.deal_worker.tasks.deal_insight_tasks.stakeholder_analysis_task import (
     analyze_deal_stakeholders_task,
 )
-from src.workers.deal_worker.tasks.deal_insight_tasks.stakeholder_research_tasks import (
-    process_stakeholder_research_job,
-    retry_pending_research_org,
-    trigger_retry_pending_research_all_orgs,
-)
 
 __all__ = [
     # Deal summary
@@ -46,10 +41,6 @@ __all__ = [
     "process_deal_update_job",
     # Stakeholder analysis
     "analyze_deal_stakeholders_task",
-    # Stakeholder research
-    "process_stakeholder_research_job",
-    "retry_pending_research_org",
-    "trigger_retry_pending_research_all_orgs",
     # Contact research
     "process_account_research_job",
     "process_contact_research_job",

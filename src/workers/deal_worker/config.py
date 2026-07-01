@@ -93,9 +93,6 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_asset.extract_email_attachments_org",
             "deal_asset.extract_email_attachments_deal",
             "deal_asset.extract_email_attachments_all_orgs",
-            # Stakeholder research retry (periodic scan for un-researched)
-            "stakeholder_research.retry_pending_org",
-            "stakeholder_research.trigger_retry_all_orgs",
         )
 
         deal_jobs_queue_tasks = (
@@ -116,9 +113,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_memory.process_job",
             # Deal task sync tasks
             "deal_tasks.sync_from_summary",
-            # Stakeholder research tasks
             "account_research.process_job",
-            "stakeholder_research.process_job",
             "contact_research.process_job",
         )
 

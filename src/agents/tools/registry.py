@@ -134,7 +134,6 @@ class ToolName(str, Enum):
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
     RESEARCH_LINKEDIN_PROFILE = "research_linkedin_profile"  # LinkedIn research for general chat
-    RESEARCH_STAKEHOLDER = "research_stakeholder"  # Read-only stakeholder lookup via Apollo
 
     # -------------------------------------------------------------------------
     # CALENDAR TOOLS - For upcoming meetings and events
@@ -484,15 +483,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
     },
     # -------------------------------------------------------------------------
-    # StakeholderResearchAgent - Stakeholder Research Agent
-    # Location: src/agents/workflows/stakeholder_research/agent.py
-    # Purpose: Researches individual stakeholders via Apollo + LinkedIn.
-    # -------------------------------------------------------------------------
-    "StakeholderResearchAgent": {
-        ToolName.RESEARCH_STAKEHOLDER,
-        ToolName.RESEARCH_LINKEDIN_PROFILE,
-    },
-    # -------------------------------------------------------------------------
     # DealTaskAgent - Post-meeting deal task automation
     # Location: src/agents/workflows/deal_tasks/agent.py
     # Purpose: Creates and completes internal deal tasks from meeting summaries.
@@ -580,7 +570,6 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
     ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
-    ToolName.RESEARCH_STAKEHOLDER: ToolCategory.SEARCH,
     # Tasks
     ToolName.CREATE_TASK: ToolCategory.CRM,
     ToolName.LIST_LEADS: ToolCategory.CRM,
@@ -690,7 +679,6 @@ class ToolRegistry:
             create_get_company_financials,
             create_get_stock_info,
             create_research_linkedin_profile,
-            create_research_stakeholder,
             create_search_arxiv,
             create_search_wikipedia,
         )
@@ -894,10 +882,6 @@ class ToolRegistry:
         self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
             lambda: create_research_linkedin_profile(self.capabilities_getter)
         )
-        self._tool_factories[ToolName.RESEARCH_STAKEHOLDER] = lambda: create_research_stakeholder(
-            self.context, self.capabilities_getter
-        )
-
         # Task tools
         self._tool_factories[ToolName.CREATE_TASK] = lambda: create_create_task(
             self.context, self.capabilities_getter

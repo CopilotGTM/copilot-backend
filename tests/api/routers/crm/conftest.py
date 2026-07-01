@@ -1411,25 +1411,26 @@ class FakeDealJobService:
 
         return result if result else None
 
-    async def get_active_stakeholder_research_job(
+    async def get_active_contact_research_job(
         self,
-        deal_id: UUID,
-        stakeholder_id: UUID,
+        contact_id: UUID,
     ) -> dict | None:
-        """Get active stakeholder research job for detail reconnect tests."""
-        jobs = self._deal_jobs.get(deal_id, [])
-        for job in jobs:
-            if (
-                job.job_type == DealJobType.STAKEHOLDER_RESEARCH
-                and job.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS)
-                and job.user_id == self.user_id
-                and getattr(job, "stakeholder_id", None) == stakeholder_id
-            ):
-                return {
-                    "job_id": job.job_id,
-                    "job_type": job.job_type.value,
-                    "status": job.status.value if hasattr(job.status, "value") else str(job.status),
-                }
+        """Get active contact research job for detail reconnect tests."""
+        for jobs in self._deal_jobs.values():
+            for job in jobs:
+                if (
+                    job.job_type == DealJobType.CONTACT_RESEARCH
+                    and job.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS)
+                    and job.user_id == self.user_id
+                    and (job.job_metadata or {}).get("contact_id") == str(contact_id)
+                ):
+                    return {
+                        "job_id": job.job_id,
+                        "job_type": job.job_type.value,
+                        "status": job.status.value
+                        if hasattr(job.status, "value")
+                        else str(job.status),
+                    }
         return None
 
 

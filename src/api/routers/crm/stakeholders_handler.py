@@ -85,47 +85,8 @@ def _to_deal_job_response(job: Any) -> DealJobResponse:
     )
 
 
-def _has_cached_stakeholder_research(stakeholder: StakeholderDetail) -> bool:
+def _has_cached_contact_research(stakeholder: StakeholderDetail) -> bool:
     return bool(stakeholder.stakeholder_research or stakeholder.last_researched_at)
-
-
-async def _dispatch_auto_stakeholder_research(
-    *,
-    organisation_id: UUID,
-    participant_id: UUID,
-    deal_id: UUID,
-    user_id: UUID | None,
-) -> DealJobResponse | None:
-    """Dispatch research for the stakeholder that was explicitly added/restored."""
-    try:
-        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-            dispatch_stakeholder_research_async,
-        )
-
-        job_id = await dispatch_stakeholder_research_async(
-            organisation_id=organisation_id,
-            stakeholder_id=participant_id,
-            deal_id=deal_id,
-            user_id=user_id,
-        )
-        if not job_id:
-            return None
-        return DealJobResponse(
-            job_id=UUID(job_id),
-            job_type="stakeholder_research",
-            status="pending",
-        )
-    except Exception:
-        logger.error(
-            "Failed to dispatch stakeholder research",
-            extra={
-                "organisation_id": str(organisation_id),
-                "participant_id": str(participant_id),
-                "deal_id": str(deal_id),
-            },
-            exc_info=True,
-        )
-        return None
 
 
 async def _dispatch_auto_contact_research(
@@ -133,6 +94,7 @@ async def _dispatch_auto_contact_research(
     organisation_id: UUID,
     contact_id: UUID,
     user_id: UUID | None,
+    force_refresh: bool = False,
 ) -> DealJobResponse | None:
     """Dispatch canonical contact research for a contact-backed stakeholder."""
     try:
@@ -145,6 +107,7 @@ async def _dispatch_auto_contact_research(
             contact_id=contact_id,
             user_id=user_id,
             trigger="stakeholder_created",
+            force_refresh=force_refresh,
         )
         if not job_id:
             return None
@@ -377,19 +340,10 @@ async def create_stakeholder(
                 deal_id,
                 stakeholder.participant_id,
             )
-        if stakeholder.contact_id and not _has_cached_stakeholder_research(stakeholder):
+        if stakeholder.contact_id and not _has_cached_contact_research(stakeholder):
             research_job = await _dispatch_auto_contact_research(
                 organisation_id=service.organisation_id,
                 contact_id=stakeholder.contact_id,
-                user_id=user_ids.user_id,
-            )
-        elif (
-            stakeholder.email or stakeholder.linkedin_url
-        ) and not _has_cached_stakeholder_research(stakeholder):
-            research_job = await _dispatch_auto_stakeholder_research(
-                organisation_id=service.organisation_id,
-                participant_id=stakeholder.participant_id,
-                deal_id=deal_id,
                 user_id=user_ids.user_id,
             )
 
@@ -461,9 +415,11 @@ async def get_stakeholder_detail(
             return Response.error_response(
                 message="Stakeholder not found", status_code=404, response=response
             )
-        detail["active_research_job"] = await deal_job_service.get_active_stakeholder_research_job(
-            deal_id,
-            participant_id,
+        contact_id = detail.get("contact_id") if isinstance(detail, dict) else None
+        detail["active_research_job"] = (
+            await deal_job_service.get_active_contact_research_job(UUID(str(contact_id)))
+            if contact_id
+            else None
         )
         return Response.success_response(
             message="Stakeholder detail retrieved",
@@ -546,19 +502,19 @@ async def update_stakeholder(
 @stakeholders_router.post(
     "/{deal_id}/stakeholders/{participant_id}/research",
     response_model=GenericResponse[DealJobResponse],
-    summary="Trigger stakeholder research",
+    summary="Trigger contact research for a stakeholder",
 )
-async def trigger_stakeholder_research(
+async def trigger_stakeholder_contact_research(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholderReadService = Depends(get_stakeholder_read_service),
 ) -> GenericResponse[DealJobResponse]:
-    """Manually trigger LinkedIn research for a stakeholder.
+    """Manually trigger contact-owned research for a stakeholder.
 
-    Dispatches a research job to enrich the stakeholder's profile.
-    If research was already run recently (within 30 days), it will be skipped.
+    Dispatches a research job for the linked CRM contact. Unlinked
+    stakeholders must be resolved to contacts before research can run.
 
     Returns the job_id if dispatched, or a message if skipped.
     """
@@ -570,44 +526,40 @@ async def trigger_stakeholder_research(
                 message="Stakeholder not found", status_code=404, response=response
             )
 
-        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-            dispatch_stakeholder_research_async,
-        )
+        contact_id = detail.get("contact_id") if isinstance(detail, dict) else None
+        if not contact_id:
+            return Response.error_response(
+                message="Stakeholder must be linked to a contact before research can run",
+                status_code=400,
+                response=response,
+            )
 
-        job_id = await dispatch_stakeholder_research_async(
+        job = await _dispatch_auto_contact_research(
             organisation_id=service.organisation_id,
-            stakeholder_id=participant_id,
-            deal_id=deal_id,
+            contact_id=UUID(str(contact_id)),
             user_id=user_ids.user_id,
-            force=True,
+            force_refresh=True,
         )
 
-        if job_id:
+        if job:
             logger.info(
-                "Stakeholder research triggered",
+                "Contact research triggered from stakeholder",
                 extra={
-                    "event": "stakeholder_research_triggered",
+                    "event": "stakeholder_contact_research_triggered",
                     "organisation_id": str(service.organisation_id),
                     "participant_id": str(participant_id),
                     "deal_id": str(deal_id),
-                    "job_id": job_id,
+                    "job_id": str(job.job_id),
                     "user_id": str(user_ids.user_id),
                 },
             )
-            return Response.success_response(
-                message="Research job dispatched",
-                data=DealJobResponse(
-                    job_id=UUID(job_id),
-                    job_type="stakeholder_research",
-                    status="pending",
-                ),
-            )
+            return Response.success_response(message="Research job dispatched", data=job)
 
         return Response.success_response(
             message="Research skipped — already researched recently",
             data=DealJobResponse(
                 job_id=None,
-                job_type="stakeholder_research",
+                job_type="contact_research",
                 status="completed",
             ),
         )

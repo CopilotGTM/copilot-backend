@@ -1,7 +1,6 @@
 """Research tools package for agent capabilities.
 
 Provides research tools for agent workflows:
-- Stakeholder research via Apollo (read-only, used by StakeholderResearchAgent)
 - Wikipedia search for background research
 - YFinance for stock and financial data
 - Web crawler for page content extraction
@@ -15,10 +14,6 @@ from .research_linkedin_profile import (
     create_research_linkedin_profile,
     research_linkedin_profile,
 )
-from .research_stakeholder import (
-    create_research_stakeholder,
-    research_stakeholder,
-)
 from .web_crawler import crawl_webpage, create_crawl_webpage
 from .wikipedia_search import create_search_wikipedia, wikipedia_search
 from .yfinance_tools import (
@@ -29,9 +24,6 @@ from .yfinance_tools import (
 )
 
 __all__ = [
-    # Stakeholder Research (read-only Apollo lookup)
-    "research_stakeholder",
-    "create_research_stakeholder",
     # Wikipedia
     "wikipedia_search",
     "create_search_wikipedia",

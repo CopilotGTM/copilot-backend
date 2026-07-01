@@ -1978,7 +1978,7 @@ def test_get_deal_with_active_stakeholder_processing_jobs(
             job_id=uuid4(),
             deal_id=deal.deal_id,
             organisation_id=org_id,
-            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            job_type=DealJobType.CONTACT_RESEARCH,
             status=JobStatus.IN_PROGRESS,
         )
     )

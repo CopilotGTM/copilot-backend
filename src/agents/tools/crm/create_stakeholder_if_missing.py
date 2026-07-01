@@ -147,7 +147,6 @@ async def create_stakeholder_if_missing(
                 await _dispatch_research_for_stakeholder_create(
                     organisation_id=organisation_id,
                     stakeholder=new_stakeholder,
-                    deal_id=actual_deal_id,
                     user_id=context.user_id,
                 )
             except Exception:

@@ -210,8 +210,6 @@ class DealJobType(StrEnum):
         "calendar_contact_account_discovery"  # Internal CRM discovery after calendar sync
     )
 
-    # Stakeholder research
-    STAKEHOLDER_RESEARCH = "stakeholder_research"
     CONTACT_RESEARCH = "contact_research"
     ACCOUNT_RESEARCH = "account_research"
 

@@ -148,17 +148,12 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
         SimpleNamespace(job_id=uuid4(), job_type="DEAL_EMAIL_REMATCH", status="PENDING"),
         SimpleNamespace(job_id=uuid4(), job_type="DEAL_CALENDAR_REMATCH", status="PENDING"),
     ]
-    research_job_id = uuid4()
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
         patch(
             "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
         ) as job_service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
-            AsyncMock(return_value=research_job_id),
-        ) as research_dispatch,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -192,12 +187,6 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
     assert not hasattr(request, "external_links")
     job_service_cls.assert_called_once_with(org_session, context.organisation_id, context.user_id)
     job_service.create_stakeholder_processing_jobs.assert_awaited_once_with(deal_id, stakeholder_id)
-    research_dispatch.assert_awaited_once_with(
-        organisation_id=context.organisation_id,
-        stakeholder_id=stakeholder_id,
-        deal_id=deal_id,
-        user_id=context.user_id,
-    )
     assert result["status"] == "created"
     assert result["participant_id"] == str(stakeholder_id)
     assert "stakeholder_id" not in result
@@ -205,14 +194,10 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
     assert result["deal_name"] == "Acme Expansion"
     assert "champion_potential" not in result
     assert len(result["processing_jobs"]) == 2
-    assert result["research_job"] == {
-        "job_id": str(research_job_id),
-        "job_type": "stakeholder_research",
-        "status": "pending",
-    }
+    assert result["research_job"] is None
     assert result["post_create_jobs"] == {
         "processing": {"status": "queued"},
-        "research": {"status": "queued"},
+        "research": {"status": "not_created"},
     }
     assert "_bot_channel_payload" not in result
 
@@ -242,10 +227,6 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
             "dispatch_contact_research_async",
             AsyncMock(return_value=str(research_job_id)),
         ) as contact_research_dispatch,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
-            AsyncMock(return_value=uuid4()),
-        ) as stakeholder_research_dispatch,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -267,7 +248,6 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
         user_id=context.user_id,
         trigger="stakeholder_created",
     )
-    stakeholder_research_dispatch.assert_not_awaited()
     assert result["research_job"] == {
         "job_id": str(research_job_id),
         "job_type": "contact_research",
@@ -276,26 +256,19 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
 
 
 @pytest.mark.asyncio
-async def test_add_stakeholder_direct_dispatches_only_research_for_linkedin_only_stakeholder() -> (
-    None
-):
+async def test_add_stakeholder_direct_does_not_research_linkedin_only_stakeholder() -> None:
     context = _context()
     deal_id = uuid4()
     stakeholder_id = uuid4()
     stakeholder = _stakeholder(stakeholder_id=stakeholder_id, deal_id=deal_id)
     stakeholder.email = None
     stakeholder.linkedin_url = "https://linkedin.com/in/linkedin-only"
-    research_job_id = uuid4()
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
         patch(
             "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
         ) as job_service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
-            AsyncMock(return_value=research_job_id),
-        ) as research_dispatch,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -312,15 +285,10 @@ async def test_add_stakeholder_direct_dispatches_only_research_for_linkedin_only
         )
 
     job_service.create_stakeholder_processing_jobs.assert_not_awaited()
-    research_dispatch.assert_awaited_once_with(
-        organisation_id=context.organisation_id,
-        stakeholder_id=stakeholder_id,
-        deal_id=deal_id,
-        user_id=context.user_id,
-    )
     assert result["processing_jobs"] == []
     assert result["post_create_jobs"]["processing"] == {"status": "not_created"}
-    assert result["research_job"]["job_id"] == str(research_job_id)
+    assert result["post_create_jobs"]["research"] == {"status": "not_created"}
+    assert result["research_job"] is None
 
 
 @pytest.mark.asyncio
@@ -328,17 +296,12 @@ async def test_add_stakeholder_direct_returns_success_when_processing_jobs_fail(
     context = _context(channel="web")
     deal_id = uuid4()
     stakeholder = _stakeholder(deal_id=deal_id)
-    research_job_id = uuid4()
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
         patch(
             "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
         ) as job_service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
-            AsyncMock(return_value=research_job_id),
-        ) as research_dispatch,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -356,15 +319,14 @@ async def test_add_stakeholder_direct_returns_success_when_processing_jobs_fail(
             email="buyer@acme.com",
         )
 
-    research_dispatch.assert_awaited_once()
     assert result["status"] == "created"
     assert result["processing_jobs"] == []
-    assert result["research_job"]["job_id"] == str(research_job_id)
+    assert result["research_job"] is None
     assert result["post_create_jobs"]["processing"] == {
         "status": "failed",
         "error": "queue down",
     }
-    assert result["post_create_jobs"]["research"] == {"status": "queued"}
+    assert result["post_create_jobs"]["research"] == {"status": "not_created"}
 
 
 @pytest.mark.asyncio
@@ -372,6 +334,7 @@ async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fai
     context = _context(channel="web")
     deal_id = uuid4()
     stakeholder = _stakeholder(deal_id=deal_id)
+    stakeholder.contact_id = uuid4()
     processing_jobs = [
         SimpleNamespace(job_id=uuid4(), job_type="DEAL_EMAIL_REMATCH", status="PENDING"),
     ]
@@ -382,7 +345,7 @@ async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fai
             "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
         ) as job_service_cls,
         patch(
-            "src.agents.tools.crm.add_stakeholder.dispatch_stakeholder_research_async",
+            "src.workers.deal_worker.utils.contact_research_dispatch.dispatch_contact_research_async",
             AsyncMock(side_effect=RuntimeError("broker down")),
         ),
     ):

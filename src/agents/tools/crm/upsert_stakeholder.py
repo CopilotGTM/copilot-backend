@@ -173,14 +173,6 @@ def _is_unknown_enum(value: Any) -> bool:
     return str(raw).upper() == "UNKNOWN"
 
 
-def _has_research_identity(stakeholder: Any) -> bool:
-    return bool(
-        getattr(stakeholder, "email", None)
-        or getattr(stakeholder, "related_email", None)
-        or getattr(stakeholder, "linkedin_url", None)
-    )
-
-
 def _stakeholder_contact_id(stakeholder: Any) -> UUID | None:
     contact_id = getattr(stakeholder, "contact_id", None) or getattr(
         stakeholder, "related_local_id", None
@@ -192,10 +184,9 @@ async def _dispatch_research_for_stakeholder_create(
     *,
     organisation_id: UUID,
     stakeholder: Any,
-    deal_id: UUID,
     user_id: UUID | None = None,
 ) -> None:
-    """Queue canonical contact research when possible, with stakeholder research as fallback."""
+    """Queue canonical contact research for contact-backed stakeholders."""
     if contact_id := _stakeholder_contact_id(stakeholder):
         from src.workers.deal_worker.utils.contact_research_dispatch import (
             dispatch_contact_research_async,
@@ -207,20 +198,6 @@ async def _dispatch_research_for_stakeholder_create(
             user_id=user_id,
             trigger="stakeholder_created",
         )
-        return
-
-    if not _has_research_identity(stakeholder):
-        return
-
-    from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-        dispatch_stakeholder_research_async,
-    )
-
-    await dispatch_stakeholder_research_async(
-        organisation_id=organisation_id,
-        stakeholder_id=stakeholder.participant_id,
-        deal_id=deal_id,
-    )
 
 
 def _format_upsert_output(
@@ -277,17 +254,13 @@ def _format_upsert_output(
     }
 
 
-def _needs_research_dispatch(stakeholder: Any, contact: Any | None) -> bool:
+def _needs_research_dispatch(contact: Any | None) -> bool:
     """Return whether an existing stakeholder needs contact-owned research."""
     if contact is not None:
         return not getattr(contact, "contact_research", None) and not getattr(
             contact, "last_researched_at", None
         )
-    return not getattr(stakeholder, "stakeholder_research", None) and not getattr(
-        stakeholder,
-        "last_researched_at",
-        None,
-    )
+    return False
 
 
 async def upsert_stakeholder(
@@ -456,14 +429,12 @@ async def upsert_stakeholder(
 
                     # Dispatch research if stakeholder was reactivated
                     if "approval_status" not in updated_fields and _needs_research_dispatch(
-                        stakeholder,
                         contact,
                     ):
                         try:
                             await _dispatch_research_for_stakeholder_create(
                                 organisation_id=organisation_id,
                                 stakeholder=stakeholder,
-                                deal_id=actual_deal_id,
                                 user_id=context.user_id,
                             )
                         except Exception:
@@ -526,7 +497,6 @@ async def upsert_stakeholder(
                 await _dispatch_research_for_stakeholder_create(
                     organisation_id=organisation_id,
                     stakeholder=new_stakeholder,
-                    deal_id=actual_deal_id,
                     user_id=context.user_id,
                 )
             except Exception:

@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -59,6 +58,8 @@ def _participant(**overrides):
     values = {
         "participant_id": participant_id,
         "stakeholder_id": participant_id,
+        "contact_id": None,
+        "related_local_id": None,
         "related_email": "buyer@example.com",
         "email": "buyer@example.com",
         "linkedin_url": None,
@@ -97,7 +98,13 @@ class _FakeStakeholdersService:
         self.find_calls.append(kwargs)
         return self.existing
 
-    async def create_stakeholder(self, deal_id, request):  # noqa: ANN001
+    async def _get_participant_contact(self, _stakeholder):  # noqa: ANN001
+        return None
+
+    def _apply_contact_profile_updates(self, **_kwargs):  # noqa: ANN001
+        return None
+
+    async def create_stakeholder(self, deal_id, request, **_kwargs):  # noqa: ANN001
         self.create_calls.append((deal_id, request))
         return self.created
 
@@ -123,12 +130,6 @@ async def test_upsert_stakeholder_updates_existing_participant(monkeypatch) -> N
     existing = _participant(related_name=None, name=None, decision_power="UNKNOWN")
     service = _FakeStakeholdersService(existing=existing)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
-    research_dispatch = AsyncMock()
-    monkeypatch.setattr(
-        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-        "dispatch_stakeholder_research_async",
-        research_dispatch,
-    )
 
     result = await upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -143,11 +144,10 @@ async def test_upsert_stakeholder_updates_existing_participant(monkeypatch) -> N
     assert result["action"] == "updated"
     assert result["participant_id"] == str(existing.participant_id)
     assert "stakeholder_id" not in result
-    assert existing.related_name == "Buyer Name"
+    assert existing.related_name is None
     assert existing.decision_power == DecisionPower.DECISION_MAKER.value
     assert session.commits == 1
     assert session.refreshed == [existing]
-    research_dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -183,12 +183,6 @@ async def test_upsert_stakeholder_creates_when_missing(monkeypatch) -> None:
     )
     service = _FakeStakeholdersService(existing=None, created=created)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
-    research_dispatch = AsyncMock()
-    monkeypatch.setattr(
-        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-        "dispatch_stakeholder_research_async",
-        research_dispatch,
-    )
 
     result = await upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -204,15 +198,10 @@ async def test_upsert_stakeholder_creates_when_missing(monkeypatch) -> None:
     assert result["participant_id"] == str(created.participant_id)
     assert "stakeholder_id" not in result
     assert service.create_calls[0][0] == context.deal_id
-    research_dispatch.assert_awaited_once_with(
-        organisation_id=context.organisation_id,
-        stakeholder_id=created.stakeholder_id,
-        deal_id=context.deal_id,
-    )
 
 
 @pytest.mark.asyncio
-async def test_upsert_stakeholder_creates_linkedin_only_and_dispatches_research(
+async def test_upsert_stakeholder_creates_linkedin_only_without_research(
     monkeypatch,
 ) -> None:
     context, _session = _make_context()
@@ -225,12 +214,6 @@ async def test_upsert_stakeholder_creates_linkedin_only_and_dispatches_research(
     )
     service = _FakeStakeholdersService(existing=None, created=created)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
-    research_dispatch = AsyncMock()
-    monkeypatch.setattr(
-        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-        "dispatch_stakeholder_research_async",
-        research_dispatch,
-    )
 
     result = await upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -243,11 +226,6 @@ async def test_upsert_stakeholder_creates_linkedin_only_and_dispatches_research(
     assert result is not None
     assert result["action"] == "created"
     assert service.create_calls[0][1].linkedin_url == "https://linkedin.com/in/created-buyer"
-    research_dispatch.assert_awaited_once_with(
-        organisation_id=context.organisation_id,
-        stakeholder_id=created.stakeholder_id,
-        deal_id=context.deal_id,
-    )
 
 
 @pytest.mark.asyncio
@@ -261,12 +239,6 @@ async def test_upsert_stakeholder_creates_name_only_placeholder(monkeypatch) -> 
     )
     service = _FakeStakeholdersService(existing=None, created=created)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
-    research_dispatch = AsyncMock()
-    monkeypatch.setattr(
-        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-        "dispatch_stakeholder_research_async",
-        research_dispatch,
-    )
 
     result = await upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -277,8 +249,7 @@ async def test_upsert_stakeholder_creates_name_only_placeholder(monkeypatch) -> 
     assert result["action"] == "created"
     assert result["email"] is None
     assert result["name"] == "Jane Buyer"
-    assert service.create_calls[0][1].identity == "Jane Buyer"
-    research_dispatch.assert_not_awaited()
+    assert service.create_calls[0][1].name == "Jane Buyer"
 
 
 @pytest.mark.asyncio
@@ -289,12 +260,6 @@ async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_o
     existing = _participant(stance="SUPPORTER", decision_power="INFLUENCER", temperature="WARM")
     service = _FakeStakeholdersService(existing=existing)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
-    research_dispatch = AsyncMock()
-    monkeypatch.setattr(
-        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-        "dispatch_stakeholder_research_async",
-        research_dispatch,
-    )
     tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
 
     result = await tool(
@@ -307,15 +272,14 @@ async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_o
     )
 
     assert result is not None
-    assert result["action"] == "updated"
-    assert "name" in result["updated_fields"]
+    assert result["action"] == "no_change"
+    assert "name" not in result["updated_fields"]
     assert "stance" not in result["updated_fields"]
     assert "decision_power" not in result["updated_fields"]
     assert "temperature" not in result["updated_fields"]
     assert existing.stance == StakeholderStance.SUPPORTER.value
     assert existing.decision_power == DecisionPower.INFLUENCER.value
     assert existing.temperature == StakeholderTemperature.WARM.value
-    research_dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio

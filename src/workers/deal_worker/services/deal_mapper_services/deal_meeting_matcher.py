@@ -92,7 +92,7 @@ class DealMeetingMatcher:
         self._suppress_research_dispatch = suppress_research_dispatch
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
-        self._pending_research: list[tuple[UUID, UUID]] = []  # (participant_id, deal_id)
+        self._pending_research: list[UUID] = []  # contact_id
         # Recording rows are created inside the DB transaction, but the Celery
         # dispatch happens only after commit so workers never see rolled-back rows.
         self._pending_recording_event_ids: set[UUID] = set()
@@ -562,7 +562,8 @@ class DealMeetingMatcher:
             )
             session.add(participant)
             await session.flush()
-            self._pending_research.append((participant.participant_id, deal.deal_id))
+            if found_contact_id:
+                self._pending_research.append(found_contact_id)
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -636,27 +637,26 @@ class DealMeetingMatcher:
             self._pending_research.clear()
             return
         try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
+            from src.workers.deal_worker.utils.contact_research_dispatch import (
+                dispatch_contact_research_async,
             )
 
-            for stakeholder_id, deal_id in self._pending_research:
+            for contact_id in self._pending_research:
                 try:
-                    await dispatch_stakeholder_research_async(
+                    await dispatch_contact_research_async(
                         organisation_id=self.organisation_id,
-                        stakeholder_id=stakeholder_id,
-                        deal_id=deal_id,
+                        contact_id=contact_id,
+                        trigger="calendar_discovery",
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s",
-                        stakeholder_id,
+                        "Failed to dispatch research for contact %s",
+                        contact_id,
                         exc_info=True,
                         extra={
-                            "event": "deal_meeting_research_dispatch_failed",
+                            "event": "deal_meeting_contact_research_dispatch_failed",
                             "organisation_id": str(self.organisation_id),
-                            "stakeholder_id": str(stakeholder_id),
-                            "deal_id": str(deal_id),
+                            "contact_id": str(contact_id),
                         },
                     )
         finally:

@@ -36,10 +36,6 @@ from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extract
 from src.workers.deal_worker.services.deal_insight_services.stakeholder_analysis_service import (
     StakeholderAnalysisService,
 )
-from src.workers.deal_worker.services.deal_insight_services.stakeholder_research_service import (
-    StakeholderResearchError,
-    StakeholderResearchService,
-)
 
 __all__ = [
     # Deal summary
@@ -55,9 +51,6 @@ __all__ = [
     # Deal memory
     "DealMemoryError",
     "DealMemoryService",
-    # Stakeholder research
-    "StakeholderResearchError",
-    "StakeholderResearchService",
     # Contact research
     "AccountResearchWorkflowError",
     "AccountResearchWorkflowService",

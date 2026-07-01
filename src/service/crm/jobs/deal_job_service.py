@@ -350,26 +350,30 @@ class DealJobService:
 
         return jobs
 
-    async def get_active_stakeholder_research_job(
+    async def get_active_contact_research_job(
         self,
-        deal_id: UUID,
-        stakeholder_id: UUID,
+        contact_id: UUID,
     ) -> dict | None:
-        """Return the active manual stakeholder research job for one stakeholder."""
+        """Return the active contact research job for one contact."""
         stmt = (
             select(DealJobs)
             .where(
                 col(DealJobs.organisation_id) == self.organisation_id,
                 col(DealJobs.user_id) == self.user_id,
-                col(DealJobs.deal_id) == deal_id,
-                col(DealJobs.stakeholder_id) == stakeholder_id,
-                col(DealJobs.job_type) == DealJobType.STAKEHOLDER_RESEARCH,
+                col(DealJobs.job_type) == DealJobType.CONTACT_RESEARCH,
                 col(DealJobs.status).in_(list(ACTIVE_JOB_STATUSES)),
             )
             .order_by(col(DealJobs.created_at).desc())
         )
         result = await self.session.execute(stmt)
-        job = result.scalars().first()
+        job = next(
+            (
+                candidate
+                for candidate in result.scalars().all()
+                if (candidate.job_metadata or {}).get("contact_id") == str(contact_id)
+            ),
+            None,
+        )
         if not job:
             return None
         return _job_response(job)
