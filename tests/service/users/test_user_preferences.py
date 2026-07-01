@@ -48,6 +48,18 @@ def test_normalize_user_preferences_adds_default_deal_list_columns() -> None:
     ]
 
 
+def test_normalize_user_preferences_adds_default_task_list_columns() -> None:
+    assert normalize_user_preferences({})["crm"]["tasks"]["list"]["columns"] == [
+        "subject",
+        "due_date",
+        "assigned_to.name",
+        "deal.name",
+        "priority",
+        "status",
+        "has_reminder",
+    ]
+
+
 def test_normalize_user_preferences_preserves_user_contact_list_columns() -> None:
     preferences = {
         "crm": {
@@ -99,4 +111,22 @@ def test_normalize_user_preferences_preserves_user_deal_list_columns() -> None:
         "name",
         "amount",
         "owner.name",
+    ]
+
+
+def test_normalize_user_preferences_preserves_user_task_list_columns() -> None:
+    preferences = {
+        "crm": {
+            "tasks": {
+                "list": {
+                    "columns": ["subject", "due_date", "status"],
+                }
+            }
+        }
+    }
+
+    assert normalize_user_preferences(preferences)["crm"]["tasks"]["list"]["columns"] == [
+        "subject",
+        "due_date",
+        "status",
     ]

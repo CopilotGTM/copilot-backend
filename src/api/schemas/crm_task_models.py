@@ -39,6 +39,13 @@ class TaskAssigneeOption(BaseModel):
     task_count: int = Field(default=0, ge=0)
 
 
+class TaskDealRef(BaseModel):
+    """Clickable deal reference for task list and detail display."""
+
+    deal_id: UUID
+    name: str | None = None
+
+
 class TaskAssigneesResponse(BaseModel):
     """Task assignee filter options."""
 
@@ -143,6 +150,10 @@ class TaskListItem(BaseModel):
     # Deal linkage
     deal_id: UUID | None
     deal_name: str | None = Field(default=None, description="Denormalized deal name.")
+    deal: TaskDealRef | None = Field(
+        default=None,
+        description="Clickable deal reference. Null for standalone tasks.",
+    )
     # Source and creator
     source: str | None = None
     created_by_user_id: UUID | None = None
@@ -207,6 +218,7 @@ class TaskDetail(BaseModel):
     # Deal linkage
     deal_id: UUID | None
     deal_name: str | None = None
+    deal: TaskDealRef | None = None
 
     # Core task fields
     subject: str | None

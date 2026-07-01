@@ -115,6 +115,25 @@ def test_list_tasks_success(client: TestClient, tasks_dependency_overrides):
     assert len(body["data"]["items"]) == 3
 
 
+def test_list_tasks_returns_clickable_deal_object(client: TestClient, tasks_dependency_overrides):
+    service = tasks_dependency_overrides["service"]
+    org_id = tasks_dependency_overrides["user_ids"]["organisation_id"]
+    deal_id = uuid4()
+    task = create_task(deal_id, org_id, subject="Follow up", related_name="Acme Enterprise")
+    service.add_task(task)
+
+    resp = client.get(f"/users/crm/deals/{deal_id}/tasks")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert item["deal"] == {
+        "deal_id": str(deal_id),
+        "name": "Acme Enterprise",
+    }
+    assert item["deal_id"] == str(deal_id)
+    assert item["deal_name"] == "Acme Enterprise"
+
+
 def test_list_tasks_pagination_limit_1(client: TestClient, tasks_dependency_overrides):
     """Test pagination with limit=1 returns single item."""
     service = tasks_dependency_overrides["service"]

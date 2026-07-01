@@ -45,6 +45,16 @@ DEFAULT_DEAL_LIST_COLUMNS = [
     "pipeline.name",
 ]
 
+DEFAULT_TASK_LIST_COLUMNS = [
+    "subject",
+    "due_date",
+    "assigned_to.name",
+    "deal.name",
+    "priority",
+    "status",
+    "has_reminder",
+]
+
 
 def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Return user UI preferences with backend-owned defaults filled in."""
@@ -83,5 +93,17 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
 
     deals["list"] = deal_list
     crm["deals"] = deals
+
+    tasks = dict(crm.get("tasks") or {})
+    task_list = dict(tasks.get("list") or {})
+    task_columns = task_list.get("columns")
+
+    if not isinstance(task_columns, list) or not all(
+        isinstance(column, str) for column in task_columns
+    ):
+        task_list["columns"] = list(DEFAULT_TASK_LIST_COLUMNS)
+
+    tasks["list"] = task_list
+    crm["tasks"] = tasks
     root["crm"] = crm
     return root

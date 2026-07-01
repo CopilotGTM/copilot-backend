@@ -33,6 +33,7 @@ from src.api.schemas.crm_deal_write_models import (
     DealWriteResponse,
 )
 from src.api.schemas.crm_models import (
+    DealAccountDetail,
     DealCustomColumnDefinition,
     DealDetail,
     DealJobResponse,
@@ -40,6 +41,7 @@ from src.api.schemas.crm_models import (
     DealOwnerDetail,
     DealOwnerFilterItem,
     DealOwnerFilters,
+    DealPrimaryContactDetail,
     DealSearchItem,
     DealSearchPage,
     DealsListParams,
@@ -613,9 +615,43 @@ async def list_deals(
                 company_id=deal.company_id,
                 company_name=getattr(deal, "company_name", None),
                 company_domain=getattr(deal, "company_domain", None),
+                account_details=(
+                    [
+                        DealAccountDetail(
+                            company_id=deal.company_id,
+                            name=getattr(deal, "company_name", None),
+                            domain=getattr(deal, "company_domain", None),
+                        )
+                    ]
+                    if any(
+                        [
+                            getattr(deal, "company_id", None),
+                            getattr(deal, "company_name", None),
+                            getattr(deal, "company_domain", None),
+                        ]
+                    )
+                    else []
+                ),
                 primary_contact_id=getattr(deal, "primary_contact_id", None),
                 primary_contact_name=getattr(deal, "primary_contact_name", None),
                 primary_contact_email=getattr(deal, "primary_contact_email", None),
+                primary_contact_details=(
+                    [
+                        DealPrimaryContactDetail(
+                            contact_id=getattr(deal, "primary_contact_id", None),
+                            name=getattr(deal, "primary_contact_name", None),
+                            email=getattr(deal, "primary_contact_email", None),
+                        )
+                    ]
+                    if any(
+                        [
+                            getattr(deal, "primary_contact_id", None),
+                            getattr(deal, "primary_contact_name", None),
+                            getattr(deal, "primary_contact_email", None),
+                        ]
+                    )
+                    else []
+                ),
                 last_activity_at=getattr(deal, "last_activity_at", None),
                 deal_team=[
                     DealTeamMember(

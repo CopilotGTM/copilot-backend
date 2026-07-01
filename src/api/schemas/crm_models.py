@@ -59,6 +59,30 @@ class DealOwnerFilters(BaseModel):
     items: list[DealOwnerFilterItem]
 
 
+class DealAccountDetail(BaseModel):
+    """Account details for a deal list row.
+
+    Exposed as a list to match owner_details so list cells can share link-rendering
+    code even though a deal currently has at most one primary account.
+    """
+
+    company_id: UUID | None = Field(None, description="Internal account/company ID for linking")
+    name: str | None = Field(None, description="Display name of the linked account")
+    domain: str | None = Field(None, description="Domain of the linked account")
+
+    model_config = {"from_attributes": True}
+
+
+class DealPrimaryContactDetail(BaseModel):
+    """Primary contact details for a deal list row."""
+
+    contact_id: UUID | None = Field(None, description="Internal contact ID for linking")
+    name: str | None = Field(None, description="Display name of the primary contact")
+    email: str | None = Field(None, description="Email address of the primary contact")
+
+    model_config = {"from_attributes": True}
+
+
 class DealListItem(BaseModel):
     """Individual deal item in a list response."""
 
@@ -87,9 +111,17 @@ class DealListItem(BaseModel):
     company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
+    account_details: list[DealAccountDetail] = Field(
+        default_factory=list,
+        description="Linked account details as a list (typically 0..1 items).",
+    )
     primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
+    primary_contact_details: list[DealPrimaryContactDetail] = Field(
+        default_factory=list,
+        description="Primary contact details as a list (typically 0..1 items).",
+    )
     last_activity_at: datetime | None = None
     deal_team: list[DealTeamMember] = Field(
         default_factory=list,
