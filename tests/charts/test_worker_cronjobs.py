@@ -290,9 +290,15 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
         assert "celery -A" in joined_liveness, name
         assert "inspect ping" in joined_liveness, name
         assert "celery@$HOSTNAME" in joined_liveness, name
+        assert container["livenessProbe"]["initialDelaySeconds"] >= 60, name
+        assert container["livenessProbe"]["timeoutSeconds"] >= 20, name
+        assert container["livenessProbe"]["failureThreshold"] >= 4, name
         assert "celery -A" in joined_readiness, name
         assert "inspect ping" in joined_readiness, name
         assert "celery@$HOSTNAME" in joined_readiness, name
+        assert container["readinessProbe"]["initialDelaySeconds"] >= 30, name
+        assert container["readinessProbe"]["timeoutSeconds"] >= 20, name
+        assert container["readinessProbe"]["failureThreshold"] >= 3, name
 
 
 def test_chat_worker_prestop_drains_all_consumed_queues() -> None:

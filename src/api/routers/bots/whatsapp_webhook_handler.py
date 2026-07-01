@@ -13,7 +13,6 @@ Notes:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -113,12 +112,11 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
 
     service = WhatsAppBotService()
 
-    async def _process() -> None:
-        try:
-            await service.process_webhook(payload)
-        except Exception:
-            logger.error("Error processing WhatsApp webhook", exc_info=True)
-
-    # Process webhook in background and return immediately to keep Meta retry budget low.
-    asyncio.create_task(_process())
+    # Do not return 200 until the inbound message has crossed a durable boundary.
+    # A detached task can be cancelled by API pod shutdown after creating the DB
+    # job but before publishing the Celery task, leaving a permanently pending job.
+    try:
+        await service.process_webhook(payload)
+    except Exception:
+        logger.error("Error processing WhatsApp webhook", exc_info=True)
     return Response(status_code=status.HTTP_200_OK)
