@@ -11,7 +11,10 @@ from src.service.email_sends.models import (
     EmailSendError,
     EmailSendProviderResult,
 )
-from src.service.integrations.api_error_utils import IntegrationPermissionError
+from src.service.integrations.api_error_utils import (
+    IntegrationPermissionError,
+    extract_api_error_details,
+)
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -87,9 +90,11 @@ class MicrosoftEmailSendClient:
                 status_code=409,
             ) from exc
         except httpx.HTTPStatusError as exc:
+            detail = extract_api_error_details(exc).summary
+            suffix = f" Provider said: {detail}" if detail else ""
             raise EmailSendError(
                 "email_send_provider_error",
-                "Outlook Email rejected the send request.",
+                f"Outlook Email rejected the send request.{suffix}",
                 status_code=502,
             ) from exc
         return EmailSendProviderResult(provider_status_code=202)

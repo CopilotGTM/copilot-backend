@@ -124,3 +124,29 @@ async def test_send_mail_translates_provider_failures(monkeypatch) -> None:
         await MicrosoftEmailSendClient().send_mail(SimpleNamespace(), _request())
 
     assert exc_info.value.code == "email_send_provider_error"
+
+
+@pytest.mark.asyncio
+async def test_send_mail_includes_safe_outlook_provider_error_summary(monkeypatch) -> None:
+    from src.service.email_sends.models import EmailSendError
+
+    async def fake_retry(token_info, request_fn):
+        request = httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/sendMail")
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "At least one recipient is not valid."}},
+        )
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    monkeypatch.setattr(
+        "src.service.email_sends.microsoft_graph_client.call_with_token_retry",
+        fake_retry,
+    )
+
+    with pytest.raises(EmailSendError) as exc_info:
+        await MicrosoftEmailSendClient().send_mail(SimpleNamespace(), _request())
+
+    assert exc_info.value.code == "email_send_provider_error"
+    assert "Outlook Email rejected the send request" in exc_info.value.message
+    assert "At least one recipient is not valid" in exc_info.value.message

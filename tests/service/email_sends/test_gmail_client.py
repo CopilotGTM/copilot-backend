@@ -138,3 +138,29 @@ async def test_send_mail_translates_gmail_provider_failures(monkeypatch) -> None
         await GmailEmailSendClient().send_mail(SimpleNamespace(), _request())
 
     assert exc_info.value.code == "email_send_provider_error"
+
+
+@pytest.mark.asyncio
+async def test_send_mail_includes_safe_gmail_provider_error_summary(monkeypatch) -> None:
+    from src.service.email_sends.models import EmailSendError
+
+    async def fake_retry(token_info, request_fn):
+        request = httpx.Request(
+            "POST",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        )
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "Invalid To header"}},
+        )
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    monkeypatch.setattr("src.service.email_sends.gmail_client.call_with_token_retry", fake_retry)
+
+    with pytest.raises(EmailSendError) as exc_info:
+        await GmailEmailSendClient().send_mail(SimpleNamespace(), _request())
+
+    assert exc_info.value.code == "email_send_provider_error"
+    assert "Gmail rejected the send request" in exc_info.value.message
+    assert "Invalid To header" in exc_info.value.message
