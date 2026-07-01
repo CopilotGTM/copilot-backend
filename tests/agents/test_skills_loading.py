@@ -617,6 +617,28 @@ def test_email_meeting_workflow_skill_requires_final_confirmation_after_details(
     assert "confirmation_payload" in instructions
 
 
+def test_email_meeting_workflow_skill_allows_explicit_edit_and_send() -> None:
+    """A user can approve a revised payload in the same turn when intent is explicit."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "apply this change and send" in instructions
+    assert "execute the revised payload without another confirmation" in instructions
+    assert "If the edit is not paired with explicit send intent" in instructions
+
+
+def test_email_meeting_workflow_skill_reports_send_tool_errors() -> None:
+    """Send failures should be surfaced instead of reported as successful sends."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "If `send_email` or `send_calendar_invite` returns `status: error`" in instructions
+    assert "do not say the email or invite was sent" in instructions
+    assert "provider rejection" in instructions
+
+
 def test_email_meeting_workflow_skill_defines_meeting_invite_state_machine() -> None:
     """The meeting flow should be a deterministic journey, not ad hoc prompts."""
     loader = LocalSkills(str(SKILLS_DIR))

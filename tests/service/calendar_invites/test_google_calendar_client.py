@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from src.service.calendar_invites.google_calendar_client import (
     GoogleCalendarInviteClient,
@@ -139,3 +140,34 @@ async def test_google_client_maps_insufficient_scope_to_invite_error(monkeypatch
         )
 
     assert exc_info.value.code == "calendar_write_scope_required"
+
+
+@pytest.mark.asyncio
+async def test_google_client_includes_safe_provider_error_summary(monkeypatch) -> None:
+    """Immediate Google rejections should keep useful provider detail for the agent."""
+
+    async def fake_call_with_token_retry(token_info, request_fn):
+        request = httpx.Request(
+            "POST",
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        )
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "Invalid attendee email."}},
+        )
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.google_calendar_client.call_with_token_retry",
+        fake_call_with_token_retry,
+    )
+
+    with pytest.raises(CalendarInviteError) as exc_info:
+        await GoogleCalendarInviteClient().create_event(
+            SimpleNamespace(access_token="token"), _request()
+        )
+
+    assert exc_info.value.code == "calendar_provider_error"
+    assert "Google Calendar rejected the invite request" in exc_info.value.message
+    assert "Invalid attendee email" in exc_info.value.message

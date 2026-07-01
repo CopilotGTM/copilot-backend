@@ -49,7 +49,8 @@ explicitly asks to create a separate meeting.
 2. Never guess a sender, recipient, attendee, calendar, meeting, date, time, or timezone.
 3. A confirmation applies only to one exact payload.
 4. Any material payload change invalidates the previous confirmation and requires a new
-   preview.
+   preview, unless the same user turn explicitly approves the revised payload with
+   send intent such as "apply this change and send".
 5. Missing-detail replies are not confirmation.
 6. Do not retry an action whose result is unknown until current state has been checked.
 7. Check for likely duplicates before creating or sending when the necessary read-only
@@ -325,7 +326,10 @@ is awaiting confirmation and the immediately preceding assistant turn showed or 
 referenced that payload.
 
 If the user changes the recipient, subject, body, sender, or attachment expectation,
-invalidate the earlier confirmation and show the revised payload.
+invalidate the earlier confirmation and show the revised payload. Exception: if the
+same user turn pairs the edit with explicit send intent, such as "change the subject
+to X and send it" or "apply this change and send", execute the revised payload without another confirmation after applying the requested edit and re-checking safety. If the
+edit is not paired with explicit send intent, show the revised preview and wait.
 
 ### 6. Send once
 
@@ -638,8 +642,11 @@ A reply such as "yes", "confirm", "send it", or "do it" authorizes the action on
 
 Suggested follow-up questions do not create approval context.
 
-If the user changes any payload field, clear or invalidate the earlier confirmation,
-rebuild the preview with `confirmed=False`, and wait for confirmation again.
+If the user changes any payload field, clear or invalidate the earlier confirmation.
+If the same user turn explicitly says to apply this change and send, execute the
+revised payload without another confirmation after applying only that requested edit
+and re-checking safety. If the edit is not paired with explicit send intent, rebuild
+the preview with `confirmed=False` and wait for confirmation again.
 
 If the prior preview is missing, stale, ambiguous, or conflicts with current CRM or
 calendar state, show a refreshed preview rather than using the old confirmation.
@@ -659,6 +666,9 @@ Do not regenerate the agenda or title after confirmation.
 
 If the tool returns a clarification request, do not report success. Surface the
 clarification and preserve the safe parts of the previewed payload.
+
+If `send_email` or `send_calendar_invite` returns `status: error`, do not say the email or invite was sent. Surface the failure as a provider rejection or tool error,
+include the tool's safe message and code, and explain that the send did not complete.
 
 If the tool times out or returns unknown or partial status:
 

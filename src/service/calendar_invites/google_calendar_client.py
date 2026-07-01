@@ -9,7 +9,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from src.service.calendar_invites.models import CalendarInviteCreateRequest, CalendarInviteError
-from src.service.integrations.api_error_utils import IntegrationPermissionError
+from src.service.integrations.api_error_utils import (
+    IntegrationPermissionError,
+    extract_api_error_details,
+)
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -160,9 +163,11 @@ class GoogleCalendarInviteClient:
                     "Reconnect Google Calendar with calendar invite permission.",
                     status_code=409,
                 ) from exc
+            detail = extract_api_error_details(exc).summary
+            suffix = f" Provider said: {detail}" if detail else ""
             raise CalendarInviteError(
                 "calendar_provider_error",
-                "Google Calendar rejected the invite request.",
+                f"Google Calendar rejected the invite request.{suffix}",
                 status_code=502,
             ) from exc
 

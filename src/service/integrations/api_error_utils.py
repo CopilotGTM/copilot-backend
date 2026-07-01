@@ -51,6 +51,24 @@ def _truncate_summary(text: str, limit: int = 300) -> str:
     return compact[:limit]
 
 
+def _response_error_message(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str):
+                return message
+        message = payload.get("message")
+        if isinstance(message, str):
+            return message
+    return response.text
+
+
 def extract_api_error_details(exc: Exception) -> ApiErrorDetails:
     if isinstance(exc, IntegrationPermissionError):
         summary = exc.response_summary or str(exc)
@@ -59,7 +77,7 @@ def extract_api_error_details(exc: Exception) -> ApiErrorDetails:
     if isinstance(exc, httpx.HTTPStatusError):
         return ApiErrorDetails(
             status_code=exc.response.status_code,
-            summary=_truncate_summary(exc.response.text or str(exc)),
+            summary=_truncate_summary(_response_error_message(exc.response) or str(exc)),
         )
 
     return ApiErrorDetails(status_code=None, summary=_truncate_summary(str(exc)))
