@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from src.api.schemas.crm_task_models import TaskAssignee, TaskDetail, TaskListItem
+from src.api.schemas.crm_task_models import TaskAssignee, TaskDealRef, TaskDetail, TaskListItem
 from src.domain.models.organisation_tables.sync.crm import CRMTask
 from src.service.crm.tasks.contracts import TaskReadRecord, TaskReminderSummary
 
@@ -163,6 +163,7 @@ def present_task_list_item(record: TaskReadRecord | CRMTask) -> TaskListItem:
         external_assignee_name=task.assigned_to_name if is_external else None,
         deal_id=task.deal_id,
         deal_name=deal_name,
+        deal=TaskDealRef(deal_id=task.deal_id, name=deal_name) if task.deal_id else None,
         source=task_source(task),
         created_by_user_id=task.created_by_user_id,
         is_overdue=compute_task_is_overdue(due_date, task.status),

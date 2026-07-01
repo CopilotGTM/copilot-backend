@@ -565,6 +565,47 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     assert item["owner_details"][0]["name"] == "John Sales"
 
 
+def test_list_deals_includes_clickable_account_and_primary_contact_details(
+    client: TestClient, deals_dependency_overrides
+):
+    """List rows should expose account/contact IDs in owner-style detail arrays."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    company_id = uuid4()
+    contact_id = uuid4()
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Relationship Deal",
+            company_id=company_id,
+            company_name="Acme Corp",
+            company_domain="acme.com",
+            primary_contact_id=contact_id,
+            primary_contact_name="Jane Buyer",
+            primary_contact_email="jane@acme.com",
+        )
+    )
+
+    resp = client.get("/users/crm/deals")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert item["account_details"] == [
+        {
+            "company_id": str(company_id),
+            "name": "Acme Corp",
+            "domain": "acme.com",
+        }
+    ]
+    assert item["primary_contact_details"] == [
+        {
+            "contact_id": str(contact_id),
+            "name": "Jane Buyer",
+            "email": "jane@acme.com",
+        }
+    ]
+
+
 def test_list_deals_includes_default_column_fields(client: TestClient, deals_dependency_overrides):
     """List rows should expose fields referenced by backend default deal columns."""
     deals_service = deals_dependency_overrides["deals_service"]

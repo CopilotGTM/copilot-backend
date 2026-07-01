@@ -128,6 +128,19 @@ Not required
               "pipeline.name"
             ]
           }
+        },
+        "tasks": {
+          "list": {
+            "columns": [
+              "subject",
+              "due_date",
+              "assigned_to.name",
+              "deal.name",
+              "priority",
+              "status",
+              "has_reminder"
+            ]
+          }
         }
       }
     },
@@ -198,6 +211,19 @@ Not required
               "pipeline.name"
             ]
           }
+        },
+        "tasks": {
+          "list": {
+            "columns": [
+              "subject",
+              "due_date",
+              "assigned_to.name",
+              "deal.name",
+              "priority",
+              "status",
+              "has_reminder"
+            ]
+          }
         }
       }
     },
@@ -206,7 +232,7 @@ Not required
 }
 ```
 
-`user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list, account-list, or deal-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
+`user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list, account-list, deal-list, or task-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
 
 ### Error Responses
 

@@ -90,6 +90,11 @@ export interface TaskAssignee {
   crm_user_id: UUID | null;
 }
 
+export interface TaskDealRef {
+  deal_id: UUID;
+  name: string | null;
+}
+
 export interface TaskListItem {
   task_id: UUID;
   subject: string | null;         // crm_tasks.title
@@ -109,6 +114,7 @@ export interface TaskListItem {
   assigned_to: TaskAssignee | null;
   deal_id: UUID | null;
   deal_name: string | null;       // Resolved from crm_deals
+  deal: TaskDealRef | null;       // Use deal.deal_id + deal.name for clickable deal links
   source: string | null;          // MANUAL | CRM_SYNC | AI_MEETING | AI_INSIGHT
   created_by_user_id: UUID | null;
   is_overdue: boolean;
@@ -254,6 +260,10 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
         },
         "deal_id": "a8a3b1db-...",
         "deal_name": "Acme Corp Enterprise",
+        "deal": {
+          "deal_id": "a8a3b1db-...",
+          "name": "Acme Corp Enterprise"
+        },
         "source": "MANUAL",
         "created_by_user_id": "b1a7f9c0-...",
         "is_overdue": false,
@@ -283,8 +293,40 @@ Returns all tasks across all deals (and standalone tasks) for the authenticated 
 - `is_overdue` is computed server-side: `due_date < now AND status NOT IN (COMPLETED, CANCELLED)`.
 - `is_read_only` is computed server-side as `integration_id IS NOT NULL` and is the authoritative flag for whether a task can be edited. PATCH / DELETE / reminder / assign endpoints all return **409 "External CRM tasks are read-only"** when invoked on a read-only task. The frontend MUST gate edit affordances on `is_read_only` (do **not** use `source === "CRM_SYNC"` — `source` is nullable and can drift).
 - `deal_name` is resolved from the associated `crm_deals` row (null for standalone tasks).
+- Use `deal.name` as the default related-deal column and `deal.deal_id` as the link target. `deal` is null for standalone tasks. `deal_id` and `deal_name` remain for backward compatibility.
 - Sorting by `due_date` places null due dates last regardless of sort order.
 - Assignee filtering follows display precedence: external assignee first, otherwise internal CRM/public owner. This prevents tasks assigned to an external person from appearing under the creator's "assigned to me" list.
+
+### Default Task List Columns
+
+Frontend should render task list columns from `user_preferences.crm.tasks.list.columns`
+returned by login and `/users/auth/me`. Do not hardcode the default order.
+
+Backend default:
+
+```ts
+[
+  "subject",
+  "due_date",
+  "assigned_to.name",
+  "deal.name",
+  "priority",
+  "status",
+  "has_reminder"
+]
+```
+
+Column mapping:
+
+| Column ID | Payload Path | Notes |
+| --- | --- | --- |
+| `subject` | `item.subject` | Task title |
+| `due_date` | `item.due_date`, plus `item.due_local_date` / `item.is_all_day` | Render all-day tasks from local date metadata |
+| `assigned_to.name` | `item.assigned_to?.name ?? item.owner_name` | Use canonical assignee first |
+| `deal.name` | `item.deal?.name ?? item.deal_name` | Link with `item.deal?.deal_id ?? item.deal_id` |
+| `priority` | `item.priority` | Label from `GET /tasks/options` |
+| `status` | `item.status` | Label from `GET /tasks/options` |
+| `has_reminder` | `item.has_reminder` | Render as compact icon/indicator, not a wide text column |
 
 ---
 
@@ -482,6 +524,10 @@ GET /tasks/{task_id}
     },
     "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
     "deal_name": "Acme Corp Enterprise",
+    "deal": {
+      "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
+      "name": "Acme Corp Enterprise"
+    },
     "source": "MANUAL",
     "created_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
     "is_overdue": false,

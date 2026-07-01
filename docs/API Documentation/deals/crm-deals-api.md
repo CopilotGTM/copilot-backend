@@ -46,11 +46,17 @@ and are not part of canonical deal API responses.
 - `owner_user_id` in write payloads maps to the deal's resolved `owner_id`.
   Display with `owner_details` / `owner_name` / `owner_email`.
 - `company_id`, `company_name`, and `company_domain` are deal association
-  snapshots stored on the deal.
+  snapshots stored on the deal. Deal list rows also expose the same account as
+  `account_details` so account cells can be rendered like `owner_details` and
+  linked by `account_details[0].company_id`.
 - `company_industry`, `company_website`, `company_linkedin_url`, and
   `company_country` are account profile fields from the linked CRM company row.
   They are returned on deal detail/write responses for convenience, but the
   durable source is the account/company record.
+- `primary_contact_id`, `primary_contact_name`, and `primary_contact_email` are
+  the deal's primary-contact snapshot. Deal list rows also expose the same
+  contact as `primary_contact_details` so contact cells can link by
+  `primary_contact_details[0].contact_id`.
 
 ### Frontend Migration Checklist
 
@@ -84,6 +90,18 @@ type ISODate = string;
 
 export interface DealOwnerDetail {
   owner_id: UUID | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface DealAccountDetail {
+  company_id: UUID | null;
+  name: string | null;
+  domain: string | null;
+}
+
+export interface DealPrimaryContactDetail {
+  contact_id: UUID | null;
   name: string | null;
   email: string | null;
 }
@@ -163,9 +181,11 @@ export interface DealListItem {
   company_id: UUID | null;
   company_name: string | null;
   company_domain: string | null;
+  account_details: DealAccountDetail[];
   primary_contact_id: UUID | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
+  primary_contact_details: DealPrimaryContactDetail[];
   last_activity_at: ISODate | null;
   deal_team: DealTeamMember[];
   is_internal: boolean;

@@ -191,6 +191,40 @@ and optional future columns, but they are not part of the backend default. `deal
 and `deal_health_reason` are not returned by the deal list API; they remain available on
 deal detail only.
 
+## Default Task Columns
+
+Tasks also use backend-owned defaults from `user_preferences.crm.tasks.list.columns`.
+The default list is intentionally compact for sales reps:
+
+```python
+DEFAULT_TASK_LIST_COLUMNS = [
+    "subject",
+    "due_date",
+    "assigned_to.name",
+    "deal.name",
+    "priority",
+    "status",
+    "has_reminder",
+]
+```
+
+`GET /users/crm/tasks` and `GET /users/crm/deals/{deal_id}/tasks` return all fields
+needed for these columns:
+
+| Column ID | Payload Path |
+| --- | --- |
+| `subject` | `item.subject` |
+| `due_date` | `item.due_date`, plus `item.due_local_date` / `item.is_all_day` |
+| `assigned_to.name` | `item.assigned_to?.name ?? item.owner_name` |
+| `deal.name` | `item.deal?.name ?? item.deal_name` |
+| `priority` | `item.priority` |
+| `status` | `item.status` |
+| `has_reminder` | `item.has_reminder` |
+
+Use `item.deal?.deal_id ?? item.deal_id` as the related-deal link target.
+`deal_id` and `deal_name` remain on the response for compatibility, but new UI should
+prefer the nested `deal` object.
+
 ## Optional Columns
 
 Expose these as selectable later, but do not include them by default:
@@ -268,6 +302,19 @@ Extend the existing normalized preference object:
           "pipeline.name"
         ]
       }
+    },
+    "tasks": {
+      "list": {
+        "columns": [
+          "subject",
+          "due_date",
+          "assigned_to.name",
+          "deal.name",
+          "priority",
+          "status",
+          "has_reminder"
+        ]
+      }
     }
   }
 }
@@ -277,6 +324,7 @@ Normalization rule:
 
 - If `crm.accounts.list.columns` is missing or invalid, set it to `DEFAULT_ACCOUNT_LIST_COLUMNS`.
 - If `crm.deals.list.columns` is missing or invalid, set it to `DEFAULT_DEAL_LIST_COLUMNS`.
+- If `crm.tasks.list.columns` is missing or invalid, set it to `DEFAULT_TASK_LIST_COLUMNS`.
 - If it is a list of strings, preserve it exactly.
 - Do not validate against allowed column names at normalization time unless the contact preference
   behavior is also tightened. Keep behavior consistent across CRM tables.
