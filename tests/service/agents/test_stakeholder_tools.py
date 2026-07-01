@@ -61,6 +61,7 @@ def _participant(**overrides):
         "stakeholder_id": participant_id,
         "related_email": "buyer@example.com",
         "email": "buyer@example.com",
+        "linkedin_url": None,
         "related_name": "Buyer",
         "name": "Buyer",
         "job_title": None,
@@ -211,6 +212,76 @@ async def test_upsert_stakeholder_creates_when_missing(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_upsert_stakeholder_creates_linkedin_only_and_dispatches_research(
+    monkeypatch,
+) -> None:
+    context, _session = _make_context()
+    created = _participant(
+        related_email=None,
+        email=None,
+        linkedin_url="https://linkedin.com/in/created-buyer",
+        related_name="Created Buyer",
+        name="Created Buyer",
+    )
+    service = _FakeStakeholdersService(existing=None, created=created)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
+    research_dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+        "dispatch_stakeholder_research_async",
+        research_dispatch,
+    )
+
+    result = await upsert_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        input_data=UpsertStakeholderInput(
+            linkedin_url="https://linkedin.com/in/created-buyer",
+            name="Created Buyer",
+        ),
+    )
+
+    assert result is not None
+    assert result["action"] == "created"
+    assert service.create_calls[0][1].linkedin_url == "https://linkedin.com/in/created-buyer"
+    research_dispatch.assert_awaited_once_with(
+        organisation_id=context.organisation_id,
+        stakeholder_id=created.stakeholder_id,
+        deal_id=context.deal_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_stakeholder_creates_name_only_placeholder(monkeypatch) -> None:
+    context, _session = _make_context()
+    created = _participant(
+        related_email=None,
+        email=None,
+        related_name="Jane Buyer",
+        name="Jane Buyer",
+    )
+    service = _FakeStakeholdersService(existing=None, created=created)
+    monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
+    research_dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+        "dispatch_stakeholder_research_async",
+        research_dispatch,
+    )
+
+    result = await upsert_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        input_data=UpsertStakeholderInput(identity="Jane Buyer"),
+    )
+
+    assert result is not None
+    assert result["action"] == "created"
+    assert result["email"] is None
+    assert result["name"] == "Jane Buyer"
+    assert service.create_calls[0][1].identity == "Jane Buyer"
+    research_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_on_update(
     monkeypatch,
 ) -> None:
@@ -218,6 +289,12 @@ async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_o
     existing = _participant(stance="SUPPORTER", decision_power="INFLUENCER", temperature="WARM")
     service = _FakeStakeholdersService(existing=existing)
     monkeypatch.setattr(upsert_module, "StakeholderWriteService", lambda *_args, **_kwargs: service)
+    research_dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+        "dispatch_stakeholder_research_async",
+        research_dispatch,
+    )
     tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
 
     result = await tool(
@@ -238,6 +315,7 @@ async def test_upsert_stakeholder_tool_factory_handles_malformed_enum_payloads_o
     assert existing.stance == StakeholderStance.SUPPORTER.value
     assert existing.decision_power == DecisionPower.INFLUENCER.value
     assert existing.temperature == StakeholderTemperature.WARM.value
+    research_dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio

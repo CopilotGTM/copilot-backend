@@ -145,7 +145,11 @@ async def research_stakeholder(
                 (contact.email if contact else None) or participant.related_email
             )
             links = _contact_external_links(contact) or participant.external_links or []
-            existing_linkedin = _extract_linkedin_url(links)
+            existing_linkedin = (
+                (getattr(contact, "linkedin_url", None) if contact else None)
+                or getattr(participant, "linkedin_url", None)
+                or _extract_linkedin_url(links)
+            )
             domain_hint = _extract_domain_hint(s_email or email)
 
     except Exception as e:

@@ -1184,13 +1184,18 @@ async def test_get_deal_returns_detail_field_definitions():
     detail_fields = data["detail_field_definitions"]
     fields_by_key = {field["key"]: field for field in detail_fields}
 
-    assert [field["order"] for field in detail_fields] == list(range(1, 37))
+    assert [field["order"] for field in detail_fields] == [
+        *range(1, 10),
+        *range(12, 37),
+    ]
     assert "custom_columns" not in fields_by_key
     assert "deal_summary_data" not in fields_by_key
     assert "active_deal_jobs" not in fields_by_key
     assert "associated_contact_count" not in fields_by_key
     assert "associated_company_count" not in fields_by_key
     assert "note_count" not in fields_by_key
+    assert "deal_health" not in fields_by_key
+    assert "deal_health_reason" not in fields_by_key
     assert fields_by_key["name"] == {
         "key": "name",
         "label": "Deal name",
@@ -1212,7 +1217,6 @@ async def test_get_deal_returns_detail_field_definitions():
     assert fields_by_key["close_date"]["edit_policy"] == "lifecycle_action"
     assert fields_by_key["company_name"]["edit_policy"] == "account_action"
     assert fields_by_key["primary_contact_name"]["edit_policy"] == "primary_contact_action"
-    assert fields_by_key["deal_health"]["edit_policy"] == "generated"
 
 
 @pytest.mark.asyncio

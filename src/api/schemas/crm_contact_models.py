@@ -117,26 +117,6 @@ _CONTACT_DETAIL_FIELD_ROWS = (
     ("last_activity_at", "Last activity", "datetime", 30, "activity", "date_range"),
     ("source_created_at", "CRM created date", "datetime", 31, "activity", "date_range"),
     ("source_modified_at", "CRM modified date", "datetime", 32, "activity", "date_range"),
-    ("research_summary.summary", "Research summary", "markdown", 33, "research", "text"),
-    (
-        "research_summary.last_researched_at",
-        "Last researched",
-        "datetime",
-        34,
-        "research",
-        "date_range",
-    ),
-    ("profile_enrichment.is_enriched", "Profile enriched", "boolean", 35, "enrichment", "boolean"),
-    ("profile_enrichment.source", "Enrichment source", "string", 36, "enrichment", "select"),
-    (
-        "profile_enrichment.enriched_at",
-        "Enriched at",
-        "datetime",
-        37,
-        "enrichment",
-        "date_range",
-    ),
-    ("profile_enrichment.data", "Enrichment data", "object", 38, "enrichment", "advanced"),
 )
 
 

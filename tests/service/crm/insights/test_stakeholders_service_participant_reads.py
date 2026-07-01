@@ -140,26 +140,3 @@ async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profil
     assert detail["job_title"] == "CFO"
     assert detail["stakeholder_research"] == "Fresh contact research"
     assert detail["engagement_history"] == []
-
-
-@pytest.mark.asyncio
-async def test_list_available_contacts_excludes_existing_participants() -> None:
-    org_id = uuid4()
-    integration_id = uuid4()
-    deal_id = uuid4()
-    contact = CRMContact(
-        organisation_id=org_id,
-        integration_id=integration_id,
-        contact_id=uuid4(),
-        email="available@example.com",
-        full_name="Available Contact",
-    )
-    session = _SequencedSession([_FakeResult(scalars=[contact])])
-    service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
-
-    contacts = await service.list_available_contacts(deal_id)
-
-    assert contacts[0].contact_id == contact.contact_id
-    statements = "\n".join(session.statements).lower()
-    assert "crm_deal_participants" in statements
-    assert "deal_stakeholders" not in statements

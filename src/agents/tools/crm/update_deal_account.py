@@ -15,7 +15,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from src.agents.tools.crm.update_deal_fields import _deal_context_fields
-from src.api.schemas.crm_deal_write_models import DealAccountUpdateRequest
+from src.contracts.crm.deal_write import DealAccountUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService

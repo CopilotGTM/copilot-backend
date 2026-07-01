@@ -75,9 +75,13 @@ async def dispatch_stakeholder_research_async(
         email = _normalize_email(
             contact.email if contact and contact.email else participant.related_email
         )
-        if not email:
+        linkedin_url = _normalize_text(
+            (getattr(contact, "linkedin_url", None) if contact else None)
+            or getattr(participant, "linkedin_url", None)
+        )
+        if not email and not linkedin_url:
             logger.warning(
-                "dispatch_stakeholder_research: participant %s has no email",
+                "dispatch_stakeholder_research: participant %s has no email or LinkedIn URL",
                 stakeholder_id,
             )
             return None
@@ -85,7 +89,7 @@ async def dispatch_stakeholder_research_async(
         resolved_deal_id = deal_id or participant.deal_id
 
         # When force=True (manual trigger), skip cooldown — user explicitly wants fresh research
-        if not force:
+        if not force and email:
             already_researched = await _find_recent_contact_research(
                 session,
                 organisation_id,
@@ -138,22 +142,26 @@ async def dispatch_stakeholder_research_async(
                         )
                     return None
 
-        # Check for existing active job for this email to avoid duplicate work
-        existing_job_stmt = (
-            select(DealJobs)
-            .join(
+        # Check for existing active job to avoid duplicate work. Email-backed
+        # stakeholders dedupe per person; LinkedIn-only placeholders dedupe per row.
+        existing_job_stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == organisation_id,
+            col(DealJobs.job_type) == DealJobType.STAKEHOLDER_RESEARCH,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        if email:
+            existing_job_stmt = existing_job_stmt.join(
                 CRMDealParticipant,
                 col(DealJobs.stakeholder_id) == col(CRMDealParticipant.participant_id),
-            )
-            .where(
-                col(DealJobs.organisation_id) == organisation_id,
+            ).where(
                 func.lower(func.trim(col(CRMDealParticipant.related_email))) == email,
                 col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
                 col(CRMDealParticipant.is_deleted).is_(False),
-                col(DealJobs.job_type) == DealJobType.STAKEHOLDER_RESEARCH,
-                col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
             )
-        )
+        else:
+            existing_job_stmt = existing_job_stmt.where(
+                col(DealJobs.stakeholder_id) == stakeholder_id,
+            )
         existing = (await session.execute(existing_job_stmt)).scalar_one_or_none()
         if existing:
             # Stale job guard: if PENDING for over 5 min, the Celery message was
@@ -310,6 +318,13 @@ def _normalize_email(email: str | None) -> str | None:
     if not email:
         return None
     normalized = email.strip().lower()
+    return normalized or None
+
+
+def _normalize_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
     return normalized or None
 
 

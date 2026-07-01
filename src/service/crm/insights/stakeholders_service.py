@@ -13,13 +13,13 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.contracts.crm.stakeholders import (
     AddContactsAsStakeholdersResponse,
-    AvailableContactItem,
     CreateStakeholderRequest,
     StakeholderDetail,
     StakeholderListResponse,
     UpdateStakeholderRequest,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.errors import StakeholdersServiceError
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
@@ -83,17 +83,20 @@ class StakeholdersService:
         """Read one stakeholder detail payload by canonical participant ID."""
         return await self._reader.get_stakeholder_detail(deal_id, participant_id)
 
-    async def list_available_contacts(
-        self, deal_id: UUID, query: str | None = None, limit: int = 50
-    ) -> list[AvailableContactItem]:
-        """Read contacts that can still become stakeholder participants."""
-        return await self._reader.list_available_contacts(deal_id, query, limit)
-
     async def create_stakeholder(
         self, deal_id: UUID, request: CreateStakeholderRequest
     ) -> StakeholderDetail:
         """Create a stakeholder and keep legacy service-owned commit behavior."""
-        stakeholder = await self._writer.create_stakeholder(deal_id, request)
+        stakeholder = await self._writer.create_stakeholder(
+            deal_id,
+            request,
+            context=StakeholderWriteContext(
+                source="api",
+                actor_user_id=self.user_id,
+                source_label="API",
+                created_via="stakeholders_service",
+            ),
+        )
         await self._finish_compat_write()
         return stakeholder
 
@@ -113,18 +116,6 @@ class StakeholdersService:
     ) -> StakeholderDetail:
         """Update stakeholder profile/behavior fields through the new writer."""
         stakeholder = await self._writer.update_stakeholder(deal_id, participant_id, request)
-        await self._finish_compat_write()
-        return stakeholder
-
-    async def approve_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
-        """Approve a pending participant-backed stakeholder."""
-        stakeholder = await self._writer.approve_stakeholder(deal_id, participant_id)
-        await self._finish_compat_write()
-        return stakeholder
-
-    async def reject_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
-        """Reject a participant-backed stakeholder from matching workflows."""
-        stakeholder = await self._writer.reject_stakeholder(deal_id, participant_id)
         await self._finish_compat_write()
         return stakeholder
 

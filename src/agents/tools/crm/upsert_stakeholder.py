@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.agents.tools.base import execute_with_capabilities
 from src.contracts.crm.stakeholders import CreateStakeholderRequest
@@ -26,6 +26,7 @@ from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
+from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 if TYPE_CHECKING:
@@ -45,7 +46,12 @@ class UpsertStakeholderInput(BaseModel):
     immutable security context.
     """
 
-    email: Annotated[str, Field(description="Stakeholder email (required)")]
+    identity: Annotated[
+        str | None,
+        Field(default=None, description="Stakeholder name, email, or LinkedIn URL"),
+    ] = None
+    email: Annotated[str | None, Field(default=None, description="Stakeholder email")] = None
+    linkedin_url: Annotated[str | None, Field(default=None, description="LinkedIn URL")] = None
     name: Annotated[str | None, Field(default=None, description="Full name")] = None
     job_title: Annotated[str | None, Field(default=None, description="Job title")] = None
     phone_number: Annotated[str | None, Field(default=None, description="Phone number")] = None
@@ -57,6 +63,16 @@ class UpsertStakeholderInput(BaseModel):
     pain_points: Annotated[list[str] | None, Field(default=None, description="Pain points")] = None
     only_fill_missing: Annotated[bool, Field(default=True)] = True
     create_if_missing: Annotated[bool, Field(default=True)] = True
+
+    @model_validator(mode="after")
+    def require_identity(self) -> UpsertStakeholderInput:
+        """Require at least one user-visible stakeholder identity field."""
+        if any(
+            value and value.strip()
+            for value in (self.identity, self.email, self.linkedin_url, self.name)
+        ):
+            return self
+        raise ValueError("Provide a stakeholder name, email, or LinkedIn URL")
 
 
 def _extract_enum_token(value: Any) -> str | None:
@@ -119,6 +135,33 @@ def _clean_text(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _looks_like_email(value: str) -> bool:
+    return "@" in value and "." in value.rsplit("@", 1)[-1]
+
+
+def _looks_like_linkedin(value: str) -> bool:
+    return "linkedin.com/" in value.lower()
+
+
+def _resolve_identity(
+    input_data: UpsertStakeholderInput,
+) -> tuple[str | None, str | None, str | None]:
+    email = _clean_text(input_data.email)
+    name = _clean_text(input_data.name)
+    linkedin_url = _clean_text(input_data.linkedin_url)
+    identity = _clean_text(input_data.identity)
+
+    if identity:
+        if _looks_like_email(identity):
+            email = email or identity
+        elif _looks_like_linkedin(identity):
+            linkedin_url = linkedin_url or identity
+        else:
+            name = name or identity
+
+    return (email.lower() if email else None, name, linkedin_url)
+
+
 def _is_missing_text(value: str | None) -> bool:
     return value is None or not value.strip()
 
@@ -128,6 +171,56 @@ def _is_unknown_enum(value: Any) -> bool:
         return True
     raw = value.value if hasattr(value, "value") else value
     return str(raw).upper() == "UNKNOWN"
+
+
+def _has_research_identity(stakeholder: Any) -> bool:
+    return bool(
+        getattr(stakeholder, "email", None)
+        or getattr(stakeholder, "related_email", None)
+        or getattr(stakeholder, "linkedin_url", None)
+    )
+
+
+def _stakeholder_contact_id(stakeholder: Any) -> UUID | None:
+    contact_id = getattr(stakeholder, "contact_id", None) or getattr(
+        stakeholder, "related_local_id", None
+    )
+    return contact_id if isinstance(contact_id, UUID) else None
+
+
+async def _dispatch_research_for_stakeholder_create(
+    *,
+    organisation_id: UUID,
+    stakeholder: Any,
+    deal_id: UUID,
+    user_id: UUID | None = None,
+) -> None:
+    """Queue canonical contact research when possible, with stakeholder research as fallback."""
+    if contact_id := _stakeholder_contact_id(stakeholder):
+        from src.workers.deal_worker.utils.contact_research_dispatch import (
+            dispatch_contact_research_async,
+        )
+
+        await dispatch_contact_research_async(
+            organisation_id=organisation_id,
+            contact_id=contact_id,
+            user_id=user_id,
+            trigger="stakeholder_created",
+        )
+        return
+
+    if not _has_research_identity(stakeholder):
+        return
+
+    from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+        dispatch_stakeholder_research_async,
+    )
+
+    await dispatch_stakeholder_research_async(
+        organisation_id=organisation_id,
+        stakeholder_id=stakeholder.participant_id,
+        deal_id=deal_id,
+    )
 
 
 def _format_upsert_output(
@@ -183,12 +276,12 @@ async def upsert_stakeholder(
     if not organisation_id or not actual_deal_id:
         return None
 
-    email = input_data.email.strip().lower()
-    if not email:
+    email, resolved_name, linkedin_url = _resolve_identity(input_data)
+    if not any((email, resolved_name, linkedin_url)):
         return None
 
     # Guardrail: reject internal team members
-    if await is_internal_email(context, email):
+    if email and await is_internal_email(context, email):
         return {
             "email": email,
             "action": "rejected_internal_user",
@@ -214,10 +307,15 @@ async def upsert_stakeholder(
                 return False
 
             service._is_internal_email = _already_checked_internal_email  # type: ignore[method-assign]
-            stakeholder = await service._find_contact_participant(
-                deal_id=actual_deal_id,
-                email=email,
-                include_deleted=True,
+            stakeholder = (
+                await service._find_contact_participant(
+                    deal_id=actual_deal_id,
+                    email=email,
+                    linkedin_url=linkedin_url,
+                    include_deleted=True,
+                )
+                if email or linkedin_url
+                else None
             )
 
             if stakeholder:
@@ -237,7 +335,7 @@ async def upsert_stakeholder(
                 updated_fields: list[str] = []
                 only_fill_missing = input_data.only_fill_missing
 
-                cleaned_name = _clean_text(input_data.name)
+                cleaned_name = resolved_name
                 if cleaned_name is not None and (
                     not only_fill_missing or _is_missing_text(stakeholder.related_name)
                 ):
@@ -307,14 +405,11 @@ async def upsert_stakeholder(
                         and stakeholder.last_researched_at is None
                     ):
                         try:
-                            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                                dispatch_stakeholder_research_async,
-                            )
-
-                            await dispatch_stakeholder_research_async(
+                            await _dispatch_research_for_stakeholder_create(
                                 organisation_id=organisation_id,
-                                stakeholder_id=stakeholder.participant_id,
+                                stakeholder=stakeholder,
                                 deal_id=actual_deal_id,
+                                user_id=context.user_id,
                             )
                         except Exception:
                             logger.warning(
@@ -345,7 +440,8 @@ async def upsert_stakeholder(
                     actual_deal_id,
                     CreateStakeholderRequest(
                         email=email,
-                        name=_clean_text(input_data.name),
+                        linkedin_url=linkedin_url,
+                        name=resolved_name,
                         job_title=_clean_text(input_data.job_title),
                         phone_number=_clean_text(input_data.phone_number),
                         department=_clean_text(input_data.department),
@@ -353,6 +449,12 @@ async def upsert_stakeholder(
                         decision_power=input_data.decision_power or DecisionPower.UNKNOWN,
                         motivation=_clean_text(input_data.motivation),
                         pain_points=input_data.pain_points or None,
+                    ),
+                    context=StakeholderWriteContext(
+                        source="agent",
+                        actor_user_id=context.user_id,
+                        source_label="Agent",
+                        created_via="upsert_stakeholder_agent",
                     ),
                 )
             except StakeholdersServiceError:
@@ -363,14 +465,11 @@ async def upsert_stakeholder(
 
             # Dispatch stakeholder research for newly created stakeholder
             try:
-                from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                    dispatch_stakeholder_research_async,
-                )
-
-                await dispatch_stakeholder_research_async(
+                await _dispatch_research_for_stakeholder_create(
                     organisation_id=organisation_id,
-                    stakeholder_id=new_stakeholder.participant_id,
+                    stakeholder=new_stakeholder,
                     deal_id=actual_deal_id,
+                    user_id=context.user_id,
                 )
             except Exception:
                 logger.warning(
@@ -393,8 +492,10 @@ def create_upsert_stakeholder(
     """Factory to create an upsert stakeholder tool bound to a context."""
 
     async def upsert_stakeholder_tool(
-        email: str,
+        identity: str | None = None,
+        email: str | None = None,
         deal_id: str | None = None,
+        linkedin_url: str | None = None,
         name: str | None = None,
         job_title: str | None = None,
         phone_number: str | None = None,
@@ -407,7 +508,7 @@ def create_upsert_stakeholder(
         only_fill_missing: bool = True,
         create_if_missing: bool = True,
     ) -> dict[str, Any] | None:
-        """Upsert stakeholder by email in the current deal.
+        """Upsert stakeholder by name, email, or LinkedIn in the current deal.
 
         deal_id: Deal UUID. If not provided, uses the current deal context.
 
@@ -419,7 +520,7 @@ def create_upsert_stakeholder(
         1. Attempt update by email (fill missing fields by default)
         2. If not found and create_if_missing=True, create the stakeholder
         """
-        logger.info("[TOOL CALLED] upsert_stakeholder - email='%s'", email)
+        logger.info("[TOOL CALLED] upsert_stakeholder - identity='%s', email='%s'", identity, email)
 
         if not context.organisation_id:
             logger.warning("upsert_stakeholder unavailable: missing organisation_id")
@@ -435,7 +536,9 @@ def create_upsert_stakeholder(
         normalized_temperature = _normalize_optional_temperature(temperature)
 
         input_data = UpsertStakeholderInput(
+            identity=identity,
             email=email,
+            linkedin_url=linkedin_url,
             name=name,
             job_title=job_title,
             phone_number=phone_number,

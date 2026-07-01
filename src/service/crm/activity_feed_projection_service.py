@@ -30,7 +30,10 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMNote,
     CRMTask,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMDealStageHistory,
+)
 from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation, Email
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
 
@@ -407,6 +410,135 @@ class ActivityFeedProjectionService:
         await self._sync_contact_lifecycle_links(
             activity_id=contact.contact_id,
             contact=contact,
+            occurred_at=occurred_at,
+        )
+
+    async def upsert_stakeholder_added(
+        self,
+        participant: CRMDealParticipant,
+        *,
+        contact: CRMContact | None = None,
+        actor_user_id: UUID | None = None,
+        source: str | None = None,
+        source_label: str | None = None,
+        created_via: str | None = None,
+    ) -> None:
+        """Project a deal participant add into the unified activity feed.
+
+        Stakeholder writes now use activities instead of legacy timeline events,
+        so the participant row remains the source while links control visibility.
+        """
+        if participant.organisation_id != self.organisation_id:
+            raise ValueError("participant does not belong to projection organisation")
+
+        occurred_at = participant.created_at or _now_utc()
+        display_name = participant.related_name or participant.related_email
+        title = f"Stakeholder added: {display_name}" if display_name else "Stakeholder added"
+        contact_id = contact.contact_id if contact is not None else participant.related_local_id
+        await self._upsert_activity(
+            activity_id=participant.participant_id,
+            integration_id=participant.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=participant.related_email,
+            preview=_compact_preview(participant.related_email or participant.related_name),
+            occurred_at=occurred_at,
+            source_type="STAKEHOLDER_ADDED",
+            source_record_id=str(participant.participant_id),
+            source_provider=None,
+            actor_name=None,
+            actor_email=None,
+            display_payload={
+                "participant_id": str(participant.participant_id),
+                "contact_id": str(contact_id) if contact_id else None,
+                "stakeholder_name": participant.related_name,
+                "email": participant.related_email,
+                "job_title": participant.job_title,
+                "participant_source": _enum_value(participant.participant_source),
+                "mutation_source": source,
+                "source_label": source_label,
+                "created_via": created_via,
+            },
+        )
+        await self._sync_primary_deal_link(
+            activity_id=participant.participant_id,
+            deal_id=participant.deal_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_related_object_link(
+            activity_id=participant.participant_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_id=contact_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_owner_user_link(
+            activity_id=participant.participant_id,
+            user_id=actor_user_id,
+            occurred_at=occurred_at,
+        )
+
+    async def upsert_stakeholder_removed(
+        self,
+        participant: CRMDealParticipant,
+        *,
+        contact: CRMContact | None = None,
+        actor_user_id: UUID | None = None,
+        source: str | None = None,
+        source_label: str | None = None,
+        created_via: str | None = None,
+    ) -> None:
+        """Project a stakeholder removal as its own activity-feed event."""
+        if participant.organisation_id != self.organisation_id:
+            raise ValueError("participant does not belong to projection organisation")
+
+        occurred_at = participant.updated_at or participant.created_at or _now_utc()
+        source_record_id = f"{participant.participant_id}:STAKEHOLDER_REMOVED"
+        activity_id = uuid5(
+            NAMESPACE_URL,
+            f"crm-stakeholder:{self.organisation_id}:{source_record_id}",
+        )
+        display_name = participant.related_name or participant.related_email
+        title = f"Stakeholder removed: {display_name}" if display_name else "Stakeholder removed"
+        contact_id = contact.contact_id if contact is not None else participant.related_local_id
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=participant.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=participant.related_email,
+            preview=_compact_preview(participant.related_email or participant.related_name),
+            occurred_at=occurred_at,
+            source_type="STAKEHOLDER_REMOVED",
+            source_record_id=source_record_id,
+            source_provider=None,
+            actor_name=None,
+            actor_email=None,
+            display_payload={
+                "participant_id": str(participant.participant_id),
+                "contact_id": str(contact_id) if contact_id else None,
+                "stakeholder_name": participant.related_name,
+                "email": participant.related_email,
+                "job_title": participant.job_title,
+                "participant_source": _enum_value(participant.participant_source),
+                "mutation_source": source,
+                "source_label": source_label,
+                "created_via": created_via,
+            },
+        )
+        await self._sync_primary_deal_link(
+            activity_id=activity_id,
+            deal_id=participant.deal_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_related_object_link(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_id=contact_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_owner_user_link(
+            activity_id=activity_id,
+            user_id=actor_user_id,
             occurred_at=occurred_at,
         )
 

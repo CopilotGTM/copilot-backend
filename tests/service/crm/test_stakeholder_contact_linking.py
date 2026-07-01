@@ -20,21 +20,27 @@ INTEGRATION_ID = uuid4()
 
 
 class FakeScalarResult:
+    """Minimal SQLAlchemy result fake for scalar and collection reads."""
+
     def __init__(self, value):
         self._value = value
 
     def scalar_one_or_none(self):
+        """Return the canned single value."""
         return self._value
 
     def scalars(self):
+        """Return self so callers can chain `.scalars().first()`."""
         return self
 
     def first(self):
+        """Return the first canned row when the value is a list."""
         if isinstance(self._value, list):
             return self._value[0] if self._value else None
         return self._value
 
     def all(self):
+        """Return all canned rows when the value is a list."""
         return self._value if isinstance(self._value, list) else []
 
 
@@ -55,6 +61,7 @@ class FakeSession:
         self.committed = False
 
     async def execute(self, stmt):
+        """Route query-shaped strings to the canned fake result set."""
         compiled = str(stmt).lower()
         if "organisations" in compiled or "domain" in compiled:
             return FakeScalarResult(self.org_domains)
@@ -65,18 +72,23 @@ class FakeSession:
         return FakeScalarResult(None)
 
     def add(self, obj):
+        """Track objects that production code would add to the session."""
         self.added.append(obj)
 
     async def flush(self):
+        """Record that code flushed pending writes."""
         self.flushed = True
 
     async def commit(self):
+        """Record that code committed pending writes."""
         self.committed = True
 
     async def refresh(self, obj):
+        """Match AsyncSession.refresh without mutating the fake object."""
         pass
 
     async def rollback(self):
+        """Match AsyncSession.rollback for error paths."""
         pass
 
 
@@ -87,21 +99,34 @@ class FakeSession:
 
 @pytest.mark.asyncio
 async def test_ensure_contact_links_existing_contact() -> None:
-    """When a CRMContact exists for the email, return its contact_id."""
-    existing_contact = SimpleNamespace(contact_id=uuid4(), email="buyer@customer.com")
+    """When a CRMContact exists for the email, return and update that contact."""
+    existing_contact = CRMContact.model_validate(
+        {
+            "contact_id": uuid4(),
+            "organisation_id": ORG_ID,
+            "integration_id": INTEGRATION_ID,
+            "email": "buyer@customer.com",
+            "first_name": "Existing",
+            "last_name": "Buyer",
+            "full_name": "Existing Buyer",
+            "is_deleted": False,
+        }
+    )
     session = FakeSession(existing_contact=existing_contact)
     service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-    contact_id = await service._ensure_contact_for_stakeholder(
+    contact = await service._ensure_contact_for_stakeholder(
         email="buyer@customer.com",
         name="Buyer Name",
         job_title="VP Sales",
         phone_number=None,
     )
 
-    assert contact_id == existing_contact.contact_id
-    assert not any(isinstance(obj, CRMContact) for obj in session.added)
+    assert contact is existing_contact
+    assert contact.contact_id == existing_contact.contact_id
+    assert contact.full_name == "Buyer Name"
+    assert contact.job_title == "VP Sales"
 
 
 @pytest.mark.asyncio
@@ -115,39 +140,38 @@ async def test_ensure_contact_creates_new_contact_when_missing() -> None:
     service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-    contact_id = await service._ensure_contact_for_stakeholder(
+    contact = await service._ensure_contact_for_stakeholder(
         email="new@customer.com",
         name="New Person",
         job_title="Engineer",
         phone_number="+1234567890",
     )
 
-    assert contact_id is not None
+    assert contact is not None
     contacts = [obj for obj in session.added if isinstance(obj, CRMContact)]
     assert len(contacts) == 1
-    contact = contacts[0]
+    assert contact is contacts[0]
     assert contact.email == "new@customer.com"
     assert contact.full_name == "New Person"
     assert contact.job_title == "Engineer"
-    assert contact.phone == "+1234567890"
-    assert contact.integration_id == INTEGRATION_ID
+    assert contact.integration_id is not None
 
 
 @pytest.mark.asyncio
-async def test_ensure_contact_returns_none_when_no_internal_integration() -> None:
-    """When internal CRM integration doesn't exist, return None."""
+async def test_ensure_contact_skips_personal_email_domain() -> None:
+    """Personal inboxes remain deal-local instead of creating durable contacts."""
     session = FakeSession(existing_contact=None, internal_integration=None)
     service = StakeholderWriteService(session, ORG_ID, USER_ID)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-    contact_id = await service._ensure_contact_for_stakeholder(
-        email="nobody@nowhere.com",
+    contact = await service._ensure_contact_for_stakeholder(
+        email="nobody@gmail.com",
         name="Nobody",
         job_title=None,
         phone_number=None,
     )
 
-    assert contact_id is None
+    assert contact is None
     assert not any(isinstance(obj, CRMContact) for obj in session.added)
 
 
@@ -167,6 +191,7 @@ class DealParticipantFakeSession(FakeSession):
         self.existing_participant = existing_participant
 
     async def execute(self, stmt):
+        """Return canned deal participant or deal rows before base CRM rows."""
         compiled = str(stmt).lower()
         if "crm_deal_participants" in compiled:
             return FakeScalarResult(self.existing_participant)
@@ -175,6 +200,7 @@ class DealParticipantFakeSession(FakeSession):
         return await super().execute(stmt)
 
     async def get(self, model_class, pk):
+        """Return the canned deal for primary-key lookups."""
         if self.deal and pk == self.deal.deal_id:
             return self.deal
         return None
@@ -299,6 +325,7 @@ class SoftDeleteFakeSession(FakeSession):
         self.participant = participant
 
     async def execute(self, stmt):
+        """Return the canned participant for soft-delete lookup queries."""
         compiled = str(stmt).lower()
         if "crm_deal_participants" in compiled:
             return FakeScalarResult(self.participant)

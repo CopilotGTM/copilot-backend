@@ -33,6 +33,7 @@ class _Session:
     def __init__(self, *execute_rows):
         self.execute_rows = list(execute_rows)
         self.commits = 0
+        self.added = []
 
     async def get(self, model, item_id):
         """Dispatch should look up participants with scoped SELECT statements."""
@@ -45,6 +46,10 @@ class _Session:
     async def commit(self):
         """Track commits for ownership handoff assertions."""
         self.commits += 1
+
+    def add(self, row):
+        """Record inserted job rows."""
+        self.added.append(row)
 
 
 class _SessionSource:
@@ -103,3 +108,47 @@ async def test_user_dispatch_claims_same_deal_automated_active_job(monkeypatch) 
     assert existing_job.stakeholder_id == participant_id
     assert existing_job.job_metadata["claimed_from"] == "automated_pipeline"
     assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_creates_research_job_for_linkedin_only_stakeholder(monkeypatch) -> None:
+    """LinkedIn-only manual stakeholders should still enter background research."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        participant_id=participant_id,
+        participant_type=CRMParticipantType.CONTACT,
+        is_deleted=False,
+        approval_status=ApprovalStatus.APPROVED.value,
+        related_local_id=None,
+        related_email=None,
+        linkedin_url="https://linkedin.com/in/linkedin-only",
+        deal_id=deal_id,
+    )
+    session = _Session(participant, None)
+    dispatched: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "src.workers.deal_worker.utils.stakeholder_research_dispatch.acquire_org_async_session",
+        lambda organisation_id: _SessionSource(session),
+    )
+
+    async def fake_send_deal_task_async(*args, **kwargs):  # noqa: ANN002, ANN003
+        dispatched.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(
+        "src.workers.deal_worker.client.send_deal_task_async",
+        fake_send_deal_task_async,
+    )
+
+    returned_job_id = await dispatch_stakeholder_research_async(
+        organisation_id=organisation_id,
+        stakeholder_id=participant_id,
+        deal_id=deal_id,
+    )
+
+    assert returned_job_id is not None
+    assert len(session.added) == 1
+    assert session.added[0].stakeholder_id == participant_id
+    assert dispatched[0]["args"][0] == "stakeholder_research.process_job"

@@ -70,13 +70,19 @@ class StakeholderResearchAgent:
     async def research(
         self,
         stakeholder_id: UUID,
-        email: str,
+        email: str | None = None,
         name: str | None = None,
+        linkedin_url: str | None = None,
     ) -> StakeholderResearchResult:
         """Research a single stakeholder. Returns structured result."""
-        identity = f"email={email}"
+        identity_parts = []
         if name:
-            identity = f"name={name}, {identity}"
+            identity_parts.append(f"name={name}")
+        if email:
+            identity_parts.append(f"email={email}")
+        if linkedin_url:
+            identity_parts.append(f"linkedin_url={linkedin_url}")
+        identity = ", ".join(identity_parts) or f"stakeholder_id={stakeholder_id}"
 
         user_prompt = (
             f"Research this stakeholder and populate the structured output.\n\n"

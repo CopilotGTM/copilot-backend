@@ -10,13 +10,13 @@ Tests cover:
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from src.api.routers.crm.contacts_handler import get_contact_read_service
 from src.api.routers.crm.stakeholders_handler import _to_deal_job_response
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
     DecisionPower,
     StakeholderSource,
     StakeholderStance,
@@ -24,7 +24,6 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 
 from tests.api.routers.crm.conftest import (
-    FakeContact,
     FakeStakeholder,
     create_contact,
     create_stakeholder,
@@ -109,6 +108,199 @@ class TestCreateStakeholder:
         }
         dispatch_research.assert_awaited_once()
 
+    def test_create_name_only_stakeholder_returns_placeholder_without_jobs(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Name-only stakeholders are captured but skipped by email/domain workflows."""
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={"name": "Jane Buyer"},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["data"]["stakeholder"]["email"] is None
+        assert body["data"]["stakeholder"]["name"] == "Jane Buyer"
+        assert body["data"]["processing_jobs"] == []
+        assert body["data"]["research_job"] is None
+        dispatch_research.assert_not_awaited()
+
+    def test_create_stakeholder_rejects_legacy_identity_only_payload(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Create no longer accepts the old identity key; callers must classify input first."""
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={"identity": "Jane Buyer"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_create_stakeholder_rejects_external_links_only_payload(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Create does not infer stakeholder identity from generic external links."""
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={
+                "external_links": [{"platform": "linkedin", "url": "https://linkedin.com/in/jane"}]
+            },
+        )
+
+        assert resp.status_code == 422
+
+    def test_create_linkedin_only_stakeholder_accepts_direct_linkedin_url(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+    ):
+        """The add modal posts linkedin_url directly, so the API must not require external_links."""
+        linkedin_url = "https://www.linkedin.com/in/direct-buyer"
+        research_job_id = uuid4()
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            dispatch_research.return_value = str(research_job_id)
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={"linkedin_url": linkedin_url},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        stakeholder = body["data"]["stakeholder"]
+        assert stakeholder["email"] is None
+        assert stakeholder["linkedin_url"] == linkedin_url
+        assert body["data"]["processing_jobs"] == []
+        assert body["data"]["research_job"] == {
+            "job_id": str(research_job_id),
+            "job_type": "stakeholder_research",
+            "status": "pending",
+        }
+        dispatch_research.assert_awaited_once()
+
+        stored_stakeholders = fake_stakeholders_service._stakeholders[test_deal_id]
+        assert stored_stakeholders[-1].linkedin_url == linkedin_url
+
+    def test_create_stakeholder_from_contact_id_uses_contact_profile_and_skips_cached_research(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Selected contacts can be added with only contact_id and reuse cached research."""
+        contact = create_contact(
+            organisation_id=test_user_ids["organisation_id"],
+            email="selected@example.com",
+            full_name="Selected Buyer",
+            job_title="Chief Revenue Officer",
+            phone="+1 555-0101",
+            linkedin_url="https://linkedin.com/in/selected-buyer",
+            contact_research="Existing contact research",
+            last_researched_at=datetime.now(UTC),
+        )
+        fake_stakeholders_service.add_contact(contact)
+
+        with patch(
+            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+            "dispatch_stakeholder_research_async",
+            new_callable=AsyncMock,
+        ) as dispatch_research:
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={"contact_id": str(contact.contact_id)},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        stakeholder = body["data"]["stakeholder"]
+        assert stakeholder["contact_id"] == str(contact.contact_id)
+        assert stakeholder["email"] == "selected@example.com"
+        assert stakeholder["name"] == "Selected Buyer"
+        assert stakeholder["job_title"] == "Chief Revenue Officer"
+        assert stakeholder["phone_number"] == "+1 555-0101"
+        assert stakeholder["linkedin_url"] == "https://linkedin.com/in/selected-buyer"
+        assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
+            "deal_email_rematch",
+            "deal_calendar_rematch",
+            "stakeholder_sync",
+        ]
+        assert body["data"]["research_job"] is None
+        dispatch_research.assert_not_awaited()
+
+    def test_create_stakeholder_from_contact_id_dispatches_contact_research_when_missing(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Contact-backed stakeholder creates should use canonical contact research."""
+        contact = create_contact(
+            organisation_id=test_user_ids["organisation_id"],
+            email="selected@example.com",
+            full_name="Selected Buyer",
+            job_title="Chief Revenue Officer",
+            phone="+1 555-0101",
+            linkedin_url="https://linkedin.com/in/selected-buyer",
+        )
+        fake_stakeholders_service.add_contact(contact)
+        research_job_id = uuid4()
+
+        with (
+            patch(
+                "src.workers.deal_worker.utils.contact_research_dispatch."
+                "dispatch_contact_research_async",
+                new_callable=AsyncMock,
+            ) as dispatch_contact_research,
+            patch(
+                "src.workers.deal_worker.utils.stakeholder_research_dispatch."
+                "dispatch_stakeholder_research_async",
+                new_callable=AsyncMock,
+            ) as dispatch_stakeholder_research,
+        ):
+            dispatch_contact_research.return_value = str(research_job_id)
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={"contact_id": str(contact.contact_id)},
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["data"]["research_job"] == {
+            "job_id": str(research_job_id),
+            "job_type": "contact_research",
+            "status": "pending",
+        }
+        dispatch_contact_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            contact_id=contact.contact_id,
+            user_id=test_user_ids["user_id"],
+            trigger="stakeholder_created",
+        )
+        dispatch_stakeholder_research.assert_not_awaited()
+
     def test_create_stakeholder_dispatches_research_separately_from_processing_jobs(
         self,
         client: TestClient,
@@ -146,7 +338,7 @@ class TestCreateStakeholder:
             job["job_type"] for job in body["data"]["processing_jobs"]
         }
 
-    def test_create_reactivates_removed_stakeholder_with_processing_jobs(
+    def test_create_reactivates_deleted_stakeholder_with_processing_jobs(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
@@ -154,7 +346,7 @@ class TestCreateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
-        """Re-adding a removed stakeholder restores the row and returns visible jobs."""
+        """Re-adding a deleted stakeholder restores the row and returns visible jobs."""
         removed = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -162,7 +354,7 @@ class TestCreateStakeholder:
             name="Old Name",
             job_title="Old Title",
         )
-        removed.approval_status = ApprovalStatus.REMOVED
+        removed.is_deleted = True
         fake_stakeholders_service.add_stakeholder(removed)
 
         research_job_id = uuid4()
@@ -201,7 +393,7 @@ class TestCreateStakeholder:
             "status": "pending",
         }
 
-    def test_create_duplicate_active_stakeholder_returns_typed_conflict(
+    def test_create_duplicate_active_stakeholder_updates_existing_row(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
@@ -209,7 +401,7 @@ class TestCreateStakeholder:
         test_deal_id,
         test_user_ids,
     ):
-        """Duplicate conflicts include metadata without tripping response validation."""
+        """Duplicate create payloads update the existing stakeholder row."""
         active = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
@@ -226,14 +418,11 @@ class TestCreateStakeholder:
             },
         )
 
-        assert resp.status_code == 409
+        assert resp.status_code == 201
         body = resp.json()
-        assert body["status"] == "ERROR"
-        assert body["data"] == {
-            "participant_id": str(active.participant_id),
-            "approval_status": "APPROVED",
-            "is_deleted": False,
-        }
+        assert body["status"] == "SUCCESS"
+        assert body["data"]["stakeholder"]["participant_id"] == str(active.participant_id)
+        assert body["data"]["stakeholder"]["name"] == "Duplicate"
 
 
 class TestGetDealStakeholders:
@@ -498,628 +687,84 @@ class TestGetDealStakeholders:
             assert resp.status_code == 422, f"Expected 422 for deal_id={invalid_id}"
 
 
-class TestListAvailableContacts:
-    """Tests for GET /{deal_id}/stakeholders/available-contacts endpoint."""
+class TestRemovedContactStakeholderRoutes:
+    """Removed contact-picker routes should not be part of the public API."""
 
-    def test_returns_empty_list_when_no_contacts_exist(
+    def test_available_contacts_route_uses_contact_search(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
         test_deal_id,
     ):
-        """Verify empty list when no contacts are available."""
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
+        contact_id = uuid4()
+        captured = {}
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "SUCCESS"
-        assert body["data"] == []
+        class FakeContactSearchService:
+            async def close(self):
+                pass
 
-    def test_returns_all_contact_fields_correctly(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify all contact fields are present in response."""
-        contact = FakeContact(
-            contact_id=uuid4(),
-            organisation_id=test_user_ids["organisation_id"],
-            email="contact@company.com",
-            full_name="Jane Contact",
-            job_title="Senior Manager",
-            company_name="Acme Corp",
-        )
-        fake_stakeholders_service.add_contact(contact)
+            async def search_contacts(self, *, q, limit, cursor, company_id):
+                captured.update(
+                    {"q": q, "limit": limit, "cursor": cursor, "company_id": company_id}
+                )
+                return [
+                    {
+                        "contact_id": contact_id,
+                        "full_name": "Sam Buyer",
+                        "email": "sam@example.com",
+                        "job_title": "CFO",
+                        "company": {"id": None, "name": "Example", "domain": "example.com"},
+                        "match_type": "name_prefix",
+                    }
+                ], None
 
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
+        async def override_contact_search_service():
+            yield FakeContactSearchService()
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 1
-
-        data = body["data"][0]
-        assert data["contact_id"] == str(contact.contact_id)
-        assert "external_id" not in data
-        assert data["email"] == "contact@company.com"
-        assert data["full_name"] == "Jane Contact"
-        assert data["job_title"] == "Senior Manager"
-        assert data["company_name"] == "Acme Corp"
-
-    def test_excludes_contacts_already_added_as_stakeholders(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify contacts that are already stakeholders are excluded."""
-        # Add stakeholder with specific email
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",
-            name="Existing Stakeholder",
-        )
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        # Add contacts - one matching stakeholder email, one new
-        existing_contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",  # Same as stakeholder
-            full_name="Existing Contact",
-        )
-        new_contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="new@example.com",
-            full_name="New Contact",
-        )
-        fake_stakeholders_service.add_contact(existing_contact)
-        fake_stakeholders_service.add_contact(new_contact)
-
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["email"] == "new@example.com"
-
-    def test_excludes_contacts_with_case_insensitive_email_match(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify email matching is case-insensitive."""
-        # Add stakeholder with lowercase email
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="john@example.com",
-        )
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        # Add contact with different case
-        contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="JOHN@EXAMPLE.COM",  # Different case
-            full_name="John Contact",
-        )
-        fake_stakeholders_service.add_contact(contact)
-
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 0
-
-    def test_excludes_contacts_without_email(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify contacts without email are excluded."""
-        contact_no_email = FakeContact(
-            contact_id=uuid4(),
-            organisation_id=test_user_ids["organisation_id"],
-            email=None,
-            full_name="No Email Contact",
-        )
-        contact_with_email = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="has.email@example.com",
-            full_name="Has Email Contact",
-        )
-        fake_stakeholders_service.add_contact(contact_no_email)
-        fake_stakeholders_service.add_contact(contact_with_email)
-
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["email"] == "has.email@example.com"
-
-    def test_filters_contacts_by_name_query(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify contacts can be filtered by name search query."""
-        contacts = [
-            {"full_name": "Alice Johnson", "email": "alice@example.com"},
-            {"full_name": "Bob Smith", "email": "bob@example.com"},
-            {"full_name": "Alice Williams", "email": "alice.w@example.com"},
-        ]
-
-        for data in contacts:
-            contact = create_contact(organisation_id=test_user_ids["organisation_id"], **data)
-            fake_stakeholders_service.add_contact(contact)
+        client.app.dependency_overrides[get_contact_read_service] = override_contact_search_service
 
         resp = client.get(
             f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts",
-            params={"query": "alice"},
+            params={"query": "sam", "limit": 10},
         )
 
         assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 2
-
-        names = {c["full_name"] for c in body["data"]}
-        assert names == {"Alice Johnson", "Alice Williams"}
-
-    def test_filters_contacts_by_email_query(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify contacts can be filtered by email search query."""
-        contacts = [
-            {"full_name": "Alice", "email": "alice@acme.com"},
-            {"full_name": "Bob", "email": "bob@acme.com"},
-            {"full_name": "Carol", "email": "carol@other.com"},
+        assert captured == {"q": "sam", "limit": 10, "cursor": None, "company_id": None}
+        assert resp.json()["data"] == [
+            {
+                "contact_id": str(contact_id),
+                "email": "sam@example.com",
+                "first_name": None,
+                "last_name": None,
+                "full_name": "Sam Buyer",
+                "job_title": "CFO",
+                "company_name": "Example",
+                "phone": None,
+                "lifecycle_stage": None,
+                "last_activity_at": None,
+            }
         ]
-
-        for data in contacts:
-            contact = create_contact(organisation_id=test_user_ids["organisation_id"], **data)
-            fake_stakeholders_service.add_contact(contact)
-
-        resp = client.get(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts",
-            params={"query": "acme"},
+        assert (
+            "/users/crm/deals/{deal_id}/stakeholders/available-contacts"
+            in client.app.openapi()["paths"]
         )
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 2
-
-    def test_filters_contacts_by_job_title_query(
+    def test_add_from_contacts_route_is_removed(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
-        fake_stakeholders_service,
         test_deal_id,
-        test_user_ids,
     ):
-        """Verify contacts can be filtered by job title search query."""
-        contacts = [
-            {"full_name": "Alice", "email": "alice@example.com", "job_title": "Software Engineer"},
-            {"full_name": "Bob", "email": "bob@example.com", "job_title": "Product Manager"},
-            {"full_name": "Carol", "email": "carol@example.com", "job_title": "Senior Engineer"},
-        ]
-
-        for data in contacts:
-            contact = create_contact(organisation_id=test_user_ids["organisation_id"], **data)
-            fake_stakeholders_service.add_contact(contact)
-
-        resp = client.get(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts",
-            params={"query": "engineer"},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 2
-
-        titles = {c["job_title"] for c in body["data"]}
-        assert "Software Engineer" in titles
-        assert "Senior Engineer" in titles
-
-    def test_query_is_case_insensitive(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify search query is case-insensitive."""
-        contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="test@example.com",
-            full_name="John DOE",
-        )
-        fake_stakeholders_service.add_contact(contact)
-
-        # Test different cases
-        for query in ["john", "JOHN", "John", "jOhN"]:
-            resp = client.get(
-                f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts",
-                params={"query": query},
-            )
-            assert resp.status_code == 200
-            assert len(resp.json()["data"]) == 1, f"Query '{query}' should match"
-
-    def test_respects_limit_parameter(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify limit parameter restricts number of results."""
-        # Add 10 contacts
-        for i in range(10):
-            contact = create_contact(
-                organisation_id=test_user_ids["organisation_id"],
-                email=f"contact{i}@example.com",
-                full_name=f"Contact {i}",
-            )
-            fake_stakeholders_service.add_contact(contact)
-
-        resp = client.get(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts",
-            params={"limit": 3},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 3
-
-    def test_default_limit_is_applied(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify default limit of 50 is applied."""
-        # Add 60 contacts
-        for i in range(60):
-            contact = create_contact(
-                organisation_id=test_user_ids["organisation_id"],
-                email=f"contact{i}@example.com",
-            )
-            fake_stakeholders_service.add_contact(contact)
-
-        resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/available-contacts")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]) == 50  # Default limit
-
-
-class TestAddContactsAsStakeholders:
-    """Tests for POST /{deal_id}/stakeholders/add-from-contacts endpoint."""
-
-    def test_successfully_adds_single_contact_as_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        fake_stakeholder_job_visibility_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Adding from contacts queues the same post-create work as manual create."""
-        contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="new.stakeholder@example.com",
-            full_name="New Stakeholder",
-            job_title="Director",
-        )
-        fake_stakeholders_service.add_contact(contact)
-
-        research_job_id = uuid4()
-        with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            new_callable=AsyncMock,
-            return_value=str(research_job_id),
-        ) as dispatch_research:
-            resp = client.post(
-                f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-                json={"contact_ids": [str(contact.contact_id)]},
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "SUCCESS"
-        assert len(body["data"]["added"]) == 1
-        assert body["data"]["skipped"] == []
-
-        added = body["data"]["added"][0]
-        assert added["email"] == "new.stakeholder@example.com"
-        assert added["name"] == "New Stakeholder"
-        assert "participant_id" in added
-        assert "stakeholder_id" not in added
-        assert [
-            job.job_type.value for job in fake_stakeholder_job_visibility_service.created_jobs
-        ] == [
-            "deal_email_rematch",
-            "deal_calendar_rematch",
-            "stakeholder_sync",
-        ]
-        dispatch_research.assert_awaited_once_with(
-            organisation_id=test_user_ids["organisation_id"],
-            stakeholder_id=UUID(added["participant_id"]),
-            deal_id=test_deal_id,
-            user_id=test_user_ids["user_id"],
-        )
-
-    def test_successfully_adds_multiple_contacts_as_stakeholders(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify multiple contacts can be added at once."""
-        contacts = []
-        for i in range(3):
-            contact = create_contact(
-                organisation_id=test_user_ids["organisation_id"],
-                email=f"contact{i}@example.com",
-                full_name=f"Contact {i}",
-            )
-            fake_stakeholders_service.add_contact(contact)
-            contacts.append(contact)
-
         resp = client.post(
             f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(c.contact_id) for c in contacts]},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]["added"]) == 3
-        assert body["data"]["skipped"] == []
-
-    def test_skips_contacts_already_added_as_stakeholders(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify existing stakeholders are skipped (not duplicated)."""
-        # Add existing stakeholder
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",
-        )
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        # Add contact with same email
-        contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",
-            full_name="Existing Contact",
-        )
-        fake_stakeholders_service.add_contact(contact)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(contact.contact_id)]},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["data"]["added"] == []
-        assert len(body["data"]["skipped"]) == 1
-        assert body["data"]["skipped"][0]["contact_id"] == str(contact.contact_id)
-        assert "already exists" in body["data"]["skipped"][0]["reason"]
-
-    def test_skips_contacts_without_email(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify contacts without email are skipped."""
-        contact = FakeContact(
-            contact_id=uuid4(),
-            organisation_id=test_user_ids["organisation_id"],
-            email=None,
-            full_name="No Email Contact",
-        )
-        fake_stakeholders_service.add_contact(contact)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(contact.contact_id)]},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["data"]["added"] == []
-        assert len(body["data"]["skipped"]) == 1
-
-    def test_skips_unknown_contact_ids(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        test_deal_id,
-    ):
-        """Verify unknown contact IDs are reported as skipped."""
-        unknown_id = uuid4()
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(unknown_id)]},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["data"]["added"] == []
-        assert len(body["data"]["skipped"]) == 1
-        assert body["data"]["skipped"][0]["contact_id"] == str(unknown_id)
-        assert "not found" in body["data"]["skipped"][0]["reason"]
-
-    def test_handles_mixed_valid_and_invalid_contacts(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify mix of valid, invalid, and existing contacts are handled correctly."""
-        # Valid contact
-        valid_contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="valid@example.com",
-            full_name="Valid Contact",
-        )
-        fake_stakeholders_service.add_contact(valid_contact)
-
-        # Contact without email
-        no_email_contact = FakeContact(
-            contact_id=uuid4(),
-            organisation_id=test_user_ids["organisation_id"],
-            email=None,
-            full_name="No Email",
-        )
-        fake_stakeholders_service.add_contact(no_email_contact)
-
-        # Existing stakeholder
-        existing_stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",
-        )
-        fake_stakeholders_service.add_stakeholder(existing_stakeholder)
-
-        existing_contact = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="existing@example.com",
-        )
-        fake_stakeholders_service.add_contact(existing_contact)
-
-        # Unknown ID
-        unknown_id = uuid4()
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={
-                "contact_ids": [
-                    str(valid_contact.contact_id),
-                    str(no_email_contact.contact_id),
-                    str(existing_contact.contact_id),
-                    str(unknown_id),
-                ]
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["data"]["added"]) == 1  # Only valid_contact
-        assert len(body["data"]["skipped"]) == 3  # no_email, existing, unknown
-
-    def test_prevents_duplicate_emails_in_same_request(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify same email added twice in one request doesn't create duplicates."""
-        contact1 = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="same@example.com",
-            full_name="Contact 1",
-        )
-        contact2 = create_contact(
-            organisation_id=test_user_ids["organisation_id"],
-            email="same@example.com",  # Same email
-            full_name="Contact 2",
-        )
-        fake_stakeholders_service.add_contact(contact1)
-        fake_stakeholders_service.add_contact(contact2)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": [str(contact1.contact_id), str(contact2.contact_id)]},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        # First one should be added, second skipped as duplicate
-        assert len(body["data"]["added"]) == 1
-        assert len(body["data"]["skipped"]) == 1
-
-    def test_returns_422_for_empty_contact_ids_list(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        test_deal_id,
-    ):
-        """Verify 422 error when contact_ids list is empty."""
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": []},
-        )
-
-        assert resp.status_code == 422  # Validation error - min_length=1
-
-    def test_returns_422_for_invalid_deal_id(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-    ):
-        """Verify 422 error for malformed deal ID."""
-        resp = client.post(
-            "/users/crm/deals/not-a-uuid/stakeholders/add-from-contacts",
             json={"contact_ids": [str(uuid4())]},
         )
 
-        assert resp.status_code == 422
-
-    def test_returns_422_for_invalid_contact_id_format(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        test_deal_id,
-    ):
-        """Verify 422 error for malformed contact IDs."""
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/add-from-contacts",
-            json={"contact_ids": ["not-a-uuid"]},
+        assert resp.status_code != 200
+        assert (
+            "/users/crm/deals/{deal_id}/stakeholders/add-from-contacts"
+            not in client.app.openapi()["paths"]
         )
-
-        assert resp.status_code == 422
 
 
 class TestGetStakeholderDetail:
@@ -1493,153 +1138,10 @@ class TestUpdateStakeholder:
         assert resp.status_code == 422
 
 
-class TestApproveStakeholder:
-    """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/approve endpoint."""
-
-    def test_successfully_approves_pending_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify pending stakeholder can be approved."""
-        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="pending@example.com",
-            name="Pending Stakeholder",
-        )
-        stakeholder.approval_status = ApprovalStatus.PENDING
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/approve"
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "SUCCESS"
-        assert body["message"] == "Stakeholder approved"
-        assert body["data"]["approval_status"] == "APPROVED"
-
-    def test_returns_400_for_already_approved_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify 400 error when stakeholder is already approved."""
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="approved@example.com",
-        )
-        # Default is APPROVED
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/approve"
-        )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "already approved" in body["message"]
-
-    def test_returns_404_for_nonexistent_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        test_deal_id,
-    ):
-        """Verify 404 when stakeholder doesn't exist."""
-        nonexistent_id = uuid4()
-
-        resp = client.post(f"/users/crm/deals/{test_deal_id}/stakeholders/{nonexistent_id}/approve")
-
-        assert resp.status_code == 404
-
-
-class TestRejectStakeholder:
-    """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/reject endpoint."""
-
-    def test_successfully_rejects_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify stakeholder can be rejected."""
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="to-reject@example.com",
-            name="To Reject",
-        )
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/reject"
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "SUCCESS"
-        assert body["message"] == "Stakeholder rejected"
-        assert body["data"]["approval_status"] == "REJECTED"
-
-    def test_returns_400_for_already_rejected_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify 400 error when stakeholder is already rejected."""
-        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="rejected@example.com",
-        )
-        stakeholder.approval_status = ApprovalStatus.REJECTED
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/reject"
-        )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "already rejected" in body["message"]
-
-    def test_returns_404_for_nonexistent_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        test_deal_id,
-    ):
-        """Verify 404 when stakeholder doesn't exist."""
-        nonexistent_id = uuid4()
-
-        resp = client.post(f"/users/crm/deals/{test_deal_id}/stakeholders/{nonexistent_id}/reject")
-
-        assert resp.status_code == 404
-
-
 class TestRemoveStakeholder:
     """Tests for DELETE /{deal_id}/stakeholders/{stakeholder_id} endpoint."""
 
-    def test_successfully_removes_approved_stakeholder(
+    def test_successfully_removes_stakeholder(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
@@ -1647,14 +1149,13 @@ class TestRemoveStakeholder:
         test_deal_id,
         test_user_ids,
     ):
-        """Verify approved stakeholder can be removed."""
+        """Verify stakeholder can be removed without legacy status gates."""
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
             email="to-remove@example.com",
             name="To Remove",
         )
-        # Default is APPROVED
         fake_stakeholders_service.add_stakeholder(stakeholder)
 
         resp = client.delete(
@@ -1665,9 +1166,10 @@ class TestRemoveStakeholder:
         body = resp.json()
         assert body["status"] == "SUCCESS"
         assert body["message"] == "Stakeholder removed"
-        assert body["data"]["approval_status"] == "REMOVED"
+        assert body["data"]["approval_status"] == "APPROVED"
+        assert stakeholder.is_deleted is True
 
-    def test_returns_400_for_already_removed_stakeholder(
+    def test_removes_legacy_pending_stakeholder(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
@@ -1675,34 +1177,7 @@ class TestRemoveStakeholder:
         test_deal_id,
         test_user_ids,
     ):
-        """Verify 400 error when stakeholder is already removed."""
-        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="removed@example.com",
-        )
-        stakeholder.approval_status = ApprovalStatus.REMOVED
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.delete(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
-        )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "already removed" in body["message"]
-
-    def test_returns_400_for_pending_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify 400 error when trying to remove a pending stakeholder."""
+        """Legacy pending rows are still removable after dropping approvals."""
         from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 
         stakeholder = create_stakeholder(
@@ -1717,36 +1192,10 @@ class TestRemoveStakeholder:
             f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
         )
 
-        assert resp.status_code == 400
+        assert resp.status_code == 200
         body = resp.json()
-        assert "Only approved stakeholders can be removed" in body["message"]
-
-    def test_returns_400_for_rejected_stakeholder(
-        self,
-        client: TestClient,
-        stakeholders_dependency_overrides,
-        fake_stakeholders_service,
-        test_deal_id,
-        test_user_ids,
-    ):
-        """Verify 400 error when trying to remove a rejected stakeholder."""
-        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-
-        stakeholder = create_stakeholder(
-            deal_id=test_deal_id,
-            organisation_id=test_user_ids["organisation_id"],
-            email="rejected@example.com",
-        )
-        stakeholder.approval_status = ApprovalStatus.REJECTED
-        fake_stakeholders_service.add_stakeholder(stakeholder)
-
-        resp = client.delete(
-            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
-        )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "Only approved stakeholders can be removed" in body["message"]
+        assert body["status"] == "SUCCESS"
+        assert stakeholder.is_deleted is True
 
     def test_returns_404_for_nonexistent_stakeholder(
         self,

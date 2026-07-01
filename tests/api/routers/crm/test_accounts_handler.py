@@ -503,10 +503,13 @@ async def test_get_account_detail_returns_compact_contacts_and_summary_placehold
     dumped = response.data.model_dump()
     detail_fields = dumped["detail_field_definitions"]
     fields_by_key = {field["key"]: field for field in detail_fields}
-    assert [field["order"] for field in detail_fields] == list(range(1, 25))
+    assert [field["order"] for field in detail_fields] == list(range(1, 22))
     assert "contact_count" not in fields_by_key
     assert "deal_count" not in fields_by_key
     assert "pipeline_value" not in fields_by_key
+    assert "account_summary.status" not in fields_by_key
+    assert "account_summary.content" not in fields_by_key
+    assert "account_summary.last_researched_at" not in fields_by_key
     assert fields_by_key["name"] == {
         "key": "name",
         "label": "Account name",
@@ -533,7 +536,6 @@ async def test_get_account_detail_returns_compact_contacts_and_summary_placehold
         "edit_policy": "assignment_action",
         "locked_reason": "Use an account owner assignment action.",
     }
-    assert fields_by_key["account_summary.content"]["edit_policy"] == "generated"
     assert dumped["account_summary"] == {
         "status": "not_available",
         "content": None,

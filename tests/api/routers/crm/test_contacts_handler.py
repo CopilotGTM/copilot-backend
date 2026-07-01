@@ -584,6 +584,12 @@ async def test_get_contact_detail_returns_page_ready_contract() -> None:
         "locked_reason": None,
     }
     fields_by_key = {field["key"]: field for field in detail_fields}
+    assert "research_summary.summary" not in fields_by_key
+    assert "research_summary.last_researched_at" not in fields_by_key
+    assert "profile_enrichment.is_enriched" not in fields_by_key
+    assert "profile_enrichment.source" not in fields_by_key
+    assert "profile_enrichment.enriched_at" not in fields_by_key
+    assert "profile_enrichment.data" not in fields_by_key
     assert fields_by_key["email"] == {
         "key": "email",
         "label": "Email",
