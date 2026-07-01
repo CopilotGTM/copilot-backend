@@ -8,6 +8,7 @@ from src.agents.tools.crm.add_stakeholder import create_add_stakeholder
 from src.agents.tools.crm.create_account import create_create_account
 from src.agents.tools.crm.create_contact import create_create_contact
 from src.agents.tools.crm.create_deal import create_create_deal
+from src.agents.tools.crm.create_lead import create_create_lead
 from src.agents.tools.crm.create_stakeholder_if_missing import create_create_stakeholder_if_missing
 from src.agents.tools.crm.enrich_stakeholder import create_enrich_stakeholder
 from src.agents.tools.crm.get_deal_change_history import create_get_deal_change_history
@@ -19,6 +20,7 @@ from src.agents.tools.crm.get_risks_blockers import create_get_existing_risks_bl
 from src.agents.tools.crm.get_stakeholder_details import create_get_stakeholder_details
 from src.agents.tools.crm.list_deal_notes import create_list_deal_notes
 from src.agents.tools.crm.list_deals import create_list_deals
+from src.agents.tools.crm.list_leads import create_list_leads
 from src.agents.tools.crm.list_stakeholders import create_list_deal_stakeholders
 from src.agents.tools.crm.manage_risks_blockers import (
     create_dismiss_risk_blocker,
@@ -40,9 +42,11 @@ __all__ = [
     "create_add_stakeholder",
     "create_create_stakeholder_if_missing",
     "create_create_deal",
+    "create_create_lead",
     "create_update_deal_stage",
     "create_search_deals",
     "create_list_deals",
+    "create_list_leads",
     "create_get_deal_details",
     "create_get_deal_memory",
     "create_get_deal_summary",

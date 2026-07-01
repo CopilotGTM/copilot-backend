@@ -24,6 +24,10 @@ if TYPE_CHECKING:
         create_list_deal_channel_messages,
     )
     from src.agents.tools.communication.list_emails import create_list_deal_emails
+    from src.agents.tools.communication.mailbox_emails import (
+        create_list_connected_email_accounts,
+        create_search_mailbox_emails,
+    )
     from src.agents.tools.communication.send_email import create_send_email
 
 _EXPORTS = {
@@ -42,6 +46,14 @@ _EXPORTS = {
     "create_get_email_details": (
         "src.agents.tools.communication.get_email_details",
         "create_get_email_details",
+    ),
+    "create_list_connected_email_accounts": (
+        "src.agents.tools.communication.mailbox_emails",
+        "create_list_connected_email_accounts",
+    ),
+    "create_search_mailbox_emails": (
+        "src.agents.tools.communication.mailbox_emails",
+        "create_search_mailbox_emails",
     ),
     "create_list_deal_channel_messages": (
         "src.agents.tools.communication.list_channel_messages",
