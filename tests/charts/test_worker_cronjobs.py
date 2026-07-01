@@ -179,6 +179,36 @@ def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     )
     assert meeting_bot_fallback["spec"]["schedule"] == "0 20 * * *"
 
+    sales_dashboard_snapshot = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-sales-dashboard-snapshot"
+    )
+    sales_dashboard_container = sales_dashboard_snapshot["spec"]["jobTemplate"]["spec"]["template"][
+        "spec"
+    ]["containers"][0]
+
+    assert sales_dashboard_snapshot["spec"]["schedule"] == "15 1 * * *"
+    assert sales_dashboard_container["command"] == [
+        "python",
+        "-m",
+        "src.workers.deal_worker.cron_dispatch",
+        "--job",
+        "sales-dashboard-snapshot",
+    ]
+
+
+def test_sales_dashboard_snapshot_cronjob_renders_in_dev() -> None:
+    """Dev overrides replace the base job list, so keep the snapshot CronJob explicit."""
+    cronjobs = _render_worker_cronjobs()
+    sales_dashboard_snapshot = next(
+        doc
+        for doc in cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-sales-dashboard-snapshot"
+    )
+
+    assert sales_dashboard_snapshot["spec"]["schedule"] == "15 1 * * *"
+
 
 def test_knowledge_cronjobs_render_with_production_job_hardening() -> None:
     """Assert knowledge cleanup CronJobs keep strict history and TTL settings."""

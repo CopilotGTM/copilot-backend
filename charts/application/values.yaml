@@ -507,6 +507,8 @@ dealCronJobs:
       schedule: "20 * * * *"
     - name: meeting-bot-fallback
       schedule: "0 20 * * *"
+    - name: sales-dashboard-snapshot
+      schedule: "15 1 * * *"
 
 # Legacy Celery Beat config for deal worker.
 # Fixed deal schedules are owned by Kubernetes CronJobs below.

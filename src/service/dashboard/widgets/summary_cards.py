@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.api.schemas.sales_dashboard_models import SalesDashboardFilterSet, SalesDashboardWidget
+from src.contracts.dashboard.sales_dashboard import SalesDashboardFilterSet, SalesDashboardWidget
 
 
 async def build_summary_card_widgets(

@@ -23,6 +23,7 @@ meeting bot flow.
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_models import ChatSession
+from .dashboard_models import DashboardSnapshot
 from .deal_asset_models import (
     DealAsset,
     DealAssetDirection,
@@ -110,6 +111,7 @@ __all__ = [
     "ChatMessage",
     "Attachment",
     "ChatMessageAttachmentLink",
+    "DashboardSnapshot",
     # Knowledge Models
     "OrganisationDocument",
     "OrganisationSource",

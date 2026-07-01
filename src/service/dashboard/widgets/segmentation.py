@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.api.schemas.sales_dashboard_models import SalesDashboardFilterSet, SalesDashboardWidget
+from src.contracts.dashboard.sales_dashboard import SalesDashboardFilterSet, SalesDashboardWidget
 from src.service.dashboard.defaults import DEFAULT_SALES_CYCLE_VALUE_BUCKETS
 
 

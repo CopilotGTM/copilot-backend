@@ -29,6 +29,7 @@ from src.domain.models.organisation_tables import (
     CRMPipeline,
     CRMSourceObjectMapping,
     CRMUser,
+    DashboardSnapshot,
     DealJobs,
     IntegrationSyncHistory,
     KnowledgeIntegration,
@@ -146,6 +147,7 @@ all_org_models: list[type[Any]] = [
     DealTimelineEvent,
     # Risk/Blocker tables
     DealRiskBlocker,
+    DashboardSnapshot,
 ]
 
 for model in all_org_models:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from src.api.schemas.sales_dashboard_models import SalesDashboardDateRange
+from src.contracts.dashboard.sales_dashboard import SalesDashboardDateRange
 
 SALES_DASHBOARD_ID = "sales"
 SALES_DASHBOARD_TITLE = "Sales Dashboard"

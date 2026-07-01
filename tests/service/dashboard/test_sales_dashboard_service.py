@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from inspect import signature
+from types import SimpleNamespace
 from uuid import uuid4
 
 from src.api.schemas.sales_dashboard_models import (
@@ -112,6 +113,42 @@ def test_dashboard_deal_filters_accept_value_bounds() -> None:
     assert "max_deal_value" in parameters
 
 
+def test_stage_movement_history_uses_internal_stage_ids() -> None:
+    deal_id = uuid4()
+    from_stage_id = uuid4()
+    to_stage_id = uuid4()
+
+    class FakeResult:
+        def all(self):
+            return [
+                SimpleNamespace(
+                    deal_id=deal_id,
+                    deal_name="Acme",
+                    deal_amount=50000,
+                    owner_name="Nikhil",
+                    entered_at=datetime(2026, 4, 12, tzinfo=UTC),
+                    stage_id=to_stage_id,
+                    from_stage_id=from_stage_id,
+                    to_stage_label="Proposal",
+                    to_stage_name="Proposal",
+                    from_stage_label="Discovery",
+                    from_stage_name="Discovery",
+                    previous_entered_at=datetime(2026, 4, 1, tzinfo=UTC),
+                )
+            ]
+
+    class FakeSession:
+        async def execute(self, stmt):
+            return FakeResult()
+
+    provider = SalesDashboardDataProvider(FakeSession(), uuid4())
+
+    history = asyncio.run(provider._get_stage_movement_history(to_date=datetime(2026, 5, 1)))
+
+    assert history[0].to_stage == "Proposal"
+    assert history[0].from_stage == "Discovery"
+
+
 def test_service_returns_sections_with_widgets(monkeypatch) -> None:
     class FakeService(SalesDashboardService):
         async def _load_saved_preferences(self):
@@ -151,6 +188,25 @@ def test_service_returns_sections_with_widgets(monkeypatch) -> None:
     assert response.dashboard_id == "sales"
     assert response.sections[0].section_id == "summary"
     assert response.sections[0].widgets[0].widget_id == "total_pipeline"
+
+
+def test_service_can_render_with_default_preferences_without_user() -> None:
+    class FakeService(SalesDashboardService):
+        async def _build_dashboard_sections(self, filters, include_widgets, saved_preferences):
+            assert saved_preferences == {}
+            return self._empty_dashboard_sections()
+
+    service = FakeService(
+        org_session=object(),
+        master_session=object(),
+        organisation_id=uuid4(),
+        user_id=None,
+    )
+
+    response = asyncio.run(service.get_sales_dashboard(SalesDashboardQueryParams()))
+
+    assert response.dashboard_id == "sales"
+    assert response.sections
 
 
 def test_service_declares_deepmatrix_section_order() -> None:

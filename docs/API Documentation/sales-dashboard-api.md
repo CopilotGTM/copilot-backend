@@ -9,7 +9,10 @@
 ## Overview
 
 The Sales Dashboard is the application-provided dashboard rendered by backend code.
-It is not stored in `org_*.dashboards`.
+Default, unfiltered Sales Dashboard payloads are cached in the tenant
+`org_*.dashboards` table as the `sales` dashboard snapshot. Filtered requests
+and non-default primary segments still render live so temporary request filters
+do not overwrite the default snapshot.
 
 Saved user preferences live under `public.users.preferences.dashboard.main`.
 Request query filters are temporary overrides and are not saved automatically.
