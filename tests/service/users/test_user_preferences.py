@@ -33,6 +33,21 @@ def test_normalize_user_preferences_adds_default_account_list_columns() -> None:
     ]
 
 
+def test_normalize_user_preferences_adds_default_deal_list_columns() -> None:
+    assert normalize_user_preferences({})["crm"]["deals"]["list"]["columns"] == [
+        "name",
+        "company.name",
+        "stage.name",
+        "amount",
+        "expected_close_date",
+        "owner.name",
+        "primary_contact.name",
+        "last_activity_at",
+        "deal_status",
+        "pipeline.name",
+    ]
+
+
 def test_normalize_user_preferences_preserves_user_contact_list_columns() -> None:
     preferences = {
         "crm": {
@@ -66,4 +81,22 @@ def test_normalize_user_preferences_preserves_user_account_list_columns() -> Non
         "name",
         "owner.name",
         "pipeline_value",
+    ]
+
+
+def test_normalize_user_preferences_preserves_user_deal_list_columns() -> None:
+    preferences = {
+        "crm": {
+            "deals": {
+                "list": {
+                    "columns": ["name", "amount", "owner.name"],
+                }
+            }
+        }
+    }
+
+    assert normalize_user_preferences(preferences)["crm"]["deals"]["list"]["columns"] == [
+        "name",
+        "amount",
+        "owner.name",
     ]

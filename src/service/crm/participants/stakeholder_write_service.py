@@ -399,6 +399,55 @@ class StakeholderWriteService:
         contact_result = await self.session.execute(contact_stmt)
         return contact_result.scalar_one_or_none()
 
+    async def _set_primary_contact_if_first_stakeholder(
+        self,
+        deal_id: UUID,
+        participant: CRMDealParticipant,
+    ) -> None:
+        """Promote the first stakeholder to the deal's default contact."""
+        if participant.is_primary_contact:
+            return
+
+        deal_stmt = select(CRMDeal).where(
+            col(CRMDeal.deal_id) == deal_id,
+            col(CRMDeal.organisation_id) == self.organisation_id,
+        )
+        deal_result = await self.session.execute(deal_stmt)
+        deal = deal_result.scalar_one_or_none()
+        if (
+            not deal
+            or deal.primary_contact_id
+            or deal.primary_contact_name
+            or deal.primary_contact_email
+        ):
+            return
+
+        existing_stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.deal_id) == deal_id,
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.participant_id) != participant.participant_id,
+        )
+        existing_result = await self.session.execute(existing_stmt)
+        if existing_result.scalars().first():
+            return
+
+        now = datetime.now(UTC)
+        participant.is_primary_contact = True
+        participant.relationship_role = participant.relationship_role or "primary_contact"
+        participant.source_modified_at = now
+        participant.synced_at = now
+        participant.last_seen_at = now
+        deal.primary_contact_id = participant.related_local_id
+        deal.primary_contact_name = participant.related_name
+        deal.primary_contact_email = participant.related_email
+        deal.source_modified_at = now
+        deal.synced_at = now
+        deal.last_seen_at = now
+        self.session.add(participant)
+        self.session.add(deal)
+
     def _participant_detail(
         self,
         participant: CRMDealParticipant,
@@ -743,6 +792,7 @@ class StakeholderWriteService:
             existing_participant.approval_status = ACTIVE_STAKEHOLDER_STATUS
             existing_participant.is_deleted = False
             existing_participant.updated_at = datetime.now(UTC)
+            await self._set_primary_contact_if_first_stakeholder(deal_id, existing_participant)
             await self._finish_write(existing_participant)
             contact = await self._get_participant_contact(existing_participant)
             return self._participant_detail(existing_participant, contact=contact)
@@ -777,6 +827,8 @@ class StakeholderWriteService:
         if contact and contact.contact_research:
             participant.stakeholder_research = contact.contact_research
             participant.last_researched_at = contact.last_researched_at
+
+        await self._set_primary_contact_if_first_stakeholder(deal_id, participant)
 
         await ActivityFeedProjectionService(
             self.session,
@@ -982,6 +1034,7 @@ class StakeholderWriteService:
                 source_label="API",
                 created_via="stakeholder_add_contacts",
             )
+            await self._set_primary_contact_if_first_stakeholder(deal_id, participant)
             added.append(self._participant_detail(participant, contact=contact))
 
             # These membership sets are batch-local uniqueness state; without them,

@@ -11,6 +11,28 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 from src.api.schemas.crm_models import DealOwnerDetail
+from src.contracts.crm.deal_write import (
+    DealAccountUpdateRequest,
+    DealCloseRequest,
+    DealCreateRequest,
+    DealOwnerAssignRequest,
+    DealPrimaryContactUpdateRequest,
+    DealReopenRequest,
+    DealStageMoveRequest,
+    DealUpdateRequest,
+)
+
+__all__ = [
+    "DealAccountUpdateRequest",
+    "DealCloseRequest",
+    "DealCreateRequest",
+    "DealOwnerAssignRequest",
+    "DealPrimaryContactUpdateRequest",
+    "DealReopenRequest",
+    "DealStageMoveRequest",
+    "DealUpdateRequest",
+    "DealWriteResponse",
+]
 
 
 class DealWriteResponse(BaseModel):

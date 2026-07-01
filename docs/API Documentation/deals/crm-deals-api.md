@@ -1,8 +1,8 @@
 # CRM Deals API Documentation
 
-> Version: 1.3
+> Version: 1.4
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-27
+> Last Updated: 2026-07-01
 
 ---
 
@@ -59,6 +59,9 @@ Use this checklist when updating the deal UI:
 - Add `predicted_amount` to deal list, search, and write-response handling.
 - Add `stage_id` and `pipeline_id` to deal list/search rows; use these IDs for
   filter preselection and stage actions, not labels.
+- Render deal list columns from `user_preferences.crm.deals.list.columns`.
+- Do not render `deal_health` or `deal_health_reason` in the deal list; those
+  fields are detail-only.
 - Treat `DealWriteResponse` as the canonical response for create, inline update,
   stage/lifecycle, owner, account, primary-contact, and delete actions.
 - Render predefined deal detail rows from `detail_field_definitions`; do not
@@ -160,8 +163,10 @@ export interface DealListItem {
   company_id: UUID | null;
   company_name: string | null;
   company_domain: string | null;
-  deal_health: string | null;
-  deal_health_reason: string | null;
+  primary_contact_id: UUID | null;
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  last_activity_at: ISODate | null;
   deal_team: DealTeamMember[];
   is_internal: boolean;
   created_at: ISODate;
@@ -714,6 +719,48 @@ Lightweight cursor search for deal pickers and typeahead. This endpoint searches
 GET /users/crm/deals
 ```
 
+### Frontend Default Columns
+
+The backend returns the default deal-list column order in
+`user_preferences.crm.deals.list.columns` from login and `/users/auth/me`.
+Use that preference list to decide which table columns to render and in what
+order. The current backend default is:
+
+```json
+[
+  "name",
+  "company.name",
+  "stage.name",
+  "amount",
+  "expected_close_date",
+  "owner.name",
+  "primary_contact.name",
+  "last_activity_at",
+  "deal_status",
+  "pipeline.name"
+]
+```
+
+These column IDs map to `DealListItem` fields as follows:
+
+| Column ID | Payload Path | Notes |
+|-----------|--------------|-------|
+| `name` | `item.name` | Deal name. Link to deal detail. |
+| `company.name` | `item.company_name` | Associated account/company. |
+| `stage.name` | `item.stage_label ?? item.stage_name` | Use labels when available. |
+| `amount` | `item.amount`, `item.currency`, `item.currency_symbol` | Currency-decorated value. |
+| `expected_close_date` | `item.expected_close_date` | Forecasted close date. |
+| `owner.name` | `item.owner_details[0]?.name` | Owner list is usually 0..1 item. |
+| `primary_contact.name` | `item.primary_contact_name` | Primary contact display snapshot. |
+| `last_activity_at` | `item.last_activity_at` | Last known deal activity timestamp. |
+| `deal_status` | `item.deal_status` | Open/won/lost/closed. |
+| `pipeline.name` | `item.pipeline_label ?? item.pipeline_name` | Useful when multiple pipelines exist. |
+
+`probability` and `forecast_category` are still returned on list rows for
+compatibility but are not default table columns. `deal_health` and
+`deal_health_reason` are not part of the list response; they remain detail-only
+AI context from `GET /users/crm/deals/{deal_id}`.
+
 ### Query Parameters
 
 | Parameter | Type | Default | Description |
@@ -769,8 +816,10 @@ GET /users/crm/deals
         "company_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
         "company_name": "Acme Corp",
         "company_domain": "acme.com",
-        "deal_health": "ON_TRACK",
-        "deal_health_reason": "Recent meeting activity and healthy stage progression",
+        "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
+        "primary_contact_name": "Jane Buyer",
+        "primary_contact_email": "jane@acme.com",
+        "last_activity_at": "2026-01-23T08:30:00Z",
         "deal_team": [],
         "is_internal": true,
         "created_at": "2026-01-22T10:00:00Z",
@@ -795,7 +844,8 @@ GET /users/crm/deals
 | `stage_id` / `pipeline_id` | UUID \| null | Stable identifiers for the current stage and pipeline. Use these for preselecting filters and stage actions. |
 | `stage_label` / `pipeline_label` | string \| null | Display labels for the current stage and pipeline. |
 | `company_id` / `company_name` / `company_domain` | UUID/string \| null | Linked account identifiers shown in the list row and searchable by company name. |
-| `deal_health` / `deal_health_reason` | string \| null | AI-assessed health summary extracted from deal summary data when available. |
+| `primary_contact_id` / `primary_contact_name` / `primary_contact_email` | UUID/string \| null | Primary contact snapshot shown in the list row. |
+| `last_activity_at` | datetime \| null | Most recent activity timestamp associated with the deal. |
 | `deal_team` | array | Internal deal team members attached as participants. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`). Frontend should use this for icon/amount decoration. |
 | `updated_at` / `synced_at` | datetime | Row freshness and provider sync timestamps. |
@@ -1979,9 +2029,10 @@ GET /users/crm/pipelines?include_stages=true
     controls. Stage picker moves through `POST /users/crm/deals/{deal_id}/stage`
     also update lifecycle when the selected stage has `stage_state` `won`, `lost`,
     or `open`.
-11. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
-12. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code). Use `editable=false` / `edit_policy=formula` to lock formula fields.
-13. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
+11. **Deal list columns**: Use `user_preferences.crm.deals.list.columns` from login/session bootstrap for the table order. Do not hardcode the default deal list order in the frontend.
+12. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
+13. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code). Use `editable=false` / `edit_policy=formula` to lock formula fields.
+14. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
 
 ---
 
@@ -2045,6 +2096,16 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 ---
 
 ## Changelog
+
+### 2026-07-01
+
+1. Added `user_preferences.crm.deals.list.columns` as the backend-owned default
+   deal list column source.
+2. Removed `deal_health` and `deal_health_reason` from `DealListItem`; health
+   remains available on deal detail only.
+3. Added `primary_contact_id`, `primary_contact_name`, `primary_contact_email`,
+   and `last_activity_at` to deal list rows so every default deal column has a
+   list payload path.
 
 ### 2026-06-21
 

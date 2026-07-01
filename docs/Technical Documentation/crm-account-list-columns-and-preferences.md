@@ -150,6 +150,47 @@ DEFAULT_ACCOUNT_LIST_COLUMNS = [
 
 These are intentionally ordered from identity and ownership to sales activity and firmographics.
 
+## Default Deal Columns
+
+Deals also use backend-owned defaults from `user_preferences.crm.deals.list.columns`.
+The current default list is intentionally CRM-friendly and excludes health,
+forecast category, and probability as default table columns:
+
+```python
+DEFAULT_DEAL_LIST_COLUMNS = [
+    "name",
+    "company.name",
+    "stage.name",
+    "amount",
+    "expected_close_date",
+    "owner.name",
+    "primary_contact.name",
+    "last_activity_at",
+    "deal_status",
+    "pipeline.name",
+]
+```
+
+`GET /users/crm/deals` returns all fields needed for these default columns:
+
+| Column ID | Payload Path |
+| --- | --- |
+| `name` | `item.name` |
+| `company.name` | `item.company_name` |
+| `stage.name` | `item.stage_label ?? item.stage_name` |
+| `amount` | `item.amount`, plus `item.currency` / `item.currency_symbol` |
+| `expected_close_date` | `item.expected_close_date` |
+| `owner.name` | `item.owner_details[0]?.name` |
+| `primary_contact.name` | `item.primary_contact_name` |
+| `last_activity_at` | `item.last_activity_at` |
+| `deal_status` | `item.deal_status` |
+| `pipeline.name` | `item.pipeline_label ?? item.pipeline_name` |
+
+`probability` and `forecast_category` remain available on list rows for existing clients
+and optional future columns, but they are not part of the backend default. `deal_health`
+and `deal_health_reason` are not returned by the deal list API; they remain available on
+deal detail only.
+
 ## Optional Columns
 
 Expose these as selectable later, but do not include them by default:
@@ -211,6 +252,22 @@ Extend the existing normalized preference object:
           "linkedin_url"
         ]
       }
+    },
+    "deals": {
+      "list": {
+        "columns": [
+          "name",
+          "company.name",
+          "stage.name",
+          "amount",
+          "expected_close_date",
+          "owner.name",
+          "primary_contact.name",
+          "last_activity_at",
+          "deal_status",
+          "pipeline.name"
+        ]
+      }
     }
   }
 }
@@ -219,6 +276,7 @@ Extend the existing normalized preference object:
 Normalization rule:
 
 - If `crm.accounts.list.columns` is missing or invalid, set it to `DEFAULT_ACCOUNT_LIST_COLUMNS`.
+- If `crm.deals.list.columns` is missing or invalid, set it to `DEFAULT_DEAL_LIST_COLUMNS`.
 - If it is a list of strings, preserve it exactly.
 - Do not validate against allowed column names at normalization time unless the contact preference
   behavior is also tightened. Keep behavior consistent across CRM tables.

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from src.api.schemas.crm_models import CreateStakeholderRequest, UpdateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
@@ -95,6 +97,144 @@ def _participant(
         synced_at=datetime.now(UTC),
         last_seen_at=datetime.now(UTC),
     )
+
+
+@pytest.mark.asyncio
+async def test_create_first_stakeholder_sets_deal_primary_contact(monkeypatch) -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="First stakeholder deal",
+    )
+    participant = _participant(
+        org_id=org_id,
+        deal_id=deal_id,
+        integration_id=integration_id,
+        email="first@example.com",
+    )
+    participant.related_name = "First Buyer"
+    session = _WriteSession([_FakeResult(scalar=deal), _FakeResult(scalars=[])])
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    async def fake_is_internal_email(_email: str) -> bool:
+        return False
+
+    async def fake_find_contact_by_email(_email: str | None) -> None:
+        return None
+
+    async def fake_find_participant(**_kwargs) -> None:
+        return None
+
+    async def fake_ensure_contact(**_kwargs) -> None:
+        return None
+
+    async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
+        session.add(participant)
+        return participant
+
+    class CapturingActivityFeedProjectionService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def upsert_stakeholder_added(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        stakeholder_write_module,
+        "ActivityFeedProjectionService",
+        CapturingActivityFeedProjectionService,
+        raising=False,
+    )
+    service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
+    service._find_contact_by_email = fake_find_contact_by_email  # type: ignore[method-assign]
+    service._find_contact_participant = fake_find_participant  # type: ignore[method-assign]
+    service._ensure_contact_for_stakeholder = fake_ensure_contact  # type: ignore[method-assign]
+    service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+
+    await service.create_stakeholder(
+        deal_id,
+        CreateStakeholderRequest(email="first@example.com", name="First Buyer"),
+    )
+
+    assert participant.is_primary_contact is True
+    assert participant.relationship_role == "primary_contact"
+    assert deal.primary_contact_id is None
+    assert deal.primary_contact_name == "First Buyer"
+    assert deal.primary_contact_email == "first@example.com"
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_does_not_replace_existing_primary_contact(monkeypatch) -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    existing_primary_id = uuid4()
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="Existing primary deal",
+        primary_contact_id=existing_primary_id,
+        primary_contact_name="Existing Buyer",
+        primary_contact_email="existing@example.com",
+    )
+    participant = _participant(
+        org_id=org_id,
+        deal_id=deal_id,
+        integration_id=integration_id,
+        email="new@example.com",
+    )
+    participant.related_name = "New Buyer"
+    session = _WriteSession([_FakeResult(scalar=deal)])
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    async def fake_is_internal_email(_email: str) -> bool:
+        return False
+
+    async def fake_find_contact_by_email(_email: str | None) -> None:
+        return None
+
+    async def fake_find_participant(**_kwargs) -> None:
+        return None
+
+    async def fake_ensure_contact(**_kwargs) -> None:
+        return None
+
+    async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
+        return participant
+
+    class CapturingActivityFeedProjectionService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def upsert_stakeholder_added(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        stakeholder_write_module,
+        "ActivityFeedProjectionService",
+        CapturingActivityFeedProjectionService,
+        raising=False,
+    )
+    service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
+    service._find_contact_by_email = fake_find_contact_by_email  # type: ignore[method-assign]
+    service._find_contact_participant = fake_find_participant  # type: ignore[method-assign]
+    service._ensure_contact_for_stakeholder = fake_ensure_contact  # type: ignore[method-assign]
+    service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+
+    await service.create_stakeholder(
+        deal_id,
+        CreateStakeholderRequest(email="new@example.com", name="New Buyer"),
+    )
+
+    assert participant.is_primary_contact is False
+    assert deal.primary_contact_id == existing_primary_id
+    assert deal.primary_contact_name == "Existing Buyer"
+    assert deal.primary_contact_email == "existing@example.com"
 
 
 @pytest.mark.asyncio
@@ -361,7 +501,7 @@ async def test_create_stakeholder_allows_linkedin_only_without_email() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile() -> None:
+async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile(monkeypatch) -> None:
     """LinkedIn matches should use the same contact profile path as contact_id creates."""
     org_id = uuid4()
     deal_id = uuid4()
@@ -414,6 +554,11 @@ async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile() 
 
     service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        service,
+        "_set_primary_contact_if_first_stakeholder",
+        AsyncMock(return_value=None),
+    )
 
     result = await service.create_stakeholder(
         deal_id,
@@ -428,7 +573,7 @@ async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile() 
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_from_email_uses_existing_contact_profile() -> None:
+async def test_create_stakeholder_from_email_uses_existing_contact_profile(monkeypatch) -> None:
     """Existing email contacts should hydrate before the create-contact fallback."""
     org_id = uuid4()
     deal_id = uuid4()
@@ -487,6 +632,11 @@ async def test_create_stakeholder_from_email_uses_existing_contact_profile() -> 
     service._find_contact_by_email = fake_find_contact_by_email  # type: ignore[method-assign]
     service._ensure_contact_for_stakeholder = fake_ensure_contact  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        service,
+        "_set_primary_contact_if_first_stakeholder",
+        AsyncMock(return_value=None),
+    )
 
     result = await service.create_stakeholder(
         deal_id,
@@ -537,7 +687,7 @@ async def test_create_stakeholder_does_not_extract_linkedin_from_external_links(
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_from_contact_id_copies_contact_profile() -> None:
+async def test_create_stakeholder_from_contact_id_copies_contact_profile(monkeypatch) -> None:
     org_id = uuid4()
     deal_id = uuid4()
     integration_id = uuid4()
@@ -597,6 +747,11 @@ async def test_create_stakeholder_from_contact_id_copies_contact_profile() -> No
 
     service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        service,
+        "_set_primary_contact_if_first_stakeholder",
+        AsyncMock(return_value=None),
+    )
 
     result = await service.create_stakeholder(
         deal_id,

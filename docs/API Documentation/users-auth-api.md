@@ -112,6 +112,22 @@ Not required
               "linkedin_url"
             ]
           }
+        },
+        "deals": {
+          "list": {
+            "columns": [
+              "name",
+              "company.name",
+              "stage.name",
+              "amount",
+              "expected_close_date",
+              "owner.name",
+              "primary_contact.name",
+              "last_activity_at",
+              "deal_status",
+              "pipeline.name"
+            ]
+          }
         }
       }
     },
@@ -166,6 +182,22 @@ Not required
               "linkedin_url"
             ]
           }
+        },
+        "deals": {
+          "list": {
+            "columns": [
+              "name",
+              "company.name",
+              "stage.name",
+              "amount",
+              "expected_close_date",
+              "owner.name",
+              "primary_contact.name",
+              "last_activity_at",
+              "deal_status",
+              "pipeline.name"
+            ]
+          }
         }
       }
     },
@@ -174,7 +206,7 @@ Not required
 }
 ```
 
-`user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list or account-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
+`user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list, account-list, or deal-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
 
 ### Error Responses
 

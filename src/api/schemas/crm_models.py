@@ -87,14 +87,10 @@ class DealListItem(BaseModel):
     company_id: UUID | None = None
     company_name: str | None = None
     company_domain: str | None = None
-    deal_health: str | None = Field(
-        None,
-        description="AI-assessed health for the deal: ON_TRACK, NEEDS_ATTENTION, AT_RISK, CRITICAL, or STALLED.",
-    )
-    deal_health_reason: str | None = Field(
-        None,
-        description="Brief explanation for the AI-assessed deal health.",
-    )
+    primary_contact_id: UUID | None = None
+    primary_contact_name: str | None = None
+    primary_contact_email: str | None = None
+    last_activity_at: datetime | None = None
     deal_team: list[DealTeamMember] = Field(
         default_factory=list,
         description="List of team members (owners, collaborators, split_owners) associated with the deal.",

@@ -613,10 +613,10 @@ async def list_deals(
                 company_id=deal.company_id,
                 company_name=getattr(deal, "company_name", None),
                 company_domain=getattr(deal, "company_domain", None),
-                deal_health=extract_deal_health(getattr(deal, "deal_summary_data", None)),
-                deal_health_reason=extract_deal_health_reason(
-                    getattr(deal, "deal_summary_data", None)
-                ),
+                primary_contact_id=getattr(deal, "primary_contact_id", None),
+                primary_contact_name=getattr(deal, "primary_contact_name", None),
+                primary_contact_email=getattr(deal, "primary_contact_email", None),
+                last_activity_at=getattr(deal, "last_activity_at", None),
                 deal_team=[
                     DealTeamMember(
                         participant_id=member.get("participant_id"),
