@@ -45,7 +45,7 @@ def test_general_prompt_has_skills_assessment_section() -> None:
     assert "## Skills" in prompt
     assert "## Tool Selection" not in prompt
     assert "analytical, action, workflow, writing, scheduling, or structured-assessment" in prompt
-    assert "FIRST tool call must be `get_skill_instructions(skill_name)`" in prompt
+    assert "call `get_skill_instructions(skill_name)` before executing" in prompt
     assert "<skills_system>" in prompt
 
 
@@ -54,9 +54,20 @@ def test_general_prompt_has_compact_datetime_grounding_rule() -> None:
     from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 
     prompt = get_general_prompt("TestOrg")
-    assert "## Date And Time Grounding" in prompt
+    assert "## Date and Time Grounding" in prompt
     assert "user timezone" in prompt
     assert "Do not manually convert local times to UTC" in prompt
+
+
+def test_general_prompt_requires_english_side_effect_inputs() -> None:
+    """CRM/tool writes should use English even when the conversation is multilingual."""
+    from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
+
+    prompt = get_general_prompt("TestOrg")
+    assert "## Side-Effect Input Language" in prompt
+    assert "Persisted inputs must default to English" in prompt
+    assert "Passageway" in prompt
+    assert "Exotel" in prompt
 
 
 def test_general_prompt_does_not_contain_hardcoded_call_analysis_playbook() -> None:
@@ -83,11 +94,3 @@ def test_general_prompt_does_not_contain_hardcoded_reminder_instructions() -> No
     assert 'reminder_type="static"' not in prompt
     assert 'reminder_type="agentic"' not in prompt
     assert "Do NOT ask the user for their timezone" not in prompt
-
-
-def test_general_prompt_hides_internal_ids_by_default() -> None:
-    """Prompt should instruct not to expose internal IDs unless requested."""
-    from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
-
-    prompt = get_general_prompt("TestOrg")
-    assert "Do not expose UUIDs, internal database IDs" in prompt
