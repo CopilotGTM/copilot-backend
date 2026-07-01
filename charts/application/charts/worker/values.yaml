@@ -23,6 +23,7 @@ config:
   pool: null
   maxTasksPerChild: null
   maxMemoryPerChildKb: null
+  enableEvents: true
   # Time (seconds) Celery will wait for running tasks to finish after SIGTERM before cold shutdown.
   # Set lower than shutdown.gracefulPeriodSeconds (leave null to use Celery default ~10s -> may be too short for long tasks)
   gracefulTimeout: 540
@@ -36,6 +37,8 @@ config:
 
 global:
   secretName: "" # Will be populated by parent chart
+  celery:
+    enableEvents: false
 
 resources:
   limits:
@@ -44,6 +47,16 @@ resources:
   requests:
     cpu: 128m
     memory: 256Mi
+
+probes:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+  readinessInitialDelaySeconds: 10
+  readinessPeriodSeconds: 30
+  readinessFailureThreshold: 2
 
 # GPU Configuration (optional)
 # Enable GPU support for workers that require GPU resources

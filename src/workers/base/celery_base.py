@@ -354,6 +354,7 @@ def create_celery_app(worker_name, config, tasks_module):
         enable_utc=True,
         worker_prefetch_multiplier=1,  # Important for fair task distribution
         task_acks_late=True,  # Prevent task loss
+        task_reject_on_worker_lost=True,  # Requeue work if Kubernetes kills a worker child.
         worker_disable_rate_limits=True,  # Disable rate limiting for better performance
         # Connection settings
         broker_connection_retry_on_startup=True,
