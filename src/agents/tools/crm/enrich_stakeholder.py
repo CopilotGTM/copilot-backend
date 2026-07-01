@@ -1,8 +1,8 @@
 """Stakeholder enrichment tool using Apollo.io API.
 
-Enriches participant-backed stakeholder contacts with LinkedIn profile data including:
+Enriches contact-backed stakeholder profiles with LinkedIn profile data including:
 - Full name, job title, department
-- LinkedIn URL (stored in external_links)
+- LinkedIn URL (stored on CRMContact and contact properties)
 - Work experience
 
 Tracks enrichment status in CRMContact.properties to avoid re-processing.
@@ -216,9 +216,14 @@ async def enrich_stakeholder(
                     contact = None
 
             contact_properties = dict(contact.properties or {}) if contact else {}
-            external_links = _contact_external_links(contact) or participant.external_links or []
+            external_links = _contact_external_links(contact) or getattr(
+                participant,
+                "external_links",
+                [],
+            )
 
-            # Check if recently enriched
+            # The cooldown marker lives on CRMContact.properties so repeated agent
+            # calls do not spend Apollo credits for the same contact profile.
             if not force_refresh and _is_recently_enriched(contact_properties):
                 logger.info(
                     "enrich_stakeholder: skipping recently enriched stakeholder %s",
@@ -234,9 +239,9 @@ async def enrich_stakeholder(
                         "name": (contact.full_name if contact else None)
                         or participant.related_name,
                         "job_title": (contact.job_title if contact else None)
-                        or participant.job_title,
+                        or getattr(participant, "job_title", None),
                         "department": contact_properties.get("department")
-                        or participant.department,
+                        or getattr(participant, "department", None),
                         "linkedin_url": _extract_linkedin_url(external_links),
                     },
                 }
@@ -245,8 +250,16 @@ async def enrich_stakeholder(
             s_id = participant.participant_id
             s_contact_id = contact.contact_id if contact else None
             s_name = (contact.full_name if contact else None) or participant.related_name
-            s_job_title = (contact.job_title if contact else None) or participant.job_title
-            s_department = contact_properties.get("department") or participant.department
+            s_job_title = (contact.job_title if contact else None) or getattr(
+                participant,
+                "job_title",
+                None,
+            )
+            s_department = contact_properties.get("department") or getattr(
+                participant,
+                "department",
+                None,
+            )
             s_email = _normalize_email(
                 (contact.email if contact else None) or participant.related_email
             )
@@ -278,29 +291,26 @@ async def enrich_stakeholder(
     if profile_data:
         linkedin_url = profile_data.get("linkedin_url") or linkedin_url
 
-    # Prepare updates
+    # Prepare updates. Participant profile columns are legacy fallbacks; Apollo
+    # enrichment writes durable person data only to the linked contact.
     participant_updates: dict[str, Any] = {}
     contact_updates: dict[str, Any] = {}
 
     if profile_data:
         profile_name = profile_data.get("name")
         if profile_name and (not s_name or len(profile_name) > len(s_name)):
-            participant_updates["related_name"] = profile_name
             contact_updates["full_name"] = profile_name
 
         profile_title = profile_data.get("title") or profile_data.get("headline")
         if profile_title:
-            participant_updates["job_title"] = profile_title
             contact_updates["job_title"] = profile_title
 
         if not s_department:
             department = _infer_department(profile_title)
             if department:
-                participant_updates["department"] = department
                 s_contact_properties["department"] = department
 
     if linkedin_url:
-        participant_updates["linkedin_url"] = linkedin_url
         contact_updates["linkedin_url"] = linkedin_url
         has_linkedin = any(
             isinstance(link, dict) and link.get("platform", "").lower() == "linkedin"
@@ -313,8 +323,7 @@ async def enrich_stakeholder(
                 "label": "LinkedIn",
                 "added_at": datetime.now(UTC).isoformat(),
             }
-            participant_updates["external_links"] = s_external_links + [new_link]
-            s_contact_properties["external_links"] = participant_updates["external_links"]
+            s_contact_properties["external_links"] = s_external_links + [new_link]
 
     s_contact_properties["enrichment"] = _build_enrichment_metadata(
         linkedin_url=linkedin_url,
@@ -366,9 +375,9 @@ async def enrich_stakeholder(
         "participant_id": str(s_id),
         "already_enriched": False,
         "data": {
-            "name": participant_updates.get("related_name", s_name),
-            "job_title": participant_updates.get("job_title", s_job_title),
-            "department": participant_updates.get("department", s_department),
+            "name": contact_updates.get("full_name", s_name),
+            "job_title": contact_updates.get("job_title", s_job_title),
+            "department": s_contact_properties.get("department", s_department),
             "linkedin_url": linkedin_url,
         },
         "metadata": {

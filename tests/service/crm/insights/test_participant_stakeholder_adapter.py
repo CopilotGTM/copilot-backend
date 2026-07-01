@@ -13,7 +13,7 @@ from src.service.crm.participants.stakeholder_adapter import (
 )
 
 
-def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
+def test_participant_adapter_uses_identity_without_contact_join() -> None:
     participant_id = uuid4()
     participant = CRMDealParticipant(
         organisation_id=uuid4(),
@@ -23,12 +23,8 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
         participant_type=CRMParticipantType.CONTACT,
         related_name="Alex Buyer",
         related_email="alex@example.com",
-        job_title="CFO",
-        phone_number="+1 555 0100",
-        linkedin_url="https://linkedin.com/in/alex",
         approval_status="APPROVED",
         participant_source="CRM",
-        stakeholder_research="Participant research",
     )
 
     payload = participant_to_stakeholder_detail_dict(participant)
@@ -36,10 +32,12 @@ def test_participant_adapter_uses_snapshots_without_contact_join() -> None:
     assert payload["participant_id"] == participant.participant_id
     assert "stakeholder_id" not in payload
     assert payload["email"] == "alex@example.com"
-    assert payload["job_title"] == "CFO"
-    assert payload["phone_number"] == "+1 555 0100"
-    assert payload["linkedin_url"] == "https://linkedin.com/in/alex"
-    assert payload["stakeholder_research"] == "Participant research"
+    assert payload["job_title"] is None
+    assert payload["phone_number"] is None
+    assert payload["linkedin_url"] is None
+    assert payload["stakeholder_research"] is None
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "stakeholder_research")
     assert "champion_potential" not in payload
     assert "engagement_score" not in payload
 
@@ -60,11 +58,8 @@ def test_participant_adapter_prefers_contact_profile_when_loaded() -> None:
         related_local_id=contact_id,
         related_name="Old Snapshot",
         related_email="old@example.com",
-        job_title="Old Title",
-        phone_number="+1 555 0000",
         approval_status="APPROVED",
         participant_source="MANUAL",
-        stakeholder_research="Old participant research",
     )
     contact = CRMContact(
         organisation_id=participant.organisation_id,

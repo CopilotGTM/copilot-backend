@@ -99,47 +99,34 @@ async def dispatch_stakeholder_research_async(
             if already_researched and already_researched.last_researched_at:
                 age = datetime.now(UTC) - already_researched.last_researched_at
                 if age < timedelta(days=RESEARCH_COOLDOWN_DAYS):
-                    if already_researched.contact_research:
-                        copy_stmt = (
-                            update(CRMDealParticipant)
+                    if (
+                        already_researched.contact_research
+                        and contact
+                        and contact.contact_id != already_researched.contact_id
+                        and not contact.contact_research
+                    ):
+                        await session.execute(
+                            update(CRMContact)
                             .where(
-                                col(CRMDealParticipant.organisation_id) == organisation_id,
-                                col(CRMDealParticipant.participant_id) == stakeholder_id,
+                                col(CRMContact.organisation_id) == organisation_id,
+                                col(CRMContact.contact_id) == contact.contact_id,
                             )
                             .values(
-                                stakeholder_research=already_researched.contact_research,
+                                contact_research=already_researched.contact_research,
                                 last_researched_at=already_researched.last_researched_at,
                                 updated_at=datetime.now(UTC),
                             )
                         )
-                        await session.execute(copy_stmt)
-                        if (
-                            contact
-                            and contact.contact_id != already_researched.contact_id
-                            and not contact.contact_research
-                        ):
-                            await session.execute(
-                                update(CRMContact)
-                                .where(
-                                    col(CRMContact.organisation_id) == organisation_id,
-                                    col(CRMContact.contact_id) == contact.contact_id,
-                                )
-                                .values(
-                                    contact_research=already_researched.contact_research,
-                                    last_researched_at=already_researched.last_researched_at,
-                                    updated_at=datetime.now(UTC),
-                                )
-                            )
                         await session.commit()
-                        logger.info(
-                            "Stakeholder research copied from recent result",
-                            extra={
-                                "event": "stakeholder_research_reused",
-                                "organisation_id": str(organisation_id),
-                                "stakeholder_id": str(stakeholder_id),
-                                "source_contact_id": str(already_researched.contact_id),
-                            },
-                        )
+                    logger.info(
+                        "Stakeholder research reused recent contact result",
+                        extra={
+                            "event": "stakeholder_research_reused",
+                            "organisation_id": str(organisation_id),
+                            "stakeholder_id": str(stakeholder_id),
+                            "source_contact_id": str(already_researched.contact_id),
+                        },
+                    )
                     return None
 
         # Check for existing active job to avoid duplicate work. Email-backed

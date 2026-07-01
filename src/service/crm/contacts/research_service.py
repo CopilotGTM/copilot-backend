@@ -3,9 +3,9 @@
 Called by the contact research worker workflow after it has loaded a
 tenant-owned contact and released the DB session for provider calls. This module
 owns canonical writes to `CRMContact`; summary generation is a separate no-tool
-agent step. Open deal stakeholder rows keep denormalized snapshots for cheap
-list reads, so successful contact research also mirrors the latest safe fields
-onto active participant-backed stakeholders.
+agent step. Open deal stakeholder rows may keep old denormalized snapshots for
+cheap list reads, but newly generated research markdown stays on the contact so
+stakeholder reads can converge on contact-owned person research.
 """
 
 from __future__ import annotations
@@ -16,18 +16,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import (
-    CRMDeal,
-    CRMDealParticipant,
-    CRMDealStatus,
-    CRMParticipantType,
-)
-from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-from src.service.crm.utils.identity import normalize_email
 from src.service.enrichment.apollo import apollo_enrich_person
 
 ContactProviderStatus = Literal["found", "not_found", "error"]
@@ -90,10 +80,9 @@ class ContactResearchService:
     ) -> bool:
         """Persist structured provider fields and mark successful research attempts.
 
-        The contact remains the durable person record. Participant-backed
-        stakeholders are updated only after the contact fields are resolved so
-        list views see the same profile data as detail views without joining
-        every contact.
+        The contact remains the durable person record. Stakeholder list/detail
+        reads join contact data, so provider profile fields are not mirrored
+        back into participant snapshots.
         """
         contact = await self._load_contact(contact_id)
         if not contact:
@@ -125,19 +114,6 @@ class ContactResearchService:
         if self._should_fill(contact.linkedin_url, result.linkedin_url):
             contact.linkedin_url = result.linkedin_url
 
-        # Mirror only the values that survived contact-level fill rules. This
-        # keeps CRM-sourced contact data authoritative while refreshing the
-        # denormalized stakeholder snapshots used by deal list screens.
-        await self._update_open_deal_stakeholders(
-            contact,
-            {
-                "related_name": contact.full_name,
-                "job_title": contact.job_title,
-                "linkedin_url": contact.linkedin_url,
-                "last_researched_at": contact.last_researched_at,
-                "updated_at": now,
-            },
-        )
         await self.session.commit()
         return True
 
@@ -146,12 +122,7 @@ class ContactResearchService:
         contact_id: UUID,
         summary: ContactResearchSummaryResult,
     ) -> bool:
-        """Persist generated UI summary without changing structured enrichment.
-
-        The summary is produced after Apollo/provider enrichment. Once it exists
-        on the canonical contact, the same markdown is safe to copy to open-deal
-        stakeholder snapshots so existing stakeholder list APIs can display it.
-        """
+        """Persist generated UI summary without changing structured enrichment."""
         if summary.status != "generated" or not summary.summary_markdown:
             return False
 
@@ -160,17 +131,8 @@ class ContactResearchService:
             return False
 
         contact.contact_research = summary.summary_markdown
-        # Summary generation is a later phase than provider persistence. Keep
-        # this as a separate mirror so an LLM failure never rolls back durable
-        # Apollo fields already written by persist_provider_result().
-        await self._update_open_deal_stakeholders(
-            contact,
-            {
-                "stakeholder_research": contact.contact_research,
-                "last_researched_at": contact.last_researched_at,
-                "updated_at": datetime.now(UTC),
-            },
-        )
+        # Keep new research markdown contact-owned. Participant research remains
+        # only a legacy fallback until all stakeholder reads join CRMContact.
         await self.session.commit()
         return True
 
@@ -180,56 +142,6 @@ class ContactResearchService:
         if not contact or contact.organisation_id != self.organisation_id or contact.is_deleted:
             return None
         return contact
-
-    async def _update_open_deal_stakeholders(
-        self,
-        contact: CRMContact,
-        values: dict[str, Any],
-    ) -> None:
-        """Mirror contact research fields onto active stakeholders on open deals.
-
-        Participant rows intentionally duplicate a few contact fields because
-        stakeholder list endpoints read participants without loading contacts.
-        The update stays scoped to this organisation and open deals so closed
-        deal history is not rewritten by later contact research.
-        """
-        values = {key: value for key, value in values.items() if value is not None}
-        if not values:
-            return
-
-        # Historic participant rows may have only an email or only a resolved
-        # contact ID. Matching both keeps old CRM-synced stakeholders in step
-        # with the canonical contact without requiring a backfill first.
-        email = normalize_email(contact.email)
-        identity_filter = col(CRMDealParticipant.related_local_id) == contact.contact_id
-        if email:
-            identity_filter = or_(
-                identity_filter,
-                func.lower(func.trim(col(CRMDealParticipant.related_email))) == email,
-            )
-
-        # The organisation filter is the tenant boundary; deal_id/contact_id
-        # values alone are not trusted when updating cross-table snapshots.
-        open_deals = select(col(CRMDeal.deal_id)).where(
-            col(CRMDeal.organisation_id) == self.organisation_id,
-            col(CRMDeal.is_deleted).is_(False),
-            col(CRMDeal.deal_status) == CRMDealStatus.OPEN.value,
-        )
-
-        # One SQL UPDATE avoids loading every participant row into memory and
-        # makes the propagation part of the same transaction as the contact write.
-        await self.session.execute(
-            update(CRMDealParticipant)
-            .where(
-                col(CRMDealParticipant.organisation_id) == self.organisation_id,
-                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
-                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
-                col(CRMDealParticipant.is_deleted).is_(False),
-                col(CRMDealParticipant.deal_id).in_(open_deals),
-                identity_filter,
-            )
-            .values(**values)
-        )
 
     @staticmethod
     def _should_fill(existing: str | None, new: str | None) -> bool:

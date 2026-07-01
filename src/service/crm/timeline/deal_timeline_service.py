@@ -16,6 +16,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
     CalendarEventUserState,
 )
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
@@ -30,6 +31,9 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.crm.participants.stakeholder_adapter import (
+    participant_to_stakeholder_detail_dict,
+)
 from src.service.crm.timeline.timeline_event_source_resolver import (
     resolve_email_event_source,
     resolve_meeting_event_source,
@@ -204,7 +208,8 @@ class DealTimelineService:
             last_event = events[-1]
             next_cursor = encode_cursor(last_event.event_timestamp, last_event.timeline_event_id)
 
-        # Get total count (separate query for efficiency)
+        # Count from the filtered subquery so pagination can trim `events`
+        # without changing the total that the API returns.
         count_stmt = select(t.c.timeline_event_id).where(
             t.c.organisation_id == self.organisation_id,
             t.c.deal_id == deal_id,
@@ -692,14 +697,27 @@ class DealTimelineService:
         if not participant:
             return preview
 
+        contact = None
+        if participant.related_local_id:
+            contact_table: Table = _table(CRMContact)
+            contact_stmt = select(CRMContact).where(
+                contact_table.c.organisation_id == self.organisation_id,
+                contact_table.c.contact_id == participant.related_local_id,
+                contact_table.c.is_deleted.is_(False),
+            )
+            contact_result = await self.session.execute(contact_stmt)
+            contact = contact_result.scalar_one_or_none()
+
+        stakeholder = participant_to_stakeholder_detail_dict(participant, contact=contact)
+
         # Build smart response (aligned with StakeholderDetail)
         return {
             # ID for navigation to full detail view
             "stakeholder_id": str(participant.participant_id),
             # Identity (core fields)
-            "email": participant.related_email,
-            "name": participant.related_name,
-            "job_title": participant.job_title,
+            "email": stakeholder["email"],
+            "name": stakeholder["name"],
+            "job_title": stakeholder["job_title"],
             # Key insights (what matters for quick understanding)
             "source": participant.participant_source,
             "stance": participant.stance,
@@ -712,7 +730,7 @@ class DealTimelineService:
         }
 
     # -------------------------------------------------------------------------
-    # Create/Update Methods (called from tasks)
+    # Task-facing writers
     # -------------------------------------------------------------------------
 
     async def create_email_timeline_event(

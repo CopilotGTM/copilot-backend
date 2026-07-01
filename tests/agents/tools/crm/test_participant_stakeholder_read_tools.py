@@ -69,7 +69,6 @@ def _participant(org_id, integration_id, deal_id, participant_id, contact_id=Non
         related_local_id=contact_id,
         related_email="buyer@example.com",
         related_name="Buyer Snapshot",
-        job_title="CFO",
         decision_power="DECISION_MAKER",
         stance="SUPPORTER",
         temperature="WARM",

@@ -11,7 +11,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from celery import Task
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlmodel import col
 
 from src.domain.models.master_tables.organisation_models import (
@@ -19,6 +19,7 @@ from src.domain.models.master_tables.organisation_models import (
     OrganisationStatus,
 )
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.crm import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -200,9 +201,8 @@ _RETRY_BATCH_LIMIT = 20
 def retry_pending_research_org(self: Task, organisation_id: str):
     """Tier 2: Find approved stakeholders without research and dispatch jobs.
 
-    Picks up stakeholders where last_researched_at IS NULL — either never
-    researched or a previous attempt hit an enrichment error (quality gate
-    clears last_researched_at on tool-level failures so they're retried).
+    Contact-backed participants use CRMContact research markers; unlinked
+    legacy participants fall back to the old participant markers.
     """
     lock_key = f"task_lock:stakeholder_research_retry:{organisation_id}"
     if not acquire_task_lock(lock_key, ttl=1800):
@@ -219,13 +219,31 @@ def retry_pending_research_org(self: Task, organisation_id: str):
             async for session in acquire_org_async_session(org_uuid):
                 stmt = (
                     select(CRMDealParticipant)
+                    .outerjoin(
+                        CRMContact,
+                        and_(
+                            col(CRMDealParticipant.related_local_id) == col(CRMContact.contact_id),
+                            col(CRMContact.organisation_id) == org_uuid,
+                            col(CRMContact.is_deleted).is_(False),
+                        ),
+                    )
                     .where(
                         col(CRMDealParticipant.organisation_id) == org_uuid,
                         col(CRMDealParticipant.participant_type)
                         == CRMParticipantType.CONTACT.value,
                         col(CRMDealParticipant.is_deleted).is_(False),
                         col(CRMDealParticipant.approval_status) == "APPROVED",
-                        col(CRMDealParticipant.last_researched_at).is_(None),
+                        or_(
+                            and_(
+                                col(CRMDealParticipant.related_local_id).is_not(None),
+                                col(CRMContact.contact_id).is_(None),
+                            ),
+                            and_(
+                                col(CRMContact.contact_id).is_not(None),
+                                col(CRMContact.contact_research).is_(None),
+                                col(CRMContact.last_researched_at).is_(None),
+                            ),
+                        ),
                     )
                     .limit(_RETRY_BATCH_LIMIT)
                 )

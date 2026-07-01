@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.api.schemas.crm_models import UpdateStakeholderRequest
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -26,22 +27,33 @@ def _service() -> StakeholderWriteService:
 @pytest.mark.asyncio
 async def test_update_stakeholder_applies_updates_and_tracks_manual_overrides() -> None:
     service = _service()
+    contact_id = uuid4()
+    integration_id = uuid4()
     participant = CRMDealParticipant(
         participant_id=uuid4(),
         deal_id=uuid4(),
         organisation_id=uuid4(),
-        integration_id=uuid4(),
+        integration_id=integration_id,
         participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
         related_email="person@example.com",
         related_name="Old Name",
-        job_title="Old Title",
         stance="UNKNOWN",
         decision_power="UNKNOWN",
         temperature="UNKNOWN",
         participant_source="MANUAL",
         approval_status="APPROVED",
     )
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=participant.organisation_id,
+        integration_id=integration_id,
+        email="person@example.com",
+        full_name="Old Name",
+        job_title="Old Title",
+    )
     service.get_stakeholder = AsyncMock(return_value=participant)  # type: ignore[method-assign]
+    service._get_participant_contact = AsyncMock(return_value=contact)  # type: ignore[method-assign]
 
     request = UpdateStakeholderRequest(
         name="Updated Name",
@@ -54,8 +66,10 @@ async def test_update_stakeholder_applies_updates_and_tracks_manual_overrides() 
     assert result.name == "Updated Name"
     assert result.job_title == "Updated Title"
     assert result.motivation == "Updated motivation"
-    assert participant.related_name == "Updated Name"
-    assert participant.job_title == "Updated Title"
+    assert contact.full_name == "Updated Name"
+    assert contact.job_title == "Updated Title"
+    assert participant.related_name == "Old Name"
+    assert not hasattr(participant, "job_title")
     assert participant.motivation == "Updated motivation"
     service.session.flush.assert_awaited()
     service.session.refresh.assert_awaited_once_with(participant)

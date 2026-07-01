@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
 from src.domain.models.master_tables.user_models import SupabaseUserStatus, User, UserAppRole
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -205,3 +206,47 @@ async def test_resolver_expands_deal_stakeholders_from_contact_participants() ->
     compiled = str(session.statement)
     assert "crm_deal_participants" in compiled
     assert "deal_stakeholders" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_resolver_expands_deal_stakeholders_from_linked_contact_profile() -> None:
+    """Deal stakeholder expansion should not depend on participant profile snapshots."""
+    contact_id = uuid4()
+    participant = CRMDealParticipant(
+        organisation_id=ORG_ID,
+        integration_id=uuid4(),
+        deal_id=DEAL_ID,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        related_name=None,
+        related_email=None,
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        integration_id=participant.integration_id,
+        contact_id=contact_id,
+        full_name="Contact Buyer",
+        email="contact@example.com",
+    )
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.results = [
+                MagicMock(scalars=lambda: MagicMock(all=lambda: [participant])),
+                MagicMock(scalars=lambda: MagicMock(all=lambda: [contact])),
+            ]
+
+        async def execute(self, statement):  # noqa: ANN001
+            self.statement = statement
+            return self.results.pop(0)
+
+    session = FakeSession()
+    resolver = CalendarInviteAttendeeResolver(session, organisation_id=ORG_ID)
+
+    candidates, missing = await resolver._resolve_deal_stakeholders(DEAL_ID)  # noqa: SLF001
+
+    assert missing == []
+    assert candidates[0].email == "contact@example.com"
+    assert candidates[0].name == "Contact Buyer"
+    assert candidates[0].source_id == str(participant.participant_id)

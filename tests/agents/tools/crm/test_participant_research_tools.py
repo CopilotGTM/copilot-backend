@@ -75,10 +75,6 @@ def _make_context() -> tuple[_Context, _Session]:
         related_local_id=contact_id,
         related_email="buyer@example.com",
         related_name=None,
-        job_title=None,
-        department=None,
-        linkedin_url=None,
-        external_links=[],
     )
     contact = SimpleNamespace(
         organisation_id=organisation_id,
@@ -87,6 +83,7 @@ def _make_context() -> tuple[_Context, _Session]:
         email="buyer@example.com",
         full_name=None,
         job_title=None,
+        linkedin_url=None,
         properties={},
     )
     session = _Session(participant, contact)
@@ -123,11 +120,11 @@ async def test_research_stakeholder_reads_participant_context(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_research_stakeholder_uses_participant_linkedin_without_email(monkeypatch) -> None:
+async def test_research_stakeholder_uses_contact_linkedin_without_email(monkeypatch) -> None:
     context, session = _make_context()
     session.participant.related_email = None
-    session.participant.linkedin_url = "https://linkedin.com/in/linkedin-only"
     session.contact.email = None
+    session.contact.linkedin_url = "https://linkedin.com/in/linkedin-only"
     captured_kwargs: dict[str, object] = {}
 
     async def fake_apollo_enrich_person(**kwargs):  # noqa: ANN003
@@ -153,7 +150,10 @@ async def test_research_stakeholder_uses_participant_linkedin_without_email(monk
 
 
 @pytest.mark.asyncio
-async def test_enrich_stakeholder_writes_contact_and_participant(monkeypatch) -> None:
+async def test_enrich_stakeholder_writes_contact_without_participant_profile(
+    monkeypatch,
+) -> None:
+    """Apollo enrichment should refresh contact profile, not participant snapshots."""
     context, session = _make_context()
 
     async def fake_apollo_enrich_person(**kwargs):  # noqa: ANN003
@@ -175,9 +175,7 @@ async def test_enrich_stakeholder_writes_contact_and_participant(monkeypatch) ->
     assert result["success"] is True
     assert result["participant_id"] == str(session.participant.participant_id)
     assert "deal_stakeholders" not in updates_by_table
-    assert updates_by_table["crm_deal_participants"]["related_name"] == "Ada Lovelace"
-    assert updates_by_table["crm_deal_participants"]["job_title"] == "CTO"
-    assert updates_by_table["crm_deal_participants"]["linkedin_url"] == ("https://linkedin/in/ada")
+    assert set(updates_by_table["crm_deal_participants"]) == {"updated_at"}
     assert updates_by_table["crm_contacts"]["full_name"] == "Ada Lovelace"
     assert updates_by_table["crm_contacts"]["job_title"] == "CTO"
     assert updates_by_table["crm_contacts"]["linkedin_url"] == "https://linkedin/in/ada"

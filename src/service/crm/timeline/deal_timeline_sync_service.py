@@ -28,6 +28,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -56,6 +57,9 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
+from src.service.crm.participants.stakeholder_adapter import (
+    participant_to_stakeholder_detail_dict,
+)
 from src.service.crm.timeline.timeline_event_source_resolver import (
     resolve_crm_event_source,
     resolve_email_event_source,
@@ -92,7 +96,7 @@ def _enum_value(val: Enum | str | None) -> str | None:
 
 
 class DealTimelineSyncService:
-    """Service for batch timeline sync operations.
+    """Rebuild deal timeline cards from emails, meetings, CRM stages, and risks.
 
     Each sub-operation acquires its own session via acquire_org_async_session
     and releases it immediately, preventing connection drops from long-held
@@ -103,7 +107,7 @@ class DealTimelineSyncService:
     - Syncing timeline for a single deal
     - Org-wide timeline reconciliation
 
-    For real-time creation during association matching, use the helper
+    For real-time creation during association matching, use the builder
     methods directly in DealEmailMatcher/DealMeetingMatcher.
     """
 
@@ -515,7 +519,8 @@ class DealTimelineSyncService:
                 stats["skipped"] += 1
                 continue
 
-            # Create timeline event
+            # Resolve the provider source before building the row so replayed
+            # backfills keep the same source labels as real-time matchers.
             integration_type = getattr(integration, "integration_type", None)
             resolved_source = resolve_email_event_source(integration_type)
             timeline_event = build_email_timeline_event(
@@ -605,7 +610,8 @@ class DealTimelineSyncService:
                 stats["skipped"] += 1
                 continue
 
-            # Create timeline event
+            # Meeting source can come from the event or attendee user state;
+            # resolve it here so the pure builder stays storage-only.
             calendar_integration_type = None
             if event:
                 if getattr(event, "integration_id", None) in integration_type_by_id:
@@ -655,7 +661,8 @@ class DealTimelineSyncService:
         """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        # Get stage lookup for resolving local stage_id -> name/label
+        # Build the lookup once per deal; every history row needs the same
+        # provider-local stage labels for readable timeline cards.
         stage_lookup = await self._get_stage_lookup(session)
 
         history_table: Table = _table(CRMDealStageHistory)
@@ -738,7 +745,8 @@ class DealTimelineSyncService:
         """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        # Check if already exists
+        # Deal-created has no separate source row, so the deal_id itself is the
+        # replay key for idempotent backfills.
         key = (TimelineEventType.DEAL_CREATED.value, str(deal_id))
         if key in existing_keys:
             stats["synced"] = 1
@@ -836,7 +844,8 @@ class DealTimelineSyncService:
                 else str(risk_blocker.status)
             )
 
-            # Create the initial ADDED/FLAGGED event
+            # Open risks/blockers need an initial lifecycle card before later
+            # status transitions can be appended chronologically.
             if item_type_val == RiskBlockerType.RISK.value:
                 initial_event_type = TimelineEventType.RISK_FLAGGED
             else:
@@ -1179,11 +1188,13 @@ def build_stage_change_timeline_event(
     """
     entered_at = history_entry.get("entered_at") or datetime.now(UTC)
 
-    # Get display labels - these should be resolved by the caller
+    # Stage labels are resolved by the sync step so this pure builder can also
+    # be used by inline writers that already have label context.
     old_stage_label = history_entry.get("from_stage_label")
     new_stage_label = history_entry.get("stage_label")
 
-    # Get internal stage IDs (UUIDs) - preferred for storage
+    # Keep local stage UUIDs in metadata even when labels are available; detail
+    # views use them to navigate back to CRM stage records.
     old_stage_id = history_entry.get("from_stage_id")
     new_stage_id = history_entry.get("stage_id")
 
@@ -1401,6 +1412,8 @@ def build_stakeholder_timeline_event(
     organisation_id: UUID,
     deal_id: UUID,
     stakeholder: CRMDealParticipant,
+    *,
+    contact: CRMContact | None = None,
     event_type: TimelineEventType = TimelineEventType.STAKEHOLDER_ADDED,
     event_source: TimelineEventSource = TimelineEventSource.SYSTEM,
 ) -> DealTimelineEvent:
@@ -1420,7 +1433,8 @@ def build_stakeholder_timeline_event(
     Returns:
         DealTimelineEvent (not yet added to session)
     """
-    display_name = stakeholder.related_name or stakeholder.related_email or "Unknown Stakeholder"
+    profile = participant_to_stakeholder_detail_dict(stakeholder, contact=contact)
+    display_name = profile["name"] or profile["email"] or "Unknown Stakeholder"
 
     # Determine title based on event type
     if event_type == TimelineEventType.STAKEHOLDER_ADDED:
@@ -1432,7 +1446,7 @@ def build_stakeholder_timeline_event(
 
     # Build subtitle
     source_str = _enum_value(stakeholder.participant_source) or str(stakeholder.participant_source)
-    subtitle = stakeholder.job_title or f"{source_str} discovery"
+    subtitle = profile["job_title"] or f"{source_str} discovery"
 
     # Determine event timestamp
     if event_type == TimelineEventType.STAKEHOLDER_REMOVED and stakeholder.updated_at:
@@ -1444,9 +1458,9 @@ def build_stakeholder_timeline_event(
     metadata: dict[str, Any] = {
         "stakeholder_id": str(stakeholder.participant_id),
         "participant_id": str(stakeholder.participant_id),
-        "email": stakeholder.related_email,
-        "name": stakeholder.related_name,
-        "job_title": stakeholder.job_title,
+        "email": profile["email"],
+        "name": profile["name"],
+        "job_title": profile["job_title"],
         "source": source_str,
         "stance": _enum_value(stakeholder.stance),
         "decision_power": _enum_value(stakeholder.decision_power),
@@ -1463,7 +1477,7 @@ def build_stakeholder_timeline_event(
         subtitle=subtitle[:500] if subtitle else None,
         direction=None,
         status=_enum_value(stakeholder.approval_status),
-        participant_names=[stakeholder.related_name] if stakeholder.related_name else [],
+        participant_names=[profile["name"]] if profile["name"] else [],
         participant_count=1,
         event_metadata=metadata,
     )

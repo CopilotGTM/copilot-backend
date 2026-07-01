@@ -68,7 +68,7 @@ def _map_participant_item(participant) -> DealParticipantItem:
         related_local_id=participant.related_local_id,
         related_name=participant.related_name,
         related_email=participant.related_email,
-        linkedin_url=participant.linkedin_url,
+        linkedin_url=None,
         relationship_role=participant.relationship_role,
         is_deleted=participant.is_deleted,
     )

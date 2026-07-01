@@ -173,7 +173,10 @@ async def test_load_context_accepts_linkedin_only_participant(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_persist_result_writes_contact_and_participant_research(monkeypatch) -> None:
+async def test_persist_result_writes_contact_research_without_participant_snapshot(
+    monkeypatch,
+) -> None:
+    """Stakeholder research persists person data on contact, not participant snapshots."""
     organisation_id = uuid4()
     participant_id = uuid4()
     contact_id = uuid4()
@@ -222,14 +225,9 @@ async def test_persist_result_writes_contact_and_participant_research(monkeypatc
     assert "deal_stakeholders" not in updates_by_table
     assert updates_by_table["crm_contacts"]["contact_research"] == "## Ada\nResearch profile"
     assert isinstance(updates_by_table["crm_contacts"]["last_researched_at"], datetime)
-    assert updates_by_table["crm_deal_participants"]["stakeholder_research"] == (
-        "## Ada\nResearch profile"
-    )
-    assert updates_by_table["crm_deal_participants"]["related_name"] == "Ada Lovelace"
-    assert updates_by_table["crm_deal_participants"]["job_title"] == "CTO"
-    assert updates_by_table["crm_deal_participants"]["linkedin_url"] == ("https://linkedin/in/ada")
+    assert set(updates_by_table["crm_deal_participants"]) == {"updated_at"}
+    assert isinstance(updates_by_table["crm_deal_participants"]["updated_at"], datetime)
     assert updates_by_table["crm_contacts"]["linkedin_url"] == "https://linkedin/in/ada"
-    assert updates_by_table["crm_deal_participants"]["department"] == "Engineering"
     assert session.commits >= 1
 
 

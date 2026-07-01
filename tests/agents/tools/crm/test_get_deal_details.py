@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 from src.agents.tools.crm.get_deal_details import get_deal_details
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 
 
 @pytest.fixture
@@ -91,6 +92,7 @@ def _make_stakeholder(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         participant_id=UUID(sid),
+        related_local_id=None,
         related_name=name,
         related_email=email,
         job_title="CTO",
@@ -249,6 +251,52 @@ class TestGetDealDetails:
         assert result is not None
         assert "stakeholders" in result
         assert "risks_blockers" not in result
+
+    @pytest.mark.asyncio
+    async def test_stakeholders_prefer_linked_contact_profile(
+        self, mock_context: MagicMock
+    ) -> None:
+        """Deal details should show the durable contact profile, not stale snapshots."""
+        deal = _make_deal()
+        company = _make_company()
+        contact_id = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        stakeholder = _make_stakeholder(
+            name="Old Snapshot",
+            email="old@example.com",
+        )
+        stakeholder.related_local_id = contact_id
+        stakeholder.job_title = "Old Title"
+        contact = CRMContact(
+            organisation_id=mock_context.organisation_id,
+            integration_id=UUID("99999999-9999-9999-9999-999999999999"),
+            contact_id=contact_id,
+            full_name="Contact Profile",
+            email="profile@example.com",
+            job_title="Chief Revenue Officer",
+        )
+
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=deal)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=company)),
+                MagicMock(
+                    scalars=MagicMock(
+                        return_value=MagicMock(all=MagicMock(return_value=[stakeholder]))
+                    )
+                ),
+                MagicMock(
+                    scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[contact])))
+                ),
+            ]
+        )
+
+        result = await get_deal_details(DEAL_ID, context=mock_context, include_risks=False)
+
+        assert result is not None
+        assert result["stakeholders"][0]["name"] == "Contact Profile"
+        assert result["stakeholders"][0]["email"] == "profile@example.com"
+        assert result["stakeholders"][0]["job_title"] == "Chief Revenue Officer"
 
     @pytest.mark.asyncio
     async def test_exclude_both_stakeholders_and_risks(self, mock_context: MagicMock) -> None:

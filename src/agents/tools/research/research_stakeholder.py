@@ -144,7 +144,11 @@ async def research_stakeholder(
             s_email = _normalize_email(
                 (contact.email if contact else None) or participant.related_email
             )
-            links = _contact_external_links(contact) or participant.external_links or []
+            links = _contact_external_links(contact) or getattr(
+                participant,
+                "external_links",
+                [],
+            )
             existing_linkedin = (
                 (getattr(contact, "linkedin_url", None) if contact else None)
                 or getattr(participant, "linkedin_url", None)

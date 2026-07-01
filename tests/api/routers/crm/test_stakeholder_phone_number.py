@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from src.api.schemas.crm_models import UpdateStakeholderRequest
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -206,12 +207,15 @@ def _read_service() -> StakeholderReadService:
 @pytest.mark.asyncio
 async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> None:
     service = _write_service()
+    contact_id = uuid4()
+    integration_id = uuid4()
     participant = CRMDealParticipant(
         participant_id=uuid4(),
         deal_id=uuid4(),
         organisation_id=uuid4(),
-        integration_id=uuid4(),
+        integration_id=integration_id,
         participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
         related_email="person@example.com",
         related_name="Test",
         stance="UNKNOWN",
@@ -220,13 +224,21 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
         participant_source="MANUAL",
         approval_status="APPROVED",
     )
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=participant.organisation_id,
+        integration_id=integration_id,
+        email="person@example.com",
+    )
     service.get_stakeholder = AsyncMock(return_value=participant)  # type: ignore[method-assign]
+    service._get_participant_contact = AsyncMock(return_value=contact)  # type: ignore[method-assign]
 
     request = UpdateStakeholderRequest(phone_number="+1 555-9999")
     result = await service.update_stakeholder(uuid4(), participant.participant_id, request)
 
     assert result.phone_number == "+1 555-9999"
-    assert participant.phone_number == "+1 555-9999"
+    assert contact.phone == "+1 555-9999"
+    assert not hasattr(participant, "phone_number")
     service.session.flush.assert_awaited()
 
 
@@ -270,8 +282,8 @@ async def test_get_stakeholder_detail_includes_phone_number() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_from_contact_sets_phone_number() -> None:
-    """Sync service should copy CRMContact.phone to stakeholder.phone_number."""
+async def test_enrich_from_contact_links_contact_without_phone_snapshot() -> None:
+    """Sync service should link CRMContact without copying phone to stakeholder."""
     service = StakeholderSyncService(uuid4())
     contact = SimpleNamespace(
         contact_id=uuid4(),
@@ -300,7 +312,8 @@ async def test_enrich_from_contact_sets_phone_number() -> None:
     )
 
     assert changed is True
-    assert stakeholder.phone_number == "+1 800-555-0123"
+    assert stakeholder.contact_id == contact.contact_id
+    assert stakeholder.phone_number is None
 
 
 @pytest.mark.asyncio
@@ -371,8 +384,8 @@ async def test_enrich_from_contact_skips_phone_when_contact_has_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_from_contact_updates_phone_when_different() -> None:
-    """If CRMContact.phone differs from current, it should update."""
+async def test_enrich_from_contact_does_not_update_phone_snapshot() -> None:
+    """CRMContact.phone remains contact-owned even when participant has old data."""
     service = StakeholderSyncService(uuid4())
     contact = SimpleNamespace(
         contact_id=uuid4(),
@@ -400,8 +413,8 @@ async def test_enrich_from_contact_updates_phone_when_different() -> None:
         email="person@example.com",
     )
 
-    assert changed is True
-    assert stakeholder.phone_number == "+1 800-UPDATED"
+    assert changed is False
+    assert stakeholder.phone_number == "+1 800-OLD"
 
 
 from contextlib import asynccontextmanager  # noqa: E402
@@ -436,6 +449,7 @@ class _FakeScalarResult:
 class _FakeSession:
     def __init__(self, records: dict[str, CRMDealParticipant], org_id, deal_id):
         self.records = records
+        self.contacts: dict[object, CRMContact] = {}
         self.org_id = org_id
         self.deal_id = deal_id
         self.integration_id = uuid4()
@@ -453,9 +467,29 @@ class _FakeSession:
                     deal_id=self.deal_id,
                     organisation_id=self.org_id,
                     integration_id=uuid4(),
+                    primary_contact_id=None,
+                    primary_contact_name=None,
+                    primary_contact_email=None,
                 )
             )
         if "crm_contacts" in compiled_text:
+            params = stmt.compile().params
+            email_param = next(
+                (v for k, v in params.items() if "email" in k or k.startswith("lower_")),
+                None,
+            )
+            contact_id_param = next((v for k, v in params.items() if "contact_id" in k), None)
+            for contact in self.contacts.values():
+                if contact_id_param and contact.contact_id == contact_id_param:
+                    return _FakeScalarResult(contact)
+                if (
+                    email_param
+                    and contact.email
+                    and contact.email.lower() == str(email_param).lower()
+                ):
+                    return _FakeScalarResult(contact)
+            if len(self.contacts) == 1:
+                return _FakeScalarResult(next(iter(self.contacts.values())))
             return _FakeScalarResult(None)
         if "crm_deal_participants" not in compiled_text:
             return _FakeScalarResult(None)
@@ -471,6 +505,8 @@ class _FakeSession:
     def add(self, obj) -> None:
         if isinstance(obj, CRMDealParticipant):
             self.pending = obj
+        if isinstance(obj, CRMContact):
+            self.contacts[obj.contact_id] = obj
 
     async def commit(self) -> None:
         if self.pending is not None:
@@ -541,8 +577,8 @@ async def test_agent_upsert_creates_stakeholder_with_phone_number() -> None:
 
     assert result is not None
     assert result["action"] == "created"
-    assert result["phone_number"] == "+1 555-0001"
-    assert store["new@customer.com"].phone_number == "+1 555-0001"
+    assert not hasattr(store["new@customer.com"], "phone_number")
+    assert next(iter(context.session.contacts.values())).phone == "+1 555-0001"
 
 
 @pytest.mark.asyncio
@@ -553,7 +589,7 @@ async def test_agent_upsert_fills_missing_phone_number() -> None:
         context=context,  # type: ignore[arg-type]
         input_data=UpsertStakeholderInput(email="nophone@customer.com", name="No Phone"),
     )
-    assert store["nophone@customer.com"].phone_number is None
+    assert not hasattr(store["nophone@customer.com"], "phone_number")
 
     result = await agent_upsert_stakeholder(
         context=context,  # type: ignore[arg-type]
@@ -566,7 +602,7 @@ async def test_agent_upsert_fills_missing_phone_number() -> None:
     assert result is not None
     assert result["action"] == "updated"
     assert "phone_number" in result["updated_fields"]
-    assert store["nophone@customer.com"].phone_number == "+1 555-0002"
+    assert next(iter(context.session.contacts.values())).phone == "+1 555-0002"
 
 
 @pytest.mark.asyncio
@@ -592,7 +628,7 @@ async def test_agent_upsert_does_not_overwrite_phone_in_fill_missing_mode() -> N
 
     assert result is not None
     assert "phone_number" not in result.get("updated_fields", [])
-    assert store["hasphone@customer.com"].phone_number == "+1 555-ORIGINAL"
+    assert next(iter(context.session.contacts.values())).phone == "+1 555-ORIGINAL"
 
 
 @pytest.mark.asyncio
@@ -618,4 +654,4 @@ async def test_agent_upsert_overwrites_phone_when_fill_missing_disabled() -> Non
 
     assert result is not None
     assert "phone_number" in result["updated_fields"]
-    assert store["overwrite@customer.com"].phone_number == "+1 555-NEW"
+    assert next(iter(context.session.contacts.values())).phone == "+1 555-NEW"

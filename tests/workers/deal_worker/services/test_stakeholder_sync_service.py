@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
 from sqlalchemy.dialects import postgresql
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -58,12 +59,55 @@ async def test_sync_deal_collapses_duplicate_contact_participants_by_normalized_
 
     result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
 
-    assert result.created == 1
+    assert result.created == 0
     assert result.updated == 1
     assert result.skipped == 1
     assert first_participant.related_email == "info@salesforce.com"
     session.add.assert_called_once_with(first_participant)
-    assert service._pending_research == [(first_participant.participant_id, deal_id)]
+    assert service._pending_research == []
+
+
+@pytest.mark.asyncio
+async def test_sync_deal_skips_research_when_linked_contact_is_researched() -> None:
+    """Sync dispatch gating should use contact research state, not participant snapshots."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+    service._internal_domains = set()
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT.value,
+        related_local_id=contact_id,
+        related_email="buyer@example.com",
+        approval_status=ApprovalStatus.APPROVED.value,
+        stakeholder_research=None,
+        last_researched_at=None,
+    )
+    deal = SimpleNamespace(
+        deal_id=deal_id,
+        integration_id=uuid4(),
+        participants=[participant],
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=participant.integration_id,
+        contact_id=contact_id,
+        email="buyer@example.com",
+        contact_research="Existing contact research",
+    )
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = contact
+    session = SimpleNamespace(add=MagicMock(), execute=AsyncMock(return_value=execute_result))
+    service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
+
+    result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
+
+    assert result.created == 0
+    assert service._pending_research == []
 
 
 @pytest.mark.asyncio
@@ -96,7 +140,8 @@ async def test_sync_deal_rejects_internal_domain_contact_participants() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_from_contact_updates_participant_profile_snapshot() -> None:
+async def test_enrich_from_contact_links_contact_without_profile_snapshot() -> None:
+    """Stakeholder sync links the contact but leaves person profile on CRMContact."""
     organisation_id = uuid4()
     service = StakeholderSyncService(organisation_id)
     contact_id = uuid4()
@@ -130,11 +175,12 @@ async def test_enrich_from_contact_updates_participant_profile_snapshot() -> Non
 
     assert changed is True
     assert participant.related_local_id == contact_id
-    assert participant.related_name == "CRM Name"
-    assert participant.job_title == "VP Sales"
-    assert participant.phone_number == "+1 800-555-0123"
-    assert participant.department == "Revenue"
-    assert participant.external_links == [{"type": "linkedin"}]
+    assert participant.related_name is None
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "external_links")
 
 
 @pytest.mark.asyncio

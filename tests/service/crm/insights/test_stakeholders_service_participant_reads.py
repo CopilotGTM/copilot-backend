@@ -1,3 +1,5 @@
+"""Regression tests for participant-backed stakeholder reads."""
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -13,32 +15,41 @@ from src.service.crm.participants.stakeholder_read_service import StakeholderRea
 
 
 class _FakeResult:
+    """Small SQLAlchemy result double for scalar and scalars read paths."""
+
     def __init__(self, *, scalar=None, scalars=None):
         self._scalar = scalar
         self._scalars = scalars or []
 
     def scalar_one_or_none(self):
+        """Return one scalar row for service calls that expect optional rows."""
         return self._scalar
 
     def scalars(self):
+        """Return self so `.all()` can mimic SQLAlchemy scalar results."""
         return self
 
     def all(self):
+        """Return the queued scalar collection."""
         return self._scalars
 
 
 class _SequencedSession:
+    """Async session double that returns queued results and records statements."""
+
     def __init__(self, results: list[_FakeResult]):
         self._results = results
         self.statements: list[str] = []
 
     async def execute(self, stmt):
+        """Record each query and return the next queued fake result."""
         self.statements.append(str(stmt))
         return self._results.pop(0)
 
 
 @pytest.mark.asyncio
 async def test_list_stakeholders_reads_active_contact_participants() -> None:
+    """List reads should merge contact-owned profile and research fields."""
     org_id = uuid4()
     integration_id = uuid4()
     deal_id = uuid4()
@@ -61,11 +72,25 @@ async def test_list_stakeholders_reads_active_contact_participants() -> None:
         related_local_id=contact_id,
         related_email="buyer@example.com",
         related_name="Buyer Snapshot",
-        job_title="VP Finance",
         approval_status="APPROVED",
         participant_source="CRM",
     )
-    session = _SequencedSession([_FakeResult(scalar=deal), _FakeResult(scalars=[participant])])
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=contact_id,
+        email="fresh@example.com",
+        full_name="Fresh Buyer",
+        job_title="CFO",
+        contact_research="Fresh contact research",
+    )
+    session = _SequencedSession(
+        [
+            _FakeResult(scalar=deal),
+            _FakeResult(scalars=[participant]),
+            _FakeResult(scalars=[contact]),
+        ]
+    )
     service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
 
     response = await service.list_stakeholders_by_deal(deal_id)
@@ -73,13 +98,15 @@ async def test_list_stakeholders_reads_active_contact_participants() -> None:
     assert response.company_domain == "acme.com"
     assert response.stakeholders[0].participant_id == participant_id
     assert response.stakeholders[0].contact_id == contact_id
-    assert response.stakeholders[0].email == "buyer@example.com"
-    assert response.stakeholders[0].name == "Buyer Snapshot"
-    assert response.stakeholders[0].job_title == "VP Finance"
+    assert response.stakeholders[0].email == "fresh@example.com"
+    assert response.stakeholders[0].name == "Fresh Buyer"
+    assert response.stakeholders[0].job_title == "CFO"
+    assert response.stakeholders[0].stakeholder_research == "Fresh contact research"
 
 
 @pytest.mark.asyncio
 async def test_list_stakeholders_accepts_limit_for_agent_callers() -> None:
+    """Agent callers can cap list size without changing the response contract."""
     org_id = uuid4()
     deal_id = uuid4()
     deal = CRMDeal(
@@ -98,6 +125,7 @@ async def test_list_stakeholders_accepts_limit_for_agent_callers() -> None:
 
 @pytest.mark.asyncio
 async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profile() -> None:
+    """Detail reads already use contact-owned profile and research fields."""
     org_id = uuid4()
     integration_id = uuid4()
     deal_id = uuid4()
@@ -112,10 +140,8 @@ async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profil
         related_local_id=contact_id,
         related_email="old@example.com",
         related_name="Old Snapshot",
-        job_title="Old Title",
         approval_status="APPROVED",
         participant_source="MANUAL",
-        stakeholder_research="Participant research",
     )
     contact = CRMContact(
         organisation_id=org_id,

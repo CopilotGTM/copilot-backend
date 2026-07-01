@@ -96,17 +96,10 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         related_local_id=contact.contact_id,
         related_name="Ada Lovelace",
         related_email="ada@example.com",
-        job_title="CTO",
-        department="Engineering",
-        phone_number="+155501",
-        linkedin_url="https://linkedin.com/in/ada",
-        external_links=[{"url": "https://linkedin.example/ada"}],
         motivation="Improve forecasting",
         pain_points=["manual reporting"],
         keywords=["forecasting"],
         last_contact_at=datetime.now(UTC),
-        stakeholder_research="Deal-scoped research",
-        last_researched_at=datetime.now(UTC),
         approval_status=ApprovalStatus.APPROVED.value,
     )
     deal = CRMDeal(
@@ -173,17 +166,17 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert participant.related_local_id is None
     assert participant.related_name is None
     assert participant.related_email is None
-    assert participant.job_title is None
-    assert participant.department is None
-    assert participant.phone_number is None
-    assert participant.linkedin_url is None
-    assert participant.external_links is None
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "external_links")
     assert participant.motivation is None
     assert participant.pain_points is None
     assert participant.keywords is None
     assert participant.last_contact_at is None
-    assert participant.stakeholder_research is None
-    assert participant.last_researched_at is None
+    assert not hasattr(participant, "stakeholder_research")
+    assert not hasattr(participant, "last_researched_at")
     assert participant.approval_status == ApprovalStatus.REMOVED.value
     assert not hasattr(participant, "data_payload")
 

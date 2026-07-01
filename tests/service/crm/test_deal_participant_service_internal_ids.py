@@ -48,6 +48,22 @@ class _FakeSession:
         self._added.append(obj)
 
 
+def test_contact_owned_profile_fields_are_not_mapped_on_participant() -> None:
+    """Participant rows should not expose contact-owned profile/research columns."""
+    removed_fields = {
+        "job_title",
+        "department",
+        "phone_number",
+        "linkedin_url",
+        "external_links",
+        "stakeholder_research",
+        "last_researched_at",
+    }
+
+    assert removed_fields.isdisjoint(CRMDealParticipant.model_fields)
+    assert removed_fields.isdisjoint(CRMDealParticipant.__table__.columns.keys())
+
+
 @pytest.mark.asyncio
 async def test_maybe_apply_company_to_deal_sets_internal_company_id() -> None:
     """Company participants update the internal deal company snapshot."""
@@ -139,6 +155,7 @@ async def test_add_participants_reuses_contact_when_same_contact_has_multiple_ro
     assert skipped[0].reason == "Duplicate participant in request"
     assert changed is True
     assert isinstance(created[0], CRMDealParticipant)
+    assert created[0].related_name is None
     assert created[0].is_primary_contact is True
     assert getattr(created[0], "properties", None) is None
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.job_models import JobStatus
 from src.workers.deal_worker.tasks.deal_insight_tasks import stakeholder_research_tasks
 
@@ -68,6 +69,20 @@ class _Publisher:
     def publish_finalize(self, reason="done"):
         """Capture terminal frame reason."""
         self.frames.append({"type": "finalize", "reason": reason})
+
+
+class _QueryCaptureSession:
+    """Fake org session that captures the retry sweep query."""
+
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):  # noqa: ANN001
+        """Capture the pending-stakeholder query and return no rows."""
+        self.statement = statement
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: []),
+        )
 
 
 def test_stakeholder_research_job_publishes_sse_frames(monkeypatch) -> None:
@@ -137,3 +152,34 @@ def test_stakeholder_research_job_publishes_sse_frames(monkeypatch) -> None:
         "finalize",
     ]
     assert _Publisher.frames[-1] == {"type": "finalize", "reason": "done"}
+
+
+def test_retry_pending_research_uses_linked_contact_research_state(monkeypatch) -> None:
+    """Retry sweeps should not rely on participant research snapshots for linked contacts."""
+    organisation_id = uuid4()
+    session = _QueryCaptureSession()
+
+    monkeypatch.setattr(
+        stakeholder_research_tasks, "acquire_task_lock", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        stakeholder_research_tasks, "release_task_lock", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        stakeholder_research_tasks,
+        "acquire_org_async_session",
+        lambda organisation_id: _SessionSource(session),
+    )
+
+    result = stakeholder_research_tasks.retry_pending_research_org.run(str(organisation_id))
+
+    assert result == {"status": "completed", "found": 0, "dispatched": 0}
+    compiled = str(
+        session.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "LEFT OUTER JOIN crm_contacts" in compiled
+    assert "crm_contacts.contact_research IS NULL" in compiled
+    assert "crm_contacts.last_researched_at IS NULL" in compiled

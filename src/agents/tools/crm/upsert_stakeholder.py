@@ -228,18 +228,33 @@ def _format_upsert_output(
     *,
     action: str,
     updated_fields: list[str] | None = None,
+    contact: Any | None = None,
 ) -> dict[str, Any]:
     updates = updated_fields or []
     participant_id = getattr(stakeholder, "participant_id", None)
     if participant_id is None:
         participant_id = getattr(stakeholder, "stakeholder_id", None)
+    contact_properties = getattr(contact, "properties", None) or {}
     return {
         "participant_id": str(participant_id) if participant_id else None,
-        "email": getattr(stakeholder, "email", None) or getattr(stakeholder, "related_email", None),
-        "name": getattr(stakeholder, "name", None) or getattr(stakeholder, "related_name", None),
-        "job_title": stakeholder.job_title,
-        "phone_number": stakeholder.phone_number,
-        "department": getattr(stakeholder, "department", None),
+        "email": (
+            getattr(contact, "email", None)
+            or getattr(stakeholder, "email", None)
+            or getattr(stakeholder, "related_email", None)
+        ),
+        "name": (
+            getattr(contact, "full_name", None)
+            or getattr(stakeholder, "name", None)
+            or getattr(stakeholder, "related_name", None)
+        ),
+        "job_title": getattr(contact, "job_title", None) or getattr(stakeholder, "job_title", None),
+        "phone_number": (
+            getattr(contact, "phone", None)
+            or getattr(contact, "mobile_phone", None)
+            or getattr(stakeholder, "phone_number", None)
+        ),
+        "department": contact_properties.get("department")
+        or getattr(stakeholder, "department", None),
         "stance": stakeholder.stance.value
         if isinstance(stakeholder.stance, StakeholderStance)
         else stakeholder.stance,
@@ -260,6 +275,19 @@ def _format_upsert_output(
         if updates
         else "No changes applied to stakeholder",
     }
+
+
+def _needs_research_dispatch(stakeholder: Any, contact: Any | None) -> bool:
+    """Return whether an existing stakeholder needs contact-owned research."""
+    if contact is not None:
+        return not getattr(contact, "contact_research", None) and not getattr(
+            contact, "last_researched_at", None
+        )
+    return not getattr(stakeholder, "stakeholder_research", None) and not getattr(
+        stakeholder,
+        "last_researched_at",
+        None,
+    )
 
 
 async def upsert_stakeholder(
@@ -311,10 +339,9 @@ async def upsert_stakeholder(
                 await service._find_contact_participant(
                     deal_id=actual_deal_id,
                     email=email,
-                    linkedin_url=linkedin_url,
                     include_deleted=True,
                 )
-                if email or linkedin_url
+                if email
                 else None
             )
 
@@ -328,40 +355,68 @@ async def upsert_stakeholder(
                     stakeholder.approval_status = ApprovalStatus.APPROVED.value
                     stakeholder.is_deleted = False
                     stakeholder.participant_source = StakeholderSource.MANUAL.value
-                    # Reset research so it gets re-researched
-                    stakeholder.stakeholder_research = None
-                    stakeholder.last_researched_at = None
 
                 updated_fields: list[str] = []
                 only_fill_missing = input_data.only_fill_missing
+                contact = await service._get_participant_contact(stakeholder)
+                contact_properties = dict(getattr(contact, "properties", None) or {})
+                profile_updates: dict[str, Any] = {}
 
                 cleaned_name = resolved_name
-                if cleaned_name is not None and (
-                    not only_fill_missing or _is_missing_text(stakeholder.related_name)
+                if (
+                    contact
+                    and cleaned_name is not None
+                    and (
+                        not only_fill_missing
+                        or _is_missing_text(getattr(contact, "full_name", None))
+                    )
                 ):
-                    stakeholder.related_name = cleaned_name
+                    profile_updates["name"] = cleaned_name
                     updated_fields.append("name")
 
                 cleaned_job_title = _clean_text(input_data.job_title)
-                if cleaned_job_title is not None and (
-                    not only_fill_missing or _is_missing_text(stakeholder.job_title)
+                if (
+                    contact
+                    and cleaned_job_title is not None
+                    and (
+                        not only_fill_missing
+                        or _is_missing_text(getattr(contact, "job_title", None))
+                    )
                 ):
-                    stakeholder.job_title = cleaned_job_title
+                    profile_updates["job_title"] = cleaned_job_title
                     updated_fields.append("job_title")
 
                 cleaned_department = _clean_text(input_data.department)
-                if cleaned_department is not None and (
-                    not only_fill_missing or _is_missing_text(stakeholder.department)
+                if (
+                    contact
+                    and cleaned_department is not None
+                    and (
+                        not only_fill_missing
+                        or _is_missing_text(contact_properties.get("department"))
+                    )
                 ):
-                    stakeholder.department = cleaned_department
+                    profile_updates["department"] = cleaned_department
                     updated_fields.append("department")
 
                 cleaned_phone = _clean_text(input_data.phone_number)
-                if cleaned_phone is not None and (
-                    not only_fill_missing or _is_missing_text(stakeholder.phone_number)
+                contact_phone = (
+                    getattr(contact, "phone", None) or getattr(contact, "mobile_phone", None)
+                    if contact
+                    else None
+                )
+                if (
+                    contact
+                    and cleaned_phone is not None
+                    and (not only_fill_missing or _is_missing_text(contact_phone))
                 ):
-                    stakeholder.phone_number = cleaned_phone
+                    profile_updates["phone_number"] = cleaned_phone
                     updated_fields.append("phone_number")
+
+                if profile_updates:
+                    service._apply_contact_profile_updates(
+                        contact=contact,
+                        updates=profile_updates,
+                    )
 
                 if input_data.stance is not None and (
                     not only_fill_missing or _is_unknown_enum(stakeholder.stance)
@@ -400,9 +455,9 @@ async def upsert_stakeholder(
                     await session.refresh(stakeholder)
 
                     # Dispatch research if stakeholder was reactivated
-                    if "approval_status" not in updated_fields and (
-                        stakeholder.stakeholder_research is None
-                        and stakeholder.last_researched_at is None
+                    if "approval_status" not in updated_fields and _needs_research_dispatch(
+                        stakeholder,
+                        contact,
                     ):
                         try:
                             await _dispatch_research_for_stakeholder_create(
@@ -421,7 +476,10 @@ async def upsert_stakeholder(
                 action = "updated" if updated_fields else "no_change"
                 return _with_action(
                     _format_upsert_output(
-                        stakeholder, action=action, updated_fields=updated_fields
+                        stakeholder,
+                        action=action,
+                        updated_fields=updated_fields,
+                        contact=contact,
                     ),
                     action,
                 )

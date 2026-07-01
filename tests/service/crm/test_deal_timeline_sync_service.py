@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -508,7 +509,6 @@ class TestBuildStakeholderTimelineEvent:
             participant_type=CRMParticipantType.CONTACT,
             related_name="Alex Buyer",
             related_email="alex@example.com",
-            job_title="CFO",
             participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
             approval_status=ApprovalStatus.APPROVED.value,
             stance=StakeholderStance.CHAMPION.value,
@@ -529,6 +529,48 @@ class TestBuildStakeholderTimelineEvent:
         assert event.event_metadata["name"] == "Alex Buyer"
         assert event.event_metadata["source"] == StakeholderSource.EMAIL_DISCOVERY.value
         assert event.participant_names == ["Alex Buyer"]
+
+    def test_stakeholder_event_prefers_contact_profile_when_provided(self) -> None:
+        """Inline timeline builders should use contact-owned profile fields."""
+        org_id = uuid4()
+        integration_id = uuid4()
+        deal_id = uuid4()
+        contact_id = uuid4()
+        participant = CRMDealParticipant(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            deal_id=deal_id,
+            participant_type=CRMParticipantType.CONTACT,
+            related_local_id=contact_id,
+            related_name="Snapshot Buyer",
+            related_email="snapshot@example.com",
+            participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
+            approval_status=ApprovalStatus.APPROVED.value,
+            stance=StakeholderStance.CHAMPION.value,
+            decision_power="DECISION_MAKER",
+        )
+        contact = CRMContact(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            contact_id=contact_id,
+            full_name="Contact Buyer",
+            email="contact@example.com",
+            job_title="Contact CFO",
+        )
+
+        event = build_stakeholder_timeline_event(
+            organisation_id=org_id,
+            deal_id=deal_id,
+            stakeholder=participant,
+            contact=contact,
+        )
+
+        assert event.title == "Stakeholder Added: Contact Buyer"
+        assert event.subtitle == "Contact CFO"
+        assert event.event_metadata["email"] == "contact@example.com"
+        assert event.event_metadata["name"] == "Contact Buyer"
+        assert event.event_metadata["job_title"] == "Contact CFO"
+        assert event.participant_names == ["Contact Buyer"]
 
 
 # =============================================================================

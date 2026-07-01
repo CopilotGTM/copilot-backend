@@ -18,6 +18,7 @@ class ContactCreateCommand:
     email: str
     name: str | None = None
     job_title: str | None = None
+    phone: str | None = None
     linkedin_url: str | None = None
 
 

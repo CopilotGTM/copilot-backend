@@ -116,6 +116,7 @@ class ContactWriteService:
                 "last_name": last_name,
                 "full_name": contact_name,
                 "job_title": command.job_title,
+                "phone": command.phone,
                 "linkedin_url": command.linkedin_url,
                 "company_id": account.company_id if account else None,
                 "company_name": account.name if account else None,
@@ -215,6 +216,7 @@ class ContactWriteService:
                 email=normalized_email,
                 name=name,
                 job_title=updates.get("job_title"),
+                phone=updates.get("phone"),
                 linkedin_url=(
                     updates.get("linkedin_url")
                     or (

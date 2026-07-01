@@ -2,7 +2,7 @@
 
 The public task name still says "stakeholder sync", but the canonical deal-person
 state is now `CRMDealParticipant`. This service normalizes contact participants,
-copies durable contact profile snapshots, rejects internal participants, and queues
+links them to durable contacts, rejects internal participants, and queues
 stakeholder research without writing the old stakeholder table.
 """
 
@@ -48,10 +48,12 @@ class StakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return whether the deal sync completed without recorded errors."""
         return len(self.errors) == 0
 
     @property
     def requires_rematching(self) -> bool:
+        """Return whether new stakeholder participants require downstream rematching."""
         return self.created > 0
 
 
@@ -71,10 +73,12 @@ class OrgStakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return whether every selected deal synced successfully."""
         return self.failed_deals == 0
 
     @property
     def requires_rematching(self) -> bool:
+        """Return whether any deal created new stakeholder participants."""
         return self.stakeholders_created > 0
 
 
@@ -105,6 +109,7 @@ class StakeholderSyncService:
         return str(getattr(value, "value", value))
 
     async def sync_for_organisation(self) -> OrgStakeholderSyncResult:
+        """Normalize participant-backed stakeholders for every open deal in the org."""
         result = OrgStakeholderSyncResult(organisation_id=self.organisation_id)
 
         deal_ids: list[UUID] = []
@@ -223,6 +228,7 @@ class StakeholderSyncService:
         return _NoopSavepoint()
 
     async def sync_for_deal(self, deal_id: UUID) -> StakeholderSyncResult:
+        """Normalize participant-backed stakeholders for a single deal."""
         async for session in acquire_org_async_session(self.organisation_id):
             try:
                 result = await self._sync_deal_internal(session, deal_id)
@@ -327,11 +333,35 @@ class StakeholderSyncService:
                 session.add(participant)
                 result.updated += 1
 
-            if not participant.stakeholder_research and not participant.last_researched_at:
+            if await self._needs_contact_research(session, participant):
                 self._pending_research.append((participant.participant_id, deal.deal_id))
                 result.created += 1
 
         return result
+
+    async def _needs_contact_research(
+        self,
+        session: AsyncSession,
+        participant: CRMDealParticipant,
+    ) -> bool:
+        """Return whether a participant still needs contact-owned research.
+
+        The linked CRMContact is authoritative after the contact-owned research
+        migration; unlinked placeholders do not carry enough identity to run.
+        """
+        if not participant.related_local_id:
+            return False
+
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.contact_id) == participant.related_local_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        result = await session.execute(stmt)
+        contact = result.scalar_one_or_none()
+        if not contact:
+            return True
+        return not contact.contact_research and not contact.last_researched_at
 
     async def _load_deal(self, session: AsyncSession, deal_id: UUID) -> CRMDeal | None:
         deal_participants_rel = cast(Any, CRMDeal.participants)
@@ -387,6 +417,7 @@ class StakeholderSyncService:
         email: str,
         manual_overrides: set[str] | None = None,
     ) -> bool:
+        _ = manual_overrides
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.email) == email,
@@ -397,37 +428,8 @@ class StakeholderSyncService:
             return False
 
         changed = False
-        override_fields = manual_overrides or set()
-        properties = getattr(contact, "properties", None) or {}
-
         changed |= self._set_if_different(stakeholder, "related_local_id", contact.contact_id)
         changed |= self._set_if_different(stakeholder, "contact_id", contact.contact_id)
-
-        contact_name = getattr(contact, "full_name", None)
-        if "name" not in override_fields and contact_name:
-            changed |= self._set_if_different(stakeholder, "related_name", contact_name)
-            if not getattr(stakeholder, "name", None):
-                changed |= self._set_if_different(stakeholder, "name", contact_name)
-
-        if "job_title" not in override_fields and getattr(contact, "job_title", None):
-            changed |= self._set_if_different(stakeholder, "job_title", contact.job_title)
-
-        phone = getattr(contact, "phone", None) or getattr(contact, "mobile_phone", None)
-        if "phone_number" not in override_fields and phone:
-            changed |= self._set_if_different(stakeholder, "phone_number", phone)
-
-        linkedin_url = getattr(contact, "linkedin_url", None)
-        if "linkedin_url" not in override_fields and linkedin_url:
-            changed |= self._set_if_different(stakeholder, "linkedin_url", linkedin_url)
-
-        department = properties.get("department")
-        if department:
-            changed |= self._set_if_different(stakeholder, "department", department)
-
-        external_links = properties.get("external_links")
-        if external_links:
-            changed |= self._set_if_different(stakeholder, "external_links", external_links)
-
         return changed
 
     @staticmethod

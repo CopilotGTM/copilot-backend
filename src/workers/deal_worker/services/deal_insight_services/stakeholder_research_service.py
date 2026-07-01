@@ -3,9 +3,10 @@
 Three-phase fresh session pattern:
 - Phase 1: Load stakeholder context (fresh session, release before LLM)
 - Phase 2: Run StakeholderResearchAgent (returns structured StakeholderResearchResult)
-- Phase 3: Persist identity fields + research markdown (fresh session)
+- Phase 3: Persist contact-owned profile + research markdown (fresh session)
 
 The service is the single DB writer — the tool is read-only during research.
+Participant research/profile columns are legacy fallbacks and are not refreshed here.
 """
 
 from __future__ import annotations
@@ -159,7 +160,7 @@ class StakeholderResearchService:
             external_links = (
                 contact_links
                 if isinstance(contact_links, list)
-                else list(stakeholder.external_links or [])
+                else list(getattr(stakeholder, "external_links", None) or [])
             )
             contact_name = contact.full_name if contact else None
 
@@ -195,17 +196,10 @@ class StakeholderResearchService:
             if not recent or not recent.contact_research:
                 return None
 
-            await session.execute(
-                update(CRMDealParticipant)
-                .where(
-                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
-                    col(CRMDealParticipant.participant_id) == stakeholder_id,
-                )
-                .values(
-                    stakeholder_research=recent.contact_research,
-                    last_researched_at=recent.last_researched_at,
-                    updated_at=datetime.now(UTC),
-                )
+            await self._touch_participant_research_attempt(
+                session,
+                stakeholder_id,
+                updated_at=datetime.now(UTC),
             )
             if ctx.contact_id and recent.contact_id != ctx.contact_id:
                 await session.execute(
@@ -321,14 +315,13 @@ class StakeholderResearchService:
             )
 
         now = datetime.now(UTC)
-        participant_values: dict[str, Any] = {"updated_at": now, "last_researched_at": now}
+        participant_values: dict[str, Any] = {"updated_at": now}
         contact_values: dict[str, Any] = {"updated_at": now, "last_researched_at": now}
         contact_properties: dict[str, Any] = {}
 
         if result.status == "not_found":
             # Person genuinely not found — record we tried so we don't retry forever,
             # but store NULL instead of junk text.
-            participant_values["stakeholder_research"] = None
             contact_values["contact_research"] = None
             await self._write_research_values(
                 stakeholder_id,
@@ -352,15 +345,12 @@ class StakeholderResearchService:
 
         # status == "found" — persist identity fields + the LLM-written markdown
         markdown = result.research_markdown or ""
-        participant_values["stakeholder_research"] = markdown
         contact_values["contact_research"] = markdown
 
         if self._should_overwrite_name(ctx.name, result.name):
-            participant_values["related_name"] = result.name
             contact_values["full_name"] = result.name
 
         if result.job_title:
-            participant_values["job_title"] = result.job_title
             contact_values["job_title"] = result.job_title
 
         if result.first_name:
@@ -370,14 +360,12 @@ class StakeholderResearchService:
 
         department = _infer_department(result.job_title)
         if department:
-            participant_values["department"] = department
             contact_properties["department"] = department
 
         if result.linkedin_url:
-            participant_values["linkedin_url"] = result.linkedin_url
             contact_values["linkedin_url"] = result.linkedin_url
             if not self._has_linkedin(ctx.external_links):
-                participant_values["external_links"] = ctx.external_links + [
+                contact_properties["external_links"] = ctx.external_links + [
                     {
                         "platform": "linkedin",
                         "url": result.linkedin_url,
@@ -385,7 +373,6 @@ class StakeholderResearchService:
                         "added_at": now.isoformat(),
                     }
                 ]
-                contact_properties["external_links"] = participant_values["external_links"]
 
         await self._write_research_values(
             stakeholder_id,
@@ -435,13 +422,10 @@ class StakeholderResearchService:
         contact_properties: dict[str, Any],
     ) -> None:
         async for session in acquire_org_async_session(self.organisation_id):
-            await session.execute(
-                update(CRMDealParticipant)
-                .where(
-                    col(CRMDealParticipant.organisation_id) == self.organisation_id,
-                    col(CRMDealParticipant.participant_id) == stakeholder_id,
-                )
-                .values(**participant_values)
+            await self._touch_participant_research_attempt(
+                session,
+                stakeholder_id,
+                updated_at=participant_values["updated_at"],
             )
 
             if contact_id:
@@ -463,6 +447,23 @@ class StakeholderResearchService:
 
             await session.commit()
             return
+
+    async def _touch_participant_research_attempt(
+        self,
+        session: AsyncSession,
+        stakeholder_id: UUID,
+        *,
+        updated_at: datetime,
+    ) -> None:
+        """Record that the participant-backed research job ran without profile writes."""
+        await session.execute(
+            update(CRMDealParticipant)
+            .where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_id) == stakeholder_id,
+            )
+            .values(updated_at=updated_at)
+        )
 
     async def _fill_contact_identity(
         self,

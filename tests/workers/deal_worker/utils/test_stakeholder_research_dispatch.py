@@ -34,6 +34,7 @@ class _Session:
         self.execute_rows = list(execute_rows)
         self.commits = 0
         self.added = []
+        self.statements = []
 
     async def get(self, model, item_id):
         """Dispatch should look up participants with scoped SELECT statements."""
@@ -41,6 +42,9 @@ class _Session:
 
     async def execute(self, stmt):
         """Return the next configured query result."""
+        self.statements.append(stmt)
+        if not self.execute_rows:
+            return _Result(None)
         return _Result(self.execute_rows.pop(0))
 
     async def commit(self):
@@ -152,3 +156,47 @@ async def test_dispatch_creates_research_job_for_linkedin_only_stakeholder(monke
     assert len(session.added) == 1
     assert session.added[0].stakeholder_id == participant_id
     assert dispatched[0]["args"][0] == "stakeholder_research.process_job"
+
+
+@pytest.mark.asyncio
+async def test_recent_contact_research_reuse_does_not_copy_to_participant(monkeypatch) -> None:
+    """Cooldown reuse should keep research on contact instead of refreshing participant snapshots."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        participant_id=participant_id,
+        participant_type=CRMParticipantType.CONTACT,
+        is_deleted=False,
+        approval_status=ApprovalStatus.APPROVED.value,
+        related_local_id=None,
+        related_email="buyer@example.com",
+        linkedin_url=None,
+        deal_id=deal_id,
+    )
+    researched_contact = SimpleNamespace(
+        contact_id=uuid4(),
+        contact_research="## Cached",
+        last_researched_at=datetime.now(UTC),
+    )
+    session = _Session(participant, researched_contact)
+
+    monkeypatch.setattr(
+        "src.workers.deal_worker.utils.stakeholder_research_dispatch.acquire_org_async_session",
+        lambda organisation_id: _SessionSource(session),
+    )
+
+    returned_job_id = await dispatch_stakeholder_research_async(
+        organisation_id=organisation_id,
+        stakeholder_id=participant_id,
+        deal_id=deal_id,
+    )
+
+    assert returned_job_id is None
+    assert session.added == []
+    update_values = [
+        getattr(bind, "value", bind)
+        for stmt in session.statements
+        for bind in getattr(stmt, "_values", {}).values()
+    ]
+    assert "## Cached" not in update_values
