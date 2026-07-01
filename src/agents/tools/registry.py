@@ -61,6 +61,8 @@ class ToolName(str, Enum):
     GET_DEAL_MEMORY = "get_deal_memory"  # Persistent deal memory document
     GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
     CREATE_DEAL = "create_deal"  # Create an internal CRM deal directly from chat
+    LIST_LEADS = "list_leads"  # List leads with filters
+    CREATE_LEAD = "create_lead"  # Create an internal CRM lead directly from chat
     ADD_DEAL_NOTE = "add_deal_note"  # Create a note directly on an existing deal
     ADD_STAKEHOLDER = "add_stakeholder"  # Create a stakeholder directly on an existing deal
     UPDATE_DEAL_STAGE = "update_deal_stage"
@@ -111,6 +113,8 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
+    LIST_CONNECTED_EMAIL_ACCOUNTS = "list_connected_email_accounts"
+    SEARCH_MAILBOX_EMAILS = "search_mailbox_emails"
     SEND_EMAIL = "send_email"
     READ_CHAT_ATTACHMENT = "read_chat_attachment"
     LIST_CHAT_ATTACHMENTS = "list_chat_attachments"
@@ -194,6 +198,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
     ToolName.CREATE_VISUALIZATION_CARD: {"teams"},
     ToolName.CREATE_DEAL: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.CREATE_LEAD: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_CONTACT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_ACCOUNT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.ADD_DEAL_NOTE: {"teams", "slack", "whatsapp", "web", "voice"},
@@ -249,6 +254,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     # Communication tools
     ToolName.LIST_DEAL_EMAILS,
     ToolName.GET_EMAIL_DETAILS,
+    ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS,
+    ToolName.SEARCH_MAILBOX_EMAILS,
     ToolName.SEND_EMAIL,
     ToolName.READ_CHAT_ATTACHMENT,
     ToolName.LIST_DEAL_NOTES,
@@ -268,6 +275,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES,
     # CRM write tools (channel-only)
     ToolName.CREATE_DEAL,
+    ToolName.LIST_LEADS,
+    ToolName.CREATE_LEAD,
     ToolName.ADD_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
@@ -555,6 +564,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS: ToolCategory.COMMUNICATION,
+    ToolName.SEARCH_MAILBOX_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.SEND_EMAIL: ToolCategory.COMMUNICATION,
     ToolName.READ_CHAT_ATTACHMENT: ToolCategory.COMMUNICATION,
     ToolName.LIST_CHAT_ATTACHMENTS: ToolCategory.COMMUNICATION,
@@ -572,6 +583,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.RESEARCH_STAKEHOLDER: ToolCategory.SEARCH,
     # Tasks
     ToolName.CREATE_TASK: ToolCategory.CRM,
+    ToolName.LIST_LEADS: ToolCategory.CRM,
+    ToolName.CREATE_LEAD: ToolCategory.CRM,
     ToolName.LIST_DEAL_TASKS: ToolCategory.CRM,
     ToolName.CREATE_DEAL_TASK: ToolCategory.CRM,
     ToolName.COMPLETE_DEAL_TASK: ToolCategory.CRM,
@@ -616,9 +629,11 @@ class ToolRegistry:
             create_fetch_teams_chat_messages,
             create_get_email_details,
             create_list_chat_attachments,
+            create_list_connected_email_accounts,
             create_list_deal_channel_messages,
             create_list_deal_emails,
             create_read_chat_attachment,
+            create_search_mailbox_emails,
             create_send_email,
         )
         from src.agents.tools.crm import (
@@ -627,6 +642,7 @@ class ToolRegistry:
             create_create_account,
             create_create_contact,
             create_create_deal,
+            create_create_lead,
             create_create_stakeholder_if_missing,
             create_dismiss_risk_blocker,
             create_enrich_stakeholder,
@@ -640,6 +656,7 @@ class ToolRegistry:
             create_list_deal_notes,
             create_list_deal_stakeholders,
             create_list_deals,
+            create_list_leads,
             create_resolve_risk_blocker,
             create_search_accounts,
             create_search_contacts,
@@ -719,6 +736,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.CREATE_DEAL] = lambda: create_create_deal(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_LEADS] = lambda: create_list_leads(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_LEAD] = lambda: create_create_lead(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.ADD_DEAL_NOTE] = lambda: create_add_deal_note(
@@ -822,6 +845,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS] = (
+            lambda: create_list_connected_email_accounts(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.SEARCH_MAILBOX_EMAILS] = lambda: create_search_mailbox_emails(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.SEND_EMAIL] = lambda: create_send_email(

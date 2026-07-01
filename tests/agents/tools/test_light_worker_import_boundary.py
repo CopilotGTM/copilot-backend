@@ -51,6 +51,7 @@ def _without_src_api():
         "src.agents.tools.reminders.create_reminder",
         "src.agents.tools.tasks.create_task",
         "src.agents.tools.crm.create_deal",
+        "src.agents.tools.crm.create_lead",
         "src.agents.tools.crm.create_account",
         "src.agents.tools.crm.create_contact",
         "src.agents.tools.crm.add_deal_note",

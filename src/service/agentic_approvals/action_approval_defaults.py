@@ -47,6 +47,14 @@ ACTION_APPROVAL_DEFAULTS: dict[str, ActionApprovalDefault] = {
         editable=True,
         crm_write_scope="deals:create",
     ),
+    "create_lead": ActionApprovalDefault(
+        tool_name="create_lead",
+        label="Create lead",
+        category="crm",
+        approval_required=True,
+        editable=True,
+        crm_write_scope="leads:create",
+    ),
     "create_account": ActionApprovalDefault(
         tool_name="create_account",
         label="Create account",

@@ -488,6 +488,18 @@ def test_crm_deal_analysis_workflow_skill_has_instructions() -> None:
     assert "Evidence Strategy" in skill.instructions
 
 
+def test_crm_deal_analysis_workflow_skill_scopes_inbound_email_leads() -> None:
+    """Inbound lead analysis from email must not read every connected mailbox by default."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-deal-analysis-workflow")
+    instructions = skill.instructions
+    assert "ListConnectedEmailAccounts" in instructions
+    assert "SearchMailboxEmails" in instructions
+    assert "resolve the exact connected mailbox first" in instructions
+    assert "do not read all connected mailboxes" in instructions
+
+
 def test_email_meeting_workflow_skill_loads() -> None:
     """The email-meeting-workflow skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
@@ -526,6 +538,21 @@ def test_email_meeting_workflow_skill_lists_email_context_sources() -> None:
     assert "risks and blockers" in instructions
     assert "stakeholder pain points" in instructions
     assert "deal notes" in instructions
+
+
+def test_email_meeting_workflow_skill_supports_mailbox_scoped_reads() -> None:
+    """Specific mailbox reads should use connected account listing and scoped search."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "Mailbox-Scoped Email Reads" in instructions
+    assert "list_connected_email_accounts" in instructions
+    assert "search_mailbox_emails" in instructions
+    assert "exact `mailbox_email`" in instructions
+    assert "has_more=True" in instructions
+    assert "next_before_received_at" in instructions
+    assert "Do not scan every connected mailbox" in instructions
 
 
 def test_email_meeting_workflow_skill_preserves_user_local_meeting_times() -> None:

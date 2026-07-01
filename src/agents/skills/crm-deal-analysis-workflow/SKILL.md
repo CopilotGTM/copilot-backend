@@ -31,6 +31,7 @@ Use these terms consistently:
 | Term | Meaning |
 | --- | --- |
 | Contact | A CRM person record, usually tied to an account/company |
+| Lead | A CRM prospect or inbound signal that may not yet be qualified into a contact, account, or deal |
 | Stakeholder | A person relevant to a deal, with sales meaning such as champion, buyer, evaluator, blocker, influencer, or user |
 | Participant | A person seen in an interaction such as a meeting, email, call, or message |
 | Deal participant | A participant connected to a specific deal through meetings, emails, notes, tasks, or CRM associations |
@@ -38,6 +39,8 @@ Use these terms consistently:
 
 Contacts, stakeholders, and participants can overlap, but they are not the same:
 
+- A lead may exist before CRM qualification and may not have a matching contact,
+  account, or deal yet.
 - A contact may exist in CRM but never join a meeting.
 - A participant may join a meeting but not yet exist as a CRM contact.
 - A stakeholder is a sales interpretation of a person based on role, influence,
@@ -65,14 +68,18 @@ Use the available tool whose description matches the needed evidence.
 
 | Need | Tool category |
 | --- | --- |
-| Find or confirm a deal | Deal search/list/detail tools |
-| Understand account/company context | Account/company search and knowledge tools |
-| Understand a person | Contact, stakeholder, participant, and user lookup tools |
-| Recent engagement | Meeting, transcript, email, note, and task tools |
-| Deal activity | CRM notes, CRM tasks, timeline, activity, and history tools |
-| Evidence from docs | Internal knowledge base and attachment tools |
-| Public/company facts | Web or internet search tools |
+| Find or confirm a deal | Deal search/list/detail tools [SearchDeals, ListDeals, GetDealDetails] |
+| Find or confirm a lead | Lead search/list tools [ListLeads] |
+| Understand account/company context | Account/company search and knowledge tools [SearchAccounts, InternalKnowledgeBase] |
+| Understand a person | Contact, stakeholder, participant, and user lookup tools [SearchContacts, ListDealStakeholders, GetStakeholderDetails] |
+| Recent engagement | Meeting, transcript, email, note, and task tools [ListDealMeetings, GetMeetingTranscript, ListDealEmails, ListDealNotes] |
+| Inbound signals from one mailbox | Connected mailbox and mailbox email tools [ListConnectedEmailAccounts, SearchMailboxEmails] |
+| Deal activity | CRM notes, CRM tasks, timeline, activity, and history tools [ListDealNotes, ListDealTasks, GetDealChangeHistory] |
+| Evidence from docs | Internal knowledge base and attachment tools [InternalKnowledgeBase] |
+| Public/company facts | Web or internet search tools [InternetSearch] |
 | Structured analysis | Relevant analysis skills such as MEDPIC, stakeholder analysis, risk analysis, or briefing skills |
+
+Use the best available tools for each data signal. Bracket hints are examples, not hard constraints.
 
 If a specialized analysis skill exists for the user's requested framework, load that skill
 after gathering enough context to know it applies.
@@ -114,6 +121,18 @@ For most CRM/deal analysis, answer these internally before writing:
    influencer, blocker, legal/procurement, end user, or unknown.
 5. State confidence and evidence. Do not over-label a person from weak evidence.
 6. Recommend how to engage them next.
+
+### Lead Analysis
+
+1. Resolve the lead from CRM leads, current context, or the user's provided signal.
+2. For inbound leads from email, resolve the exact connected mailbox first and use
+   `search_mailbox_emails`; do not read all connected mailboxes unless the user asked
+   for all of them.
+3. Check whether the lead already maps to a contact, account, company, or deal.
+4. Gather captured message, source, owner, status, company, and recent activity if available.
+5. Identify qualification gaps such as missing buyer identity, company fit, interest,
+   timeline, budget, or next owner action.
+6. Recommend the smallest useful next action without creating or updating CRM data.
 
 ### Pre-Meeting Briefing
 

@@ -38,6 +38,7 @@ explicitly asks to create a separate meeting.
 | "Send meeting/email to all stakeholders" | Resolve the deal and stakeholders, expand and deduplicate recipients, then show the final recipient list |
 | "Send it to Sarah/the champion/the buyer" | Resolve the person from stakeholders, contacts, meetings, emails, or conversation |
 | List or find meetings | Use the connected calendar, apply the requested date range, and return enough details to distinguish matching events |
+| Read/search emails for a specific mailbox | Verify the mailbox with `list_connected_email_accounts`, then use `search_mailbox_emails` with the exact email address and requested date range |
 | "Send a bot to my meeting" | List meetings, resolve one clear event, show the confirmation preview, then use the meeting bot tool |
 | Missing or ambiguous critical fields | Ask one bundled clarification covering every blocker |
 | Tool returns unknown, timeout, or partial status | Check current state before any retry; do not blindly repeat the action |
@@ -217,6 +218,31 @@ Use only connected and authorized sender mailboxes or calendars.
 - Never infer an unconnected mailbox from an email signature, document, contact record,
   or prior external email.
 - A reply such as "yes" does not answer a question asking which sender mailbox to use.
+
+## Mailbox-Scoped Email Reads
+
+When the user asks to read, search, summarize, or extract signals from emails in a
+specific connected account, keep the read scoped to that mailbox.
+
+Use this flow:
+
+1. If the user supplied a mailbox address, call `list_connected_email_accounts` to
+   verify that the exact mailbox is connected and readable.
+2. If the mailbox is connected and readable, call `search_mailbox_emails` with the
+   exact `mailbox_email`, requested date range such as `days_back=14`, and any sender,
+   subject, or text filters from the prompt.
+3. If `search_mailbox_emails` returns `has_more=True` and the task requires more
+   emails, call it again with `next_before_received_at` and `next_before_email_id`.
+4. If the user asks for "this account", "that inbox", or similar but multiple readable
+   mailboxes exist, ask which connected mailbox to use before reading.
+5. If the named mailbox is not connected or lacks read permission, say that specific
+   mailbox is unavailable and list the readable connected accounts when available.
+6. Do not scan every connected mailbox unless the user explicitly asks for all
+   connected mailboxes or separately confirms that broader scope.
+
+`search_mailbox_emails` reads synced emails for a selected mailbox. Use
+`list_deal_emails` for deal-scoped email history and `get_email_details` when you
+already have a specific message ID.
 
 ## Email Workflow
 
