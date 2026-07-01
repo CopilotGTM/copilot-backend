@@ -656,7 +656,7 @@ Paginated contact list with computed `deal_count`, `source`, nested `company`, a
 GET /users/crm/contacts/search
 ```
 
-Lightweight contact picker/typeahead endpoint. Use this for add-to-deal pickers, browse search, and any general contact UI where company-name matches are useful. It does not return `total_count`; clients should use `next_cursor` for infinite scroll.
+Lightweight contact picker/typeahead endpoint. Use this for add-to-deal pickers, add-stakeholder contact selection, browse search, and any general contact UI where company-name matches are useful. It does not return `total_count`; clients should use `next_cursor` for infinite scroll.
 
 #### Query Parameters
 
@@ -713,6 +713,8 @@ Contact creation still performs its own duplicate-email check, so search endpoin
 - Debounce user input before calling this endpoint.
 - Reset `cursor` whenever `q` or `company_id` changes.
 - Fetch the next page when the dropdown scroll nears the end and `has_more` is `true`.
+- Add-stakeholder clients should send the selected `contact_id` to `POST /users/crm/deals/{deal_id}/stakeholders`.
+- The older `GET /users/crm/deals/{deal_id}/stakeholders/available-contacts?query=...` route remains as a compatibility alias for deployed add-stakeholder modals, but new clients should call this endpoint directly.
 - For contact creation, use `/contacts/search/create-candidates` instead so company-name matches do not hide the create action.
 
 ---

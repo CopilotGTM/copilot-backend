@@ -10,14 +10,10 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.contracts.crm.stakeholders import (
-    AvailableContactItem,
-    StakeholderDetail,
-    StakeholderListResponse,
-)
+from src.contracts.crm.stakeholders import StakeholderDetail, StakeholderListResponse
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -156,75 +152,6 @@ class StakeholderReadService:
         payload["engagement_history"] = []
         payload["active_research_job"] = None
         return payload
-
-    async def list_available_contacts(
-        self, deal_id: UUID, query: str | None = None, limit: int = 50
-    ) -> list[AvailableContactItem]:
-        """List CRM contacts that can still be added as deal stakeholders.
-
-        Exclusion is by contact ID and normalized email because historic data can
-        have one without the other; using both avoids duplicate stakeholder rows.
-        """
-        contact_id_subq = select(col(CRMDealParticipant.related_local_id)).where(
-            col(CRMDealParticipant.deal_id) == deal_id,
-            col(CRMDealParticipant.organisation_id) == self.organisation_id,
-            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
-            col(CRMDealParticipant.is_deleted).is_(False),
-            col(CRMDealParticipant.related_local_id).isnot(None),
-        )
-        email_subq = select(func.lower(func.trim(col(CRMDealParticipant.related_email)))).where(
-            col(CRMDealParticipant.deal_id) == deal_id,
-            col(CRMDealParticipant.organisation_id) == self.organisation_id,
-            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
-            col(CRMDealParticipant.is_deleted).is_(False),
-            col(CRMDealParticipant.related_email).isnot(None),
-            col(CRMDealParticipant.related_email) != "",
-        )
-
-        stmt = select(CRMContact).where(
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.contact_id).not_in(contact_id_subq),
-            func.lower(func.trim(col(CRMContact.email))).not_in(email_subq),
-            col(CRMContact.email).isnot(None),
-            col(CRMContact.email) != "",
-        )
-
-        if query:
-            search = f"%{query}%"
-            # The UI uses this endpoint as typeahead, so the search spans identity
-            # and company fields without exposing contacts outside the org filter.
-            stmt = stmt.where(
-                (col(CRMContact.first_name).ilike(search))
-                | (col(CRMContact.last_name).ilike(search))
-                | (col(CRMContact.full_name).ilike(search))
-                | (col(CRMContact.email).ilike(search))
-                | (col(CRMContact.company_name).ilike(search))
-            )
-
-        stmt = stmt.limit(limit)
-        result = await self.session.execute(stmt)
-        contacts = list(result.scalars().all())
-
-        available_contacts: list[AvailableContactItem] = []
-        for contact in contacts:
-            if not contact.email:
-                continue
-            available_contacts.append(
-                AvailableContactItem(
-                    contact_id=contact.contact_id,
-                    external_id=None,
-                    email=contact.email,
-                    first_name=contact.first_name,
-                    last_name=contact.last_name,
-                    full_name=contact.full_name,
-                    job_title=contact.job_title,
-                    company_name=contact.company_name,
-                    phone=contact.phone,
-                    lifecycle_stage=contact.lifecycle_stage,
-                    last_activity_at=contact.last_activity_at,
-                )
-            )
-        return available_contacts
 
     async def close(self) -> None:
         """Close the caller-provided org session when dependency cleanup owns it."""

@@ -19,7 +19,11 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
 )
 from src.domain.models.organisation_tables.sync.crm import CRMContact, CRMDeal, CRMNote, CRMTask
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMDealStageHistory,
+    CRMParticipantType,
+)
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     DealEmailDirection,
@@ -151,6 +155,114 @@ async def test_contact_created_projection_writes_contact_activity_and_links() ->
     assert _activity_link_values(session) == {
         ("CONTACT", contact_id, "RELATED", "SYSTEM"),
         ("COMPANY", company_id, "RELATED", "SYSTEM"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_stakeholder_added_projection_writes_deal_and_contact_activity_links() -> None:
+    """Adding a stakeholder should appear in the activity feed, not legacy timeline events."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    contact_id = uuid4()
+    actor_user_id = uuid4()
+    occurred_at = datetime(2026, 6, 25, 10, 0, tzinfo=UTC)
+    participant = CRMDealParticipant(
+        participant_id=participant_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        related_name="Jane Buyer",
+        related_email="jane@example.com",
+        job_title="CFO",
+        participant_source="MANUAL",
+        created_at=occurred_at,
+    )
+    session = _FakeSession()
+
+    await ActivityFeedProjectionService(session, organisation_id).upsert_stakeholder_added(
+        participant,
+        actor_user_id=actor_user_id,
+        source="agent",
+        created_via="add_stakeholder_agent",
+    )
+
+    values = _compiled_values(session.statements[0])
+    assert values["activity_id"] == participant_id
+    assert values["activity_type"] == "EVENT"
+    assert values["title"] == "Stakeholder added: Jane Buyer"
+    assert values["summary"] == "jane@example.com"
+    assert values["preview"] == "jane@example.com"
+    assert values["occurred_at"] == occurred_at
+    assert values["source_type"] == "STAKEHOLDER_ADDED"
+    assert values["source_record_id"] == str(participant_id)
+    assert values["source_integration_id"] == integration_id
+    assert values["display_payload"] == {
+        "participant_id": str(participant_id),
+        "contact_id": str(contact_id),
+        "stakeholder_name": "Jane Buyer",
+        "email": "jane@example.com",
+        "job_title": "CFO",
+        "participant_source": "MANUAL",
+        "mutation_source": "agent",
+        "created_via": "add_stakeholder_agent",
+    }
+    assert _activity_link_values(session) == {
+        ("DEAL", deal_id, "PRIMARY", "SYSTEM"),
+        ("CONTACT", contact_id, "RELATED", "SYSTEM"),
+        ("USER", actor_user_id, "OWNER", "SYSTEM"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_stakeholder_removed_projection_writes_distinct_activity() -> None:
+    """Removing a stakeholder should use a separate activity from the add card."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    contact_id = uuid4()
+    actor_user_id = uuid4()
+    removed_at = datetime(2026, 6, 25, 11, 0, tzinfo=UTC)
+    participant = CRMDealParticipant(
+        participant_id=participant_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        related_name="Jane Buyer",
+        related_email="jane@example.com",
+        job_title="CFO",
+        participant_source="MANUAL",
+        updated_at=removed_at,
+    )
+    session = _FakeSession()
+
+    await ActivityFeedProjectionService(session, organisation_id).upsert_stakeholder_removed(
+        participant,
+        actor_user_id=actor_user_id,
+        source="api",
+        created_via="remove_stakeholder",
+    )
+
+    values = _compiled_values(session.statements[0])
+    assert values["activity_id"] != participant_id
+    assert values["activity_type"] == "EVENT"
+    assert values["title"] == "Stakeholder removed: Jane Buyer"
+    assert values["occurred_at"] == removed_at
+    assert values["source_type"] == "STAKEHOLDER_REMOVED"
+    assert values["source_record_id"] == f"{participant_id}:STAKEHOLDER_REMOVED"
+    assert values["display_payload"]["participant_id"] == str(participant_id)
+    assert values["display_payload"]["mutation_source"] == "api"
+    assert values["display_payload"]["created_via"] == "remove_stakeholder"
+    assert _activity_link_values(session) == {
+        ("DEAL", deal_id, "PRIMARY", "SYSTEM"),
+        ("CONTACT", contact_id, "RELATED", "SYSTEM"),
+        ("USER", actor_user_id, "OWNER", "SYSTEM"),
     }
 
 

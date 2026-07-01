@@ -11,7 +11,6 @@ import logging
 from typing import Any
 
 from src.service.bots.form_handlers.add_deal_note_handler import AddDealNoteFormHandler
-from src.service.bots.form_handlers.add_stakeholder_handler import AddStakeholderFormHandler
 from src.service.bots.form_handlers.base import (
     BaseFormHandler,
     CancelFormHandler,
@@ -89,10 +88,6 @@ FormHandlerRegistry.register("add_deal_note_submit", AddDealNoteFormHandler())
 FormHandlerRegistry.register(
     "add_deal_note_cancel",
     NonceCancelFormHandler("note_confirm", "Note cancelled."),
-)
-FormHandlerRegistry.register("add_stakeholder_submit", AddStakeholderFormHandler())
-FormHandlerRegistry.register(
-    "add_stakeholder_cancel", CancelFormHandler("Stakeholder addition cancelled.")
 )
 FormHandlerRegistry.register("update_deal_stage_submit", UpdateDealStageFormHandler())
 FormHandlerRegistry.register(

@@ -200,6 +200,8 @@ export interface StakeholderDetail {
   source: StakeholderSource;            // How stakeholder was discovered
   approval_status: ApprovalStatus;      // APPROVED/PENDING/REJECTED/REMOVED for matching
   active_research_job: DealJobResponse | null; // Present when stakeholder research is active
+  stakeholder_research: string | null;  // Cached research profile, when already available
+  last_researched_at: string | null;    // ISO8601
 }
 
 /**
@@ -259,6 +261,17 @@ export interface CreateStakeholderResponse {
   research_job: DealJobResponse | null;
 }
 
+/**
+ * Create payload for POST /{deal_id}/stakeholders.
+ * Send only identity fields. At least one field must be present.
+ */
+export interface CreateStakeholderRequest {
+  contact_id?: UUID | null;          // Existing CRM contact selected from search
+  name?: string | null;              // Manual name or optional override for selected contact
+  email?: string | null;             // Manual email identity
+  linkedin_url?: string | null;      // Manual LinkedIn identity
+}
+
 export interface StakeholderLink {
   platform: string;                  // e.g., "linkedin", "twitter"
   url: string;
@@ -281,33 +294,6 @@ export interface UpdateStakeholderRequest {
   motivation?: string | null;
   pain_points?: string[] | null;
   external_links?: StakeholderLink[] | null;
-}
-
-export interface AvailableContactItem {
-  contact_id: UUID;
-  email: string;                     // Required for participant-backed stakeholder identity
-  first_name: string | null;
-  last_name: string | null;
-  full_name: string | null;
-  job_title: string | null;
-  company_name: string | null;
-  phone: string | null;
-  lifecycle_stage: string | null;
-  last_activity_at: string | null;   // ISO8601
-}
-
-export interface SkippedContact {
-  contact_id: UUID;
-  reason: string;
-}
-
-export interface AddContactsAsStakeholdersResponse {
-  // Added rows are CONTACT participants; participant_id is the canonical row ID.
-  added: StakeholderDetail[];
-  skipped: SkippedContact[];
-  total_requested: number;
-  total_added: number;
-  total_skipped: number;
 }
 ```
 
@@ -407,211 +393,28 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 
 ---
 
-## 2. List Available Contacts
+## 2. Add Stakeholder
 
-Lists CRM contacts that can be added as stakeholders for a deal. This is the
-read-only contact picker endpoint for the add-from-contacts flow. It only
-returns contacts with valid email addresses and excludes contacts that already
-have a participant-backed stakeholder row for this deal.
+Manually add a new stakeholder to a deal. Use this when you want to quickly capture someone who is not already selected from CRM contacts.
 
-This endpoint reads from `crm_contacts`; it does not create participants and it
-does not write to the legacy `deal_stakeholders` table.
-
-### Endpoint (List Available Contacts)
+For typeahead/search in the add-stakeholder modal, prefer the canonical contact
+search endpoint:
 
 ```http
-GET /{deal_id}/stakeholders/available-contacts
+GET /users/crm/contacts/search?q={query}
 ```
 
-### Path Parameters (List Available Contacts)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-
-### Query Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | No | - | Search string to filter by name, email, or company |
-| `limit` | integer | No | 50 | Maximum number of results to return |
-
-### Success Response (200) (List Available Contacts)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Available contacts retrieved",
-  "data": [
-    {
-      "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "email": "alice.smith@acmecorp.com",
-      "first_name": "Alice",
-      "last_name": "Smith",
-      "full_name": "Alice Smith",
-      "job_title": "VP of Engineering",
-      "company_name": "Acme Corporation",
-      "phone": "+1-555-123-4567",
-      "lifecycle_stage": "opportunity",
-      "last_activity_at": "2024-11-01T09:00:00Z"
-    }
-  ]
-}
-```
-
-#### Response Schema (`AvailableContactItem`)
-
-| Field | Type | Nullable | Description |
-|-------|------|----------|-------------|
-| `contact_id` | UUID | No | Internal CRM contact identifier |
-| `email` | string | No | Primary email address; required before a contact can be added as a stakeholder |
-| `first_name` | string | Yes | Contact first name |
-| `last_name` | string | Yes | Contact last name |
-| `full_name` | string | Yes | Display name used by pickers and search results |
-| `job_title` | string | Yes | Current or latest known job title from the contact profile |
-| `company_name` | string | Yes | Associated company/account name |
-| `phone` | string | Yes | Primary phone number |
-| `lifecycle_stage` | string | Yes | CRM lifecycle stage, when available |
-| `last_activity_at` | datetime | Yes | Last known CRM activity timestamp |
-
-### Notes
-
-- **Email Required**: Only contacts with a valid email address are returned, as email is required for participant-backed stakeholder identity
-- **Search**: The `query` parameter searches across `first_name`, `last_name`, `full_name`, `email`, and `company_name`
-- **Exclusion**: Contacts already added as stakeholders for this deal are automatically excluded
-- **Identity**: The follow-up add endpoint creates or restores `CONTACT` rows in `crm_deal_participants`; `participant_id` is the returned row ID.
-
-### Error Responses (List Available Contacts)
-
-| Code | Description |
-|------|-------------|
-| `401` | Missing or invalid authentication token |
-| `500` | Internal server error |
-
-### Example cURL (List Available Contacts)
-
-```bash
-curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/available-contacts?query=engineering&limit=20" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-```
-
----
-
-## 3. Add Contacts as Stakeholders
-
-Add selected CRM contacts as stakeholders to a deal. Only contacts with valid
-email addresses will be added. Contacts without emails or those that already
-exist as stakeholders are skipped.
-
-Added contacts are persisted as `CONTACT` participants in
-`crm_deal_participants`. The legacy `deal_stakeholders` table is not updated.
-
-### Endpoint (Add Contacts as Stakeholders)
+The deal-scoped legacy picker URL is still supported for deployed clients:
 
 ```http
-POST /{deal_id}/stakeholders/add-from-contacts
+GET /{deal_id}/stakeholders/available-contacts?query={query}
 ```
 
-### Path Parameters (Add Contacts as Stakeholders)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-
-### Request Body
-
-```json
-{
-  "contact_ids": [
-    "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "4fa85f64-5717-4562-b3fc-2c963f66afa7",
-    "5fa85f64-5717-4562-b3fc-2c963f66afa8"
-  ]
-}
-```
-
-#### Request Schema (`AddContactsAsStakeholdersRequest`)
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `contact_ids` | UUID[] | Yes | List of contact IDs to add as stakeholders (minimum 1) |
-
-### Success Response (200) (Add Contacts as Stakeholders)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Stakeholders added from contacts",
-  "data": {
-    "added": [
-      {
-        "participant_id": "6fa85f64-5717-4562-b3fc-2c963f66afa9",
-        "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "email": "alice.smith@acmecorp.com",
-        "name": "Alice Smith",
-        "job_title": "VP of Engineering",
-        "phone_number": "+1-555-123-4567",
-        "stance": "UNKNOWN",
-        "decision_power": "UNKNOWN",
-        "temperature": "COLD",
-        "source": "CRM"
-      }
-    ],
-    "skipped": [
-      {
-        "contact_id": "4fa85f64-5717-4562-b3fc-2c963f66afa7",
-        "reason": "Contact has no email address"
-      },
-      {
-        "contact_id": "5fa85f64-5717-4562-b3fc-2c963f66afa8",
-        "reason": "Stakeholder with this email already exists"
-      }
-    ],
-    "total_requested": 3,
-    "total_added": 1,
-    "total_skipped": 2
-  }
-}
-```
-
-### Skip Reasons
-
-| Reason | Description |
-| -------- | ------------- |
-| `Contact not found` | The contact ID does not exist in the CRM |
-| `Contact has no email address` | Contact exists but has no email |
-| `Stakeholder with this email already exists` | A stakeholder with the same email is already on this deal |
-| `Contact is already a stakeholder` | The contact is already linked to this deal |
-
-### Error Responses (Add Contacts as Stakeholders)
-
-| Code | Description |
-|------|-------------|
-| `401` | Missing or invalid authentication token |
-| `422` | Validation error (e.g., empty contact_ids list) |
-| `500` | Internal server error |
-
-### Example cURL (Add Contacts as Stakeholders)
-
-```bash
-curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/add-from-contacts" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contact_ids": [
-      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "4fa85f64-5717-4562-b3fc-2c963f66afa7"
-    ]
-  }'
-```
-
----
-
-## 4. Add Stakeholder (Manual)
-
-Manually add a new stakeholder to a deal. Use this when you want to add someone who is not in your CRM contacts.
+It delegates to the same contact search implementation and returns the older
+flat available-contact list shape. New clients should use
+`GET /users/crm/contacts/search` and then send the selected `contact_id` to the
+create endpoint below. Do not use the removed bulk
+`/{deal_id}/stakeholders/add-from-contacts` endpoint.
 
 ### Endpoint (Add Stakeholder)
 
@@ -627,96 +430,110 @@ POST /{deal_id}/stakeholders
 
 ### Request Body
 
-The request body includes UI metadata to help frontend developers build appropriate form controls.
+Frontend should send only stakeholder identity fields on create. If the user
+selects a result from contact search, send `contact_id` by itself or with a
+user-edited `name`.
 
 ```json
 {
-  "email": "john.smith@prospect.com",
   "name": "John Smith",
-  "job_title": "CTO",
-  "phone_number": "+1 (555) 123-4567",
-  "linkedin_url": "https://www.linkedin.com/in/johnsmith",
-  "stance": "SUPPORTER",
-  "decision_power": "DECISION_MAKER",
-  "department": "Technology",
-  "motivation": "Looking to modernize their tech stack",
-  "pain_points": ["Legacy systems", "Manual processes"],
-  "external_links": [
-    {
-      "platform": "linkedin",
-      "url": "https://linkedin.com/in/johnsmith",
-      "label": "LinkedIn"
-    }
-  ]
+  "email": "john.smith@prospect.com",
+  "linkedin_url": "https://www.linkedin.com/in/johnsmith"
 }
 ```
 
-### Request Field Categories
+### Create Request Contract
 
-Fields are categorized to help frontend build appropriate UI:
+Send these fields only. At least one of `contact_id`, `name`, `email`, or
+`linkedin_url` must be present.
 
-#### Required Fields
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `contact_id` | UUID | Conditionally | Existing CRM contact selected from contact search. Backend copies email, name, job title, phone, LinkedIn, external links, and cached research from the contact. |
+| `name` | string | Conditionally | Stakeholder name. Can create an incomplete placeholder when this is the only known value. |
+| `email` | string | Conditionally | Email address. Used for contact resolution, dedupe, domain checks, communication matching, and automatic research dispatch. |
+| `linkedin_url` | string | Conditionally | LinkedIn profile URL. Used for contact resolution, dedupe, and enrichment when email is not known. |
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `email` | string | Email address (must be unique per deal) |
+Do not send profile, buying-role, or engagement fields on create. The backend/enrichment pipeline owns:
 
-> **Domain Validation**: Frontend should validate that the email domain matches `company_domain` from the GET stakeholders response. If domains don't match, show a warning: "This email domain doesn't match the company domain ({company_domain}). Are you sure this person works at {company_name}?"
+- `job_title`
+- `phone_number`
+- `department`
+- `stance`
+- `decision_power`
+- `motivation`
+- `pain_points`
+- `external_links`
+- `temperature`
+- `source`
+- `approval_status`
 
-#### Primary Fields (Show Prominently)
+Those fields may be returned in responses and may be editable through the stakeholder edit endpoint where supported, but they should not be part of the add-stakeholder form.
 
-| Field | Type | Default | Description | UI Component |
-|-------|------|---------|-------------|--------------|
-| `name` | string | null | Full name (strongly recommended) | Text input |
-| `job_title` | string | null | Job title | Text input |
-| `phone_number` | string | null | Phone number (stored as-is, no formatting) | Text input |
-| `linkedin_url` | string | null | LinkedIn profile URL | URL input |
-| `stance` | enum | UNKNOWN | Attitude toward solution | Select dropdown |
-| `decision_power` | enum | UNKNOWN | Role in buying process | Select dropdown |
+> **Domain Validation**: If `email` is provided, frontend should validate that the email domain matches `company_domain` from the GET stakeholders response. If domains don't match, show a warning: "This email domain doesn't match the company domain ({company_domain}). Are you sure this person works at {company_name}?"
 
-#### Secondary Fields (Collapsible Section)
+### Minimal Request Examples
 
-| Field | Type | Default | Description | UI Component |
-|-------|------|---------|-------------|--------------|
-| `department` | string | null | Department | Text input |
-| `motivation` | string | null | What drives this person | Textarea |
-| `pain_points` | string[] | null | Challenges they've mentioned | Tag input |
-| `external_links` | array | null | Profile links | Link builder |
+Email-only:
 
-> **Note on Defaults**: Fields with neutral defaults (like `stance=UNKNOWN`) allow users to skip fields they're unsure about. The AI analysis will refine these values over time based on actual interactions.
+```json
+{
+  "email": "john.smith@prospect.com"
+}
+```
 
-### Stance Options (for UI dropdown)
+Name-only placeholder:
 
-| Value | Label | Description |
-|-------|-------|-------------|
-| `UNKNOWN` | Unknown | Not yet determined |
-| `CHAMPION` | Champion | Actively advocates for your solution |
-| `SUPPORTER` | Supporter | Generally positive |
-| `NEUTRAL` | Neutral | No strong opinion |
-| `DETRACTOR` | Detractor | Has concerns or objections |
-| `BLOCKER` | Blocker | Actively opposing |
+```json
+{
+  "name": "John Smith"
+}
+```
 
-### Decision Power Options (for UI dropdown)
+LinkedIn-only:
 
-| Value | Label | Description |
-|-------|-------|-------------|
-| `UNKNOWN` | Unknown | Not yet determined |
-| `DECISION_MAKER` | Decision Maker | Has final authority and budget sign-off |
-| `INFLUENCER` | Influencer | Can sway decision makers |
-| `EVALUATOR` | Evaluator | Assesses technical/functional fit |
-| `GATEKEEPER` | Gatekeeper | Controls access to decision makers |
-| `END_USER` | End User | Will use the product daily |
+```json
+{
+  "linkedin_url": "https://www.linkedin.com/in/johnsmith"
+}
+```
+
+Selected contact:
+
+```json
+{
+  "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+Selected contact with a user-edited display name:
+
+```json
+{
+  "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "John Smith"
+}
+```
 
 ### Success Response (201) (Add Stakeholder)
 
 The stakeholder row is created synchronously. The response also returns three
 visible post-create processing jobs for related email rematch, calendar rematch,
-and stakeholder sync. Stakeholder research is not started here; use the manual
-research trigger endpoint when the user explicitly requests research.
+and stakeholder sync when the stakeholder has an email. Contact-backed
+stakeholders enqueue `contact_research` when cached contact research is missing;
+unlinked email/LinkedIn placeholders use the temporary `stakeholder_research`
+path until enrichment can resolve a contact. Name-only placeholders return no
+jobs.
 
 Writes are participant-backed: durable person/profile fields are written to
 `crm_contacts` when a contact can be resolved or created, and deal-specific
 behavior is written to the active `CONTACT` row in `crm_deal_participants`.
+
+`research_job.job_type` is therefore one of:
+
+- `contact_research` when `stakeholder.contact_id` is present and fresh contact
+  research was not already copied.
+- `stakeholder_research` for unlinked email/LinkedIn placeholders.
 
 ```json
 {
@@ -767,6 +584,53 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
 }
 ```
 
+Selected contact response when cached contact research already exists:
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stakeholder created successfully",
+  "data": {
+    "stakeholder": {
+      "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
+      "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "email": "john.smith@prospect.com",
+      "name": "John Smith",
+      "job_title": "CTO",
+      "phone_number": "+1 (555) 123-4567",
+      "linkedin_url": "https://www.linkedin.com/in/johnsmith",
+      "stance": "UNKNOWN",
+      "decision_power": "UNKNOWN",
+      "temperature": "UNKNOWN",
+      "source": "CRM",
+      "approval_status": "APPROVED",
+      "stakeholder_research": "## Professional background\nJohn leads platform engineering...",
+      "last_researched_at": "2026-06-20T10:20:00Z",
+      "active_research_job": null
+    },
+    "processing_jobs": [
+      {
+        "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
+        "job_type": "deal_email_rematch",
+        "status": "pending"
+      },
+      {
+        "job_id": "2dad9c62-3a1b-4ea5-b3b0-8267112c9222",
+        "job_type": "deal_calendar_rematch",
+        "status": "pending"
+      },
+      {
+        "job_id": "bddb0b2d-efae-4d93-b76d-2a2d3ebbbd3a",
+        "job_type": "stakeholder_sync",
+        "status": "pending"
+      }
+    ],
+    "research_job": null
+  }
+}
+```
+
 ### Auto-Set & Default Fields
 
 The following fields are automatically set or have neutral defaults:
@@ -812,9 +676,10 @@ After a successful add, register every `processing_jobs[]` item in the global
 activity surface and subscribe to `GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream`.
 Show these as deal-level processing. They run sequentially in this order: email
 rematch, calendar rematch, then stakeholder sync. `research_job` is separate from
-that processing chain and represents research for the added/restored stakeholder.
-That returned research job is user-owned and can be subscribed to by the same
-authenticated user through the generic deal job stream.
+that processing chain. For contact-backed stakeholders it represents contact
+research; for unlinked email/LinkedIn placeholders it represents temporary
+stakeholder research. That returned research job is user-owned and can be
+subscribed to by the same authenticated user through the generic deal job stream.
 If the rematch/sync chain discovers additional stakeholders, those services may
 dispatch research for the newly discovered stakeholders through the normal
 dedupe/cooldown path. Refresh deal detail, stakeholders, meetings, timeline, and
@@ -827,22 +692,9 @@ related activity when the jobs complete.
 │  ADD STAKEHOLDER                                            │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Email*: [_________________________________]                │
-│                                                             │
-│  ─── Primary Details ───                                    │
-│  Name:      [_________________________________]             │
-│  Job Title: [_________________________________]             │
-│  Phone:     [_________________________________]             │
-│  Stance:    [UNKNOWN        ▼]                              │
-│  Role:      [UNKNOWN        ▼]                              │
-│                                                             │
-│  ▶ More Details (collapsed by default)                      │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ Department: [_________________________]              │   │
-│  │ Motivation: [________________________]              │   │
-│  │ Pain Points: [tag1] [tag2] [+]                      │   │
-│  │ LinkedIn: [_________________________]               │   │
-│  └─────────────────────────────────────────────────────┘   │
+│  Name:     [_________________________________]              │
+│  Email:    [_________________________________]              │
+│  LinkedIn: [_________________________________]              │
 │                                                             │
 │                              [Cancel]  [Add Stakeholder]    │
 └─────────────────────────────────────────────────────────────┘
@@ -850,7 +702,7 @@ related activity when the jobs complete.
 
 ---
 
-## 5. Edit Stakeholder
+## 3. Edit Stakeholder
 
 Partially updates an existing stakeholder for a deal. Only fields included in the request are changed.
 Profile fields (`name`, `job_title`, `phone_number`, `linkedin_url`, `department`,
@@ -949,7 +801,7 @@ curl -X PATCH "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/8fa85
 
 ---
 
-## 6. Get Stakeholder Detail
+## 4. Get Stakeholder Detail
 
 Retrieves full details of a specific stakeholder including engagement history.
 
@@ -1061,11 +913,13 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f6
 
 ---
 
-## 7. Trigger Stakeholder Research
+## 5. Trigger Stakeholder Research
 
 Manually starts stakeholder research for a specific stakeholder. Stakeholder
-add/re-add also returns `research_job` for the added/restored stakeholder, while
-this endpoint is used when the user explicitly triggers research later.
+add/re-add may return `contact_research` for contact-backed rows or temporary
+`stakeholder_research` for unlinked email/LinkedIn placeholders. This endpoint
+is used when the user explicitly triggers participant-scoped stakeholder
+research later.
 
 ### Endpoint (Trigger Stakeholder Research)
 
@@ -1117,132 +971,9 @@ The stream emits normal job frames: `ready`, `progress.update`, optional
 
 ---
 
-## 8. Approve Stakeholder
+## 6. Remove Stakeholder
 
-Approve a PENDING stakeholder for deal matching. Changes approval_status from PENDING to APPROVED.
-
-### Endpoint (Approve Stakeholder)
-
-```http
-POST /{deal_id}/stakeholders/{participant_id}/approve
-```
-
-### Path Parameters (Approve Stakeholder)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
-
-### When to Use
-
-When stakeholders are discovered from calendar events or emails beyond the first 5:
-- They're marked as PENDING by default
-- Frontend should display these for user review
-- User can approve to include in deal matching
-
-### Success Response (200) (Approve Stakeholder)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Stakeholder approved",
-  "data": {
-    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "email": "discovered.contact@example.com",
-    "name": "Discovered Contact",
-    "approval_status": "APPROVED",
-    "source": "CALENDAR_DISCOVERY",
-    ...
-  }
-}
-```
-
-### Error Responses (Approve Stakeholder)
-
-| Code | Description |
-|------|-------------|
-| `401` | Missing or invalid authentication token |
-| `404` | Stakeholder not found |
-| `422` | Invalid status transition (e.g., already APPROVED or REJECTED) |
-| `500` | Internal server error |
-
-### Example cURL (Approve Stakeholder)
-
-```bash
-curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/approve" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## 9. Reject Stakeholder
-
-Reject a stakeholder to exclude from deal matching. Works for PENDING or APPROVED stakeholders.
-
-### Endpoint (Reject Stakeholder)
-
-```http
-POST /{deal_id}/stakeholders/{participant_id}/reject
-```
-
-### Path Parameters (Reject Stakeholder)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `participant_id` | UUID | Yes | The CRMDealParticipant row ID |
-
-### Use Cases
-
-- **Incorrect discovery**: Stakeholder discovered but not actually relevant to deal
-- **Exclude from matching**: Don't want calendar/email events matched to this person
-- **Cleanup**: Remove noise from stakeholder list
-
-### Success Response (200) (Reject Stakeholder)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Stakeholder rejected",
-  "data": {
-    "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "email": "irrelevant.contact@example.com",
-    "name": "Irrelevant Contact",
-    "approval_status": "REJECTED",
-    ...
-  }
-}
-```
-
-### What Happens When Rejected
-
-- **Not used for calendar matching**: Events with this attendee won't auto-associate
-- **Not used for email matching**: Emails with this person won't auto-associate
-- **Hidden by default**: Not shown in stakeholder list unless `include_rejected=true`
-- **Reversible**: Can be re-approved later if needed (future endpoint)
-
-### Error Responses (Reject Stakeholder)
-
-| Code | Description |
-|------|-------------|
-| `401` | Missing or invalid authentication token |
-| `404` | Stakeholder not found |
-| `422` | Invalid status transition (e.g., already REJECTED) |
-| `500` | Internal server error |
-
-### Example cURL (Reject Stakeholder)
-
-```bash
-curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/reject" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## 10. Remove Stakeholder
-
-Remove an approved stakeholder from the deal. This is different from rejection - removal is for stakeholders that were previously active but should no longer be associated with the deal.
+Remove a stakeholder from the deal.
 
 ### Endpoint (Remove Stakeholder)
 
@@ -1264,18 +995,6 @@ DELETE /{deal_id}/stakeholders/{participant_id}
 - **Clean up active list**: Remove stakeholders who were active but are no longer relevant
 - **Undo manual addition**: Remove a manually added stakeholder that shouldn't be there
 
-### Difference from Reject
-
-| Action | Use Case | Original Status | Result |
-|--------|----------|-----------------|--------|
-| **Reject** | Stakeholder was discovered but shouldn't be included | PENDING or APPROVED | REJECTED |
-| **Remove** | Stakeholder was active but is no longer relevant | APPROVED only | REMOVED |
-
-Both REJECTED and REMOVED stakeholders are excluded from deal matching. The distinction helps with:
-- **Analytics**: Track how many stakeholders were removed vs rejected
-- **Audit trail**: Understand the history of stakeholder changes
-- **Potential restoration**: Different workflows for re-adding rejected vs removed stakeholders
-
 ### Success Response (200) (Remove Stakeholder)
 
 ```json
@@ -1286,7 +1005,7 @@ Both REJECTED and REMOVED stakeholders are excluded from deal matching. The dist
     "participant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "email": "former.contact@example.com",
     "name": "Former Contact",
-    "approval_status": "REMOVED",
+    "approval_status": "APPROVED",
     "source": "CRM",
     ...
   }
@@ -1304,8 +1023,6 @@ Both REJECTED and REMOVED stakeholders are excluded from deal matching. The dist
 
 | Code | Description |
 |------|-------------|
-| `400` | Stakeholder is not in APPROVED status (only approved stakeholders can be removed) |
-| `400` | Stakeholder is already removed |
 | `401` | Missing or invalid authentication token |
 | `404` | Stakeholder not found |
 | `500` | Internal server error |
@@ -1337,10 +1054,10 @@ curl -X DELETE "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa8
 1. **View Stakeholders**: Call `GET /{deal_id}/stakeholders` to display the stakeholder list
 2. **Add Stakeholders**:
    - User clicks "Add Stakeholder" button
-   - Call `GET /{deal_id}/stakeholders/available-contacts` to show available contacts
-   - User selects one or more contacts
-   - Call `POST /{deal_id}/stakeholders/add-from-contacts` with selected contact IDs
-   - Display success/skip summary to user
+   - User enters one identity value: `name`, `email`, `linkedin_url`, or selects an existing contact from `GET /users/crm/contacts/search`
+   - Existing deployed clients may call `GET /{deal_id}/stakeholders/available-contacts?query=...`; that route is a compatibility alias over contact search
+   - Call `POST /{deal_id}/stakeholders` with the inferred identity payload
+   - Display the created stakeholder and any returned processing or research job
 
 3. **View Stakeholder Detail**:
     - User clicks on a stakeholder card
@@ -1353,15 +1070,8 @@ curl -X DELETE "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa8
    - Refresh stakeholder card/detail after success
    - Edits made through PATCH are preserved during stakeholder mapper sync
 
-5. **Manage Pending Stakeholders** (Approval Flow):
-    - Display PENDING stakeholders with visual indicator (badge, different styling)
-    - Show "Approve" and "Reject" action buttons for pending items
-    - On approve: Call `POST /{deal_id}/stakeholders/{participant_id}/approve`
-    - On reject: Call `POST /{deal_id}/stakeholders/{participant_id}/reject`
-    - Update UI immediately (optimistic update) or refetch list
-
-6. **Remove Active Stakeholders**:
-    - Show "Remove" action on APPROVED stakeholders (e.g., in dropdown menu or detail view)
+5. **Remove Stakeholders**:
+    - Show "Remove" action in the stakeholder dropdown menu or detail view
     - On remove: Call `DELETE /{deal_id}/stakeholders/{participant_id}`
     - Show confirmation dialog: "Remove this stakeholder from the deal?"
     - Update UI immediately or refetch list
@@ -1375,24 +1085,7 @@ Display key metrics with appropriate indicators:
 | `stance` | Color-coded badge (Green: CHAMPION/SUPPORTER, Yellow: NEUTRAL, Red: DETRACTOR/BLOCKER) |
 | `decision_power` | Icon + label (Crown: DECISION_MAKER, Megaphone: INFLUENCER, etc.) |
 | `temperature` | Colored indicator (Red: HOT, Orange: WARM, Blue: COLD) |
-| `approval_status` | PENDING: Yellow badge with action buttons; REMOVED: Gray badge (if shown) |
-
-### Search Best Practices
-
-- Debounce the `query` parameter input (300-500ms) to avoid excessive API calls
-- Show loading state while fetching contacts
-- Display company name and job title to help users identify the right contacts
-
-### Handling Skipped Contacts
-
-- Display skipped contacts with their reasons in a non-blocking way
-- For "no email" skips, consider prompting user to update contact in CRM first
-
-### Handling Pending Stakeholders
-
-- Show a badge or section header: "X stakeholders pending approval"
-- Explain to users: "These contacts were discovered in calendar events/emails"
-- Provide bulk approve/reject actions for efficiency
+| `approval_status` | APPROVED: active stakeholder; REMOVED: Gray badge if shown in historical views |
 
 ---
 

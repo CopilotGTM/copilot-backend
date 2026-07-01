@@ -25,10 +25,10 @@ def _get_input_block(payload: dict, block_id: str) -> dict:
 def test_form_builder_embeds_metadata_in_button_value() -> None:
     metadata = {"deal_id": "abc-123", "organisation_id": "org-123", "nonce": "nonce-1"}
     form = FormDefinition(
-        title="Add Stakeholder",
+        title="Add Note",
         fields=[FormField(id="email", label="Email", field_type="text", required=True)],
-        submit_action="add_stakeholder_submit",
-        cancel_action="add_stakeholder_cancel",
+        submit_action="add_note_submit",
+        cancel_action="add_note_cancel",
         metadata=metadata,
     )
 
@@ -39,8 +39,8 @@ def test_form_builder_embeds_metadata_in_button_value() -> None:
     submit_button = actions["elements"][0]
     cancel_button = actions["elements"][1]
 
-    assert submit_button["action_id"] == "add_stakeholder_submit"
-    assert cancel_button["action_id"] == "add_stakeholder_cancel"
+    assert submit_button["action_id"] == "add_note_submit"
+    assert cancel_button["action_id"] == "add_note_cancel"
     assert json.loads(submit_button["value"]) == metadata
     assert json.loads(cancel_button["value"]) == metadata
 

@@ -20,10 +20,9 @@ from src.api.dependencies.organisation_dependencies import (
     get_current_user,
     get_org_async_session,
 )
+from src.api.routers.crm.contacts_handler import get_contact_read_service
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
-    AddContactsAsStakeholdersRequest,
-    AddContactsAsStakeholdersResponse,
     AvailableContactItem,
     CreateStakeholderRequest,
     CreateStakeholderResponse,
@@ -40,6 +39,7 @@ from src.contracts.crm.stakeholders import (
     UpdateStakeholderCommand,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
     StakeholdersServiceError,
@@ -48,6 +48,7 @@ from src.service.crm.jobs.deal_job_service import DealJobService
 from src.service.crm.jobs.stakeholder_job_visibility_service import (
     StakeholderJobVisibilityService,
 )
+from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
@@ -84,6 +85,10 @@ def _to_deal_job_response(job: Any) -> DealJobResponse:
     )
 
 
+def _has_cached_stakeholder_research(stakeholder: StakeholderDetail) -> bool:
+    return bool(stakeholder.stakeholder_research or stakeholder.last_researched_at)
+
+
 async def _dispatch_auto_stakeholder_research(
     *,
     organisation_id: UUID,
@@ -117,6 +122,43 @@ async def _dispatch_auto_stakeholder_research(
                 "organisation_id": str(organisation_id),
                 "participant_id": str(participant_id),
                 "deal_id": str(deal_id),
+            },
+            exc_info=True,
+        )
+        return None
+
+
+async def _dispatch_auto_contact_research(
+    *,
+    organisation_id: UUID,
+    contact_id: UUID,
+    user_id: UUID | None,
+) -> DealJobResponse | None:
+    """Dispatch canonical contact research for a contact-backed stakeholder."""
+    try:
+        from src.workers.deal_worker.utils.contact_research_dispatch import (
+            dispatch_contact_research_async,
+        )
+
+        job_id = await dispatch_contact_research_async(
+            organisation_id=organisation_id,
+            contact_id=contact_id,
+            user_id=user_id,
+            trigger="stakeholder_created",
+        )
+        if not job_id:
+            return None
+        return DealJobResponse(
+            job_id=UUID(job_id),
+            job_type="contact_research",
+            status="pending",
+        )
+    except Exception:
+        logger.error(
+            "Failed to dispatch contact research",
+            extra={
+                "organisation_id": str(organisation_id),
+                "contact_id": str(contact_id),
             },
             exc_info=True,
         )
@@ -201,26 +243,19 @@ async def get_stakeholder_deal_job_service(
 async def get_deal_stakeholders(
     deal_id: UUID,
     response: FastAPIResponse,
-    include_pending: bool = Query(
-        True, description="Include PENDING stakeholders awaiting approval"
-    ),
-    include_rejected: bool = Query(False, description="Include REJECTED stakeholders"),
+    include_pending: bool = Query(True, description="Legacy filter; ignored for new writes"),
+    include_rejected: bool = Query(False, description="Legacy filter for old imported rows"),
     service: StakeholderReadService = Depends(get_stakeholder_read_service),
 ) -> GenericResponse[StakeholderListResponse]:
     """Get stakeholders associated with a specific deal.
 
-    By default returns APPROVED and PENDING stakeholders.
-    Use query parameters to control which approval statuses are included.
+    New stakeholder writes create active participants directly. The legacy
+    approval filters remain for older imported/discovered rows during rollout.
 
     Response includes:
     - company_domain: For frontend to validate new stakeholder email domains
     - company_name: For display purposes
-    - stakeholders: List of stakeholders filtered by approval_status
-
-    The approval_status field indicates:
-    - APPROVED: Stakeholder is active and used for deal matching
-    - PENDING: Stakeholder discovered but awaiting user approval (> 5 per source)
-    - REJECTED: Stakeholder excluded from deal matching by user
+    - stakeholders: List of active stakeholder participants
     """
     try:
         result = await service.list_stakeholders_by_deal(
@@ -246,96 +281,47 @@ async def get_deal_stakeholders(
 @stakeholders_router.get(
     "/{deal_id}/stakeholders/available-contacts",
     response_model=GenericResponse[list[AvailableContactItem]],
-    summary="List available contacts for adding as stakeholders",
+    summary="Search CRM contacts for the add-stakeholder picker",
 )
 async def list_available_contacts(
     deal_id: UUID,
     response: FastAPIResponse,
-    query: str | None = None,
-    limit: int = 50,
-    service: StakeholderReadService = Depends(get_stakeholder_read_service),
+    query: str | None = Query(None, description="Legacy search query parameter"),
+    q: str | None = Query(None, description="Search by name, email, or company"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum contacts to return"),
+    service: ContactReadService = Depends(get_contact_read_service),
 ) -> GenericResponse[list[AvailableContactItem]]:
-    """
-    List contacts that can be added as stakeholders to the deal.
-
-    Only returns contacts that have a valid email address, as email is required
-    for stakeholder identification and communication.
-
-    Response includes:
-    - Contact identity (name, email)
-    - Professional context (job title, company name)
-    - CRM metadata for reference
-    """
+    """Compatibility endpoint backed by the canonical CRM contact search."""
     try:
-        contacts = await service.list_available_contacts(deal_id, query, limit)
-        return Response.success_response(
-            message="Available contacts retrieved",
-            data=[_to_api_model(AvailableContactItem, contact) for contact in contacts],
+        rows, _next_cursor = await service.search_contacts(
+            q=q or query,
+            limit=limit,
+            cursor=None,
+            company_id=None,
         )
-    except StakeholdersServiceError as e:
-        logger.warning("Available contacts service error: %s", e.message)
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception as e:
-        logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@stakeholders_router.post(
-    "/{deal_id}/stakeholders/add-from-contacts",
-    response_model=GenericResponse[AddContactsAsStakeholdersResponse],
-    summary="Add selected contacts as stakeholders",
-)
-async def add_contacts_as_stakeholders(
-    deal_id: UUID,
-    request: AddContactsAsStakeholdersRequest,
-    response: FastAPIResponse,
-    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
-    job_visibility_service: StakeholderJobVisibilityService = Depends(
-        get_stakeholder_job_visibility_service
-    ),
-    user_ids: UserIDs = Depends(get_current_user),
-) -> GenericResponse[AddContactsAsStakeholdersResponse]:
-    """
-    Add selected contacts as stakeholders to a deal.
-
-    Only contacts with valid email addresses will be added. Contacts without
-    email addresses are skipped and reported in the response.
-
-    Returns:
-    - List of successfully added stakeholders
-    - List of skipped contact IDs (no email or already exists)
-    """
-    try:
-        result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
-        await service.session.commit()
-        response_data = _to_api_model(AddContactsAsStakeholdersResponse, result)
-        for stakeholder in response_data.added:
-            await job_visibility_service.create_stakeholder_processing_jobs(
-                deal_id,
-                stakeholder.participant_id,
+        items = []
+        for row in rows:
+            email = row.get("email")
+            if not email:
+                continue
+            company = row.get("company") or {}
+            items.append(
+                AvailableContactItem(
+                    contact_id=row["contact_id"],
+                    email=email,
+                    first_name=None,
+                    last_name=None,
+                    full_name=row.get("full_name"),
+                    job_title=row.get("job_title"),
+                    company_name=company.get("name") if isinstance(company, dict) else None,
+                    phone=None,
+                    lifecycle_stage=None,
+                    last_activity_at=None,
+                )
             )
-            await _dispatch_auto_stakeholder_research(
-                organisation_id=service.organisation_id,
-                participant_id=stakeholder.participant_id,
-                deal_id=deal_id,
-                user_id=user_ids.user_id,
-            )
-        return Response.success_response(
-            message="Stakeholders added from contacts",
-            data=response_data,
-        )
-    except StakeholdersServiceError as e:
-        await service.session.rollback()
-        logger.warning("Add contacts as stakeholders error: %s", e.message)
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
+        return Response.success_response(message="Available contacts retrieved", data=items)
     except Exception:
-        logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
+        logger.exception("Unexpected error searching available contacts for deal %s", deal_id)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -362,28 +348,50 @@ async def create_stakeholder(
     The stakeholder will be created with source=MANUAL and approval_status=APPROVED.
 
     Request Fields:
-    - REQUIRED: email (must be unique per deal)
-    - PRIMARY: name, job_title, stance, decision_power
-    - SECONDARY: department, motivation, pain_points, external_links
+    - Send only contact_id, name, email, and/or linkedin_url.
+    - At least one of contact_id, name, email, or linkedin_url must be non-empty.
+    - Profile, buying-role, and engagement fields are filled by contact resolution
+      and enrichment after creation.
 
-    The request schema includes UI hints (ui_category, ui_component) for frontend form building.
-    Check the OpenAPI schema for field-level metadata.
+    The request schema still accepts legacy optional fields during rollout, but
+    frontend create forms should not send them.
     """
     try:
         command = CreateStakeholderCommand.model_validate(request.model_dump())
-        stakeholder_result = await service.create_stakeholder(deal_id, command)
+        stakeholder_result = await service.create_stakeholder(
+            deal_id,
+            command,
+            context=StakeholderWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                source_label="API",
+                created_via="stakeholder_api",
+            ),
+        )
         await service.session.commit()
         stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
-        processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
-            deal_id,
-            stakeholder.participant_id,
-        )
-        research_job = await _dispatch_auto_stakeholder_research(
-            organisation_id=service.organisation_id,
-            participant_id=stakeholder.participant_id,
-            deal_id=deal_id,
-            user_id=user_ids.user_id,
-        )
+        processing_jobs = []
+        research_job = None
+        if stakeholder.email:
+            processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
+                deal_id,
+                stakeholder.participant_id,
+            )
+        if stakeholder.contact_id and not _has_cached_stakeholder_research(stakeholder):
+            research_job = await _dispatch_auto_contact_research(
+                organisation_id=service.organisation_id,
+                contact_id=stakeholder.contact_id,
+                user_id=user_ids.user_id,
+            )
+        elif (
+            stakeholder.email or stakeholder.linkedin_url
+        ) and not _has_cached_stakeholder_research(stakeholder):
+            research_job = await _dispatch_auto_stakeholder_research(
+                organisation_id=service.organisation_id,
+                participant_id=stakeholder.participant_id,
+                deal_id=deal_id,
+                user_id=user_ids.user_id,
+            )
 
         return Response.created_response(
             message="Stakeholder created successfully",
@@ -536,115 +544,6 @@ async def update_stakeholder(
 
 
 @stakeholders_router.post(
-    "/{deal_id}/stakeholders/{participant_id}/approve",
-    response_model=GenericResponse[StakeholderDetail],
-    summary="Approve a pending stakeholder",
-)
-async def approve_stakeholder(
-    deal_id: UUID,
-    participant_id: UUID,
-    response: FastAPIResponse,
-    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
-) -> GenericResponse[StakeholderDetail]:
-    """Approve a PENDING stakeholder for deal matching.
-
-    Discovered stakeholders beyond the first 5 per source are marked as PENDING
-    and require manual approval before they're used in deal matching.
-
-    This endpoint changes the stakeholder's approval_status from PENDING to APPROVED.
-    """
-    try:
-        stakeholder = await service.approve_stakeholder(deal_id, participant_id)
-        await service.session.commit()
-        return Response.success_response(
-            message="Stakeholder approved",
-            data=cast(StakeholderDetail, stakeholder),
-        )
-    except StakeholdersServiceError as e:
-        await service.session.rollback()
-        logger.warning(
-            "Approve stakeholder error",
-            extra={
-                "organisation_id": str(service.organisation_id),
-                "deal_id": str(deal_id),
-                "participant_id": str(participant_id),
-                "failure_reason": e.message,
-            },
-        )
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception:
-        logger.exception(
-            "Failed to approve stakeholder",
-            extra={
-                "organisation_id": str(service.organisation_id),
-                "deal_id": str(deal_id),
-                "participant_id": str(participant_id),
-            },
-        )
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@stakeholders_router.post(
-    "/{deal_id}/stakeholders/{participant_id}/reject",
-    response_model=GenericResponse[StakeholderDetail],
-    summary="Reject a stakeholder",
-)
-async def reject_stakeholder(
-    deal_id: UUID,
-    participant_id: UUID,
-    response: FastAPIResponse,
-    service: StakeholderWriteService = Depends(get_stakeholder_write_service),
-) -> GenericResponse[StakeholderDetail]:
-    """Reject a stakeholder to exclude from deal matching.
-
-    Rejected stakeholders are not used for:
-    - Calendar event matching
-    - Email matching
-    - Stakeholder analysis
-
-    This can be used to remove incorrectly discovered stakeholders or
-    contacts that are not relevant to the deal.
-    """
-    try:
-        stakeholder = await service.reject_stakeholder(deal_id, participant_id)
-        await service.session.commit()
-        return Response.success_response(
-            message="Stakeholder rejected",
-            data=cast(StakeholderDetail, stakeholder),
-        )
-    except StakeholdersServiceError as e:
-        await service.session.rollback()
-        logger.warning(
-            "Reject stakeholder error",
-            extra={
-                "organisation_id": str(service.organisation_id),
-                "deal_id": str(deal_id),
-                "participant_id": str(participant_id),
-                "failure_reason": e.message,
-            },
-        )
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception:
-        logger.exception(
-            "Failed to reject stakeholder",
-            extra={
-                "organisation_id": str(service.organisation_id),
-                "deal_id": str(deal_id),
-                "participant_id": str(participant_id),
-            },
-        )
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@stakeholders_router.post(
     "/{deal_id}/stakeholders/{participant_id}/research",
     response_model=GenericResponse[DealJobResponse],
     summary="Trigger stakeholder research",
@@ -741,19 +640,13 @@ async def remove_stakeholder(
     response: FastAPIResponse,
     service: StakeholderWriteService = Depends(get_stakeholder_write_service),
 ) -> GenericResponse[StakeholderDetail]:
-    """Remove an approved stakeholder from the deal.
+    """Remove a stakeholder from the deal.
 
-    This endpoint marks the stakeholder as REMOVED, excluding them from:
+    This endpoint soft-deletes the participant, excluding them from:
     - Deal stakeholder lists (unless explicitly requested)
     - Calendar event matching
     - Email matching
     - Stakeholder analysis
-
-    Unlike rejection, removal is intended for stakeholders that were
-    previously active but should no longer be associated with the deal.
-
-    Only APPROVED stakeholders can be removed. Use the reject endpoint
-    for PENDING stakeholders.
     """
     try:
         stakeholder = await service.remove_stakeholder(deal_id, participant_id)

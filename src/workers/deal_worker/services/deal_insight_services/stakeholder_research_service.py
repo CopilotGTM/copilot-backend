@@ -51,10 +51,11 @@ class StakeholderResearchError(Exception):
 class _StakeholderContext:
     """Snapshot of a stakeholder loaded for research, with session released."""
 
-    email: str
+    email: str | None
     name: str | None
     deal_id: UUID
     contact_id: UUID | None = None
+    linkedin_url: str | None = None
     external_links: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -138,9 +139,14 @@ class StakeholderResearchService:
             email = _normalize_email(
                 contact.email if contact and contact.email else stakeholder.related_email
             )
-            if not email:
+            linkedin_url = (
+                (getattr(contact, "linkedin_url", None) if contact else None)
+                or getattr(stakeholder, "linkedin_url", None)
+                or self._extract_linkedin_url(getattr(stakeholder, "external_links", None))
+            )
+            if not email and not linkedin_url:
                 raise StakeholderResearchError(
-                    f"Stakeholder {stakeholder_id} has no email",
+                    f"Stakeholder {stakeholder_id} has no email or LinkedIn URL",
                     retryable=False,
                 )
 
@@ -162,6 +168,7 @@ class StakeholderResearchService:
                 name=contact_name or stakeholder.related_name,
                 deal_id=override_deal_id or stakeholder.deal_id,
                 contact_id=contact.contact_id if contact else stakeholder.related_local_id,
+                linkedin_url=linkedin_url,
                 external_links=list(external_links),
             )
 
@@ -180,6 +187,8 @@ class StakeholderResearchService:
         Same person can appear on multiple deals — research is per-person, not per-deal.
         """
         cutoff = datetime.now(UTC) - timedelta(days=RESEARCH_COOLDOWN_DAYS)
+        if not ctx.email:
+            return None
 
         async for session in acquire_org_async_session(self.organisation_id):
             recent = await self._find_recent_research(session, ctx.email, cutoff)
@@ -273,6 +282,7 @@ class StakeholderResearchService:
                 stakeholder_id=stakeholder_id,
                 email=ctx.email,
                 name=ctx.name,
+                linkedin_url=ctx.linkedin_url,
             )
         except Exception as exc:
             raise StakeholderResearchError(
@@ -524,6 +534,16 @@ class StakeholderResearchService:
             isinstance(link, dict) and link.get("platform", "").lower() == "linkedin"
             for link in links
         )
+
+    @staticmethod
+    def _extract_linkedin_url(links: list[dict[str, Any]] | None) -> str | None:
+        if not links:
+            return None
+        for link in links:
+            if isinstance(link, dict) and link.get("platform", "").lower() == "linkedin":
+                url = link.get("url")
+                return str(url) if url else None
+        return None
 
     async def _load_contact(
         self,

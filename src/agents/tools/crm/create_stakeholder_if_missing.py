@@ -22,6 +22,7 @@ from src.agents.tools.crm.upsert_stakeholder import (
     AUTOMATED_PIPELINE_USER_ID,
     UpsertStakeholderInput,
     _clean_text,
+    _dispatch_research_for_stakeholder_create,
     _format_upsert_output,
     _normalize_optional_decision_power,
     _normalize_optional_stance,
@@ -37,6 +38,7 @@ from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
+from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 if TYPE_CHECKING:
@@ -127,6 +129,12 @@ async def create_stakeholder_if_missing(
                         motivation=_clean_text(input_data.motivation),
                         pain_points=input_data.pain_points or None,
                     ),
+                    context=StakeholderWriteContext(
+                        source="agent",
+                        actor_user_id=context.user_id,
+                        source_label="Agent",
+                        created_via="create_stakeholder_if_missing_agent",
+                    ),
                 )
             except StakeholdersServiceError:
                 logger.exception("create_stakeholder_if_missing: service create failed")
@@ -136,14 +144,11 @@ async def create_stakeholder_if_missing(
 
             # Dispatch stakeholder research (fire-and-forget)
             try:
-                from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                    dispatch_stakeholder_research_async,
-                )
-
-                await dispatch_stakeholder_research_async(
+                await _dispatch_research_for_stakeholder_create(
                     organisation_id=organisation_id,
-                    stakeholder_id=new_stakeholder.participant_id,
+                    stakeholder=new_stakeholder,
                     deal_id=actual_deal_id,
+                    user_id=context.user_id,
                 )
             except Exception:
                 logger.warning(

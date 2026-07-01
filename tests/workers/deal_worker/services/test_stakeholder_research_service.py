@@ -100,6 +100,7 @@ async def test_load_context_reads_active_contact_participant(monkeypatch) -> Non
         related_email="buyer@example.com",
         related_name="Buyer Snapshot",
         job_title="Old Title",
+        linkedin_url=None,
         external_links=[],
     )
     contact = SimpleNamespace(
@@ -109,6 +110,7 @@ async def test_load_context_reads_active_contact_participant(monkeypatch) -> Non
         email="buyer@example.com",
         full_name="Buyer Contact",
         job_title="CFO",
+        linkedin_url=None,
         properties={
             "department": "Finance",
             "external_links": [{"platform": "linkedin", "url": "https://linkedin/in/buyer"}],
@@ -131,6 +133,43 @@ async def test_load_context_reads_active_contact_participant(monkeypatch) -> Non
     assert ctx.deal_id == deal_id
     assert ctx.contact_id == contact_id
     assert ctx.external_links == [{"platform": "linkedin", "url": "https://linkedin/in/buyer"}]
+
+
+@pytest.mark.asyncio
+async def test_load_context_accepts_linkedin_only_participant(monkeypatch) -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        organisation_id=organisation_id,
+        participant_id=participant_id,
+        participant_type=CRMParticipantType.CONTACT,
+        is_deleted=False,
+        approval_status=ApprovalStatus.APPROVED.value,
+        deal_id=deal_id,
+        related_local_id=None,
+        related_email=None,
+        related_name="LinkedIn Buyer",
+        job_title=None,
+        linkedin_url="https://linkedin.com/in/linkedin-buyer",
+        external_links=[],
+    )
+    session = _ParticipantLookupSession(participant, None)
+    monkeypatch.setattr(
+        service_module,
+        "acquire_org_async_session",
+        lambda organisation_id: _SessionSource(session),
+    )
+
+    ctx = await StakeholderResearchService(organisation_id)._load_context(  # noqa: SLF001
+        participant_id,
+        None,
+    )
+
+    assert ctx.email is None
+    assert ctx.linkedin_url == "https://linkedin.com/in/linkedin-buyer"
+    assert ctx.name == "LinkedIn Buyer"
+    assert ctx.deal_id == deal_id
 
 
 @pytest.mark.asyncio

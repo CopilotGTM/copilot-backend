@@ -1575,10 +1575,10 @@ class DealWriteService:
     def _sync_deal_company_profile_for_response(*, deal: CRMDeal, company: CRMCompany) -> None:
         # copilotgtm: These are response-only attrs; the durable company profile
         # remains owned by CRMCompany and full detail reads still join that row.
-        deal.company_industry = getattr(company, "industry", None)
-        deal.company_website = getattr(company, "website", None)
-        deal.company_linkedin_url = getattr(company, "linkedin_url", None)
-        deal.company_country = getattr(company, "country", None)
+        object.__setattr__(deal, "company_industry", getattr(company, "industry", None))
+        object.__setattr__(deal, "company_website", getattr(company, "website", None))
+        object.__setattr__(deal, "company_linkedin_url", getattr(company, "linkedin_url", None))
+        object.__setattr__(deal, "company_country", getattr(company, "country", None))
 
     async def _replace_primary_contact_participant(
         self,

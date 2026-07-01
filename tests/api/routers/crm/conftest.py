@@ -114,10 +114,11 @@ class FakeStakeholder:
         stakeholder_id: UUID,
         deal_id: UUID,
         organisation_id: UUID,
-        email: str,
+        email: str | None,
         name: str | None = None,
         job_title: str | None = None,
         phone_number: str | None = None,
+        linkedin_url: str | None = None,
         department: str | None = None,
         source: StakeholderSource = StakeholderSource.CRM,
         approval_status: ApprovalStatus = ApprovalStatus.APPROVED,
@@ -132,6 +133,8 @@ class FakeStakeholder:
         external_links: list[dict[str, Any]] | None = None,
         stakeholder_engagement_history: list[dict[str, Any]] | None = None,
         stakeholder_data: dict[str, Any] | None = None,
+        stakeholder_research: str | None = None,
+        last_researched_at: datetime | None = None,
     ):
         self.stakeholder_id = stakeholder_id
         self.participant_id = stakeholder_id
@@ -141,6 +144,7 @@ class FakeStakeholder:
         self.name = name
         self.job_title = job_title
         self.phone_number = phone_number
+        self.linkedin_url = linkedin_url
         self.department = department
         self.source = source
         self.approval_status = approval_status
@@ -155,6 +159,8 @@ class FakeStakeholder:
         self.external_links = external_links or []
         self.stakeholder_engagement_history = stakeholder_engagement_history or []
         self.stakeholder_data = stakeholder_data
+        self.stakeholder_research = stakeholder_research
+        self.last_researched_at = last_researched_at
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
         self.is_deleted = False
@@ -173,6 +179,8 @@ class FakeContact:
         company_name: str | None = None,
         phone: str | None = None,
         linkedin_url: str | None = None,
+        contact_research: str | None = None,
+        last_researched_at: datetime | None = None,
     ):
         self.contact_id = contact_id
         self.organisation_id = organisation_id
@@ -182,6 +190,8 @@ class FakeContact:
         self.company_name = company_name
         self.phone = phone
         self.linkedin_url = linkedin_url
+        self.contact_research = contact_research
+        self.last_researched_at = last_researched_at
 
 
 class FakeInsight:
@@ -339,51 +349,16 @@ class FakeStakeholdersService:
                 return s
         return None
 
-    async def approve_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
-        """Approve a PENDING stakeholder."""
-        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
-
-        stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
-        if not stakeholder:
-            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
-
-        if stakeholder.approval_status == ApprovalStatus.APPROVED:
-            raise StakeholdersServiceError("Stakeholder is already approved", status_code=400)
-
-        stakeholder.approval_status = ApprovalStatus.APPROVED
-        return stakeholder
-
-    async def reject_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
-        """Reject a stakeholder."""
-        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
-
-        stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
-        if not stakeholder:
-            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
-
-        if stakeholder.approval_status == ApprovalStatus.REJECTED:
-            raise StakeholdersServiceError("Stakeholder is already rejected", status_code=400)
-
-        stakeholder.approval_status = ApprovalStatus.REJECTED
-        return stakeholder
-
     async def remove_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
-        """Remove an approved stakeholder from the deal."""
+        """Soft-delete a stakeholder from the deal."""
         from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
 
         stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
         if not stakeholder:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 
-        if stakeholder.approval_status == ApprovalStatus.REMOVED:
-            raise StakeholdersServiceError("Stakeholder is already removed", status_code=400)
-
-        if stakeholder.approval_status != ApprovalStatus.APPROVED:
-            raise StakeholdersServiceError(
-                "Only approved stakeholders can be removed", status_code=400
-            )
-
-        stakeholder.approval_status = ApprovalStatus.REMOVED
+        stakeholder.is_deleted = True
+        stakeholder.updated_at = datetime.now(UTC)
         return stakeholder
 
     async def update_stakeholder(self, deal_id: UUID, stakeholder_id: UUID, request):
@@ -419,62 +394,67 @@ class FakeStakeholdersService:
         stakeholder.updated_at = datetime.now(UTC)
         return stakeholder
 
-    async def create_stakeholder(self, deal_id: UUID, request):
+    async def create_stakeholder(self, deal_id: UUID, request, *, context=None):
         """Create a manual stakeholder for route contract tests."""
         from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
 
-        email = request.email.lower().strip()
+        email = request.email.lower().strip() if request.email else None
+        name = request.name
+        contact_id = getattr(request, "contact_id", None)
+        contact = self._contacts.get(contact_id) if contact_id else None
+        if contact_id and not contact:
+            raise StakeholdersServiceError("Contact not found", status_code=404)
+        if contact:
+            email = contact.email.lower().strip() if contact.email else email
+            name = name or contact.full_name
         existing = [
             s
             for s in self._stakeholders.get(deal_id, [])
-            if s.email.lower() == email and not s.is_deleted
+            if email and s.email and s.email.lower() == email
         ]
         if existing:
             stakeholder = existing[0]
-            if stakeholder.approval_status == ApprovalStatus.REMOVED:
-                stakeholder.approval_status = ApprovalStatus.APPROVED
-                stakeholder.source = StakeholderSource.MANUAL
-                stakeholder.name = request.name
-                stakeholder.job_title = request.job_title
-                stakeholder.phone_number = request.phone_number
-                stakeholder.department = request.department
-                stakeholder.stance = request.stance
-                stakeholder.decision_power = request.decision_power
-                stakeholder.motivation = request.motivation
-                stakeholder.pain_points = request.pain_points or []
-                stakeholder.external_links = [
-                    link.model_dump() for link in request.external_links or []
-                ]
-                stakeholder.updated_at = datetime.now(UTC)
-                return stakeholder
-
-            raise StakeholdersServiceError(
-                "A stakeholder with this email already exists for this deal",
-                status_code=409,
-                data={
-                    "participant_id": str(stakeholder.participant_id),
-                    "approval_status": stakeholder.approval_status.value,
-                    "is_deleted": stakeholder.is_deleted,
-                },
-            )
+            stakeholder.approval_status = ApprovalStatus.APPROVED
+            stakeholder.is_deleted = False
+            stakeholder.source = StakeholderSource.MANUAL
+            stakeholder.name = name
+            stakeholder.job_title = request.job_title
+            stakeholder.phone_number = request.phone_number
+            stakeholder.department = request.department
+            stakeholder.stance = request.stance
+            stakeholder.decision_power = request.decision_power
+            stakeholder.motivation = request.motivation
+            stakeholder.pain_points = request.pain_points or []
+            stakeholder.external_links = [
+                link.model_dump() for link in getattr(request, "external_links", None) or []
+            ]
+            stakeholder.updated_at = datetime.now(UTC)
+            return stakeholder
 
         stakeholder = FakeStakeholder(
             stakeholder_id=uuid4(),
             deal_id=deal_id,
             organisation_id=self.organisation_id,
             email=email,
-            name=request.name,
-            job_title=request.job_title,
-            phone_number=request.phone_number,
+            name=name,
+            job_title=request.job_title or (contact.job_title if contact else None),
+            phone_number=request.phone_number or (contact.phone if contact else None),
+            linkedin_url=request.linkedin_url or (contact.linkedin_url if contact else None),
             department=request.department,
-            source=StakeholderSource.MANUAL,
+            contact_id=contact.contact_id if contact else None,
+            source=StakeholderSource.CRM if contact else StakeholderSource.MANUAL,
             approval_status=ApprovalStatus.APPROVED,
             stance=request.stance,
             decision_power=request.decision_power,
             motivation=request.motivation,
             pain_points=request.pain_points,
-            external_links=[link.model_dump() for link in request.external_links or []],
+            external_links=[
+                link.model_dump() for link in getattr(request, "external_links", None) or []
+            ],
+            stakeholder_research=contact.contact_research if contact else None,
+            last_researched_at=contact.last_researched_at if contact else None,
         )
+        _ = context
         self.add_stakeholder(stakeholder)
         return stakeholder
 
@@ -534,44 +514,6 @@ class FakeStakeholdersService:
             "created_at": stakeholder.created_at,
             "updated_at": stakeholder.updated_at,
         }
-
-    async def list_available_contacts(self, deal_id: UUID, query: str | None, limit: int):
-        """Return contacts that can be added as stakeholders."""
-        existing_emails = {
-            s.email.lower()
-            for s in self._stakeholders.get(deal_id, [])
-            if s.email and not s.is_deleted
-        }
-
-        contacts = []
-        for c in self._contacts.values():
-            if not c.email:
-                continue
-            if c.email.lower() in existing_emails:
-                continue
-            # Search filter - check name, email, and job title
-            if query:
-                query_lower = query.lower()
-                match = (
-                    (c.full_name and query_lower in c.full_name.lower())
-                    or (c.email and query_lower in c.email.lower())
-                    or (c.job_title and query_lower in c.job_title.lower())
-                )
-                if not match:
-                    continue
-            contacts.append(
-                {
-                    "contact_id": c.contact_id,
-                    "email": c.email,
-                    "full_name": c.full_name,
-                    "job_title": c.job_title,
-                    "company_name": c.company_name,
-                }
-            )
-            if len(contacts) >= limit:
-                break
-
-        return contacts
 
     async def add_contacts_as_stakeholders(self, deal_id: UUID, contact_ids: list[UUID]):
         """Add contacts as stakeholders."""

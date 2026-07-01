@@ -27,6 +27,20 @@ class ParticipantWriteContext:
 
 
 @dataclass(frozen=True)
+class StakeholderWriteContext:
+    """Caller provenance for stakeholder semantic writes.
+
+    The entrypoint sets this context from trusted runtime state, rather than
+    accepting provenance from client payloads that could spoof API/agent/system.
+    """
+
+    source: str
+    actor_user_id: UUID | None = None
+    source_label: str | None = None
+    created_via: str | None = None
+
+
+@dataclass(frozen=True)
 class ParticipantSkipped:
     """Participant request skipped by the canonical participant writer."""
 

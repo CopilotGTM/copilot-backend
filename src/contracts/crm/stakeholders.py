@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
@@ -43,7 +43,7 @@ class StakeholderDetail(BaseModel):
     participant_id: UUID = Field(..., description="Canonical CRMDealParticipant ID")
     deal_id: UUID
     contact_id: UUID | None = None
-    email: str
+    email: str | None = None
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided")
@@ -59,6 +59,8 @@ class StakeholderDetail(BaseModel):
     source: StakeholderSource = Field(..., description="Stakeholder source")
     approval_status: ApprovalStatus = Field(..., description="Approval status")
     active_research_job: DealJobResponse | None = None
+    stakeholder_research: str | None = None
+    last_researched_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -66,7 +68,8 @@ class StakeholderDetail(BaseModel):
 class CreateStakeholderCommand(BaseModel):
     """Application command for manually creating a stakeholder."""
 
-    email: str = Field(..., description="Email address")
+    contact_id: UUID | None = Field(None, description="Existing CRM contact to add")
+    email: str | None = Field(None, description="Email address")
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = None
@@ -76,7 +79,15 @@ class CreateStakeholderCommand(BaseModel):
     department: str | None = None
     motivation: str | None = None
     pain_points: list[str] | None = None
-    external_links: list[StakeholderLink] | None = None
+
+    @model_validator(mode="after")
+    def require_identity(self) -> CreateStakeholderCommand:
+        """Require one explicit person key unless a CRM contact was selected."""
+        if self.contact_id:
+            return self
+        if any(value and value.strip() for value in (self.email, self.linkedin_url, self.name)):
+            return self
+        raise ValueError("Provide a stakeholder name, email, LinkedIn URL, or contact ID")
 
 
 class UpdateStakeholderCommand(BaseModel):
@@ -92,24 +103,6 @@ class UpdateStakeholderCommand(BaseModel):
     motivation: str | None = None
     pain_points: list[str] | None = None
     external_links: list[StakeholderLink] | None = None
-
-
-class AvailableContactItem(BaseModel):
-    """Contact available for adding as a stakeholder."""
-
-    contact_id: UUID = Field(..., description="Internal contact identifier")
-    external_id: str | None = Field(None, description="Provider contact identifier")
-    email: str = Field(..., description="Primary email address")
-    first_name: str | None = None
-    last_name: str | None = None
-    full_name: str | None = None
-    job_title: str | None = None
-    company_name: str | None = None
-    phone: str | None = None
-    lifecycle_stage: str | None = None
-    last_activity_at: datetime | None = None
-
-    model_config = {"from_attributes": True}
 
 
 class SkippedContact(BaseModel):

@@ -29,6 +29,8 @@ from src.service.crm.participants.contracts import (
     ParticipantSkipped,
     ParticipantWriteResult,
 )
+from src.service.crm.utils.account import clean_optional_string
+from src.service.crm.utils.identity import normalize_email
 
 logger = get_logger(__name__)
 
@@ -77,7 +79,7 @@ class ParticipantWriteService:
         for payload in payloads:
             participant_type = self._parse_participant_type(payload.get("participant_type"))
             related_id = payload.get("related_id")
-            relationship_role = self._clean_string(payload.get("relationship_role"))
+            relationship_role = clean_optional_string(payload.get("relationship_role"))
 
             if not isinstance(related_id, UUID):
                 raise ParticipantServiceError("Invalid related_id", status_code=400)
@@ -245,7 +247,7 @@ class ParticipantWriteService:
         if participant.is_deleted:
             raise ParticipantServiceError("Participant not found", status_code=404)
 
-        new_role = self._clean_string(relationship_role)
+        new_role = clean_optional_string(relationship_role)
         role_key = new_role or ""
 
         participant_type = self._parse_participant_type(participant.participant_type)
@@ -333,7 +335,11 @@ class ParticipantWriteService:
             if contact.is_deleted:
                 raise ParticipantServiceError("Contact is deleted", 404)
 
-            name = contact.full_name or self._build_name(contact.first_name, contact.last_name)
+            name = (
+                contact.full_name
+                or " ".join(p for p in [contact.first_name, contact.last_name] if p)
+                or None
+            )
             return contact.contact_id, name, contact.email
 
         if participant_type == CRMParticipantType.COMPANY:
@@ -403,7 +409,7 @@ class ParticipantWriteService:
         if related_local_id is not None:
             return str(related_local_id)
         if participant_type == CRMParticipantType.CONTACT:
-            email = self._normalize_email(related_email)
+            email = normalize_email(related_email)
             if email:
                 return email
         raise ParticipantServiceError("Participant identity missing", status_code=400)
@@ -518,22 +524,8 @@ class ParticipantWriteService:
         self.session.add(deal)
 
     @staticmethod
-    def _clean_string(value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
-
-    @staticmethod
-    def _normalize_email(value: str | None) -> str | None:
-        cleaned = ParticipantWriteService._clean_string(value)
-        if not cleaned:
-            return None
-        return cleaned.lower()
-
-    @staticmethod
     def _is_primary_contact_role(value: str | None) -> bool:
-        cleaned = ParticipantWriteService._clean_string(value)
+        cleaned = clean_optional_string(value)
         if not cleaned:
             return False
         return cleaned.lower().replace(" ", "_") == "primary_contact"
@@ -541,7 +533,7 @@ class ParticipantWriteService:
     @staticmethod
     def is_owner_role(value: str | None) -> bool:
         """Normalize legacy role strings before deciding whether a row is owner-only."""
-        cleaned = ParticipantWriteService._clean_string(value)
+        cleaned = clean_optional_string(value)
         if not cleaned:
             return False
         return cleaned.lower().replace(" ", "_") == "owner"
@@ -551,8 +543,3 @@ class ParticipantWriteService:
         """Return the SQL expression used to identify owner projection rows."""
         c = cast(Any, CRMDealParticipant).__table__.c
         return func.lower(func.replace(func.trim(func.coalesce(c.relationship_role, "")), " ", "_"))
-
-    @staticmethod
-    def _build_name(first_name: str | None, last_name: str | None) -> str | None:
-        parts = [p for p in [first_name, last_name] if p]
-        return " ".join(parts) if parts else None

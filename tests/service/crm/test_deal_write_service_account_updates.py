@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.internal.deal_write_service import DealWriteService
@@ -353,6 +353,28 @@ async def test_update_account_skips_participant_replace_when_company_link_alread
         deal=existing_deal,
         company_id=company_id,
     )
+
+
+def test_company_profile_response_snapshot_supports_sqlmodel_deal() -> None:
+    deal = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+        name="Acme Deal",
+    )
+    company = SimpleNamespace(
+        industry="Powerline",
+        website="https://acme.com",
+        linkedin_url="https://linkedin.com/company/acme",
+        country="India",
+    )
+
+    DealWriteService._sync_deal_company_profile_for_response(deal=deal, company=company)
+
+    assert deal.company_industry == "Powerline"
+    assert deal.company_website == "https://acme.com"
+    assert deal.company_linkedin_url == "https://linkedin.com/company/acme"
+    assert deal.company_country == "India"
 
 
 @pytest.mark.asyncio

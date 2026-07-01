@@ -77,6 +77,7 @@ def _make_context() -> tuple[_Context, _Session]:
         related_name=None,
         job_title=None,
         department=None,
+        linkedin_url=None,
         external_links=[],
     )
     contact = SimpleNamespace(
@@ -118,6 +119,36 @@ async def test_research_stakeholder_reads_participant_context(monkeypatch) -> No
     assert result["participant_id"] == str(session.participant.participant_id)
     assert "stakeholder_id" not in result
     assert result["data"]["title"] == "CFO"
+    assert session.updates == []
+
+
+@pytest.mark.asyncio
+async def test_research_stakeholder_uses_participant_linkedin_without_email(monkeypatch) -> None:
+    context, session = _make_context()
+    session.participant.related_email = None
+    session.participant.linkedin_url = "https://linkedin.com/in/linkedin-only"
+    session.contact.email = None
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_apollo_enrich_person(**kwargs):  # noqa: ANN003
+        captured_kwargs.update(kwargs)
+        return {
+            "success": True,
+            "apollo_id": "person-linkedin",
+            "name": "LinkedIn Buyer",
+            "linkedin_url": "https://linkedin.com/in/linkedin-only",
+        }
+
+    monkeypatch.setattr(research_module, "apollo_enrich_person", fake_apollo_enrich_person)
+
+    result = await research_module.research_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        stakeholder_id=str(session.participant.participant_id),
+    )
+
+    assert result["success"] is True
+    assert captured_kwargs["email"] is None
+    assert captured_kwargs["linkedin_url"] == "https://linkedin.com/in/linkedin-only"
     assert session.updates == []
 
 

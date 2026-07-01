@@ -1,10 +1,13 @@
-"""Participant-backed stakeholder semantic writes."""
+"""Participant-backed stakeholder semantic writes.
+
+Called through the legacy stakeholder facade, agent tools, and deal UI actions.
+This module owns writes to the canonical CRMDealParticipant rows while mirroring
+durable person profile fields onto CRMContact whenever a contact can be linked.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -17,32 +20,36 @@ from src.contracts.crm.stakeholders import (
     StakeholderDetail,
     UpdateStakeholderRequest,
 )
-from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    ApprovalStatus,
-    StakeholderSource,
-)
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
-from src.infra.database.sessions import acquire_master_async_session
+from src.domain.models.organisation_tables.sync.crm.stakeholders import StakeholderSource
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import ContactWriteContext
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
+from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.errors import StakeholdersServiceError
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
 )
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    build_stakeholder_timeline_event,
+from src.service.crm.utils.account import clean_optional_string
+from src.service.crm.utils.external_links import extract_linkedin_url, serialize_external_links
+from src.service.crm.utils.identity import extract_email_domain, normalize_email
+from src.service.crm.utils.internal_domains import (
+    get_internal_domains,
+)
+from src.service.crm.utils.internal_domains import (
+    is_internal_email as email_matches_internal_domain,
 )
 
 logger = get_logger("stakeholder_write_service")
+
+ACTIVE_STAKEHOLDER_STATUS = "APPROVED"
 
 # Personal consumer providers are skipped to reduce false-positive internal
 # participant linking for manually-added external stakeholders.
@@ -65,7 +72,12 @@ PERSONAL_EMAIL_DOMAINS = frozenset(
 
 
 class StakeholderWriteService:
-    """Participant-backed stakeholder semantic writes."""
+    """Write stakeholder actions into org-scoped contact participant rows.
+
+    The service treats stakeholder IDs as participant IDs; callers must pass the
+    org-scoped session and deal context so every lookup can enforce tenant and
+    deal boundaries before mutating rows.
+    """
 
     def __init__(
         self,
@@ -84,41 +96,21 @@ class StakeholderWriteService:
         return self.org_session
 
     async def _finish_write(self, obj: object | None = None) -> None:
+        """Flush pending stakeholder/contact/activity changes before returning DTOs."""
         await self.session.flush()
         if obj is not None:
             await self.session.refresh(obj)
 
     async def _get_internal_domains(self) -> set[str]:
-        """Load the organisation's internal email domains from Organisation.domain.
-
-        Uses a master session because Organisation lives in the public schema,
-        which org-scoped DB users cannot read.
-        """
-        stmt = select(col(Organisation.domain)).where(
-            col(Organisation.organisation_id) == self.organisation_id,
-        )
-        async for master_session in acquire_master_async_session():
-            result = await master_session.execute(stmt)
-        domains_raw = result.scalar_one_or_none()
-        domains: set[str] = set()
-        if domains_raw and isinstance(domains_raw, list):
-            for d in domains_raw:
-                if not d or not d.strip():
-                    continue
-                d_lower = d.strip().lower()
-                domains.add(d_lower)
-                # Strip www. prefix so "www.acme.com" also blocks "@acme.com"
-                if d_lower.startswith("www."):
-                    domains.add(d_lower[4:])
-        return domains
+        """Load internal email domains through the shared CRM utility."""
+        return await get_internal_domains(self.organisation_id)
 
     async def _is_internal_email(self, email: str) -> bool:
         """Check whether an email belongs to an internal org domain."""
         if not email or "@" not in email:
             return False
-        domain = email.strip().lower().split("@")[-1]
         internal_domains = await self._get_internal_domains()
-        return domain in internal_domains
+        return email_matches_internal_domain(email, internal_domains)
 
     async def _ensure_contact_for_stakeholder(
         self,
@@ -129,18 +121,21 @@ class StakeholderWriteService:
         linkedin_url: str | None = None,
         department: str | None = None,
         external_links: list[dict] | None = None,
-    ) -> UUID | None:
+    ) -> CRMContact | None:
         """Find or create a CRMContact for a manually-added stakeholder.
 
-        Returns the contact_id if found or created, or None when business rules
-        intentionally skip durable contact materialization.
+        Returns the contact if found or created, or None when business rules
+        intentionally keep the stakeholder deal-local.
         """
-        email_normalized = email.lower().strip()
+        email_normalized = normalize_email(email)
+        if not email_normalized:
+            return None
 
-        # Skip contact creation for internal team members and common personal email providers
+        # Keep manual stakeholders lightweight when the address is likely an employee
+        # or a consumer inbox; the participant row still records the deal-local person.
         if await self._is_internal_email(email_normalized):
             return None
-        domain = email_normalized.split("@")[-1] if "@" in email_normalized else ""
+        domain = extract_email_domain(email_normalized) or ""
         if domain in PERSONAL_EMAIL_DOMAINS:
             return None
 
@@ -172,13 +167,13 @@ class StakeholderWriteService:
                 if value
             },
         )
-        return result.contact.contact_id
+        return result.contact
 
     async def _ensure_deal_participant(
         self,
         deal_id: UUID,
         contact_id: UUID | None,
-        email: str,
+        email: str | None,
         name: str | None,
         job_title: str | None = None,
         phone_number: str | None = None,
@@ -190,7 +185,7 @@ class StakeholderWriteService:
         motivation: str | None = None,
         pain_points: list[str] | None = None,
         participant_source: str = StakeholderSource.MANUAL.value,
-        approval_status: str = ApprovalStatus.APPROVED.value,
+        approval_status: str = ACTIVE_STAKEHOLDER_STATUS,
     ) -> CRMDealParticipant | None:
         """Create or reuse the canonical contact participant for a deal."""
         from src.service.crm.internal.internal_crm_setup_service import (
@@ -204,6 +199,8 @@ class StakeholderWriteService:
         setup_result = await setup_service.setup_internal_crm(commit=False)
         integration = setup_result.integration
 
+        # The org predicate is the tenant boundary; a deal_id supplied by an API
+        # caller is never trusted without matching this service's organisation.
         deal_stmt = select(CRMDeal).where(
             col(CRMDeal.deal_id) == deal_id,
             col(CRMDeal.organisation_id) == self.organisation_id,
@@ -212,17 +209,21 @@ class StakeholderWriteService:
         if not deal_result.scalar_one_or_none():
             return None
 
-        email_normalized = email.lower().strip()
+        email_normalized = normalize_email(email)
 
         participant = await self._find_contact_participant(
             deal_id=deal_id,
             email=email_normalized,
             contact_id=contact_id,
+            linkedin_url=linkedin_url,
             include_deleted=True,
         )
         if participant:
+            # Reactivate the existing participant instead of inserting a duplicate.
+            # Dedupe must include soft-deleted rows so remove/re-add keeps history on
+            # the same participant ID for activity and research references.
             participant.related_local_id = participant.related_local_id or contact_id
-            participant.related_email = email_normalized
+            participant.related_email = email_normalized or participant.related_email
             participant.related_name = name or participant.related_name
             participant.job_title = job_title or participant.job_title
             participant.department = department or participant.department
@@ -276,8 +277,11 @@ class StakeholderWriteService:
         if contact.integration_id == internal_integration_id:
             return contact
 
-        email_normalized = contact.email.lower().strip() if contact.email else None
+        email_normalized = normalize_email(contact.email)
         if email_normalized:
+            # Copy external CRM contacts into the internal CRM integration before
+            # linking them to stakeholders; participant writes should not mutate the
+            # provider-owned contact row that sync jobs may later refresh.
             stmt = select(CRMContact).where(
                 col(CRMContact.organisation_id) == self.organisation_id,
                 col(CRMContact.integration_id) == internal_integration_id,
@@ -341,6 +345,7 @@ class StakeholderWriteService:
         deal_id: UUID,
         email: str | None = None,
         contact_id: UUID | None = None,
+        linkedin_url: str | None = None,
         participant_id: UUID | None = None,
         include_deleted: bool = False,
     ) -> CRMDealParticipant | None:
@@ -354,16 +359,25 @@ class StakeholderWriteService:
             predicates.append(col(CRMDealParticipant.is_deleted).is_(False))
 
         if participant_id:
+            # participant_id is caller-supplied, so keep deal and org predicates in
+            # place even for direct ID lookups.
             predicates.append(col(CRMDealParticipant.participant_id) == participant_id)
         else:
             identity_predicates = []
             if contact_id:
                 identity_predicates.append(col(CRMDealParticipant.related_local_id) == contact_id)
             if email:
-                email_normalized = email.lower().strip()
+                email_normalized = normalize_email(email) or ""
                 identity_predicates.append(
                     func.lower(func.trim(col(CRMDealParticipant.related_email))) == email_normalized
                 )
+            if linkedin_url:
+                linkedin_normalized = clean_optional_string(linkedin_url)
+                if linkedin_normalized:
+                    identity_predicates.append(
+                        func.lower(func.trim(col(CRMDealParticipant.linkedin_url)))
+                        == linkedin_normalized.lower()
+                    )
             if not identity_predicates:
                 return None
             predicates.append(or_(*identity_predicates))
@@ -394,24 +408,6 @@ class StakeholderWriteService:
         """Convert the canonical participant row to the public stakeholder DTO."""
         return StakeholderDetail.model_validate(
             participant_to_stakeholder_detail_dict(participant, contact=contact)
-        )
-
-    @staticmethod
-    def _participant_timeline_stakeholder(
-        participant: CRMDealParticipant,
-    ) -> Any:
-        """Build the stakeholder-shaped event payload until timeline is cut over."""
-        return SimpleNamespace(
-            participant_id=participant.participant_id,
-            related_email=participant.related_email,
-            related_name=participant.related_name,
-            job_title=participant.job_title,
-            participant_source=participant.participant_source,
-            stance=participant.stance,
-            decision_power=participant.decision_power,
-            approval_status=participant.approval_status,
-            created_at=participant.created_at,
-            updated_at=participant.updated_at,
         )
 
     def _apply_contact_profile_updates(
@@ -452,15 +448,18 @@ class StakeholderWriteService:
             participant.department = updates["department"]
 
         if "external_links" in updates:
-            serialized_links = self._serialize_external_links(updates["external_links"])
+            serialized_links = serialize_external_links(updates["external_links"])
             if contact:
                 if serialized_links is None:
                     contact_properties.pop("external_links", None)
                 else:
                     contact_properties["external_links"] = serialized_links
             participant.external_links = serialized_links
-            linkedin_url = self._extract_linkedin_url(serialized_links)
+            linkedin_url = extract_linkedin_url(serialized_links)
             if linkedin_url:
+                # LinkedIn may arrive inside the generic external_links payload.
+                # Mirror it to the first-class field so later identity matching can
+                # find the same stakeholder without parsing the links blob.
                 if contact:
                     contact.linkedin_url = linkedin_url
                 participant.linkedin_url = linkedin_url
@@ -515,7 +514,7 @@ class StakeholderWriteService:
         if not integration:
             return
 
-        email_normalized = email.lower().strip()
+        email_normalized = normalize_email(email) or ""
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.deal_id) == deal_id,
             col(CRMDealParticipant.integration_id) == integration.integration_id,
@@ -531,45 +530,49 @@ class StakeholderWriteService:
             participant.synced_at = now
             participant.last_seen_at = now
 
-    @staticmethod
-    def _serialize_external_links(external_links: list | None) -> list[dict] | None:
-        """Serialize external links to JSON-friendly dicts.
-
-        The service stores external links as JSON-like payloads; callers can pass
-        either DTO instances or raw dictionaries from form payloads.
-        """
-        if external_links is None:
+    async def _find_contact_by_linkedin_url(self, linkedin_url: str | None) -> CRMContact | None:
+        """Find an org-owned contact by normalized LinkedIn URL."""
+        linkedin_normalized = clean_optional_string(linkedin_url)
+        if not linkedin_normalized:
             return None
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            func.lower(func.trim(col(CRMContact.linkedin_url))) == linkedin_normalized.lower(),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
 
-        serialized: list[dict] = []
-        for link in external_links:
-            if isinstance(link, dict):
-                serialized.append(link)
-                continue
+    async def _find_contact_by_email(self, email: str | None) -> CRMContact | None:
+        """Find an active org-owned contact by normalized email."""
+        email_normalized = normalize_email(email)
+        if not email_normalized:
+            return None
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            func.lower(func.trim(col(CRMContact.email))) == email_normalized,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
 
-            added_at = getattr(link, "added_at", None)
-            serialized.append(
-                {
-                    "platform": link.platform,
-                    "url": link.url,
-                    "label": link.label,
-                    "added_at": added_at.isoformat() if added_at else None,
-                }
-            )
-
-        return serialized
+    async def _find_contact_by_id(self, contact_id: UUID | None) -> CRMContact | None:
+        """Find an active org-owned contact by ID from a caller payload."""
+        if not contact_id:
+            return None
+        stmt = select(CRMContact).where(
+            col(CRMContact.contact_id) == contact_id,
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     @staticmethod
-    def _extract_linkedin_url(external_links: list[dict] | None) -> str | None:
-        """Keep LinkedIn first-class without dropping the full external link list."""
-        for link in external_links or []:
-            platform = str(link.get("platform") or link.get("type") or "").lower()
-            url = link.get("url")
-            if not isinstance(url, str) or not url.strip():
-                continue
-            if platform == "linkedin" or "linkedin." in url.lower():
-                return url.strip()
-        return None
+    def _contacts_conflict(*contacts: CRMContact | None) -> bool:
+        """Return true when strong identity fields point at different contacts."""
+        contact_ids = {contact.contact_id for contact in contacts if contact is not None}
+        return len(contact_ids) > 1
 
     async def get_stakeholder(
         self, deal_id: UUID, participant_id: UUID
@@ -580,124 +583,37 @@ class StakeholderWriteService:
             participant_id=participant_id,
         )
 
-    async def approve_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
-        """Approve a PENDING stakeholder for deal matching.
-
-        Args:
-            deal_id: The deal ID.
-            participant_id: The participant to approve.
-
-        Returns:
-            The updated stakeholder.
-
-        Raises:
-            StakeholdersServiceError: If stakeholder not found or already approved.
-        """
-        stakeholder = await self.get_stakeholder(deal_id, participant_id)
-        if not stakeholder:
-            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
-
-        if stakeholder.approval_status == ApprovalStatus.APPROVED.value:
-            raise StakeholdersServiceError("Stakeholder is already approved", status_code=400)
-
-        stakeholder.approval_status = ApprovalStatus.APPROVED.value
-        stakeholder.updated_at = datetime.now(UTC)
-        await self._finish_write(stakeholder)
-        contact = await self._get_participant_contact(stakeholder)
-        return self._participant_detail(stakeholder, contact=contact)
-
-    async def reject_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
-        """Reject a stakeholder to exclude from deal matching.
-
-        Args:
-            deal_id: The deal ID.
-            participant_id: The participant to reject.
-
-        Returns:
-            The updated stakeholder.
-
-        Raises:
-            StakeholdersServiceError: If stakeholder not found or already rejected.
-        """
-        stakeholder = await self.get_stakeholder(deal_id, participant_id)
-        if not stakeholder:
-            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
-
-        if stakeholder.approval_status == ApprovalStatus.REJECTED.value:
-            raise StakeholdersServiceError("Stakeholder is already rejected", status_code=400)
-
-        stakeholder.approval_status = ApprovalStatus.REJECTED.value
-        stakeholder.updated_at = datetime.now(UTC)
-        await self._finish_write(stakeholder)
-        contact = await self._get_participant_contact(stakeholder)
-        return self._participant_detail(stakeholder, contact=contact)
-
     async def remove_stakeholder(self, deal_id: UUID, participant_id: UUID) -> StakeholderDetail:
-        """Remove an APPROVED stakeholder from the deal.
-
-        This marks the stakeholder as REMOVED, excluding them from deal matching
-        and stakeholder lists. Unlike REJECTED, REMOVED indicates the stakeholder
-        was previously active but has been removed by the user.
-
-        Args:
-            deal_id: The deal ID.
-            participant_id: The participant to remove.
-
-        Returns:
-            The updated stakeholder with REMOVED status.
-
-        Raises:
-            StakeholdersServiceError: If stakeholder not found or not in APPROVED status.
-        """
+        """Soft-delete a stakeholder participant from the deal."""
         stakeholder = await self.get_stakeholder(deal_id, participant_id)
         if not stakeholder:
             raise StakeholdersServiceError("Stakeholder not found", status_code=404)
 
-        if stakeholder.approval_status == ApprovalStatus.REMOVED.value:
-            raise StakeholdersServiceError("Stakeholder is already removed", status_code=400)
-
-        if stakeholder.approval_status != ApprovalStatus.APPROVED.value:
-            raise StakeholdersServiceError(
-                "Only approved stakeholders can be removed", status_code=400
-            )
-
-        stakeholder.approval_status = ApprovalStatus.REMOVED.value
         stakeholder.is_deleted = True
         stakeholder.updated_at = datetime.now(UTC)
 
-        # Remove any existing STAKEHOLDER_REMOVED timeline event for this stakeholder
-        # (handles re-add then re-remove scenario without violating unique constraint)
-        # Uses raw DELETE to avoid ORM flush/lazy-load issues (MissingGreenlet)
-        from sqlalchemy import delete
-        from src.domain.models.organisation_tables.sync.timeline_models import (
-            DealTimelineEvent,
+        contact = await self._get_participant_contact(stakeholder)
+        await ActivityFeedProjectionService(
+            self.session,
+            self.organisation_id,
+        ).upsert_stakeholder_removed(
+            stakeholder,
+            contact=contact,
+            actor_user_id=self.user_id,
+            source="api",
+            source_label="API",
+            created_via="remove_stakeholder",
         )
-
-        delete_stmt = delete(DealTimelineEvent).where(
-            col(DealTimelineEvent.deal_id) == deal_id,
-            col(DealTimelineEvent.event_type) == TimelineEventType.STAKEHOLDER_REMOVED,
-            col(DealTimelineEvent.source_record_id) == str(stakeholder.participant_id),
-        )
-        await self.session.execute(delete_stmt)
-        # Refresh stakeholder after DELETE to prevent expired-attribute lazy-load errors
-        await self.session.refresh(stakeholder)
-
-        # Recreate the removal event in the same flush context so downstream
-        # subscribers see a single ordered timeline sequence per update.
-        timeline_event = build_stakeholder_timeline_event(
-            organisation_id=self.organisation_id,
-            deal_id=deal_id,
-            stakeholder=self._participant_timeline_stakeholder(stakeholder),
-            event_type=TimelineEventType.STAKEHOLDER_REMOVED,
-        )
-        self.session.add(timeline_event)
 
         await self._finish_write(stakeholder)
-        contact = await self._get_participant_contact(stakeholder)
         return self._participant_detail(stakeholder, contact=contact)
 
     async def create_stakeholder(
-        self, deal_id: UUID, request: CreateStakeholderRequest
+        self,
+        deal_id: UUID,
+        request: CreateStakeholderRequest,
+        *,
+        context: StakeholderWriteContext | None = None,
     ) -> StakeholderDetail:
         """Manually create a new stakeholder for a deal.
 
@@ -711,91 +627,136 @@ class StakeholderWriteService:
         Raises:
             StakeholdersServiceError: If email already exists for this deal.
         """
+        email_normalized = normalize_email(request.email)
+        name = clean_optional_string(request.name)
+        linkedin_url = clean_optional_string(request.linkedin_url)
+
+        def hydrate_from_contact(contact: CRMContact) -> None:
+            """Use a resolved contact as the canonical profile source for create."""
+            nonlocal email_normalized, name, linkedin_url
+
+            contact_properties = dict(contact.properties or {})
+            contact_name = (
+                contact.full_name
+                or " ".join(filter(None, [contact.first_name, contact.last_name]))
+                or None
+            )
+            email_normalized = normalize_email(contact.email) or email_normalized
+            name = contact_name or name
+            linkedin_url = linkedin_url or contact.linkedin_url
+            request.job_title = request.job_title or contact.job_title
+            request.phone_number = request.phone_number or contact.phone or contact.mobile_phone
+            request.department = request.department or contact_properties.get("department")
+
+        # Resolve strong claims independently. Agent tools may overfill contact_id,
+        # email, and LinkedIn; rejecting contradictions here prevents silent CRM
+        # identity corruption before any participant/contact write happens.
+        contact_by_id = await self._find_contact_by_id(request.contact_id)
+        if request.contact_id and not contact_by_id:
+            raise StakeholdersServiceError("Contact not found", status_code=404)
+        contact_by_email = (
+            await self._find_contact_by_email(email_normalized) if email_normalized else None
+        )
+        contact_by_linkedin = (
+            await self._find_contact_by_linkedin_url(linkedin_url) if linkedin_url else None
+        )
+        if self._contacts_conflict(contact_by_id, contact_by_email, contact_by_linkedin):
+            raise StakeholdersServiceError(
+                "Conflicting stakeholder identity fields resolve to different contacts",
+                status_code=409,
+                data={
+                    key: str(contact.contact_id)
+                    for key, contact in {
+                        "contact_id": contact_by_id,
+                        "email": contact_by_email,
+                        "linkedin_url": contact_by_linkedin,
+                    }.items()
+                    if contact is not None
+                },
+            )
+
+        contact = contact_by_id or contact_by_email or contact_by_linkedin
+        if contact:
+            # A resolved CRM contact wins over manually typed profile fragments.
+            # It gives the participant a stable contact link for future
+            # research/profile refreshes.
+            hydrate_from_contact(contact)
+
         # Guardrail: reject internal team members
-        email_normalized = request.email.lower().strip()
-        if await self._is_internal_email(email_normalized):
+        if email_normalized and await self._is_internal_email(email_normalized):
             raise StakeholdersServiceError(
                 "This email belongs to an internal team member and cannot be added "
                 "as a stakeholder. Stakeholders must be external contacts only.",
                 status_code=403,
             )
 
-        external_links_data = self._serialize_external_links(request.external_links)
-        linkedin_url = request.linkedin_url or self._extract_linkedin_url(external_links_data)
-
         # Contact owns durable profile fields; participant keeps a deal-local
         # snapshot for list reads.
-        contact_id = await self._ensure_contact_for_stakeholder(
-            email=email_normalized,
-            name=request.name,
-            job_title=request.job_title,
-            phone_number=request.phone_number,
-            linkedin_url=linkedin_url,
-            department=request.department,
-            external_links=external_links_data,
-        )
+        contact_id = contact.contact_id if contact else None
+        if email_normalized and not contact:
+            contact = await self._ensure_contact_for_stakeholder(
+                email=email_normalized,
+                name=name,
+                job_title=request.job_title,
+                phone_number=request.phone_number,
+                linkedin_url=linkedin_url,
+                department=request.department,
+                external_links=None,
+            )
+            if contact:
+                hydrate_from_contact(contact)
+                contact_id = contact.contact_id
 
         existing_participant = await self._find_contact_participant(
             deal_id=deal_id,
             email=email_normalized,
             contact_id=contact_id,
+            linkedin_url=linkedin_url,
             include_deleted=True,
         )
         if existing_participant:
-            status = existing_participant.approval_status
-            conflict_data = {
-                "participant_id": str(existing_participant.participant_id),
-                "approval_status": status.value if hasattr(status, "value") else str(status),
-                "is_deleted": existing_participant.is_deleted,
-            }
-
-            if status == ApprovalStatus.APPROVED.value and not existing_participant.is_deleted:
-                raise StakeholdersServiceError(
-                    "A stakeholder with this email already exists for this deal",
-                    status_code=409,
-                    data=conflict_data,
-                )
-
-            if status == ApprovalStatus.REMOVED.value or existing_participant.is_deleted:
-                updates = request.model_dump(exclude_unset=True)
+            # Existing stakeholder identity is an upsert target. Keep the row ID
+            # stable so activity and research references do not split across rows.
+            updates = request.model_dump(exclude_unset=True)
+            if email_normalized:
                 updates["email"] = email_normalized
-                self._apply_contact_profile_updates(
-                    contact=await self._get_participant_contact(existing_participant),
-                    participant=existing_participant,
-                    updates=updates,
-                )
-                self._apply_participant_behavior_updates(existing_participant, updates)
-                existing_participant.related_local_id = (
-                    existing_participant.related_local_id or contact_id
-                )
-                existing_participant.related_email = email_normalized
-                existing_participant.participant_source = StakeholderSource.MANUAL.value
-                existing_participant.approval_status = ApprovalStatus.APPROVED.value
-                existing_participant.is_deleted = False
-                existing_participant.updated_at = datetime.now(UTC)
-                await self._finish_write(existing_participant)
-                contact = await self._get_participant_contact(existing_participant)
-                return self._participant_detail(existing_participant, contact=contact)
-
-            # Stakeholder exists but is REJECTED or soft-deleted
-            # Let the user decide — they can re-approve via the approve endpoint
-            raise StakeholdersServiceError(
-                f"Stakeholder exists but is currently {conflict_data['approval_status']}. "
-                "Use the approve endpoint to reactivate it.",
-                status_code=409,
-                data=conflict_data,
+            if name:
+                updates["name"] = name
+            self._apply_contact_profile_updates(
+                contact=await self._get_participant_contact(existing_participant),
+                participant=existing_participant,
+                updates=updates,
             )
+            self._apply_participant_behavior_updates(existing_participant, updates)
+            existing_participant.related_local_id = (
+                existing_participant.related_local_id or contact_id
+            )
+            existing_participant.related_email = (
+                email_normalized or existing_participant.related_email
+            )
+            existing_participant.participant_source = (
+                StakeholderSource.CRM.value if contact else StakeholderSource.MANUAL.value
+            )
+            if contact and contact.contact_research:
+                existing_participant.stakeholder_research = contact.contact_research
+                existing_participant.last_researched_at = contact.last_researched_at
+            existing_participant.approval_status = ACTIVE_STAKEHOLDER_STATUS
+            existing_participant.is_deleted = False
+            existing_participant.updated_at = datetime.now(UTC)
+            await self._finish_write(existing_participant)
+            contact = await self._get_participant_contact(existing_participant)
+            return self._participant_detail(existing_participant, contact=contact)
 
         participant = await self._ensure_deal_participant(
             deal_id=deal_id,
             contact_id=contact_id,
             email=email_normalized,
-            name=request.name,
+            name=name,
             job_title=request.job_title,
             phone_number=request.phone_number,
             linkedin_url=linkedin_url,
             department=request.department,
-            external_links=external_links_data,
+            external_links=None,
             stance=request.stance.value if hasattr(request.stance, "value") else request.stance,
             decision_power=(
                 request.decision_power.value
@@ -804,22 +765,30 @@ class StakeholderWriteService:
             ),
             motivation=request.motivation,
             pain_points=request.pain_points,
+            participant_source=(
+                StakeholderSource.CRM.value if contact else StakeholderSource.MANUAL.value
+            ),
         )
         if not participant:
             raise StakeholdersServiceError(
                 "Unable to create stakeholder participant for this deal",
                 status_code=500,
             )
+        if contact and contact.contact_research:
+            participant.stakeholder_research = contact.contact_research
+            participant.last_researched_at = contact.last_researched_at
 
-        # Persist the add-event so downstream consumers can replay audit history
-        # and rebuild timelines without inferring it from row timestamps alone.
-        timeline_event = build_stakeholder_timeline_event(
-            organisation_id=self.organisation_id,
-            deal_id=deal_id,
-            stakeholder=self._participant_timeline_stakeholder(participant),
-            event_type=TimelineEventType.STAKEHOLDER_ADDED,
+        await ActivityFeedProjectionService(
+            self.session,
+            self.organisation_id,
+        ).upsert_stakeholder_added(
+            participant,
+            contact=contact,
+            actor_user_id=context.actor_user_id if context else self.user_id,
+            source=context.source if context else None,
+            source_label=context.source_label if context else None,
+            created_via=context.created_via if context else None,
         )
-        self.session.add(timeline_event)
 
         await self._finish_write(participant)
 
@@ -876,7 +845,8 @@ class StakeholderWriteService:
         added: list[StakeholderDetail] = []
         skipped: list[SkippedContact] = []
 
-        # Fetch all requested contacts
+        # Fetch all requested contacts through the org boundary; contact IDs in the
+        # client payload are not trusted across tenants.
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.contact_id).in_(contact_ids),
@@ -895,7 +865,7 @@ class StakeholderWriteService:
         existing_result = await self.session.execute(existing_stmt)
         existing_rows = list(existing_result.scalars().all())
         existing_emails = {
-            row.related_email.lower().strip() for row in existing_rows if row.related_email
+            email for row in existing_rows if (email := normalize_email(row.related_email))
         }
         existing_contact_ids = {
             row.related_local_id for row in existing_rows if row.related_local_id
@@ -923,7 +893,7 @@ class StakeholderWriteService:
 
             # De-duplicate by email first because it is the matching key in all
             # discovery and dedupe paths.
-            contact_email_normalized = contact.email.lower().strip()
+            contact_email_normalized = normalize_email(contact.email)
             if contact_email_normalized in existing_emails:
                 skipped.append(
                     SkippedContact(
@@ -944,11 +914,23 @@ class StakeholderWriteService:
                 )
                 continue
 
+            user_id = self.user_id
+            if user_id is None:
+                skipped.append(
+                    SkippedContact(
+                        contact_id=contact_id,
+                        reason="Unable to create stakeholder participant",
+                    )
+                )
+                continue
+
             if internal_integration_id is None:
+                # Resolve the internal integration lazily so an all-skipped batch does
+                # not create CRM setup side effects.
                 setup_result = await InternalCRMSetupService(
                     self.session,
                     self.organisation_id,
-                    self.user_id,
+                    user_id,
                 ).setup_internal_crm(commit=False)
                 internal_integration_id = setup_result.integration.integration_id
             contact = await self._ensure_internal_contact_from_selected_contact(
@@ -978,7 +960,7 @@ class StakeholderWriteService:
                 if isinstance(properties.get("external_links"), list)
                 else None,
                 participant_source=StakeholderSource.CRM.value,
-                approval_status=ApprovalStatus.APPROVED.value,
+                approval_status=ACTIVE_STAKEHOLDER_STATUS,
             )
             if not participant:
                 skipped.append(
@@ -989,19 +971,23 @@ class StakeholderWriteService:
                 )
                 continue
 
-            # Emit timeline event so stakeholder additions are recoverable in activity
-            # feeds and support incident debugging.
-            timeline_event = build_stakeholder_timeline_event(
-                organisation_id=self.organisation_id,
-                deal_id=deal_id,
-                stakeholder=self._participant_timeline_stakeholder(participant),
-                event_type=TimelineEventType.STAKEHOLDER_ADDED,
+            await ActivityFeedProjectionService(
+                self.session,
+                self.organisation_id,
+            ).upsert_stakeholder_added(
+                participant,
+                contact=contact,
+                actor_user_id=self.user_id,
+                source="api",
+                source_label="API",
+                created_via="stakeholder_add_contacts",
             )
-            self.session.add(timeline_event)
             added.append(self._participant_detail(participant, contact=contact))
 
-            # Track for response - add email to existing set
-            existing_emails.add(contact.email.lower().strip())
+            # These membership sets are batch-local uniqueness state; without them,
+            # duplicate IDs later in the same request could create a second row.
+            if contact_email_normalized:
+                existing_emails.add(contact_email_normalized)
             existing_contact_ids.add(contact_id)
 
         await self._finish_write()
