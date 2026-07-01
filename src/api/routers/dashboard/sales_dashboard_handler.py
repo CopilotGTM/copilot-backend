@@ -24,9 +24,12 @@ from src.api.schemas.sales_dashboard_models import (
     UpdateSalesDashboardPreferencesRequest,
 )
 from src.api.utils.http_response import Response
+from src.infra.utils.logger import get_logger
+from src.service.dashboard.dashboard_snapshot_service import DashboardSnapshotService
 from src.service.dashboard.sales_dashboard_service import SalesDashboardService
 
 sales_dashboard_router = APIRouter()
+logger = get_logger("sales_dashboard_handler")
 
 
 def get_sales_dashboard_query_params(
@@ -65,13 +68,25 @@ async def get_sales_dashboard(
     master_session: AsyncSession = Depends(get_master_async_session),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[SalesDashboardResponse]:
-    service = SalesDashboardService(
+    snapshot_service = DashboardSnapshotService(
         org_session=org_session,
         master_session=master_session,
         organisation_id=user.organisation_id,
-        user_id=user.user_id,
     )
-    payload = await service.get_sales_dashboard(query)
+    try:
+        payload = await snapshot_service.get_sales_dashboard(query, user_id=user.user_id)
+    except Exception:
+        logger.exception(
+            "Snapshot-backed Sales Dashboard read failed; falling back to live render",
+            extra={"organisation_id": str(user.organisation_id), "dashboard_key": "sales"},
+        )
+        service = SalesDashboardService(
+            org_session=org_session,
+            master_session=master_session,
+            organisation_id=user.organisation_id,
+            user_id=user.user_id,
+        )
+        payload = await service.get_sales_dashboard(query)
     return Response.success_response(
         message="Sales Dashboard retrieved successfully",
         data=payload,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from src.api.schemas.sales_dashboard_models import SalesDashboardWidget, WidgetEmptyState
+from src.contracts.dashboard.sales_dashboard import SalesDashboardWidget, WidgetEmptyState
 
 
 def empty_widget(

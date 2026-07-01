@@ -60,6 +60,12 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="0 20 * * *",
         max_lag_seconds=90 * 60,
     ),
+    "sales-dashboard-snapshot": ScheduledJob(
+        name="sales-dashboard-snapshot",
+        task_name="dashboard.refresh_sales_snapshots_all_orgs",
+        schedule="15 1 * * *",
+        max_lag_seconds=26 * 60 * 60,
+    ),
 }
 
 

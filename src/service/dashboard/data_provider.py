@@ -650,8 +650,8 @@ class SalesDashboardDataProvider:
                 d_c.amount.label("deal_amount"),
                 d_c.owner_name,
                 h_c.entered_at,
-                h_c.stage_external_id,
-                h_c.from_stage_external_id,
+                h_c.stage_id,
+                h_c.from_stage_id,
                 to_stage.c.label.label("to_stage_label"),
                 to_stage.c.name.label("to_stage_name"),
                 from_stage.c.label.label("from_stage_label"),
@@ -735,9 +735,15 @@ class SalesDashboardDataProvider:
         result = await self.org_session.execute(stmt)
         history: list[StageMovementHistory] = []
         for row in result.all():
-            to_stage_label = row.to_stage_label or row.to_stage_name or row.stage_external_id
+            to_stage_label = (
+                row.to_stage_label
+                or row.to_stage_name
+                or (str(row.stage_id) if row.stage_id else None)
+            )
             from_stage_label = (
-                row.from_stage_label or row.from_stage_name or row.from_stage_external_id
+                row.from_stage_label
+                or row.from_stage_name
+                or (str(row.from_stage_id) if row.from_stage_id else None)
             )
             history.append(
                 StageMovementHistory(

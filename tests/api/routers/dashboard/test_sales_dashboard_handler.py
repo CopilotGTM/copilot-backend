@@ -17,7 +17,7 @@ from src.api.schemas.sales_dashboard_models import SalesDashboardPreferences, Sa
 def test_sales_dashboard_route_returns_success(
     monkeypatch,
 ) -> None:
-    async def fake_get_sales_dashboard(self, query):
+    async def fake_get_sales_dashboard(self, query, *, user_id):
         return SalesDashboardResponse(
             dashboard_id="sales",
             schema_version=1,
@@ -55,7 +55,8 @@ def test_sales_dashboard_route_returns_success(
     app.dependency_overrides[get_master_async_session] = override_master_session
     app.dependency_overrides[rate_limit_user_read] = override_rate_limit
     monkeypatch.setattr(
-        "src.service.dashboard.sales_dashboard_service.SalesDashboardService.get_sales_dashboard",
+        "src.service.dashboard.dashboard_snapshot_service."
+        "DashboardSnapshotService.get_sales_dashboard",
         fake_get_sales_dashboard,
     )
 
@@ -65,6 +66,52 @@ def test_sales_dashboard_route_returns_success(
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["dashboard_id"] == "sales"
+
+
+def test_sales_dashboard_route_uses_snapshot_service(monkeypatch) -> None:
+    async def fake_get_sales_dashboard(self, query, *, user_id):
+        assert user_id == user_ids.user_id
+        return SalesDashboardResponse(
+            dashboard_id="sales",
+            schema_version=1,
+            title="Sales Dashboard",
+            generated_at=datetime(2026, 5, 6, tzinfo=UTC),
+            effective_filters={"date_range": "last_90_days"},
+            sections=[],
+            warnings=[],
+        )
+
+    user_ids = UserIDs(user_id=uuid4(), organisation_id=uuid4())
+    app = FastAPI()
+    app.include_router(sales_dashboard_router, prefix="/users/dashboard")
+
+    def override_user() -> UserIDs:
+        return user_ids
+
+    async def override_org_session():
+        yield object()
+
+    async def override_master_session():
+        yield object()
+
+    async def override_rate_limit() -> None:
+        return None
+
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_org_async_session] = override_org_session
+    app.dependency_overrides[get_master_async_session] = override_master_session
+    app.dependency_overrides[rate_limit_user_read] = override_rate_limit
+    monkeypatch.setattr(
+        "src.service.dashboard.dashboard_snapshot_service."
+        "DashboardSnapshotService.get_sales_dashboard",
+        fake_get_sales_dashboard,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/users/dashboard/sales")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["dashboard_id"] == "sales"
 
 
 def test_sales_dashboard_preferences_routes_return_success(monkeypatch) -> None:

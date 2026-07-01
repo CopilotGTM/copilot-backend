@@ -5,6 +5,10 @@ deal-worker tasks to stable names for queue dispatch. Keep imports explicit so
 worker startup fails loudly if a task module stops importing.
 """
 
+from .dashboard_snapshot_tasks import (
+    refresh_sales_snapshot_org_task,
+    refresh_sales_snapshots_all_orgs_task,
+)
 from .deal_asset_email_attachment_tasks import (
     extract_email_attachments_all_orgs_task,
     extract_email_attachments_deal_task,
@@ -97,4 +101,6 @@ __all__ = [
     "extract_email_attachments_all_orgs_task",
     "extract_email_attachments_org_task",
     "extract_email_attachments_deal_task",
+    "refresh_sales_snapshots_all_orgs_task",
+    "refresh_sales_snapshot_org_task",
 ]

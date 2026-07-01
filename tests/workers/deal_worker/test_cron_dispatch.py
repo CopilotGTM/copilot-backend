@@ -41,6 +41,18 @@ def test_get_scheduled_job_returns_nightly_meeting_bot_fallback_definition() -> 
     assert job.kwargs == {}
 
 
+def test_get_scheduled_job_returns_sales_dashboard_snapshot_definition() -> None:
+    """Sales dashboard snapshots should refresh once per day."""
+    job = get_scheduled_job("sales-dashboard-snapshot")
+
+    assert job.name == "sales-dashboard-snapshot"
+    assert job.task_name == "dashboard.refresh_sales_snapshots_all_orgs"
+    assert job.schedule == "15 1 * * *"
+    assert job.max_lag_seconds == 26 * 60 * 60
+    assert job.queue == "deal"
+    assert job.kwargs == {}
+
+
 def test_transcript_fetch_pipeline_schedule_is_disabled() -> None:
     """Recall webhooks now materialize transcripts directly; polling stays disabled."""
     with pytest.raises(KeyError):

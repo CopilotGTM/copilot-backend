@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.schemas.sales_dashboard_models import (
+from src.contracts.dashboard.sales_dashboard import (
     SalesDashboardDateRange,
     SalesDashboardFilterSet,
     SalesDashboardPreferences,
@@ -46,7 +46,7 @@ class SalesDashboardService:
         org_session: AsyncSession | None,
         master_session: AsyncSession,
         organisation_id,
-        user_id,
+        user_id=None,
     ) -> None:
         self.org_session = org_session
         self.master_session = master_session
@@ -151,6 +151,8 @@ class SalesDashboardService:
         return user
 
     async def _load_saved_preferences(self) -> dict[str, Any]:
+        if self.user_id is None:
+            return {}
         user = await self._get_current_user_row()
         return extract_sales_dashboard_preferences(user.preferences)
 
