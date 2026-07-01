@@ -412,6 +412,31 @@ def test_list_deals_success(client: TestClient, deals_dependency_overrides):
     assert len(data["items"]) == 3
 
 
+def test_list_deals_does_not_expose_deal_health(client: TestClient, deals_dependency_overrides):
+    """Deal health is detail/AI context, not a deal-list column."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Health Hidden Deal",
+            deal_summary_data={
+                "data": {
+                    "deal_health": "AT_RISK",
+                    "deal_health_reason": "Procurement is blocked.",
+                }
+            },
+        )
+    )
+
+    resp = client.get("/users/crm/deals")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert "deal_health" not in item
+    assert "deal_health_reason" not in item
+
+
 def test_list_deals_pagination(client: TestClient, deals_dependency_overrides):
     """Test pagination with limit and page number."""
     deals_service = deals_dependency_overrides["deals_service"]
@@ -538,6 +563,33 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     item = data["items"][0]
     assert len(item["owner_details"]) == 1
     assert item["owner_details"][0]["name"] == "John Sales"
+
+
+def test_list_deals_includes_default_column_fields(client: TestClient, deals_dependency_overrides):
+    """List rows should expose fields referenced by backend default deal columns."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    contact_id = uuid4()
+    last_activity_at = datetime(2026, 6, 30, 15, 45, tzinfo=UTC)
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Default Column Deal",
+            primary_contact_id=contact_id,
+            primary_contact_name="Jane Buyer",
+            primary_contact_email="jane@example.com",
+            last_activity_at=last_activity_at,
+        )
+    )
+
+    resp = client.get("/users/crm/deals")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert item["primary_contact_id"] == str(contact_id)
+    assert item["primary_contact_name"] == "Jane Buyer"
+    assert item["primary_contact_email"] == "jane@example.com"
+    assert item["last_activity_at"] == "2026-06-30T15:45:00Z"
 
 
 def test_list_deals_search_matches_company_name(client: TestClient, deals_dependency_overrides):
@@ -1016,13 +1068,16 @@ def test_list_deals_hides_active_import_job_links(
         integration_id=None,
         name="Reconnect Deal",
         amount=1000.0,
+        predicted_amount=None,
         currency="USD",
         deal_status=CRMDealStatus.OPEN,
         probability=0.5,
         close_date=None,
         expected_close_date=None,
+        stage_id=None,
         stage_name="Discovery",
         stage_label="Discovery",
+        pipeline_id=None,
         pipeline_name="Default",
         pipeline_label="Default",
         owner_name=None,
