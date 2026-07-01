@@ -113,13 +113,21 @@ class StakeholderJobVisibilityService:
         await self.session.commit()
 
         try:
-            await send_deal_task_chain_async(
+            celery_chain_id = await send_deal_task_chain_async(
                 self._build_task_chain(jobs, deal_id),
                 queue="deal",
             )
         except Exception:
             await self._mark_jobs_failed(jobs, "Failed to enqueue stakeholder processing chain")
             raise
+
+        for job in jobs:
+            job.job_metadata = {
+                **(job.job_metadata or {}),
+                "enqueue_status": "enqueued",
+                "celery_chain_id": celery_chain_id,
+            }
+        await self.session.commit()
 
         logger.info(
             "Created stakeholder processing jobs org=%s deal=%s stakeholder=%s jobs=%s",
@@ -153,6 +161,7 @@ class StakeholderJobVisibilityService:
             status=JobStatus.PENDING,
             job_metadata={
                 "trigger": "stakeholder_created",
+                "enqueue_status": "pending",
                 "operation_group_id": operation_group_id,
                 "stakeholder_id": str(stakeholder_id),
                 "participant_id": str(stakeholder_id),

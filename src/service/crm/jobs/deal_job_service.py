@@ -19,7 +19,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.client import send_deal_task_async
+from src.workers.deal_worker.client import send_deal_task_async, send_deal_task_chain_async
 
 logger = get_logger(__name__)
 
@@ -34,6 +34,18 @@ STAKEHOLDER_PROCESSING_JOB_TYPES = {
     DealJobType.DEAL_EMAIL_REMATCH,
     DealJobType.DEAL_CALENDAR_REMATCH,
     DealJobType.STAKEHOLDER_SYNC,
+}
+
+STAKEHOLDER_PROCESSING_ORDER = (
+    DealJobType.DEAL_EMAIL_REMATCH,
+    DealJobType.DEAL_CALENDAR_REMATCH,
+    DealJobType.STAKEHOLDER_SYNC,
+)
+
+STAKEHOLDER_PROCESSING_TASK_NAMES = {
+    DealJobType.DEAL_EMAIL_REMATCH: "deal.match_email_to_deals",
+    DealJobType.DEAL_CALENDAR_REMATCH: "deal.match_calendar_to_deals",
+    DealJobType.STAKEHOLDER_SYNC: "stakeholder.sync_deal_stakeholders",
 }
 
 # Deal-level job types (not tied to a specific event)
@@ -55,6 +67,41 @@ def _job_response(job: DealJobs) -> dict:
         "job_type": _enum_value(job.job_type),
         "status": _enum_value(job.status),
     }
+
+
+def _metadata(job: DealJobs) -> dict:
+    value = job.job_metadata
+    return value if isinstance(value, dict) else {}
+
+
+def _is_unenqueued_stakeholder_group_job(job: DealJobs) -> bool:
+    metadata = _metadata(job)
+    return (
+        job.job_type in STAKEHOLDER_PROCESSING_JOB_TYPES
+        and metadata.get("trigger") == "stakeholder_created"
+        and bool(metadata.get("operation_group_id"))
+        and metadata.get("enqueue_status") != "enqueued"
+    )
+
+
+def _stakeholder_task_kwargs(job: DealJobs) -> dict:
+    if not job.deal_id:
+        raise ValueError("Stakeholder processing job is missing deal_id")
+
+    org_id = str(job.organisation_id)
+    deal_id = str(job.deal_id)
+    job_id = str(job.job_id)
+    if job.job_type == DealJobType.STAKEHOLDER_SYNC:
+        return {
+            "organisation_id": org_id,
+            "deal_id": deal_id,
+            "change_type": "MANUAL_REFRESH",
+            "integration_id": None,
+            "integration_type": None,
+            "trigger_rematching": False,
+            "job_id": job_id,
+        }
+    return {"organisation_id": org_id, "deal_id": deal_id, "job_id": job_id}
 
 
 class DealJobServiceError(Exception):
@@ -229,13 +276,79 @@ class DealJobService:
         )
         result = await self.session.execute(stmt)
         jobs = result.scalars().all()
+        jobs = await self._recover_unenqueued_stakeholder_processing_groups(jobs)
 
         return [
             _job_response(job)
             for job in jobs
             if job.job_type in STAKEHOLDER_PROCESSING_JOB_TYPES
             and job.status in ACTIVE_JOB_STATUSES
+            and _metadata(job).get("enqueue_status", "enqueued") == "enqueued"
         ]
+
+    async def _recover_unenqueued_stakeholder_processing_groups(
+        self, jobs: list[DealJobs]
+    ) -> list[DealJobs]:
+        groups: dict[str, list[DealJobs]] = {}
+        for job in jobs:
+            if _is_unenqueued_stakeholder_group_job(job):
+                groups.setdefault(str(_metadata(job)["operation_group_id"]), []).append(job)
+
+        for operation_group_id, group_jobs in groups.items():
+            if len(group_jobs) != len(STAKEHOLDER_PROCESSING_ORDER):
+                logger.warning(
+                    "Stakeholder processing group is incomplete; hiding from active jobs org=%s group=%s jobs=%s",
+                    self.organisation_id,
+                    operation_group_id,
+                    [str(job.job_id) for job in group_jobs],
+                )
+                continue
+
+            by_type = {job.job_type: job for job in group_jobs}
+            if any(job_type not in by_type for job_type in STAKEHOLDER_PROCESSING_ORDER):
+                continue
+
+            ordered_jobs = [by_type[job_type] for job_type in STAKEHOLDER_PROCESSING_ORDER]
+            try:
+                celery_chain_id = await send_deal_task_chain_async(
+                    [
+                        {
+                            "task_name": STAKEHOLDER_PROCESSING_TASK_NAMES[job.job_type],
+                            "kwargs": _stakeholder_task_kwargs(job),
+                        }
+                        for job in ordered_jobs
+                    ],
+                    queue="deal",
+                )
+            except Exception:
+                for job in ordered_jobs:
+                    job.status = JobStatus.FAILED
+                    job.error_message = "Failed to enqueue stakeholder processing chain"
+                    job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
+                await self.session.commit()
+                logger.exception(
+                    "Failed to recover unenqueued stakeholder processing group org=%s group=%s",
+                    self.organisation_id,
+                    operation_group_id,
+                )
+                continue
+
+            for job in ordered_jobs:
+                job.job_metadata = {
+                    **_metadata(job),
+                    "enqueue_status": "enqueued",
+                    "celery_chain_id": celery_chain_id,
+                    "enqueue_recovered": True,
+                }
+            await self.session.commit()
+            logger.warning(
+                "Recovered unenqueued stakeholder processing group org=%s group=%s jobs=%s",
+                self.organisation_id,
+                operation_group_id,
+                [str(job.job_id) for job in ordered_jobs],
+            )
+
+        return jobs
 
     async def get_active_stakeholder_research_job(
         self,

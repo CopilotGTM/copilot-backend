@@ -75,12 +75,15 @@ async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(m
     assert all(job.stakeholder_id == stakeholder_id for job in jobs)
     assert session.added == jobs
     assert session.committed is True
+    assert session.commit_count == 2
 
     operation_group_ids = {job.job_metadata["operation_group_id"] for job in jobs}
     assert len(operation_group_ids) == 1
     for job in jobs:
         assert UUID(job.job_metadata["operation_group_id"])
         assert job.job_metadata["trigger"] == "stakeholder_created"
+        assert job.job_metadata["enqueue_status"] == "enqueued"
+        assert UUID(job.job_metadata["celery_chain_id"])
         assert job.job_metadata["deal_id"] == str(deal_id)
         assert job.job_metadata["stakeholder_id"] == str(stakeholder_id)
         assert job.job_metadata["participant_id"] == str(stakeholder_id)
