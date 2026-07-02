@@ -47,6 +47,9 @@ from src.service.integrations.sync_health import (
 from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
     CommunicationDealMappingTriggerService,
 )
+from src.workers.deal_worker.utils.communication_contact_materialization_dispatch import (
+    dispatch_communication_contact_materialization_async,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
@@ -459,6 +462,14 @@ def sync_calendar_org_task(
                     total_events += records_synced
                     communication_deal_mapping = None
                     if records_synced > 0 or sync_result.get("changed_event_ids"):
+                        sync_result[
+                            "communication_contact_materialization_task_id"
+                        ] = await dispatch_communication_contact_materialization_async(
+                            organisation_id=org_id,
+                            integration_id=fetch_data.integration_id,
+                            changed_event_ids=sync_result.get("changed_event_ids", []),
+                            trigger_source="incremental_sync",
+                        )
                         communication_deal_mapping = (
                             await CommunicationDealMappingTriggerService(
                                 org_id
