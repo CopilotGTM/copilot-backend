@@ -84,8 +84,6 @@ async def test_sync_deal_skips_research_when_linked_contact_is_researched() -> N
         related_local_id=contact_id,
         related_email="buyer@example.com",
         approval_status=ApprovalStatus.APPROVED.value,
-        stakeholder_research=None,
-        last_researched_at=None,
     )
     deal = SimpleNamespace(
         deal_id=deal_id,

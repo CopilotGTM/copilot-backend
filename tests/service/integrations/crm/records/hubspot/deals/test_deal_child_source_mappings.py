@@ -32,6 +32,21 @@ from src.service.integrations.crm.records.hubspot.deals.stage_history_writer imp
     HubSpotDealStageHistoryWriter,
 )
 
+REMOVED_PARTICIPANT_PROFILE_FIELDS = {
+    "job_title",
+    "department",
+    "phone_number",
+    "linkedin_url",
+    "external_links",
+    "stakeholder_research",
+    "last_researched_at",
+}
+
+
+def _assert_no_removed_participant_profile_fields(row: CRMDealParticipant) -> None:
+    for field_name in REMOVED_PARTICIPANT_PROFILE_FIELDS:
+        assert not hasattr(row, field_name)
+
 
 @pytest.mark.asyncio
 async def test_stage_history_writer_upserts_source_mapping_for_existing_transition() -> None:
@@ -182,6 +197,7 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
     assert mapping_call.kwargs["local_object_id"] == existing.participant_id
     assert existing.is_primary_contact is False
     assert existing.participant_source == "CRM"
+    _assert_no_removed_participant_profile_fields(existing)
 
 
 @pytest.mark.asyncio
@@ -241,6 +257,7 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
     created = session.add.call_args.args[0]
     assert created.is_primary_contact is True
     assert created.participant_source == "CRM"
+    _assert_no_removed_participant_profile_fields(created)
     mapped_ids = [
         call.kwargs["local_object_id"]
         for call in mapping_helper.upsert_integration_mapping.await_args_list

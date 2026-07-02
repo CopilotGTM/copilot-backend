@@ -87,7 +87,6 @@ def _participant(
         participant_type=CRMParticipantType.CONTACT,
         related_email=email,
         related_name="Old Buyer",
-        job_title="Old Title",
         participant_source=StakeholderSource.MANUAL.value,
         approval_status=approval_status,
         is_deleted=is_deleted,

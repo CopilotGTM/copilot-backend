@@ -262,7 +262,6 @@ async def test_add_stakeholder_direct_does_not_research_unlinked_linkedin_placeh
     stakeholder_id = uuid4()
     stakeholder = _stakeholder(stakeholder_id=stakeholder_id, deal_id=deal_id)
     stakeholder.email = None
-    stakeholder.linkedin_url = "https://linkedin.com/in/linkedin-only"
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,

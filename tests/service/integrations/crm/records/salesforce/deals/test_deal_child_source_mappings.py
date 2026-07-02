@@ -32,6 +32,21 @@ from src.service.integrations.crm.records.salesforce.deals.stage_history_writer 
     SalesforceDealStageHistoryWriter,
 )
 
+REMOVED_PARTICIPANT_PROFILE_FIELDS = {
+    "job_title",
+    "department",
+    "phone_number",
+    "linkedin_url",
+    "external_links",
+    "stakeholder_research",
+    "last_researched_at",
+}
+
+
+def _assert_no_removed_participant_profile_fields(row: CRMDealParticipant) -> None:
+    for field_name in REMOVED_PARTICIPANT_PROFILE_FIELDS:
+        assert not hasattr(row, field_name)
+
 
 @pytest.mark.asyncio
 async def test_stage_history_writer_upserts_source_mapping_for_existing_transition() -> None:
@@ -192,6 +207,7 @@ async def test_participant_writer_upserts_source_mapping_for_existing_participan
     assert mapped_rows[0].local_object_id == existing.participant_id
     assert existing.is_primary_contact is False
     assert existing.participant_source == "CRM"
+    _assert_no_removed_participant_profile_fields(existing)
 
 
 @pytest.mark.asyncio
@@ -253,6 +269,7 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
     assert created.relationship_role is None
     assert created.is_primary_contact is True
     assert created.participant_source == "CRM"
+    _assert_no_removed_participant_profile_fields(created)
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
     assert {row.local_object_id for row in mapped_rows} == {created.participant_id}
     assert {"is_primary_contact": False} in [row.mapping_metadata for row in mapped_rows]
