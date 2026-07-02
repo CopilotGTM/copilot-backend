@@ -48,12 +48,6 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="20,50 * * * *",
         max_lag_seconds=45 * 60,
     ),
-    "stakeholder-research-retry": ScheduledJob(
-        name="stakeholder-research-retry",
-        task_name="stakeholder_research.trigger_retry_all_orgs",
-        schedule="20 * * * *",
-        max_lag_seconds=90 * 60,
-    ),
     "meeting-bot-fallback": ScheduledJob(
         name="meeting-bot-fallback",
         task_name="deal.trigger_send_unsent_meeting_recordings_all_orgs",

@@ -14,8 +14,7 @@ tools/
 │   ├── list_emails.py
 │   └── get_email_details.py
 ├── crm/                    # CRM/Stakeholder tools
-│   ├── list_stakeholders.py
-│   └── get_stakeholder_details.py
+│   └── list_stakeholders.py
 ├── intelligence/           # Meeting intelligence tools
 │   ├── list_meetings.py
 │   ├── get_meeting_details.py
@@ -40,8 +39,7 @@ tools/
 
 | Tool | Factory Function | Description |
 |------|------------------|-------------|
-| `list_deal_stakeholders` | `create_list_deal_stakeholders` | List all stakeholders for a deal |
-| `get_stakeholder_details` | `create_get_stakeholder_details` | Get detailed info about a specific stakeholder |
+| `list_deal_stakeholders` | `create_list_deal_stakeholders` | List stakeholders for a deal, optionally filtered to one person |
 
 ### Intelligence Tools
 
@@ -64,44 +62,25 @@ tools/
 
 ### `list_deal_stakeholders`
 
-**Purpose**: List all stakeholders (contacts) associated with a deal.
+**Purpose**: List stakeholders (contacts) associated with a deal, or return one stakeholder when `stakeholder_id` or `query` is provided.
 
 **Parameters**:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `deal_id` | str | No | context.deal_id | UUID of the deal |
+| `stakeholder_id` | str | No | None | CRMDealParticipant UUID to return as a one-item list |
+| `query` | str | No | None | Case-insensitive filter for name, email, title, or department |
 | `limit` | int | No | 20 | Max results (max: 50) |
 
 **Returns**: List of stakeholder summaries with:
 
-- `participant_id`, `email`, `name`, `job_title`, `department`
+- `participant_id`, `deal_id`, `contact_id`, `email`, `name`, `job_title`, `department`
 - `stance`: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, UNKNOWN
 - `decision_power`: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, UNKNOWN
 - `temperature`: HOT, WARM, COLD
-- `last_contact_at`, `source`
-
----
-
-### `get_stakeholder_details`
-
-**Purpose**: Get comprehensive information about a specific stakeholder.
-
-**Parameters**:
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `stakeholder_id` | str | Yes | CRMDealParticipant UUID for the stakeholder |
-
-**Returns**: Detailed stakeholder info including:
-
-- All fields from `list_deal_stakeholders`
-- `deal_id`
-- `motivation`: AI-extracted motivation/goals
-- `pain_points`: List of AI-extracted pain points
-- `keywords`: List of relevant topics
-- `external_links`: LinkedIn and other profile links
-- `contact_id`: Linked CRM contact UUID
+- `motivation`, `pain_points`, `keywords`, `external_links`
+- `last_contact_at`, `source`, `stakeholder_research`, `last_researched_at`
 
 ---
 
@@ -243,7 +222,7 @@ Tools are assigned to agents via `AGENT_TOOLS` in `registry.py`:
 
 | Agent | Available Tools |
 |-------|-----------------|
-| **GeneralAgent** | search_internal_knowledge, search_internet, list_deal_stakeholders, get_stakeholder_details, list_deal_meetings, get_meeting_details, list_deal_emails, get_email_details |
+| **GeneralAgent** | search_internal_knowledge, search_internet, list_deal_stakeholders, list_deal_meetings, get_meeting_details, list_deal_emails, get_email_details |
 | **DealAgent** | All CRM tools + all meeting tools + all email tools + search |
 | **MeetingAgent** | All meeting tools + list_deal_stakeholders |
 | **BriefingAgent** | All tools for comprehensive deal briefings including emails |

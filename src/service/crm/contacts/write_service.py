@@ -30,8 +30,11 @@ from src.service.crm.mutations.contracts import (
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import ContactMutationPolicy
+from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 from src.service.crm.utils.identity import normalize_email
 from src.service.crm.utils.person import split_full_name
+
+ContactIdentityResolutionService = None
 
 
 class ContactWriteService:
@@ -55,19 +58,73 @@ class ContactWriteService:
         *,
         context: ContactWriteContext | None = None,
     ) -> ContactWriteResult:
-        """Create an internal CRM contact without account-link side effects."""
-        normalized_email = normalize_email(command.email) or ""
-        dup_stmt = select(CRMContact).where(
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.is_deleted).is_(False),
-            func.lower(col(CRMContact.email)) == normalized_email,
-        )
-        dup_res = await self.org_session.execute(dup_stmt)
-        if dup_res.scalars().first():
-            raise ContactWriteServiceError(
-                f"A contact with email '{command.email}' already exists",
-                status_code=409,
+        """Create or resolve an internal CRM contact from email and LinkedIn identity."""
+        linkedin_url = command.linkedin_url.strip() if command.linkedin_url else None
+        if linkedin_url and not is_person_linkedin_url(linkedin_url):
+            raise ContactWriteServiceError(PERSON_LINKEDIN_URL_ERROR, status_code=400)
+
+        if linkedin_url:
+            resolver_cls = globals().get("ContactIdentityResolutionService")
+            if resolver_cls is None:
+                from src.service.crm.contacts.resolution_service import (
+                    ContactIdentityResolutionService as ImportedContactIdentityResolutionService,
+                )
+                from src.service.crm.contacts.resolution_service import (
+                    ContactIdentityResolveCommand,
+                )
+
+                resolver_cls = ImportedContactIdentityResolutionService
+            else:
+                from src.service.crm.contacts.resolution_service import (
+                    ContactIdentityResolveCommand,
+                )
+            resolution = await resolver_cls(
+                self.org_session,
+                self.organisation_id,
+                contact_writer=self,
+            ).resolve(
+                ContactIdentityResolveCommand(
+                    email=command.email,
+                    linkedin_url=linkedin_url,
+                    name=command.name,
+                    context=context,
+                )
             )
+            if resolution.status == "resolved" and resolution.contact:
+                return ContactWriteResult(
+                    resolution.contact,
+                    resolution.created,
+                    resolution.matched_by or "apollo",
+                    resolution.created_account_id,
+                )
+            if not normalize_email(command.email):
+                raise ContactWriteServiceError(
+                    resolution.error_detail or "Unable to resolve LinkedIn URL to a contact",
+                    status_code=404,
+                )
+
+        return await self._create_contact_record(command, context=context)
+
+    async def _create_contact_record(
+        self,
+        command: ContactCreateCommand,
+        *,
+        context: ContactWriteContext | None = None,
+    ) -> ContactWriteResult:
+        """Create the CRMContact row after identity resolution has already run."""
+        normalized_email = normalize_email(command.email)
+        if normalized_email:
+            dup_stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(col(CRMContact.email)) == normalized_email,
+            )
+            dup_res = await self.org_session.execute(dup_stmt)
+            if dup_res.scalars().first():
+                raise ContactWriteServiceError(
+                    f"A contact with email '{command.email}' already exists",
+                    status_code=409,
+                )
 
         integration = await InternalCRMSetupService(
             self.org_session,
@@ -103,6 +160,8 @@ class ContactWriteService:
                     created_via="contact_create",
                 ),
             )
+            if normalized_email
+            else None
         )
         account = account_result.account if account_result else None
 
@@ -116,6 +175,7 @@ class ContactWriteService:
                 "last_name": last_name,
                 "full_name": contact_name,
                 "job_title": command.job_title,
+                "phone": command.phone,
                 "linkedin_url": command.linkedin_url,
                 "company_id": account.company_id if account else None,
                 "company_name": account.name if account else None,
@@ -210,11 +270,12 @@ class ContactWriteService:
             )
             return ContactWriteResult(existing, False, "email")
 
-        return await self.create_contact(
+        return await self._create_contact_record(
             ContactCreateCommand(
                 email=normalized_email,
                 name=name,
                 job_title=updates.get("job_title"),
+                phone=updates.get("phone"),
                 linkedin_url=(
                     updates.get("linkedin_url")
                     or (
@@ -310,6 +371,8 @@ class ContactWriteService:
 
         if "linkedin_url" in updates:
             linkedin_url = updates.pop("linkedin_url")
+            if linkedin_url and not is_person_linkedin_url(linkedin_url):
+                raise ContactWriteServiceError(PERSON_LINKEDIN_URL_ERROR, status_code=400)
             if contact.linkedin_url and linkedin_url != contact.linkedin_url:
                 raise ContactWriteServiceError(
                     "Cannot change an existing LinkedIn URL",

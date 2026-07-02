@@ -139,11 +139,6 @@ class HubSpotContactPrivacyDeletionHandler:
             participant.related_local_id = None
             participant.related_name = None
             participant.related_email = None
-            participant.job_title = None
-            participant.department = None
-            participant.phone_number = None
-            participant.linkedin_url = None
-            participant.external_links = None
             participant.motivation = None
             participant.pain_points = None
             participant.keywords = None
@@ -152,8 +147,6 @@ class HubSpotContactPrivacyDeletionHandler:
             participant.decision_power = "UNKNOWN"
             participant.temperature = "UNKNOWN"
             participant.approval_status = ApprovalStatus.REMOVED.value
-            participant.stakeholder_research = None
-            participant.last_researched_at = None
 
         for deal in deals or []:
             deal.primary_contact_id = None

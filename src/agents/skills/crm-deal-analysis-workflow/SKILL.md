@@ -71,7 +71,7 @@ Use the available tool whose description matches the needed evidence.
 | Find or confirm a deal | Deal search/list/detail tools [SearchDeals, ListDeals, GetDealDetails] |
 | Find or confirm a lead | Lead search/list tools [ListLeads] |
 | Understand account/company context | Account/company search and knowledge tools [SearchAccounts, InternalKnowledgeBase] |
-| Understand a person | Contact, stakeholder, participant, and user lookup tools [SearchContacts, ListDealStakeholders, GetStakeholderDetails] |
+| Understand a person | Contact, stakeholder, participant, and user lookup tools [SearchContacts, ListDealStakeholders] |
 | Recent engagement | Meeting, transcript, email, note, and task tools [ListDealMeetings, GetMeetingTranscript, ListDealEmails, ListDealNotes] |
 | Inbound signals from one mailbox | Connected mailbox and mailbox email tools [ListConnectedEmailAccounts, SearchMailboxEmails] |
 | Deal activity | CRM notes, CRM tasks, timeline, activity, and history tools [ListDealNotes, ListDealTasks, GetDealChangeHistory] |

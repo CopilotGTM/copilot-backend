@@ -149,7 +149,9 @@ class ParticipantWriteService:
                 )
 
             participant.related_local_id = related_local_id
-            participant.related_name = related_name
+            participant.related_name = (
+                None if participant_type == CRMParticipantType.CONTACT else related_name
+            )
             participant.related_email = related_email
             if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
                 relationship_role
@@ -164,6 +166,8 @@ class ParticipantWriteService:
             created.append(participant)
 
             if participant_type == CRMParticipantType.CONTACT:
+                # Contact participants render person names from CRMContact. Keeping
+                # related_name empty avoids creating a second profile snapshot.
                 contact_participant_changed = True
                 seen_contact_participants[identity_key] = participant
 

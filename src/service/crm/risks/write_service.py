@@ -17,16 +17,12 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.risks.contracts import (
     RiskBlockerNotFoundError,
     RiskBlockerWriteContext,
 )
 from src.service.crm.risks.mapper import RiskBlockerMapper
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    build_risk_blocker_timeline_event,
-)
 
 
 class ExtractedRiskBlockerProtocol(Protocol):
@@ -182,7 +178,7 @@ class RiskBlockerWriteService:
         }
 
         self.session.add(item)
-        self.session.add(self._build_opened_timeline_event(item))
+        # Timeline is deprecated; create activity-feed projection instead.
         await self.session.flush()
         await self.session.refresh(item)
         await self._projection.upsert_risk_blocker_lifecycle(
@@ -208,7 +204,7 @@ class RiskBlockerWriteService:
             source_record_id=source_record_id,
         )
         self.session.add(item)
-        self.session.add(self._build_opened_timeline_event(item))
+        # Timeline is deprecated; create activity-feed projection instead.
         await self.session.flush()
         await self._projection.upsert_risk_blocker_lifecycle(
             item,
@@ -281,19 +277,6 @@ class RiskBlockerWriteService:
             )
         )
         return result.scalar_one_or_none()
-
-    def _build_opened_timeline_event(self, item: DealRiskBlocker):
-        event_type = (
-            TimelineEventType.RISK_FLAGGED
-            if item.item_type == RiskBlockerType.RISK
-            else TimelineEventType.BLOCKER_ADDED
-        )
-        return build_risk_blocker_timeline_event(
-            organisation_id=self.organisation_id,
-            deal_id=item.deal_id,
-            risk_blocker=item,
-            event_type=event_type,
-        )
 
     @staticmethod
     def _opened_source_type(item: DealRiskBlocker) -> str:

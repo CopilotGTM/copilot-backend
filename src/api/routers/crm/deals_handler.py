@@ -325,39 +325,37 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
     )
 
 
-async def _dispatch_auto_stakeholder_research(
+async def _contact_research_job_response(
     *,
     organisation_id: UUID,
-    participant_id: UUID,
-    deal_id: UUID,
+    contact_id: UUID,
     user_id: UUID | None,
 ) -> DealJobResponse | None:
-    """Dispatch research for contacts attached during deal creation."""
+    """Dispatch contact-owned research for contacts attached during deal creation."""
     try:
-        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-            dispatch_stakeholder_research_async,
+        from src.workers.deal_worker.utils.contact_research_dispatch import (
+            dispatch_contact_research_for_contact,
         )
 
-        job_id = await dispatch_stakeholder_research_async(
+        job_id = await dispatch_contact_research_for_contact(
             organisation_id=organisation_id,
-            stakeholder_id=participant_id,
-            deal_id=deal_id,
+            contact_id=contact_id,
             user_id=user_id,
+            trigger="stakeholder_created",
         )
         if not job_id:
             return None
         return DealJobResponse(
             job_id=UUID(job_id),
-            job_type="stakeholder_research",
+            job_type="contact_research",
             status="pending",
         )
     except Exception:
         logger.error(
-            "Failed to dispatch inline stakeholder research",
+            "Failed to dispatch inline contact research",
             extra={
                 "organisation_id": str(organisation_id),
-                "participant_id": str(participant_id),
-                "deal_id": str(deal_id),
+                "contact_id": str(contact_id),
             },
             exc_info=True,
         )
@@ -946,7 +944,7 @@ async def get_deals_stats(
     - Core business context (amount, status, probability)
     - Sales process details (stage, pipeline, forecast)
     - Ownership and associations
-    - Activity timeline
+    - Activity and history context
     - Custom properties and metrics
     - Deal summary data (if generated)
     - Active deal-level jobs (for SSE reconnection)
@@ -1219,6 +1217,7 @@ async def create_deal(
         create_payload.pop("contact_participants", None)
         deal = await service.create_deal(create_payload)
         inline_stakeholder_ids: list[UUID] = []
+        inline_contact_ids: list[UUID] = []
         if request.contact_participants:
             stakeholder_service = StakeholderWriteService(
                 service.session,
@@ -1231,6 +1230,11 @@ async def create_deal(
             )
             inline_stakeholder_ids = [
                 stakeholder.participant_id for stakeholder in stakeholder_result.added
+            ]
+            inline_contact_ids = [
+                stakeholder.contact_id
+                for stakeholder in stakeholder_result.added
+                if stakeholder.contact_id
             ]
         await service.session.commit()
         await service.session.refresh(deal)
@@ -1259,11 +1263,10 @@ async def create_deal(
                     },
                     exc_info=True,
                 )
-            for participant_id in inline_stakeholder_ids:
-                await _dispatch_auto_stakeholder_research(
+            for contact_id in inline_contact_ids:
+                await _contact_research_job_response(
                     organisation_id=service.organisation_id,
-                    participant_id=participant_id,
-                    deal_id=deal.deal_id,
+                    contact_id=contact_id,
                     user_id=service.actor_user_id,
                 )
 
@@ -1598,7 +1601,7 @@ async def assign_deal_owner(
     a comprehensive deal summary including:
     - Overall deal narrative and progression
     - Key themes across meetings
-    - Relationship timeline
+    - Relationship progression
     - Critical decisions made
     - Outstanding items and risks
     - Recommended next steps

@@ -44,12 +44,9 @@ from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailDirection,
     Email,
 )
-from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
-from src.service.crm.timeline.deal_timeline_sync_service import build_email_timeline_event
-from src.service.crm.timeline.timeline_event_source_resolver import resolve_email_event_source
 from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_for_users,
@@ -130,7 +127,7 @@ class DealEmailMatcher:
         self._team_email_to_deals: dict[str, set[UUID]] = {}
         self._contact_email_to_deals: dict[str, set[UUID]] = {}
         self._deal_info: dict[UUID, DealStakeholderInfo] = {}
-        self._pending_research: list[tuple[UUID, UUID]] = []  # (participant_id, deal_id)
+        self._pending_research: list[UUID] = []  # contact_id
 
     def _normalize_email(self, email: str | None) -> str | None:
         """Normalize email string by stripping whitespace and converting to lowercase."""
@@ -398,7 +395,8 @@ class DealEmailMatcher:
             )
             session.add(participant)
             await session.flush()
-            self._pending_research.append((participant.participant_id, deal_id))
+            if found_contact_id:
+                self._pending_research.append(found_contact_id)
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -473,27 +471,26 @@ class DealEmailMatcher:
             self._pending_research.clear()
             return
         try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
+            from src.workers.deal_worker.utils.contact_research_dispatch import (
+                dispatch_contact_research_for_contact,
             )
 
-            for stakeholder_id, deal_id in self._pending_research:
+            for contact_id in self._pending_research:
                 try:
-                    await dispatch_stakeholder_research_async(
+                    await dispatch_contact_research_for_contact(
                         organisation_id=self.organisation_id,
-                        stakeholder_id=stakeholder_id,
-                        deal_id=deal_id,
+                        contact_id=contact_id,
+                        trigger="email_discovery",
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s",
-                        stakeholder_id,
+                        "Failed to dispatch research for contact %s",
+                        contact_id,
                         exc_info=True,
                         extra={
-                            "event": "deal_email_research_dispatch_failed",
+                            "event": "deal_email_contact_research_dispatch_failed",
                             "organisation_id": str(self.organisation_id),
-                            "stakeholder_id": str(stakeholder_id),
-                            "deal_id": str(deal_id),
+                            "contact_id": str(contact_id),
                         },
                     )
         finally:
@@ -967,7 +964,6 @@ class DealEmailMatcher:
         session: AsyncSession,
         email: Email,
         match: EmailMatchResult,
-        integration_type: Any | None = None,
     ) -> DealEmailAssociation | None:
         """
         Create a DealEmailAssociation for a matched email-deal pair.
@@ -976,9 +972,7 @@ class DealEmailMatcher:
             session: Database session to use for inserts.
             email: Email object to create association for.
             match: EmailMatchResult with deal and score info.
-            integration_type: Optional integration type for timeline event.
-
-        Also creates a corresponding timeline event in the same transaction.
+        Activity-feed projection is created in the same transaction.
 
         Returns the created association or None if it already exists.
         """
@@ -1028,22 +1022,10 @@ class DealEmailMatcher:
         )
         result = await session.execute(stmt)
 
-        # Skip timeline side-effects for duplicates so progress indicators stay
+        # Skip activity side-effects for duplicates so progress indicators stay
         # aligned with true first-write events.
         if (getattr(result, "rowcount", 0) or 0) > 0:
-            # Keep timeline + last-contact updates in the same transaction as
-            # the insert so recovery remains replay-safe.
-            resolved_source = resolve_email_event_source(integration_type)
-            timeline_event = build_email_timeline_event(
-                organisation_id=self.organisation_id,
-                deal_id=match.deal_id,
-                association=association,
-                email=email,
-                event_source=resolved_source,
-            )
-            session.add(timeline_event)
-            # Keep the legacy timeline and new activity feed in the same insert
-            # transaction so either both surfaces show the email, or neither does.
+            # Timeline is deprecated; create activity-feed projection instead.
             await ActivityFeedProjectionService(
                 session,
                 self.organisation_id,
@@ -1086,8 +1068,6 @@ class DealEmailMatcher:
         # Phase 1: Setup - Build maps and get emails (single session)
         # =================================================================
         emails: list[Email] = []
-        integration_type_by_id: dict[UUID, Any] = {}
-
         async for session in acquire_org_async_session(self.organisation_id):
             # Step 1: Build stakeholder maps
             await self._build_stakeholder_maps(session)
@@ -1117,18 +1097,6 @@ class DealEmailMatcher:
                 )
                 return stats
 
-            # Preload integration types for this batch (avoid N+1 queries)
-            integration_ids = {
-                e.integration_id for e in emails if getattr(e, "integration_id", None)
-            }
-            if integration_ids:
-                it_stmt = select(
-                    KnowledgeIntegration.integration_id,
-                    KnowledgeIntegration.integration_type,
-                ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
-                it_result = await session.execute(it_stmt)
-                integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
-
             # No commit needed - read-only operations
             # Session closes here, connection returns to pool
 
@@ -1155,7 +1123,6 @@ class DealEmailMatcher:
                             session,
                             email,
                             match,
-                            integration_type=integration_type_by_id.get(email.integration_id),
                         )
                         if association:
                             stats["associations_created"] += 1
@@ -1317,17 +1284,6 @@ class DealEmailMatcher:
             )
             return stats
 
-        # Preload integration types
-        integration_ids = {e.integration_id for e in emails if getattr(e, "integration_id", None)}
-        integration_type_by_id: dict[UUID, Any] = {}
-        if integration_ids:
-            it_stmt = select(
-                KnowledgeIntegration.integration_id,
-                KnowledgeIntegration.integration_type,
-            ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
-            it_result = await session.execute(it_stmt)
-            integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
-
         # Match and create associations
         for email_record in emails:
             stats["emails_processed"] += 1
@@ -1348,7 +1304,6 @@ class DealEmailMatcher:
                         session,
                         email_record,
                         match,
-                        integration_type=integration_type_by_id.get(email_record.integration_id),
                     )
                     if association:
                         stats["associations_created"] += 1

@@ -94,7 +94,7 @@ def test_initiate_briefing_job_success(client: TestClient, meetings_dependency_o
     body = resp.json()
     assert body["status"] == "SUCCESS"
     assert "job_id" in body["data"]
-    assert body["data"]["job_type"] == "DealJobType.MEETING_BRIEFING"
+    assert body["data"]["job_type"] == "meeting_briefing"
 
 
 def test_initiate_summary_job_success(client: TestClient, meetings_dependency_overrides):
@@ -108,7 +108,7 @@ def test_initiate_summary_job_success(client: TestClient, meetings_dependency_ov
     resp = client.post(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/summary")
     assert resp.status_code == 202, resp.text
     body = resp.json()
-    assert body["data"]["job_type"] == "DealJobType.MEETING_SUMMARY"
+    assert body["data"]["job_type"] == "meeting_summary"
 
 
 def test_initiate_followup_job_success(client: TestClient, meetings_dependency_overrides):
@@ -122,7 +122,7 @@ def test_initiate_followup_job_success(client: TestClient, meetings_dependency_o
     resp = client.post(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/followup")
     assert resp.status_code == 202, resp.text
     body = resp.json()
-    assert body["data"]["job_type"] == "DealJobType.MEETING_FOLLOWUP"
+    assert body["data"]["job_type"] == "meeting_followup"
 
 
 def test_initiate_job_invalid_job_type(client: TestClient, meetings_dependency_overrides):
@@ -133,7 +133,7 @@ def test_initiate_job_invalid_job_type(client: TestClient, meetings_dependency_o
     resp = client.post(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/invalid")
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert "Invalid job type" in body["detail"]
+    assert "Invalid job type" in body["message"]
 
 
 def test_initiate_job_type_case_sensitivity_uppercase(
@@ -147,7 +147,7 @@ def test_initiate_job_type_case_sensitivity_uppercase(
     resp = client.post(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/BRIEFING")
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert "Invalid job type" in body["detail"]
+    assert "Invalid job type" in body["message"]
 
 
 def test_initiate_job_type_case_sensitivity_mixed(
@@ -247,16 +247,35 @@ def test_initiate_job_different_types_creates_different_jobs(
 # =============================================================================
 
 
-def test_meeting_job_stream_returns_sse(client: TestClient, meetings_dependency_overrides):
+def test_meeting_job_stream_returns_sse(
+    client: TestClient, meetings_dependency_overrides, monkeypatch
+):
     """Test SSE stream endpoint returns EventSourceResponse."""
     deal_id = uuid4()
     event_id = uuid4()
     job_id = uuid4()
 
-    # Note: This tests that the endpoint is reachable and returns SSE
-    # Full streaming test would require async client
+    class FakeDealJobSSEService:
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.organisation_id = organisation_id
+            self.job_id = created_job_id
+            self.user_id = user_id
+
+        async def ensure_user_access(self, deal_id=None):
+            return True
+
+        async def stream_events(self, *, resume_from_id=None):
+            yield {"event": "complete", "data": "{}"}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.meetings_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
     resp = client.get(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/{job_id}/stream")
-    # SSE endpoints return 200 with text/event-stream content type
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
 

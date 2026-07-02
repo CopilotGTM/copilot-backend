@@ -13,7 +13,6 @@ import pytest
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.deal_notes_handler import get_deal_notes_service
-from src.api.routers.crm.deal_timeline_handler import get_deal_timeline_service
 from src.api.routers.crm.deals_handler import (
     get_deal_job_service,
     get_deals_access_service,
@@ -51,7 +50,6 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightStatus,
     StakeholderInsightType,
 )
-from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.service.crm.access.tasks_access_service import TasksAccessServiceError
 from src.service.crm.deals.read_service import (
     _deal_search_cursor_name_key,
@@ -404,6 +402,22 @@ class FakeStakeholdersService:
         contact = self._contacts.get(contact_id) if contact_id else None
         if contact_id and not contact:
             raise StakeholdersServiceError("Contact not found", status_code=404)
+        if not contact and request.linkedin_url:
+            contact = next(
+                (
+                    candidate
+                    for candidate in self._contacts.values()
+                    if candidate.linkedin_url
+                    and candidate.linkedin_url.strip().lower()
+                    == request.linkedin_url.strip().lower()
+                ),
+                None,
+            )
+            if not contact and not email:
+                raise StakeholdersServiceError(
+                    "Unable to resolve LinkedIn URL to a contact",
+                    status_code=404,
+                )
         if contact:
             email = contact.email.lower().strip() if contact.email else email
             name = name or contact.full_name
@@ -693,7 +707,9 @@ class FakeStakeholderInsightService:
 
     async def acknowledge(self, insight_id: UUID, deal_id: UUID):
         """Acknowledge an insight."""
-        from src.service.crm.stakeholder_insight_service import StakeholderInsightServiceError
+        from src.service.crm.insights.stakeholder_insight_service import (
+            StakeholderInsightServiceError,
+        )
 
         insight = self._get_insight(insight_id, deal_id)
         if not insight:
@@ -705,7 +721,9 @@ class FakeStakeholderInsightService:
 
     async def dismiss(self, insight_id: UUID, deal_id: UUID):
         """Dismiss an insight."""
-        from src.service.crm.stakeholder_insight_service import StakeholderInsightServiceError
+        from src.service.crm.insights.stakeholder_insight_service import (
+            StakeholderInsightServiceError,
+        )
 
         insight = self._get_insight(insight_id, deal_id)
         if not insight:
@@ -717,7 +735,9 @@ class FakeStakeholderInsightService:
 
     async def resolve(self, insight_id: UUID, deal_id: UUID, resolution_notes: str | None = None):
         """Resolve an insight."""
-        from src.service.crm.stakeholder_insight_service import StakeholderInsightServiceError
+        from src.service.crm.insights.stakeholder_insight_service import (
+            StakeholderInsightServiceError,
+        )
 
         insight = self._get_insight(insight_id, deal_id)
         if not insight:
@@ -1411,25 +1431,26 @@ class FakeDealJobService:
 
         return result if result else None
 
-    async def get_active_stakeholder_research_job(
+    async def get_active_contact_research_job(
         self,
-        deal_id: UUID,
-        stakeholder_id: UUID,
+        contact_id: UUID,
     ) -> dict | None:
-        """Get active stakeholder research job for detail reconnect tests."""
-        jobs = self._deal_jobs.get(deal_id, [])
-        for job in jobs:
-            if (
-                job.job_type == DealJobType.STAKEHOLDER_RESEARCH
-                and job.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS)
-                and job.user_id == self.user_id
-                and getattr(job, "stakeholder_id", None) == stakeholder_id
-            ):
-                return {
-                    "job_id": job.job_id,
-                    "job_type": job.job_type.value,
-                    "status": job.status.value if hasattr(job.status, "value") else str(job.status),
-                }
+        """Get active contact research job for detail reconnect tests."""
+        for jobs in self._deal_jobs.values():
+            for job in jobs:
+                if (
+                    job.job_type == DealJobType.CONTACT_RESEARCH
+                    and job.status in (JobStatus.PENDING, JobStatus.IN_PROGRESS)
+                    and job.user_id == self.user_id
+                    and (job.job_metadata or {}).get("contact_id") == str(contact_id)
+                ):
+                    return {
+                        "job_id": job.job_id,
+                        "job_type": job.job_type.value,
+                        "status": job.status.value
+                        if hasattr(job.status, "value")
+                        else str(job.status),
+                    }
         return None
 
 
@@ -1557,6 +1578,8 @@ def insights_dependency_overrides(client, test_user_ids, fake_insight_service):
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_insight_service] = _override_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield
     app.dependency_overrides = {}
 
@@ -1911,19 +1934,24 @@ class FakeMeetingsService:
         return [
             {
                 "event_id": m.event_id,
-                "deal_id": m.deal_id,
-                "title": m.title,
-                "start_time": m.start_time,
-                "end_time": m.end_time,
+                "subject": m.title,
+                "start_at": m.start_time,
                 "status": m.status.value if hasattr(m.status, "value") else m.status,
                 "attendees": m.attendees,
+                "meeting_prep_status": "NOT_STARTED",
+                "meeting_prep_data": None,
+                "meeting_summary_status": "NOT_STARTED",
+                "meeting_summary_data": None,
+                "meeting_followup_status": "NOT_STARTED",
+                "meeting_followup_data": None,
+                "active_jobs": None,
             }
             for m in meetings
         ]
 
     async def update_meeting_status(self, deal_id: UUID, event_id: UUID, status: str):
         """Update meeting status."""
-        from src.service.crm.meetings_service import MeetingsServiceError
+        from src.service.crm.meetings.meetings_service import MeetingsServiceError
 
         meeting = self._meeting_by_event.get(event_id)
         if not meeting or meeting.deal_id != deal_id:
@@ -1959,7 +1987,7 @@ class FakeDealMeetingJobService:
         self, deal_id: UUID, event_id: UUID, job_type: DealJobType
     ) -> FakeMeetingJob:
         """Create or get existing meeting job."""
-        from src.service.crm.deal_meeting_job_service import DealMeetingJobServiceError
+        from src.service.crm.jobs.deal_meeting_job_service import DealMeetingJobServiceError
 
         # Check event exists and belongs to deal
         if event_id not in self._valid_events:
@@ -2479,6 +2507,8 @@ def meetings_dependency_overrides(
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_meetings_service] = _override_meetings_service
     app.dependency_overrides[get_deal_meeting_job_service] = _override_job_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield {
         "meetings_service": fake_meetings_service,
         "job_service": fake_meeting_job_service,
@@ -2509,6 +2539,8 @@ def risks_dependency_overrides(client, test_user_ids, fake_risk_blocker_service)
 
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_risk_blocker_service] = _override_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield {
         "service": fake_risk_blocker_service,
         "user_ids": test_user_ids,
@@ -2786,148 +2818,6 @@ class FakeTasksAccessService:
 
 
 # =============================================================================
-# FAKE MODELS - Timeline
-# =============================================================================
-
-
-class FakeTimelineEvent:
-    """Fake timeline event for testing."""
-
-    def __init__(
-        self,
-        timeline_event_id: UUID,
-        deal_id: UUID,
-        organisation_id: UUID,
-        event_type: str = "EMAIL",
-        event_source: str = "GMAIL",
-        event_timestamp: datetime | None = None,
-        event_data: dict | None = None,
-        excluded_at: datetime | None = None,
-        **kwargs,
-    ):
-        self.timeline_event_id = timeline_event_id
-        self.deal_id = deal_id
-        self.organisation_id = organisation_id
-        self.event_type = event_type
-        self.event_source = event_source
-        self.event_timestamp = event_timestamp or datetime.now(UTC)
-        self.event_data = event_data or {}
-        self.excluded_at = excluded_at
-        self.created_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-
-
-class FakeDealTimelineService:
-    """Fake DealTimelineService for testing."""
-
-    def __init__(self, session, organisation_id: UUID):
-        self.organisation_id = organisation_id
-        self._events: dict[UUID, list[FakeTimelineEvent]] = {}  # deal_id -> events
-
-    def add_event(self, event: FakeTimelineEvent):
-        """Add an event to the fake store."""
-        if event.deal_id not in self._events:
-            self._events[event.deal_id] = []
-        self._events[event.deal_id].append(event)
-
-    def clear(self):
-        """Clear all events."""
-        self._events.clear()
-
-    async def close(self):
-        """No-op for test cleanup."""
-        pass
-
-    def _build_preview_event_data(self, event: FakeTimelineEvent) -> dict:
-        """Build preview event data."""
-        return event.event_data or {}
-
-    async def get_timeline_events(
-        self,
-        deal_id: UUID,
-        limit: int = 20,
-        cursor: str | None = None,
-        event_types: list | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        include_excluded: bool = False,
-        sort_order: str = "desc",
-    ) -> tuple[list[FakeTimelineEvent], str | None, int]:
-        """Get timeline events for a deal."""
-        events = list(self._events.get(deal_id, []))
-
-        # Filter excluded
-        if not include_excluded:
-            events = [e for e in events if e.excluded_at is None]
-
-        # Filter by event types
-        if event_types:
-            type_values = [t.value if hasattr(t, "value") else t for t in event_types]
-            events = [e for e in events if e.event_type in type_values]
-
-        # Filter by date range
-        if start_date:
-            events = [e for e in events if e.event_timestamp >= start_date]
-        if end_date:
-            events = [e for e in events if e.event_timestamp <= end_date]
-
-        total_count = len(events)
-
-        # Sort
-        reverse = sort_order == "desc"
-        events.sort(key=lambda e: e.event_timestamp, reverse=reverse)
-
-        # Apply cursor pagination
-        if cursor:
-            try:
-                ts, eid = decode_cursor(cursor)
-                if reverse:
-                    events = [
-                        e
-                        for e in events
-                        if e.event_timestamp < ts
-                        or (e.event_timestamp == ts and e.timeline_event_id < eid)
-                    ]
-                else:
-                    events = [
-                        e
-                        for e in events
-                        if e.event_timestamp > ts
-                        or (e.event_timestamp == ts and e.timeline_event_id > eid)
-                    ]
-            except Exception as err:
-                logger.debug("Invalid cursor, ignoring for timeline pagination: %s", err)
-
-        # Paginate
-        has_more = len(events) > limit
-        items = events[:limit]
-        next_cursor = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(last.event_timestamp, last.timeline_event_id)
-
-        return items, next_cursor, total_count
-
-    async def get_timeline_event_detail(self, timeline_event_id: UUID) -> dict | None:
-        """Get timeline event detail."""
-        for events_list in self._events.values():
-            for event in events_list:
-                if event.timeline_event_id == timeline_event_id:
-                    return {
-                        "id": event.timeline_event_id,
-                        "deal_id": event.deal_id,
-                        "event_type": event.event_type,
-                        "event_source": event.event_source,
-                        "event_timestamp": event.event_timestamp,
-                        "event_data": event.event_data,
-                        "excluded_at": event.excluded_at,
-                        "created_at": event.created_at,
-                        "updated_at": event.updated_at,
-                    }
-        return None
-
-
-# =============================================================================
 # FIXTURES - Tasks
 # =============================================================================
 
@@ -2972,49 +2862,7 @@ def tasks_dependency_overrides(client, test_user_ids, fake_tasks_service):
 
 
 # =============================================================================
-# FIXTURES - Timeline
-# =============================================================================
-
-
-@pytest.fixture(scope="function")
-def fake_timeline_service(test_user_ids):
-    """Create a fresh FakeDealTimelineService for each test."""
-    service = FakeDealTimelineService(None, test_user_ids["organisation_id"])
-    yield service
-    service.clear()
-
-
-@pytest.fixture(scope="function")
-def timeline_dependency_overrides(client, test_user_ids, fake_timeline_service):
-    """Override dependencies for timeline tests."""
-
-    def _override_user():
-        return UserIDs(
-            user_id=test_user_ids["user_id"],
-            organisation_id=test_user_ids["organisation_id"],
-            user_name="Test User",
-            user_email="test@example.com",
-        )
-
-    async def _override_service():
-        try:
-            yield fake_timeline_service
-        finally:
-            await fake_timeline_service.close()
-
-    from src.infra.utils.app_state import fastapp as app
-
-    app.dependency_overrides[get_current_user] = _override_user
-    app.dependency_overrides[get_deal_timeline_service] = _override_service
-    yield {
-        "service": fake_timeline_service,
-        "user_ids": test_user_ids,
-    }
-    app.dependency_overrides = {}
-
-
-# =============================================================================
-# FACTORY FUNCTIONS - Tasks & Timeline
+# FACTORY FUNCTIONS - Tasks
 # =============================================================================
 
 
@@ -3042,27 +2890,5 @@ def create_task(
         due_date=due_date,
         due_at=due_at,
         is_all_day=is_all_day,
-        **kwargs,
-    )
-
-
-def create_timeline_event(
-    deal_id: UUID,
-    organisation_id: UUID,
-    event_type: str = "EMAIL",
-    event_source: str = "GMAIL",
-    event_timestamp: datetime | None = None,
-    excluded_at: datetime | None = None,
-    **kwargs,
-) -> FakeTimelineEvent:
-    """Factory function to create a timeline event."""
-    return FakeTimelineEvent(
-        timeline_event_id=uuid4(),
-        deal_id=deal_id,
-        organisation_id=organisation_id,
-        event_type=event_type,
-        event_source=event_source,
-        event_timestamp=event_timestamp or datetime.now(UTC),
-        excluded_at=excluded_at,
         **kwargs,
     )

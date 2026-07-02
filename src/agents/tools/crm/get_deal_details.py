@@ -35,6 +35,7 @@ from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -213,15 +214,28 @@ async def get_deal_details(
             try:
                 stakeholder_result = await session.execute(stakeholder_stmt)
                 participants = stakeholder_result.scalars().all()
-                output["stakeholders"] = [
-                    {
-                        "participant_id": str(participant.participant_id),
-                        "name": participant.related_name,
-                        "email": participant.related_email,
-                        "job_title": participant.job_title,
-                        "decision_power": participant.decision_power,
-                        "stance": participant.stance,
+                contact_ids = {
+                    participant.related_local_id
+                    for participant in participants
+                    if participant.related_local_id
+                }
+                contacts_by_id: dict[UUID, CRMContact] = {}
+                if contact_ids:
+                    contact_c = cast(Any, CRMContact).__table__.c
+                    contact_stmt = select(CRMContact).where(
+                        contact_c.organisation_id == organisation_id,
+                        contact_c.contact_id.in_(contact_ids),
+                        contact_c.is_deleted.is_(False),
+                    )
+                    contact_result = await session.execute(contact_stmt)
+                    contacts_by_id = {
+                        contact.contact_id: contact for contact in contact_result.scalars().all()
                     }
+                output["stakeholders"] = [
+                    _deal_detail_stakeholder_summary(
+                        participant,
+                        contacts_by_id.get(participant.related_local_id),
+                    )
                     for participant in participants
                 ]
             except Exception as e:
@@ -269,6 +283,23 @@ async def get_deal_details(
 
     logger.info("get_deal_details: found deal %s", deal_id)
     return output
+
+
+def _deal_detail_stakeholder_summary(
+    participant: CRMDealParticipant,
+    contact: CRMContact | None,
+) -> dict[str, Any]:
+    """Render stakeholder summary fields from contact-owned profile data."""
+    return {
+        "participant_id": str(participant.participant_id),
+        "name": contact.full_name if contact and contact.full_name else participant.related_name,
+        "email": contact.email if contact and contact.email else participant.related_email,
+        "job_title": contact.job_title
+        if contact and contact.job_title
+        else getattr(participant, "job_title", None),
+        "decision_power": participant.decision_power,
+        "stance": participant.stance,
+    }
 
 
 def create_get_deal_details(

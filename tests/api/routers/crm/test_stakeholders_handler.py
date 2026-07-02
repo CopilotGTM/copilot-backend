@@ -12,9 +12,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from src.api.routers.crm.contacts_handler import get_contact_read_service
 from src.api.routers.crm.stakeholders_handler import _to_deal_job_response
+from src.api.schemas.crm_models import (
+    CreateStakeholderRequest as ApiCreateStakeholderRequest,
+)
+from src.api.schemas.crm_models import (
+    UpdateStakeholderRequest as ApiUpdateStakeholderRequest,
+)
+from src.contracts.crm.stakeholders import (
+    CreateStakeholderCommand,
+    UpdateStakeholderCommand,
+)
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DecisionPower,
@@ -24,6 +36,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 
 from tests.api.routers.crm.conftest import (
+    FakeContact,
     FakeStakeholder,
     create_contact,
     create_stakeholder,
@@ -32,6 +45,17 @@ from tests.api.routers.crm.conftest import (
 
 class TestCreateStakeholder:
     """Tests for POST /{deal_id}/stakeholders endpoint."""
+
+    def test_stakeholder_schemas_reject_company_linkedin_url(self):
+        """Stakeholder API and command schemas both enforce person LinkedIn URLs."""
+        with pytest.raises(ValidationError):
+            ApiCreateStakeholderRequest(linkedin_url="https://linkedin.com/company/acme")
+        with pytest.raises(ValidationError):
+            ApiUpdateStakeholderRequest(linkedin_url="https://linkedin.com/company/acme")
+        with pytest.raises(ValidationError):
+            CreateStakeholderCommand(linkedin_url="https://linkedin.com/company/acme")
+        with pytest.raises(ValidationError):
+            UpdateStakeholderCommand(linkedin_url="https://linkedin.com/company/acme")
 
     def test_deal_job_response_conversion_accepts_string_backed_job_fields(self):
         """Create response job mapping handles ORM jobs hydrated with string enum values."""
@@ -70,21 +94,14 @@ class TestCreateStakeholder:
         test_deal_id,
     ):
         """Manual create response exposes stakeholder plus reconnectable processing jobs."""
-        research_job_id = uuid4()
-        with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            new_callable=AsyncMock,
-        ) as dispatch_research:
-            dispatch_research.return_value = str(research_job_id)
-            resp = client.post(
-                f"/users/crm/deals/{test_deal_id}/stakeholders",
-                json={
-                    "email": "new.buyer@example.com",
-                    "name": "New Buyer",
-                    "job_title": "VP Engineering",
-                },
-            )
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={
+                "email": "new.buyer@example.com",
+                "name": "New Buyer",
+                "job_title": "VP Engineering",
+            },
+        )
 
         assert resp.status_code == 201
         body = resp.json()
@@ -101,12 +118,7 @@ class TestCreateStakeholder:
         assert "stakeholder_research" not in {
             job["job_type"] for job in body["data"]["processing_jobs"]
         }
-        assert body["data"]["research_job"] == {
-            "job_id": str(research_job_id),
-            "job_type": "stakeholder_research",
-            "status": "pending",
-        }
-        dispatch_research.assert_awaited_once()
+        assert body["data"]["research_job"] is None
 
     def test_create_name_only_stakeholder_returns_placeholder_without_jobs(
         self,
@@ -115,15 +127,10 @@ class TestCreateStakeholder:
         test_deal_id,
     ):
         """Name-only stakeholders are captured but skipped by email/domain workflows."""
-        with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            new_callable=AsyncMock,
-        ) as dispatch_research:
-            resp = client.post(
-                f"/users/crm/deals/{test_deal_id}/stakeholders",
-                json={"name": "Jane Buyer"},
-            )
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={"name": "Jane Buyer"},
+        )
 
         assert resp.status_code == 201
         body = resp.json()
@@ -131,7 +138,6 @@ class TestCreateStakeholder:
         assert body["data"]["stakeholder"]["name"] == "Jane Buyer"
         assert body["data"]["processing_jobs"] == []
         assert body["data"]["research_job"] is None
-        dispatch_research.assert_not_awaited()
 
     def test_create_stakeholder_rejects_legacy_identity_only_payload(
         self,
@@ -163,42 +169,23 @@ class TestCreateStakeholder:
 
         assert resp.status_code == 422
 
-    def test_create_linkedin_only_stakeholder_accepts_direct_linkedin_url(
+    def test_create_linkedin_only_stakeholder_returns_not_found_when_unresolved(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
-        fake_stakeholders_service,
         test_deal_id,
     ):
-        """The add modal posts linkedin_url directly, so the API must not require external_links."""
+        """Unresolved LinkedIn-only creates should not store empty stakeholder rows."""
         linkedin_url = "https://www.linkedin.com/in/direct-buyer"
-        research_job_id = uuid4()
-        with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            new_callable=AsyncMock,
-        ) as dispatch_research:
-            dispatch_research.return_value = str(research_job_id)
-            resp = client.post(
-                f"/users/crm/deals/{test_deal_id}/stakeholders",
-                json={"linkedin_url": linkedin_url},
-            )
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={"linkedin_url": linkedin_url},
+        )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 404
         body = resp.json()
-        stakeholder = body["data"]["stakeholder"]
-        assert stakeholder["email"] is None
-        assert stakeholder["linkedin_url"] == linkedin_url
-        assert body["data"]["processing_jobs"] == []
-        assert body["data"]["research_job"] == {
-            "job_id": str(research_job_id),
-            "job_type": "stakeholder_research",
-            "status": "pending",
-        }
-        dispatch_research.assert_awaited_once()
-
-        stored_stakeholders = fake_stakeholders_service._stakeholders[test_deal_id]
-        assert stored_stakeholders[-1].linkedin_url == linkedin_url
+        assert body["status"] == "ERROR"
+        assert body["message"] == "Unable to resolve LinkedIn URL to a contact"
 
     def test_create_stakeholder_from_contact_id_uses_contact_profile_and_skips_cached_research(
         self,
@@ -222,10 +209,11 @@ class TestCreateStakeholder:
         fake_stakeholders_service.add_contact(contact)
 
         with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
+            "src.workers.deal_worker.utils.contact_research_dispatch."
+            "dispatch_contact_research_for_contact",
             new_callable=AsyncMock,
-        ) as dispatch_research:
+        ) as dispatch_contact_research:
+            dispatch_contact_research.return_value = None
             resp = client.post(
                 f"/users/crm/deals/{test_deal_id}/stakeholders",
                 json={"contact_id": str(contact.contact_id)},
@@ -246,7 +234,13 @@ class TestCreateStakeholder:
             "stakeholder_sync",
         ]
         assert body["data"]["research_job"] is None
-        dispatch_research.assert_not_awaited()
+        dispatch_contact_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            contact_id=contact.contact_id,
+            user_id=test_user_ids["user_id"],
+            trigger="stakeholder_created",
+            force_refresh=False,
+        )
 
     def test_create_stakeholder_from_contact_id_dispatches_contact_research_when_missing(
         self,
@@ -268,18 +262,11 @@ class TestCreateStakeholder:
         fake_stakeholders_service.add_contact(contact)
         research_job_id = uuid4()
 
-        with (
-            patch(
-                "src.workers.deal_worker.utils.contact_research_dispatch."
-                "dispatch_contact_research_async",
-                new_callable=AsyncMock,
-            ) as dispatch_contact_research,
-            patch(
-                "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-                "dispatch_stakeholder_research_async",
-                new_callable=AsyncMock,
-            ) as dispatch_stakeholder_research,
-        ):
+        with patch(
+            "src.workers.deal_worker.utils.contact_research_dispatch."
+            "dispatch_contact_research_for_contact",
+            new_callable=AsyncMock,
+        ) as dispatch_contact_research:
             dispatch_contact_research.return_value = str(research_job_id)
             resp = client.post(
                 f"/users/crm/deals/{test_deal_id}/stakeholders",
@@ -298,42 +285,74 @@ class TestCreateStakeholder:
             contact_id=contact.contact_id,
             user_id=test_user_ids["user_id"],
             trigger="stakeholder_created",
+            force_refresh=False,
         )
-        dispatch_stakeholder_research.assert_not_awaited()
 
-    def test_create_stakeholder_dispatches_research_separately_from_processing_jobs(
+    def test_create_stakeholder_from_no_email_contact_dispatches_contact_research(
         self,
         client: TestClient,
         stakeholders_dependency_overrides,
+        fake_stakeholders_service,
         test_deal_id,
         test_user_ids,
     ):
-        """Adding a stakeholder researches that stakeholder but keeps processing jobs separate."""
+        """No-email contact-backed stakeholders can still summarize cached enrichment."""
+        contact = FakeContact(
+            contact_id=uuid4(),
+            organisation_id=test_user_ids["organisation_id"],
+            email=None,
+            full_name="LinkedIn Buyer",
+            linkedin_url="https://linkedin.com/in/linkedin-buyer",
+        )
+        fake_stakeholders_service.add_contact(contact)
         research_job_id = uuid4()
+
         with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
+            "src.workers.deal_worker.utils.contact_research_dispatch."
+            "dispatch_contact_research_for_contact",
             new_callable=AsyncMock,
-        ) as dispatch_research:
-            dispatch_research.return_value = str(research_job_id)
+        ) as dispatch_contact_research:
+            dispatch_contact_research.return_value = str(research_job_id)
             resp = client.post(
                 f"/users/crm/deals/{test_deal_id}/stakeholders",
-                json={
-                    "email": "research.auto@example.com",
-                    "name": "Research Auto",
-                },
+                json={"contact_id": str(contact.contact_id)},
             )
 
         assert resp.status_code == 201
         body = resp.json()
-        dispatch_research.assert_awaited_once()
-        assert dispatch_research.await_args.kwargs["deal_id"] == test_deal_id
-        assert dispatch_research.await_args.kwargs["user_id"] == test_user_ids["user_id"]
+        assert body["data"]["stakeholder"]["email"] is None
+        assert body["data"]["processing_jobs"] == []
         assert body["data"]["research_job"] == {
             "job_id": str(research_job_id),
-            "job_type": "stakeholder_research",
+            "job_type": "contact_research",
             "status": "pending",
         }
+        dispatch_contact_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            contact_id=contact.contact_id,
+            user_id=test_user_ids["user_id"],
+            trigger="stakeholder_created",
+            force_refresh=False,
+        )
+
+    def test_create_stakeholder_without_contact_does_not_dispatch_research(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Unlinked stakeholders only queue processing jobs; research needs a contact."""
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={
+                "email": "research.auto@example.com",
+                "name": "Research Auto",
+            },
+        )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["data"]["research_job"] is None
         assert "stakeholder_research" not in {
             job["job_type"] for job in body["data"]["processing_jobs"]
         }
@@ -357,21 +376,14 @@ class TestCreateStakeholder:
         removed.is_deleted = True
         fake_stakeholders_service.add_stakeholder(removed)
 
-        research_job_id = uuid4()
-        with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            new_callable=AsyncMock,
-        ) as dispatch_research:
-            dispatch_research.return_value = str(research_job_id)
-            resp = client.post(
-                f"/users/crm/deals/{test_deal_id}/stakeholders",
-                json={
-                    "email": "removed-again@example.com",
-                    "name": "Restored Name",
-                    "job_title": "Restored Title",
-                },
-            )
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders",
+            json={
+                "email": "removed-again@example.com",
+                "name": "Restored Name",
+                "job_title": "Restored Title",
+            },
+        )
 
         assert resp.status_code == 201
         body = resp.json()
@@ -385,13 +397,7 @@ class TestCreateStakeholder:
             "deal_calendar_rematch",
             "stakeholder_sync",
         ]
-        dispatch_research.assert_awaited_once()
-        assert dispatch_research.await_args.kwargs["stakeholder_id"] == removed.stakeholder_id
-        assert body["data"]["research_job"] == {
-            "job_id": str(research_job_id),
-            "job_type": "stakeholder_research",
-            "status": "pending",
-        }
+        assert body["data"]["research_job"] is None
 
     def test_create_duplicate_active_stakeholder_updates_existing_row(
         self,
@@ -834,11 +840,16 @@ class TestGetStakeholderDetail:
         test_deal_id,
         test_user_ids,
     ):
-        """Stakeholder detail exposes active manual research job for SSE reconnect."""
+        """Stakeholder detail exposes active contact research job for SSE reconnect."""
         from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 
         from tests.api.routers.crm.conftest import FakeDealJob
 
+        contact = create_contact(
+            organisation_id=test_user_ids["organisation_id"],
+            email="research.active@acme.com",
+        )
+        fake_stakeholders_service.add_contact(contact)
         stakeholder = FakeStakeholder(
             stakeholder_id=uuid4(),
             deal_id=test_deal_id,
@@ -846,16 +857,17 @@ class TestGetStakeholderDetail:
             email="research.active@acme.com",
             name="Research Active",
             source=StakeholderSource.MANUAL,
+            contact_id=contact.contact_id,
         )
         fake_stakeholders_service.add_stakeholder(stakeholder)
         job = FakeDealJob(
             job_id=uuid4(),
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
-            stakeholder_id=stakeholder.stakeholder_id,
-            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            job_type=DealJobType.CONTACT_RESEARCH,
             status=JobStatus.IN_PROGRESS,
         )
+        job.job_metadata = {"contact_id": str(contact.contact_id)}
         fake_deal_job_service.add_job(job)
 
         resp = client.get(
@@ -866,7 +878,7 @@ class TestGetStakeholderDetail:
         active_job = resp.json()["data"]["active_research_job"]
         assert active_job == {
             "job_id": str(job.job_id),
-            "job_type": "stakeholder_research",
+            "job_type": "contact_research",
             "status": "in_progress",
         }
 
@@ -1222,7 +1234,7 @@ class TestRemoveStakeholder:
         assert resp.status_code == 422
 
 
-class TestTriggerStakeholderResearch:
+class TestTriggerStakeholderContactResearch:
     """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/research endpoint."""
 
     def test_returns_deal_job_response_for_manual_research(
@@ -1234,20 +1246,26 @@ class TestTriggerStakeholderResearch:
         test_user_ids,
     ):
         """Manual research returns the same generic job DTO used by other deal jobs."""
+        contact = create_contact(
+            organisation_id=test_user_ids["organisation_id"],
+            email="research.target@example.com",
+        )
+        fake_stakeholders_service.add_contact(contact)
         stakeholder = create_stakeholder(
             deal_id=test_deal_id,
             organisation_id=test_user_ids["organisation_id"],
             email="research.target@example.com",
+            contact_id=contact.contact_id,
         )
         fake_stakeholders_service.add_stakeholder(stakeholder)
         job_id = uuid4()
 
         with patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
+            "src.workers.deal_worker.utils.contact_research_dispatch."
+            "dispatch_contact_research_for_contact",
             new_callable=AsyncMock,
             return_value=str(job_id),
-        ):
+        ) as dispatch_research:
             resp = client.post(
                 f"/users/crm/deals/{test_deal_id}/stakeholders/"
                 f"{stakeholder.stakeholder_id}/research"
@@ -1259,6 +1277,13 @@ class TestTriggerStakeholderResearch:
         assert body["message"] == "Research job dispatched"
         assert body["data"] == {
             "job_id": str(job_id),
-            "job_type": "stakeholder_research",
+            "job_type": "contact_research",
             "status": "pending",
         }
+        dispatch_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            contact_id=contact.contact_id,
+            user_id=test_user_ids["user_id"],
+            trigger="stakeholder_created",
+            force_refresh=True,
+        )

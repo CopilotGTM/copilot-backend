@@ -373,11 +373,11 @@ export interface AccountSearchPage {
  * Request to create a new account.
  */
 export interface CreateAccountRequest {
-  name?: string | null;               // Optional when domain or website is supplied
+  name?: string | null;               // Optional when domain, website, or linkedin_url is supplied
   domain?: string | null;             // Optional; auto-normalised when provided
   website?: string | null;            // Optional; domain can be derived when provided
   industry?: string | null;
-  linkedin_url?: string | null;
+  linkedin_url?: string | null;       // Optional LinkedIn company/school/showcase page; can satisfy identity via enrichment
 }
 
 /**
@@ -658,11 +658,13 @@ After the account transaction commits, the API attempts to enqueue asynchronous 
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
-| `name` | string | Conditionally | Non-empty when present | Company display name. Required only when neither `domain` nor `website` is supplied |
+| `name` | string | Conditionally | Non-empty when present | Company display name. Required only when `domain`, `website`, and `linkedin_url` are all missing |
 | `domain` | string | Conditionally | Auto-normalised when present | Company domain. Can satisfy the identity requirement without `name` |
 | `website` | string | Conditionally | Used to derive `domain` when `domain` is omitted | Full website URL. Can satisfy the identity requirement without `name` |
 | `industry` | string | No | — | Industry classification |
-| `linkedin_url` | string | No | — | LinkedIn company page URL |
+| `linkedin_url` | string | Conditionally | Must be a LinkedIn account page path: `/company/`, `/school/`, or `/showcase/` | LinkedIn company/school/showcase page URL. Can satisfy the identity requirement through account enrichment |
+
+**LinkedIn URL type rule for frontend:** Account forms must only send organization-style LinkedIn URLs in `linkedin_url`: `linkedin.com/company/...`, `linkedin.com/school/...`, or `linkedin.com/showcase/...`. Do not send person profile URLs such as `linkedin.com/in/...` or `linkedin.com/pub/...` to account create/update; route those to contact/stakeholder flows instead. The backend returns `400` with `Use a LinkedIn company, school, or showcase URL for accounts` when a person URL is sent.
 
 #### Domain Normalisation
 
@@ -1010,7 +1012,7 @@ All fields optional. Only include fields to update.
 | `company_type` | string | — | Company type/segment |
 | `description` | string | — | Company description |
 | `phone` | string | — | Phone number |
-| `linkedin_url` | string | — | LinkedIn URL |
+| `linkedin_url` | string | Must be a LinkedIn account page path: `/company/`, `/school/`, or `/showcase/` | LinkedIn company/school/showcase URL |
 | `number_of_employees` | integer | — | Employee count |
 | `annual_revenue` | number | — | Annual revenue (decimal) |
 | `address` | string | — | Street address |
@@ -1242,6 +1244,7 @@ Consolidated reference of all error responses across all endpoints.
 | `404` | `"Account not found"` | Get detail, Update, Enrich | Account doesn't exist or is deleted |
 | `409` | `"An account with domain '...' already exists"` | Create, Update | Duplicate normalised domain |
 | `409` | `"An account named '...' already exists"` | Create | Duplicate exact account name when no domain/website was supplied |
+| `400` | `"Use a LinkedIn company, school, or showcase URL for accounts"` | Create, Update | A person LinkedIn URL (`/in/` or `/pub/`) was sent as an account LinkedIn URL |
 | `409` | `"Internal CRM integration not configured"` | Create | Missing INTERNAL_CRM integration |
 | `422` | Pydantic validation error | Create, Update, Suggest, Search | Invalid request body or query parameters |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |

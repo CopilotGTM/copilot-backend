@@ -1,8 +1,7 @@
 """DTO adapter for rendering contact participants as product stakeholders.
 
-Stakeholder reads prefer durable contact profile fields when a CRMContact is
-loaded, but fall back to participant snapshots so list views can remain cheap
-and resilient when the contact profile is missing or stale.
+Stakeholder reads use linked CRMContact rows for durable person profile and
+research data. Participant rows only contribute deal-local participation fields.
 """
 
 from __future__ import annotations
@@ -44,25 +43,17 @@ def participant_to_stakeholder_detail_dict(
         "contact_id": participant.related_local_id,
         "email": contact.email if contact and contact.email else participant.related_email,
         "name": contact.full_name if contact and contact.full_name else participant.related_name,
-        "job_title": (
-            contact.job_title if contact and contact.job_title else participant.job_title
-        ),
-        "department": (
-            contact.properties.get("department")
-            if contact and contact.properties.get("department")
-            else participant.department
-        ),
+        "job_title": contact.job_title if contact else None,
+        "department": contact.properties.get("department") if contact else None,
         "phone_number": (
             contact.phone
             if contact and contact.phone
             else contact.mobile_phone
             if contact and contact.mobile_phone
-            else participant.phone_number
+            else None
         ),
-        "linkedin_url": _contact_linkedin_url(contact)
-        or getattr(participant, "linkedin_url", None),
-        "external_links": _contact_external_links(contact)
-        or getattr(participant, "external_links", None),
+        "linkedin_url": _contact_linkedin_url(contact),
+        "external_links": _contact_external_links(contact),
         "stance": participant.stance,
         "decision_power": participant.decision_power,
         "motivation": participant.motivation,
@@ -73,16 +64,8 @@ def participant_to_stakeholder_detail_dict(
         "source": participant.participant_source,
         "source_reference_id": participant.source_reference_id,
         "approval_status": participant.approval_status,
-        "stakeholder_research": (
-            contact.contact_research
-            if contact and contact.contact_research
-            else participant.stakeholder_research
-        ),
-        "last_researched_at": (
-            contact.last_researched_at
-            if contact and contact.last_researched_at
-            else participant.last_researched_at
-        ),
+        "stakeholder_research": contact.contact_research if contact else None,
+        "last_researched_at": contact.last_researched_at if contact else None,
         "is_deleted": participant.is_deleted,
         "created_at": participant.created_at,
         "updated_at": participant.updated_at,

@@ -27,6 +27,26 @@ CONTACT_RESEARCH_COOLDOWN_DAYS = 30
 ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.IN_PROGRESS)
 
 
+async def dispatch_contact_research_for_contact(
+    *,
+    organisation_id: UUID,
+    contact_id: UUID | None,
+    user_id: UUID | None = None,
+    trigger: str,
+    force_refresh: bool = False,
+) -> str | None:
+    """Skip unlinked entities before entering contact research eligibility checks."""
+    if contact_id is None:
+        return None
+    return await dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        user_id=user_id,
+        trigger=trigger,
+        force_refresh=force_refresh,
+    )
+
+
 async def dispatch_contact_research_async(
     *,
     organisation_id: UUID,
@@ -50,10 +70,19 @@ async def dispatch_contact_research_async(
             return None
 
         email = (contact.email or "").strip().lower()
-        if not AccountDomainResolutionService.derive_safe_domain_from_email(email):
+        has_safe_email = bool(AccountDomainResolutionService.derive_safe_domain_from_email(email))
+        profile_enrichment = contact.profile_enrichment or {}
+        has_cached_provider_data = bool(profile_enrichment) and (
+            profile_enrichment.get("status") != "not_found"
+        )
+        if not has_safe_email and not has_cached_provider_data:
             return None
 
-        if not force_refresh and _is_recent(contact.last_researched_at):
+        if (
+            not force_refresh
+            and contact.contact_research
+            and _is_recent(contact.last_researched_at)
+        ):
             return None
 
         existing = await session.execute(
@@ -74,7 +103,7 @@ async def dispatch_contact_research_async(
             status=JobStatus.PENDING,
             job_metadata={
                 "contact_id": str(contact_id),
-                "normalized_email": email,
+                "normalized_email": email or None,
                 "trigger": trigger,
                 "force_refresh": force_refresh,
                 "source": "api" if user_id else "automated_pipeline",

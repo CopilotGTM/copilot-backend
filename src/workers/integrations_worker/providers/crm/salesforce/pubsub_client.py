@@ -8,9 +8,6 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Protocol, cast
 
-from fastavro import parse_schema, schemaless_reader
-from grpc import ssl_channel_credentials
-
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_schema_cache import (
     SalesforcePubSubSchemaCache,
@@ -59,7 +56,7 @@ class SalesforceGrpcSchemaClient(SalesforcePubSubSchemaClient):
         self._pubsub_endpoint = pubsub_endpoint
 
     async def get_schema(self, schema_id: str, *, metadata: tuple[tuple[str, str], ...]) -> str:
-        from grpc import aio
+        from grpc import aio, ssl_channel_credentials
 
         from src.workers.integrations_worker.providers.crm.salesforce.pubsub_proto import (
             pubsub_api_pb2,
@@ -91,7 +88,7 @@ class SalesforceGrpcPubSubTransport:
         metadata: tuple[tuple[str, str], ...],
         num_requested: int,
     ) -> AsyncIterator[SalesforcePubSubRawEvent | SalesforcePubSubKeepalive]:
-        from grpc import aio
+        from grpc import aio, ssl_channel_credentials
 
         from src.workers.integrations_worker.providers.crm.salesforce.pubsub_proto import (
             pubsub_api_pb2,
@@ -203,6 +200,8 @@ class SalesforcePubSubClient:
             return raw_event
         schema_id = str(raw_event.schema_id)
         schema_json = await self._schema_cache.get_schema(schema_id, metadata=metadata)
+        from fastavro import parse_schema, schemaless_reader
+
         schema = parse_schema(json.loads(schema_json))
         payload = schemaless_reader(BytesIO(raw_event.payload), schema)
         if not isinstance(payload, dict):

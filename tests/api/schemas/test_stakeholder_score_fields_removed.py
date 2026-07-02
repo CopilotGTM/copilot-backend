@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.agents.tools.crm.upsert_stakeholder import UpsertStakeholderInput
+from src.agents.tools.crm.create_stakeholder_if_missing import CreateStakeholderIfMissingInput
 from src.agents.workflows.stakeholder_analysis.models import StakeholderAnalysisData
 from src.api.schemas import crm_models
 from src.contracts.crm import stakeholders as stakeholder_contracts
@@ -31,4 +31,4 @@ def test_agent_stakeholder_write_models_do_not_expose_removed_scores() -> None:
     removed_fields = {"champion_potential", "engagement_score"}
 
     assert removed_fields.isdisjoint(StakeholderAnalysisData.model_fields)
-    assert removed_fields.isdisjoint(UpsertStakeholderInput.model_fields)
+    assert removed_fields.isdisjoint(CreateStakeholderIfMissingInput.model_fields)

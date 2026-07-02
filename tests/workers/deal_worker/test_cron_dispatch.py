@@ -60,7 +60,7 @@ def test_transcript_fetch_pipeline_schedule_is_disabled() -> None:
 
 
 def test_timeline_sync_schedule_is_disabled() -> None:
-    """Timeline sync now runs deal-scoped after email/calendar mapping."""
+    """Legacy timeline sync stays disabled after timeline deprecation."""
     with pytest.raises(KeyError):
         get_scheduled_job("timeline-sync")
 

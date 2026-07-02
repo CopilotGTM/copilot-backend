@@ -138,11 +138,6 @@ from .stakeholder_insight_models import (
     create_insight_action,
     get_default_actions,
 )
-from .timeline_models import (
-    DealTimelineEvent,
-    TimelineEventSource,
-    TimelineEventType,
-)
 
 __all__ = [
     "SyncCategory",
@@ -244,9 +239,6 @@ __all__ = [
     "EmailThreadSummary",
     "DealEmailAssociation",
     # Timeline models
-    "TimelineEventType",
-    "TimelineEventSource",
-    "DealTimelineEvent",
     # Risk & Blocker models
     "RiskBlockerType",
     "RiskBlockerStatus",

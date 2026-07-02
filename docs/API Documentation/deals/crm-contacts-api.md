@@ -459,10 +459,10 @@ export interface ContactSearchPage {
  * Request to create a new contact.
  */
 export interface CreateContactRequest {
-  email: string;                      // Required. Primary email (auto-lowercased, trimmed)
-  name?: string | null;               // Optional. Full name when already known
+  email?: string | null;              // Required unless linkedin_url or name is supplied
+  name?: string | null;               // Can create a non-researchable placeholder when supplied alone
   job_title?: string | null;          // Optional. Job title when already known
-  linkedin_url?: string | null;       // Optional. LinkedIn profile URL when already known
+  linkedin_url?: string | null;       // Required unless email or name is supplied; must be a person profile URL
 }
 
 /**
@@ -766,8 +766,8 @@ Use this endpoint before `POST /contacts` when the UI wants to show possible dup
 POST /users/crm/contacts
 ```
 
-Creates a new contact owned by the `INTERNAL_CRM` integration. Email is normalised (lowercased, trimmed) and checked for uniqueness within the organisation.
-After the contact transaction commits, the API queues asynchronous contact research for eligible business-email contacts. Research runs outside the request path, so contact creation still succeeds if queue dispatch fails.
+Creates a new contact owned by the `INTERNAL_CRM` integration. At least one of `email`, `linkedin_url`, or `name` is required. Email is normalised (lowercased, trimmed) and checked for uniqueness within the organisation when provided.
+After the contact transaction commits, the API queues asynchronous contact research only for contacts with an email. Name-only contacts are saved as placeholders and do not enqueue research.
 
 #### Request Headers
 
@@ -780,10 +780,12 @@ After the contact transaction commits, the API queues asynchronous contact resea
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
-| `email` | string | **Yes** | Non-empty, must contain `@` | Primary email (auto-lowercased, trimmed) |
-| `name` | string | No | Non-empty when provided | Full name when already known. If omitted, name fields remain `null`; clients can use email as a display fallback. |
+| `email` | string | No* | Non-empty, must contain `@` | Primary email (auto-lowercased, trimmed). Required unless `linkedin_url` or `name` is supplied. |
+| `name` | string | No* | Non-empty when provided | Full name when already known. Can create a non-researchable placeholder when email and LinkedIn are absent. |
 | `job_title` | string | No | Non-empty when provided | Job title when already known. |
-| `linkedin_url` | string | No | Non-empty when provided | LinkedIn profile URL when already known. |
+| `linkedin_url` | string | No* | Must be a LinkedIn person profile path: `/in/` or `/pub/` | LinkedIn profile URL when already known. Required unless `email` or `name` is supplied. |
+
+**LinkedIn URL type rule for frontend:** Contact forms must only send person profile LinkedIn URLs in `linkedin_url`: `linkedin.com/in/...` or `linkedin.com/pub/...`. Do not send organization URLs such as `linkedin.com/company/...`, `linkedin.com/school/...`, or `linkedin.com/showcase/...` to contact create/update; route those to account/company flows instead. The backend returns `400` with `Use a LinkedIn profile URL for contacts and stakeholders` when an organization URL is sent.
 
 Unknown fields are rejected. Contact creation no longer accepts `phone` or account-link fields such as `company_id`, `account_id`, `account_name`, or `account_domain`.
 
@@ -804,7 +806,7 @@ Create contact does not accept account inputs from the caller. The backend uses 
 
 - If one active account exists with the email domain, the contact is linked to it.
 - If no account exists with the email domain, an account is created with `name = domain` and `domain = domain`, then the contact is linked to it.
-- If multiple accounts match the same domain or the email has no usable domain, the contact is created without an account link.
+- If multiple accounts match the same domain, the email has no usable domain, or the contact is name-only, the contact is created without an account link.
 
 **Integration auto-creation:**
 If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is automatically created on first contact creation. This is idempotent.
@@ -813,6 +815,7 @@ If the `INTERNAL_CRM` integration doesn't exist for the organisation, it is auto
 
 After commit, `POST /contacts` attempts to enqueue `contact_research.process_job`.
 
+- Name-only contacts are skipped because there is no email/domain identity to research.
 - Free/personal email providers and their subdomains are skipped.
 - Business subdomains are preserved, e.g. `buyer@test.hackme.com` researches against `test.hackme.com`.
 - Provider enrichment writes structured profile fields and `profile_enrichment` first.
@@ -1291,6 +1294,8 @@ All fields optional. Only include fields to update.
 | Has existing LinkedIn URL | Send `linkedin_url: null` | `400` — cannot change an existing LinkedIn URL |
 | Has existing LinkedIn URL | Omit `linkedin_url` from body | No change (other fields update normally) |
 
+Only person profile URLs are valid here: `linkedin.com/in/...` or `linkedin.com/pub/...`. Company, school, and showcase LinkedIn pages belong on account records.
+
 **Frontend implementation:**
 
 ```ts
@@ -1581,9 +1586,9 @@ The dropdown should display **account name + domain** (and optionally industry) 
 ### Flow A: Creating a new contact
 
 ```
-1. User enters email, and optionally name
-2. Submit → POST /contacts with email and optional name only
-3. Backend resolves or creates an account from the email domain when possible
+1. User enters email, LinkedIn URL, or name, and optionally job title
+2. Submit -> POST /contacts with at least one of `email`, `linkedin_url`, or `name` plus optional `job_title`
+3. Backend resolves LinkedIn through contact identity enrichment when provided, then resolves or creates an account from the final email domain when possible. Name-only creates an unresearched placeholder.
 4. Response returns `company_id` and `company_name` when a stored account link was created
 ```
 
@@ -1652,6 +1657,7 @@ Consolidated reference of all error responses across all endpoints.
 | `400` | `"Cannot unlink a contact from its account"` | Update | Attempted to set `company_id` to `null` |
 | `400` | `"Contact must have an email address before being linked to an account..."` | Update | Tried to set `company_id` on a contact with no email |
 | `400` | `"Contact must have an email address before being added to a deal..."` | Add to deal | Contact has no email |
+| `400` | `"Use a LinkedIn profile URL for contacts and stakeholders"` | Create, Update | An account/company LinkedIn URL was sent as a contact profile URL |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
 | `404` | `"Contact not found"` | Get detail, Update, Enrich, Add to deal | Contact doesn't exist or is deleted |
 | `404` | `"Account not found"` | Update | `company_id` references a non-existent account |
@@ -1691,8 +1697,8 @@ Consolidated reference of all error responses across all endpoints.
   - Batch-resolved `integration_type` for `source` annotation
   - Nested `company` resolved from stored FK first, with email domain matching as display fallback
   - Nested `owner` built from contact owner metadata
-- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; the canonical command accepts required `email` plus optional `name`, `job_title`, and `linkedin_url`
-- `create_contact()` does not accept `phone` or caller-supplied account-link fields; account resolution is derived from email domain through `AccountWriteService`
+- `create_contact()` auto-creates the `INTERNAL_CRM` integration if it doesn't exist; the canonical command accepts `email`, `linkedin_url`, or `name` plus optional `job_title`
+- `create_contact()` does not accept `phone` or caller-supplied account-link fields; account resolution is derived from email domain through `AccountWriteService` and is skipped for name-only placeholders
 - `update_contact()` accepts `company_id` to link/unlink accounts; validates account exists when non-null
 - `update_contact()` handles `linkedin_url` as a top-level contact profile field
 - `add_contact_to_deal()` delegates to `DealParticipantService` for centralized participant creation and duplicate detection
@@ -1722,12 +1728,12 @@ def _split_name(full_name: str) -> tuple[str, str | None]:
 
 ### Enrichment Pipeline Architecture
 
-Contacts created through this API use the contact research pipeline:
+Contacts created through this API use the contact research pipeline when they have an email:
 
 ```
 POST /contacts
   → commit CRMContact
-    → dispatch_contact_research_async()
+    → dispatch_contact_research_async() only if contact.email exists
       → creates a contact_research DealJobs row
         → contact_research.process_job
           → provider enrichment writes structured CRMContact fields

@@ -60,7 +60,7 @@ def test_get_scheduler_health_marks_stale_dispatch_as_unhealthy(mocker) -> None:
                 "status": "triggered",
                 "job_name": "deal-mapping",
                 "task_name": "stakeholder.sync_all_deals_stakeholders_all_orgs",
-                "triggered_at": (now - timedelta(hours=1)).isoformat(),
+                "triggered_at": (now - timedelta(hours=4)).isoformat(),
             }
         }
     )

@@ -151,6 +151,7 @@ def _normalize_response(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": True,
         "apollo_id": person.get("id"),
+        "email": person.get("email"),
         "name": person.get("name"),
         "first_name": person.get("first_name"),
         "last_name": person.get("last_name"),

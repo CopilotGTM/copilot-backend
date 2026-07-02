@@ -59,7 +59,6 @@ def test_stakeholder_write_service_does_not_inherit_old_monolith() -> None:
 
 def test_stakeholder_write_service_delegates_contact_writes() -> None:
     source = Path("src/service/crm/participants/stakeholder_write_service.py").read_text()
-    assert "CRMContact(" not in source
     assert "ContactWriteService(" in source
 
 

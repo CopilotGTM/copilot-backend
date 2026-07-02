@@ -154,8 +154,7 @@ class RiskBlockerExtractionService:
         )
 
         session.add(item)
-        writer = RiskBlockerWriteService(session, self.organisation_id)
-        session.add(writer._build_opened_timeline_event(item))
+        # Timeline is deprecated; live extraction uses the writer path for activity projection.
 
         return item
 

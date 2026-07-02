@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.service.crm.utils.account import ACCOUNT_LINKEDIN_URL_ERROR, is_account_linkedin_url
 
 
 class AccountDetailFieldDefinition(BaseModel):
@@ -262,6 +263,19 @@ class CreateAccountRequest(BaseModel):
         cleaned = value.strip()
         return cleaned or None
 
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only organization-style LinkedIn URLs for account records."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_account_linkedin_url(cleaned):
+            raise ValueError(ACCOUNT_LINKEDIN_URL_ERROR)
+        return cleaned
+
     @model_validator(mode="after")
     def validate_identity(self) -> CreateAccountRequest:
         """Require at least one stable account identity before creating a row."""
@@ -271,7 +285,9 @@ class CreateAccountRequest(BaseModel):
             return self
         if self.website and self.website.strip():
             return self
-        raise ValueError("name, domain, or website is required")
+        if self.linkedin_url and self.linkedin_url.strip():
+            return self
+        raise ValueError("name, domain, website, or LinkedIn URL is required")
 
 
 class UpdateAccountRequest(BaseModel):
@@ -294,6 +310,19 @@ class UpdateAccountRequest(BaseModel):
     postal_code: str | None = None
     country: str | None = None
     timezone: str | None = None
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only organization-style LinkedIn URLs for account records."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_account_linkedin_url(cleaned):
+            raise ValueError(ACCOUNT_LINKEDIN_URL_ERROR)
+        return cleaned
 
 
 class AccountSuggestion(BaseModel):

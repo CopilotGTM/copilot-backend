@@ -48,7 +48,7 @@ The three supported flows this API powers:
 |-----|-------------|---------------|
 | **CRM Deals** | Deals reference pipelines and stages via `pipeline_id` and `stage_id` FKs | `crm-deals-api.md` |
 | **CRM Settings** | Organisation-level defaults and feature flags | `crm-settings-api.md` |
-| **Deal Timeline** | Stage transitions recorded in `crm_deal_stage_history` | `deal-timeline-api.md` |
+| **Deprecated Deal Timeline** | Stage transitions recorded in `crm_deal_stage_history`; the legacy timeline API doc moved to `deprecated/docs/API Documentation/deals/deal-timeline-api.md` | `deprecated/docs/API Documentation/deals/deal-timeline-api.md` |
 | **CRM Deals Import** | Non-default import pipelines are created via the CSV import flow | `crm-deals-import-api.md` |
 
 ### Pipeline ↔ Stage ↔ Deal relationship
@@ -154,7 +154,7 @@ Stages belong to exactly one pipeline via `CRMDealStage.pipeline_id`. A pipeline
 
 ### Stage → Deals
 
-Deals reference a stage via `CRMDeal.stage_id`. A stage can hold any number of deals. When a deal is created, it defaults to the pipeline's first stage by `display_order`. Stage transitions (moving a deal from one stage to the next) are recorded in the `crm_deal_stage_history` table and surfaced via the deal timeline API.
+Deals reference a stage via `CRMDeal.stage_id`. A stage can hold any number of deals. When a deal is created, it defaults to the pipeline's first stage by `display_order`. Stage transitions (moving a deal from one stage to the next) are recorded in the `crm_deal_stage_history` table. The legacy deal timeline API is deprecated; callers should use stage history and activity surfaces instead.
 
 ### Snapshot propagation (why renames touch deals)
 
@@ -957,7 +957,7 @@ DELETE /users/crm/pipelines/{pipeline_id}/stages/{stage_id}
 
 Soft-deletes a stage. Blocked if any non-deleted deal currently references this stage. There is **no migration path** — you cannot ask the API to move deals to another stage as part of the delete. Callers must move the deals individually via the deals API first, then retry.
 
-`CRMDealStageHistory` rows are preserved (they keep their FK to the stage), so deal timeline history continues to resolve correctly after the stage is soft-deleted.
+`CRMDealStageHistory` rows are preserved (they keep their FK to the stage), so stage history continues to resolve correctly after the stage is soft-deleted.
 
 #### Path Parameters
 
@@ -1289,4 +1289,4 @@ This is safe because the pipeline-level in-use guard has already confirmed no de
 - `crm-deals-api.md` — Deals CRUD (uses `pipeline_id` and `stage_id` from this API)
 - `crm-deals-import-api.md` — CSV import flow (creates non-default pipelines via `InternalCRMSetupService.create_import_pipeline`)
 - `crm-settings-api.md` — Organisation-level CRM settings
-- `deal-timeline-api.md` — Stage transition history
+- `deprecated/docs/API Documentation/deals/deal-timeline-api.md` — Deprecated stage transition timeline API

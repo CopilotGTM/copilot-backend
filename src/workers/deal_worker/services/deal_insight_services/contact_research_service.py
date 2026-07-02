@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from src.agents.workflows.contact_research_summary import ContactResearchSummaryAgent
@@ -58,6 +59,7 @@ class _ContactResearchSnapshot:
     company_name: str | None
     company_domain: str | None
     linkedin_url: str | None
+    profile_enrichment: dict[str, Any]
 
 
 class ContactResearchWorkflowService:
@@ -85,54 +87,60 @@ class ContactResearchWorkflowService:
         if snapshot is None:
             raise ContactResearchWorkflowError("Contact not found", retryable=False)
 
-        if not snapshot.email or not snapshot.company_domain:
+        if snapshot.profile_enrichment:
+            provider_status = "cached"
+            profile_enrichment = snapshot.profile_enrichment
+        elif not snapshot.email or not snapshot.company_domain:
             return ContactResearchWorkflowResult(
                 provider_status="skipped",
                 summary_status="skipped",
             )
-
-        provider_result = await self.provider_lookup(
-            ContactProviderResearchInput(
-                organisation_id=self.organisation_id,
-                contact_id=snapshot.contact_id,
-                email=snapshot.email,
-                name=snapshot.name,
-                company_name=snapshot.company_name,
-                company_domain=snapshot.company_domain,
-                linkedin_url=snapshot.linkedin_url,
-            )
-        )
-
-        if provider_result.status == "error":
-            raise ContactResearchWorkflowError(
-                provider_result.error_detail or "Contact provider research failed",
-                retryable=True,
+        else:
+            provider_result = await self.provider_lookup(
+                ContactProviderResearchInput(
+                    organisation_id=self.organisation_id,
+                    contact_id=snapshot.contact_id,
+                    email=snapshot.email,
+                    name=snapshot.name,
+                    company_name=snapshot.company_name,
+                    company_domain=snapshot.company_domain,
+                    linkedin_url=snapshot.linkedin_url,
+                )
             )
 
-        # Persist provider result before summary generation. A model failure
-        # should not discard durable fields from Apollo/provider enrichment.
-        async for session in acquire_org_async_session(self.organisation_id):
-            await ContactResearchService(session, self.organisation_id).persist_provider_result(
-                snapshot.contact_id,
-                provider_result,
-            )
-            break
+            if provider_result.status == "error":
+                raise ContactResearchWorkflowError(
+                    provider_result.error_detail or "Contact provider research failed",
+                    retryable=True,
+                )
 
-        if provider_result.status != "found" or not provider_result.profile_enrichment:
+            # Persist provider result before summary generation. A model failure
+            # should not discard durable fields from Apollo/provider enrichment.
+            async for session in acquire_org_async_session(self.organisation_id):
+                await ContactResearchService(session, self.organisation_id).persist_provider_result(
+                    snapshot.contact_id,
+                    provider_result,
+                )
+                break
+
+            provider_status = provider_result.status
+            profile_enrichment = provider_result.profile_enrichment or {}
+
+        if provider_status not in {"found", "cached"} or not profile_enrichment:
             await self._record_completion_activity(
                 snapshot.contact_id,
                 job_id=job_id,
-                provider_status=provider_result.status,
+                provider_status=provider_status,
                 summary_status="skipped",
             )
             return ContactResearchWorkflowResult(
-                provider_status=provider_result.status,
+                provider_status=provider_status,
                 summary_status="skipped",
             )
 
         summary_result = await self._generate_summary(
             snapshot.contact_id,
-            provider_result.profile_enrichment,
+            profile_enrichment,
         )
         if summary_result.status == "generated":
             async for session in acquire_org_async_session(self.organisation_id):
@@ -145,11 +153,11 @@ class ContactResearchWorkflowService:
         await self._record_completion_activity(
             snapshot.contact_id,
             job_id=job_id,
-            provider_status=provider_result.status,
+            provider_status=provider_status,
             summary_status=summary_result.status,
         )
         return ContactResearchWorkflowResult(
-            provider_status=provider_result.status,
+            provider_status=provider_status,
             summary_status=summary_result.status,
             summary_markdown=summary_result.summary_markdown,
         )
@@ -170,6 +178,7 @@ class ContactResearchWorkflowService:
                 company_name=contact.company_name,
                 company_domain=domain,
                 linkedin_url=contact.linkedin_url,
+                profile_enrichment=dict(contact.profile_enrichment or {}),
             )
         return None
 

@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.deal_assets_handler import get_deal_assets_service
 from src.service.crm.deal_assets_service import DealAssetsServiceError
 
@@ -103,8 +104,13 @@ def assets_dependency_overrides(client: TestClient, mock_service):
         finally:
             await mock_service.close()
 
+    async def _override_rate_limit():
+        return None
+
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_deal_assets_service] = _override_service
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
+    app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield mock_service
     app.dependency_overrides = {}
 

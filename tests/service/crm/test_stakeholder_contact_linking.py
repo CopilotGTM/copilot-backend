@@ -208,7 +208,7 @@ class DealParticipantFakeSession(FakeSession):
 
 @pytest.mark.asyncio
 async def test_ensure_deal_participant_creates_for_internal_deal() -> None:
-    """Create CRMDealParticipant when deal belongs to internal CRM."""
+    """Create only participant identity fields when deal belongs to internal CRM."""
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 
     internal_integration = SimpleNamespace(integration_id=INTEGRATION_ID)
@@ -228,7 +228,6 @@ async def test_ensure_deal_participant_creates_for_internal_deal() -> None:
         deal_id=DEAL_ID,
         contact_id=contact_id,
         email="buyer@customer.com",
-        name="Buyer Name",
     )
 
     assert participant is not None
@@ -237,6 +236,12 @@ async def test_ensure_deal_participant_creates_for_internal_deal() -> None:
     assert participant is participants[0]
     assert participant.related_email == "buyer@customer.com"
     assert participant.related_local_id == contact_id
+    assert participant.related_name is None
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "external_links")
 
 
 @pytest.mark.asyncio
@@ -261,7 +266,6 @@ async def test_ensure_deal_participant_creates_for_external_deal() -> None:
         deal_id=DEAL_ID,
         contact_id=uuid4(),
         email="buyer@customer.com",
-        name="Buyer Name",
     )
 
     assert participant is not None
@@ -273,7 +277,7 @@ async def test_ensure_deal_participant_creates_for_external_deal() -> None:
 
 @pytest.mark.asyncio
 async def test_ensure_deal_participant_skips_when_already_exists() -> None:
-    """Don't create duplicate participant."""
+    """Reactivate duplicates without refreshing participant person snapshots."""
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 
     internal_integration = SimpleNamespace(integration_id=INTEGRATION_ID)
@@ -304,10 +308,15 @@ async def test_ensure_deal_participant_skips_when_already_exists() -> None:
         deal_id=DEAL_ID,
         contact_id=uuid4(),
         email="buyer@customer.com",
-        name="Buyer Name",
     )
 
     assert participant is existing_participant
+    assert existing_participant.related_name == "Buyer Name"
+    assert not hasattr(existing_participant, "job_title")
+    assert not hasattr(existing_participant, "phone_number")
+    assert not hasattr(existing_participant, "linkedin_url")
+    assert not hasattr(existing_participant, "department")
+    assert not hasattr(existing_participant, "external_links")
     participants = [obj for obj in session.added if isinstance(obj, CRMDealParticipant)]
     assert len(participants) == 0
 

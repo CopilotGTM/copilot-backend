@@ -14,20 +14,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
+from pydantic import BaseModel, Field
+
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.crm.upsert_stakeholder import (
-    AUTOMATED_PIPELINE_USER_ID,
-    UpsertStakeholderInput,
-    _clean_text,
-    _dispatch_research_for_stakeholder_create,
-    _format_upsert_output,
-    _normalize_optional_decision_power,
-    _normalize_optional_stance,
-    _normalize_optional_temperature,
-)
 from src.contracts.crm.stakeholders import CreateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DecisionPower,
@@ -40,6 +32,9 @@ from src.service.crm.insights.stakeholders_service import (
 )
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
+from src.workers.deal_worker.utils.contact_research_dispatch import (
+    dispatch_contact_research_for_contact,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -47,12 +42,128 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+class CreateStakeholderIfMissingInput(BaseModel):
+    """Input contract for the create-only missing-stakeholder tool."""
+
+    email: Annotated[str, Field(description="External stakeholder email")]
+    name: Annotated[str | None, Field(default=None, description="Full name")] = None
+    job_title: Annotated[str | None, Field(default=None, description="Job title")] = None
+    phone_number: Annotated[str | None, Field(default=None, description="Phone number")] = None
+    department: Annotated[str | None, Field(default=None, description="Department")] = None
+    stance: Annotated[StakeholderStance | None, Field(default=None)] = None
+    decision_power: Annotated[DecisionPower | None, Field(default=None)] = None
+    temperature: Annotated[StakeholderTemperature | None, Field(default=None)] = None
+    motivation: Annotated[str | None, Field(default=None, description="Motivation")] = None
+    pain_points: Annotated[list[str] | None, Field(default=None, description="Pain points")] = None
+
+
+def _extract_enum_token(value: Any) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        return normalized or None
+
+    if isinstance(value, dict):
+        for key in ("value", "enum", "name", "label"):
+            raw = value.get(key)
+            if isinstance(raw, str):
+                normalized = raw.strip().upper()
+                if normalized:
+                    return normalized
+        return None
+
+    return None
+
+
+def _normalize_optional_stance(value: Any) -> StakeholderStance | None:
+    token = _extract_enum_token(value)
+    if token is None:
+        return None
+    try:
+        return StakeholderStance(token)
+    except ValueError:
+        return None
+
+
+def _normalize_optional_decision_power(value: Any) -> DecisionPower | None:
+    token = _extract_enum_token(value)
+    if token is None:
+        return None
+    try:
+        return DecisionPower(token)
+    except ValueError:
+        return None
+
+
+def _normalize_optional_temperature(value: Any) -> StakeholderTemperature | None:
+    token = _extract_enum_token(value)
+    if token is None:
+        return None
+    try:
+        return StakeholderTemperature(token)
+    except ValueError:
+        return None
+
+
+def _clean_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _stakeholder_contact_id(stakeholder: Any) -> UUID | None:
+    contact_id = getattr(stakeholder, "contact_id", None) or getattr(
+        stakeholder,
+        "related_local_id",
+        None,
+    )
+    return contact_id if isinstance(contact_id, UUID) else None
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
+
+
+def _format_create_output(
+    stakeholder: Any,
+    *,
+    action: str,
+) -> dict[str, Any]:
+    participant_id = getattr(stakeholder, "participant_id", None)
+    return {
+        "participant_id": str(participant_id) if participant_id else None,
+        "email": getattr(stakeholder, "email", None)
+        or getattr(
+            stakeholder,
+            "related_email",
+            None,
+        ),
+        "name": getattr(stakeholder, "name", None) or getattr(stakeholder, "related_name", None),
+        "job_title": getattr(stakeholder, "job_title", None),
+        "phone_number": getattr(stakeholder, "phone_number", None),
+        "department": getattr(stakeholder, "department", None),
+        "stance": _enum_value(getattr(stakeholder, "stance", None)),
+        "decision_power": _enum_value(getattr(stakeholder, "decision_power", None)),
+        "temperature": _enum_value(getattr(stakeholder, "temperature", None)),
+        "motivation": getattr(stakeholder, "motivation", None),
+        "pain_points": getattr(stakeholder, "pain_points", None),
+        "updated_fields": [],
+        "updated": False,
+        "created": action == "created",
+        "message": "Stakeholder created successfully"
+        if action == "created"
+        else "No changes applied to stakeholder",
+    }
+
 
 async def create_stakeholder_if_missing(
     *,
     context: AgentContext,
     deal_id: str | None = None,
-    input_data: UpsertStakeholderInput,
+    input_data: CreateStakeholderIfMissingInput,
 ) -> dict[str, Any] | None:
     """Create a stakeholder only when the email is new for the current deal.
 
@@ -106,10 +217,9 @@ async def create_stakeholder_if_missing(
             )
 
             if stakeholder:
-                result = _format_upsert_output(
+                result = _format_create_output(
                     stakeholder,
                     action="already_exists",
-                    updated_fields=[],
                 )
                 result["action"] = "already_exists"
                 result["message"] = "Stakeholder already exists; no changes applied"
@@ -142,13 +252,13 @@ async def create_stakeholder_if_missing(
 
             await session.commit()
 
-            # Dispatch stakeholder research (fire-and-forget)
+            # Dispatch contact research after the stakeholder create commits.
             try:
-                await _dispatch_research_for_stakeholder_create(
+                await dispatch_contact_research_for_contact(
                     organisation_id=organisation_id,
-                    stakeholder=new_stakeholder,
-                    deal_id=actual_deal_id,
+                    contact_id=_stakeholder_contact_id(new_stakeholder),
                     user_id=context.user_id,
+                    trigger="stakeholder_created",
                 )
             except Exception:
                 logger.warning(
@@ -157,10 +267,9 @@ async def create_stakeholder_if_missing(
                     exc_info=True,
                 )
 
-            result = _format_upsert_output(
+            result = _format_create_output(
                 new_stakeholder,
                 action="created",
-                updated_fields=[],
             )
             result["action"] = "created"
             return result
@@ -218,7 +327,7 @@ def create_create_stakeholder_if_missing(
             )
             return None
 
-        input_data = UpsertStakeholderInput(
+        input_data = CreateStakeholderIfMissingInput(
             email=email,
             name=name,
             job_title=job_title,
@@ -229,8 +338,6 @@ def create_create_stakeholder_if_missing(
             temperature=_normalize_optional_temperature(temperature),
             motivation=motivation,
             pain_points=pain_points,
-            only_fill_missing=True,
-            create_if_missing=True,
         )
 
         result = await execute_with_capabilities(
@@ -264,6 +371,7 @@ def create_create_stakeholder_if_missing(
 
 
 __all__ = [
+    "CreateStakeholderIfMissingInput",
     "create_stakeholder_if_missing",
     "create_create_stakeholder_if_missing",
 ]

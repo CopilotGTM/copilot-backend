@@ -36,6 +36,9 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation, Email
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
+from src.service.crm.participants.stakeholder_adapter import (
+    participant_to_stakeholder_detail_dict,
+)
 
 
 def _now_utc() -> datetime:
@@ -78,6 +81,13 @@ def _enum_value(value: Any) -> str | None:
 
 def _enum_value_required(value: Any) -> str:
     return str(value.value) if hasattr(value, "value") else str(value)
+
+
+def _participant_profile_payload(
+    participant: CRMDealParticipant,
+    contact: CRMContact | None,
+) -> dict[str, Any]:
+    return participant_to_stakeholder_detail_dict(participant, contact=contact)
 
 
 def _normalize_email(value: str | None) -> str | None:
@@ -432,7 +442,8 @@ class ActivityFeedProjectionService:
             raise ValueError("participant does not belong to projection organisation")
 
         occurred_at = participant.created_at or _now_utc()
-        display_name = participant.related_name or participant.related_email
+        profile = _participant_profile_payload(participant, contact)
+        display_name = profile["name"] or profile["email"]
         title = f"Stakeholder added: {display_name}" if display_name else "Stakeholder added"
         contact_id = contact.contact_id if contact is not None else participant.related_local_id
         await self._upsert_activity(
@@ -440,8 +451,8 @@ class ActivityFeedProjectionService:
             integration_id=participant.integration_id,
             activity_type=CRMActivityType.EVENT.value,
             title=title,
-            summary=participant.related_email,
-            preview=_compact_preview(participant.related_email or participant.related_name),
+            summary=profile["email"],
+            preview=_compact_preview(profile["email"] or profile["name"]),
             occurred_at=occurred_at,
             source_type="STAKEHOLDER_ADDED",
             source_record_id=str(participant.participant_id),
@@ -451,9 +462,9 @@ class ActivityFeedProjectionService:
             display_payload={
                 "participant_id": str(participant.participant_id),
                 "contact_id": str(contact_id) if contact_id else None,
-                "stakeholder_name": participant.related_name,
-                "email": participant.related_email,
-                "job_title": participant.job_title,
+                "stakeholder_name": profile["name"],
+                "email": profile["email"],
+                "job_title": profile["job_title"],
                 "participant_source": _enum_value(participant.participant_source),
                 "mutation_source": source,
                 "source_label": source_label,
@@ -497,7 +508,8 @@ class ActivityFeedProjectionService:
             NAMESPACE_URL,
             f"crm-stakeholder:{self.organisation_id}:{source_record_id}",
         )
-        display_name = participant.related_name or participant.related_email
+        profile = _participant_profile_payload(participant, contact)
+        display_name = profile["name"] or profile["email"]
         title = f"Stakeholder removed: {display_name}" if display_name else "Stakeholder removed"
         contact_id = contact.contact_id if contact is not None else participant.related_local_id
         await self._upsert_activity(
@@ -505,8 +517,8 @@ class ActivityFeedProjectionService:
             integration_id=participant.integration_id,
             activity_type=CRMActivityType.EVENT.value,
             title=title,
-            summary=participant.related_email,
-            preview=_compact_preview(participant.related_email or participant.related_name),
+            summary=profile["email"],
+            preview=_compact_preview(profile["email"] or profile["name"]),
             occurred_at=occurred_at,
             source_type="STAKEHOLDER_REMOVED",
             source_record_id=source_record_id,
@@ -516,9 +528,9 @@ class ActivityFeedProjectionService:
             display_payload={
                 "participant_id": str(participant.participant_id),
                 "contact_id": str(contact_id) if contact_id else None,
-                "stakeholder_name": participant.related_name,
-                "email": participant.related_email,
-                "job_title": participant.job_title,
+                "stakeholder_name": profile["name"],
+                "email": profile["email"],
+                "job_title": profile["job_title"],
                 "participant_source": _enum_value(participant.participant_source),
                 "mutation_source": source,
                 "source_label": source_label,

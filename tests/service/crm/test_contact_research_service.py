@@ -1,8 +1,7 @@
 """Regression tests for contact research provider normalization and persistence.
 
 These tests lock the contract that Apollo/provider data is persisted to the
-canonical CRMContact first, then mirrored into active open-deal stakeholder
-snapshots only where list endpoints need denormalized participant fields.
+canonical CRMContact without refreshing participant profile/research snapshots.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.service.crm.contacts.research_service import (
     ContactProviderResearchInput,
     ContactProviderResearchResult,
@@ -41,10 +39,6 @@ class _WriteSession:
     async def commit(self):
         """Count commits without needing a real database transaction."""
         self.commits += 1
-
-
-def _compiled_statement(stmt):  # noqa: ANN001
-    return str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
 
 @pytest.mark.asyncio
@@ -224,8 +218,47 @@ async def test_provider_result_does_not_overwrite_existing_job_title() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_result_updates_open_deal_stakeholder_snapshots() -> None:
-    """Contact enrichment should refresh active open-deal stakeholder snapshots."""
+async def test_provider_result_fills_empty_email_and_preserves_match_metadata() -> None:
+    """Apollo work email and match metadata stay in contact-owned provider enrichment."""
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email=None,
+        linkedin_url="https://linkedin.com/in/ada-buyer",
+    )
+    session = _WriteSession(contact)
+
+    persisted = await ContactResearchService(session, organisation_id).persist_provider_result(
+        contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            profile_enrichment={
+                "provider": "apollo",
+                "apollo_id": "person_123",
+                "match_source": "linkedin_url",
+            },
+            enrichment_source="apollo",
+            email="ada@acme.com",
+            name="Ada Buyer",
+            linkedin_url="https://linkedin.com/in/ada-buyer",
+        ),
+    )
+
+    assert persisted is True
+    assert contact.email == "ada@acme.com"
+    assert contact.profile_enrichment["apollo_id"] == "person_123"
+    assert contact.profile_enrichment["match_source"] == "linkedin_url"
+    assert contact.profile_enriched_at is not None
+    assert contact.last_researched_at is None
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_result_stays_on_contact_without_updating_stakeholder_snapshots() -> None:
+    """Contact enrichment should not refresh participant profile snapshots."""
     organisation_id = uuid4()
     contact_id = uuid4()
     contact = CRMContact(
@@ -249,25 +282,18 @@ async def test_provider_result_updates_open_deal_stakeholder_snapshots() -> None
     )
 
     assert persisted is True
-    assert len(session.statements) == 1
-    sql = _compiled_statement(session.statements[0])
-    # The propagation contract is SQL-scoped: one bulk update should refresh
-    # only approved contact stakeholders on open deals for this researched person.
-    assert "UPDATE crm_deal_participants" in sql
-    assert "related_name='Ada Buyer'" in sql
-    assert "job_title='VP Engineering'" in sql
-    assert "linkedin_url='https://linkedin.com/in/ada-buyer'" in sql
-    assert f"related_local_id = '{contact_id.hex}'" in sql
-    assert "lower(trim(crm_deal_participants.related_email)) = 'buyer@example.com'" in sql
-    assert "crm_deals.deal_status = 'open'" in sql
-    assert "crm_deal_participants.approval_status = 'APPROVED'" in sql
-    assert "crm_deal_participants.is_deleted IS false" in sql
+    assert contact.full_name == "Ada Buyer"
+    assert contact.job_title == "VP Engineering"
+    assert contact.linkedin_url == "https://linkedin.com/in/ada-buyer"
+    assert contact.profile_enriched_at is not None
+    assert contact.last_researched_at is None
+    assert session.statements == []
     assert session.commits == 1
 
 
 @pytest.mark.asyncio
-async def test_summary_updates_open_deal_stakeholder_research_snapshots() -> None:
-    """Generated contact research should become the stakeholder list snapshot."""
+async def test_summary_stays_on_contact_without_updating_stakeholder_research_snapshots() -> None:
+    """Generated contact research stays canonical on CRMContact during rollout."""
     organisation_id = uuid4()
     contact_id = uuid4()
     contact = CRMContact(
@@ -288,13 +314,6 @@ async def test_summary_updates_open_deal_stakeholder_research_snapshots() -> Non
 
     assert persisted is True
     assert contact.contact_research == "## Ada Buyer\nResearch profile"
-    assert len(session.statements) == 1
-    sql = _compiled_statement(session.statements[0])
-    # Contact research markdown powers stakeholder list cards, which do not load
-    # the canonical CRMContact row. Keep the denormalized copy in sync here.
-    assert "UPDATE crm_deal_participants" in sql
-    assert "stakeholder_research='## Ada Buyer" in sql
-    assert "crm_deals.deal_status = 'open'" in sql
-    assert f"related_local_id = '{contact_id.hex}'" in sql
-    assert CRMDealStatus.OPEN.value in sql
+    assert contact.last_researched_at is not None
+    assert session.statements == []
     assert session.commits == 1

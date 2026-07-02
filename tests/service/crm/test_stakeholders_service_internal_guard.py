@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -29,6 +30,10 @@ class _FakeScalarResult:
 
     def scalars(self):
         return self
+
+    def first(self):
+        values = self.all()
+        return values[0] if values else None
 
     def all(self):
         return self._value if isinstance(self._value, list) else []
@@ -86,6 +91,23 @@ def _participant(
         participant_source=StakeholderSource.MANUAL.value,
         approval_status=approval_status,
         is_deleted=is_deleted,
+    )
+
+
+def _contact(*, contact_id, email: str = "buyer@customer.com", name: str = "External Buyer"):
+    return SimpleNamespace(
+        contact_id=contact_id,
+        email=email,
+        full_name=name,
+        first_name=None,
+        last_name=None,
+        linkedin_url=None,
+        job_title=None,
+        phone=None,
+        mobile_phone=None,
+        properties={},
+        contact_research=None,
+        last_researched_at=None,
     )
 
 
@@ -164,12 +186,13 @@ async def test_create_stakeholder_allows_external_email() -> None:
     session = _FakeSession(org_domains=["mycompany.com"])
     service = StakeholderWriteService(org_session=session, organisation_id=uuid4())  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    service._ensure_contact_for_stakeholder = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
+    service._ensure_contact_for_stakeholder = AsyncMock(return_value=_contact(contact_id=uuid4()))  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=None)  # type: ignore[method-assign]
     service._ensure_deal_participant = AsyncMock(
         return_value=_participant(org_id=service.organisation_id, deal_id=uuid4())
     )  # type: ignore[method-assign]
     service._get_participant_contact = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._set_primary_contact_if_first_stakeholder = AsyncMock()  # type: ignore[method-assign]
 
     result = await service.create_stakeholder(
         deal_id=uuid4(),
@@ -204,9 +227,14 @@ async def test_create_stakeholder_reactivates_removed_existing_participant() -> 
     session = _FakeSession(org_domains=["mycompany.com"])
     service = StakeholderWriteService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    service._ensure_contact_for_stakeholder = AsyncMock(return_value=contact_id)  # type: ignore[method-assign]
+    service._ensure_contact_for_stakeholder = AsyncMock(
+        return_value=_contact(contact_id=contact_id, name="Restored Buyer")
+    )  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=removed)  # type: ignore[method-assign]
-    service._get_participant_contact = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._get_participant_contact = AsyncMock(
+        return_value=_contact(contact_id=contact_id, name="Restored Buyer")
+    )  # type: ignore[method-assign]
+    service._set_primary_contact_if_first_stakeholder = AsyncMock()  # type: ignore[method-assign]
 
     result = await service.create_stakeholder(
         deal_id=deal_id,
@@ -222,15 +250,14 @@ async def test_create_stakeholder_reactivates_removed_existing_participant() -> 
     assert result.participant_id == removed.participant_id
     assert removed.approval_status == ApprovalStatus.APPROVED.value
     assert removed.is_deleted is False
-    assert removed.related_name == "Restored Buyer"
-    assert removed.job_title == "New Title"
     assert removed.related_local_id == contact_id
+    assert result.name == "Restored Buyer"
     assert session.committed is False
     assert session.flushed is True
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_duplicate_active_error_includes_conflict_data() -> None:
+async def test_create_stakeholder_existing_active_reuses_participant() -> None:
     from src.api.schemas.crm_models import CreateStakeholderRequest
     from src.domain.models.organisation_tables.sync.crm.stakeholders import (
         DecisionPower,
@@ -243,22 +270,19 @@ async def test_create_stakeholder_duplicate_active_error_includes_conflict_data(
     session = _FakeSession(org_domains=["mycompany.com"])
     service = StakeholderWriteService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
     service._is_internal_email = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    service._ensure_contact_for_stakeholder = AsyncMock(return_value=uuid4())  # type: ignore[method-assign]
+    service._ensure_contact_for_stakeholder = AsyncMock(return_value=_contact(contact_id=uuid4()))  # type: ignore[method-assign]
     service._find_contact_participant = AsyncMock(return_value=active)  # type: ignore[method-assign]
+    service._set_primary_contact_if_first_stakeholder = AsyncMock()  # type: ignore[method-assign]
 
-    with pytest.raises(StakeholdersServiceError) as exc_info:
-        await service.create_stakeholder(
-            deal_id=deal_id,
-            request=CreateStakeholderRequest(
-                email="buyer@customer.com",
-                stance=StakeholderStance.UNKNOWN,
-                decision_power=DecisionPower.UNKNOWN,
-            ),
-        )
+    result = await service.create_stakeholder(
+        deal_id=deal_id,
+        request=CreateStakeholderRequest(
+            email="buyer@customer.com",
+            stance=StakeholderStance.UNKNOWN,
+            decision_power=DecisionPower.UNKNOWN,
+        ),
+    )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.data == {
-        "participant_id": str(active.participant_id),
-        "approval_status": "APPROVED",
-        "is_deleted": False,
-    }
+    assert result.participant_id == active.participant_id
+    assert active.approval_status == ApprovalStatus.APPROVED.value
+    assert active.is_deleted is False

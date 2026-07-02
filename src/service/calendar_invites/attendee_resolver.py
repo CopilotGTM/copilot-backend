@@ -328,22 +328,27 @@ class CalendarInviteAttendeeResolver:
         )
         result = await self.session.execute(stmt)
         participants = result.scalars().all()
+        contacts_by_id = await self._contact_profiles_for_participants(participants)
 
         candidates: list[AttendeeCandidate] = []
         missing: list[dict[str, Any]] = []
         for participant in participants:
-            if participant.related_email:
+            contact = contacts_by_id.get(participant.related_local_id)
+            email = contact.email if contact and contact.email else participant.related_email
+            name = contact.full_name if contact and contact.full_name else participant.related_name
+            if email:
                 candidates.append(
                     self._candidate_from_participant(
                         participant,
                         "all stakeholders",
+                        contact=contact,
                         confidence="deal_group",
                     )
                 )
                 continue
             missing.append(
                 {
-                    "input": participant.related_name or str(participant.participant_id),
+                    "input": name or str(participant.participant_id),
                     "source": "deal_stakeholder",
                     "source_id": str(participant.participant_id),
                     "reason": "missing_email",
@@ -360,6 +365,25 @@ class CalendarInviteAttendeeResolver:
             )
 
         return self._dedupe_candidates(candidates), missing
+
+    async def _contact_profiles_for_participants(
+        self,
+        participants: list[CRMDealParticipant],
+    ) -> dict[UUID, CRMContact]:
+        contact_ids = {
+            participant.related_local_id
+            for participant in participants
+            if participant.related_local_id
+        }
+        if not contact_ids:
+            return {}
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.contact_id).in_(contact_ids),
+            col(CRMContact.is_deleted) == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return {contact.contact_id: contact for contact in result.scalars().all()}
 
     @staticmethod
     def _coerce_attendee_intent(raw_attendee: str | dict[str, Any]) -> dict[str, Any]:
@@ -444,18 +468,21 @@ class CalendarInviteAttendeeResolver:
         participant: CRMDealParticipant,
         search: str,
         *,
+        contact: CRMContact | None = None,
         confidence: str | None = None,
     ) -> AttendeeCandidate:
+        email = contact.email if contact and contact.email else participant.related_email
+        name = contact.full_name if contact and contact.full_name else participant.related_name
         return AttendeeCandidate(
-            email=CalendarInviteAttendee(email=participant.related_email or "").email,
-            name=participant.related_name,
+            email=CalendarInviteAttendee(email=email or "").email,
+            name=name,
             source="deal_stakeholder",
             source_id=str(participant.participant_id),
             confidence=confidence
             or self._confidence_for(
                 search,
-                name=participant.related_name,
-                email=participant.related_email,
+                name=name,
+                email=email,
             ),
             input_value=search,
         )

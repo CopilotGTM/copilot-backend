@@ -3,8 +3,7 @@
 Covers:
 - API handler: list, detail, create, update endpoints return/accept phone_number
 - Service layer: create and update handle phone_number correctly
-- Sync service: enriches phone_number from CRMContact, respects manual overrides
-- Agent tools: upsert creates/updates phone_number, get_details and list return it
+- Sync service: enriches phone_number from CRMContact and respects manual overrides
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from src.api.schemas.crm_models import UpdateStakeholderRequest
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
@@ -206,12 +206,15 @@ def _read_service() -> StakeholderReadService:
 @pytest.mark.asyncio
 async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> None:
     service = _write_service()
+    contact_id = uuid4()
+    integration_id = uuid4()
     participant = CRMDealParticipant(
         participant_id=uuid4(),
         deal_id=uuid4(),
         organisation_id=uuid4(),
-        integration_id=uuid4(),
+        integration_id=integration_id,
         participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
         related_email="person@example.com",
         related_name="Test",
         stance="UNKNOWN",
@@ -220,13 +223,21 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
         participant_source="MANUAL",
         approval_status="APPROVED",
     )
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=participant.organisation_id,
+        integration_id=integration_id,
+        email="person@example.com",
+    )
     service.get_stakeholder = AsyncMock(return_value=participant)  # type: ignore[method-assign]
+    service._get_participant_contact = AsyncMock(return_value=contact)  # type: ignore[method-assign]
 
     request = UpdateStakeholderRequest(phone_number="+1 555-9999")
     result = await service.update_stakeholder(uuid4(), participant.participant_id, request)
 
     assert result.phone_number == "+1 555-9999"
-    assert participant.phone_number == "+1 555-9999"
+    assert contact.phone == "+1 555-9999"
+    assert not hasattr(participant, "phone_number")
     service.session.flush.assert_awaited()
 
 
@@ -270,8 +281,8 @@ async def test_get_stakeholder_detail_includes_phone_number() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_from_contact_sets_phone_number() -> None:
-    """Sync service should copy CRMContact.phone to stakeholder.phone_number."""
+async def test_enrich_from_contact_links_contact_without_phone_snapshot() -> None:
+    """Sync service should link CRMContact without copying phone to stakeholder."""
     service = StakeholderSyncService(uuid4())
     contact = SimpleNamespace(
         contact_id=uuid4(),
@@ -300,7 +311,8 @@ async def test_enrich_from_contact_sets_phone_number() -> None:
     )
 
     assert changed is True
-    assert stakeholder.phone_number == "+1 800-555-0123"
+    assert stakeholder.contact_id == contact.contact_id
+    assert stakeholder.phone_number is None
 
 
 @pytest.mark.asyncio
@@ -371,8 +383,8 @@ async def test_enrich_from_contact_skips_phone_when_contact_has_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_from_contact_updates_phone_when_different() -> None:
-    """If CRMContact.phone differs from current, it should update."""
+async def test_enrich_from_contact_does_not_update_phone_snapshot() -> None:
+    """CRMContact.phone remains contact-owned even when participant has old data."""
     service = StakeholderSyncService(uuid4())
     contact = SimpleNamespace(
         contact_id=uuid4(),
@@ -400,222 +412,5 @@ async def test_enrich_from_contact_updates_phone_when_different() -> None:
         email="person@example.com",
     )
 
-    assert changed is True
-    assert stakeholder.phone_number == "+1 800-UPDATED"
-
-
-from contextlib import asynccontextmanager  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
-
-from src.agents.tools.crm.upsert_stakeholder import (  # noqa: E402
-    UpsertStakeholderInput,
-)
-from src.agents.tools.crm.upsert_stakeholder import (
-    upsert_stakeholder as agent_upsert_stakeholder,
-)
-
-
-class _FakeScalarResult:
-    def __init__(self, obj=None, rows=None):
-        self._obj = obj
-        self._rows = rows or []
-
-    def scalar_one_or_none(self):
-        return self._obj
-
-    def scalars(self):
-        return self
-
-    def first(self):
-        return self._obj
-
-    def all(self):
-        return self._rows
-
-
-class _FakeSession:
-    def __init__(self, records: dict[str, CRMDealParticipant], org_id, deal_id):
-        self.records = records
-        self.org_id = org_id
-        self.deal_id = deal_id
-        self.integration_id = uuid4()
-        self.pending: CRMDealParticipant | None = None
-
-    async def execute(self, stmt):
-        compiled_text = str(stmt).lower()
-        if "knowledge_integrations" in compiled_text:
-            return _FakeScalarResult(SimpleNamespace(integration_id=self.integration_id))
-        if "crm_pipelines" in compiled_text or "crm_deal_stages" in compiled_text:
-            return _FakeScalarResult(rows=[])
-        if "crm_deals" in compiled_text:
-            return _FakeScalarResult(
-                SimpleNamespace(
-                    deal_id=self.deal_id,
-                    organisation_id=self.org_id,
-                    integration_id=uuid4(),
-                )
-            )
-        if "crm_contacts" in compiled_text:
-            return _FakeScalarResult(None)
-        if "crm_deal_participants" not in compiled_text:
-            return _FakeScalarResult(None)
-
-        params = stmt.compile().params
-        email_param = next(
-            (v for k, v in params.items() if k.startswith("lower_") or k.startswith("email_")),
-            None,
-        )
-        email = str(email_param).lower() if email_param else ""
-        return _FakeScalarResult(self.records.get(email))
-
-    def add(self, obj) -> None:
-        if isinstance(obj, CRMDealParticipant):
-            self.pending = obj
-
-    async def commit(self) -> None:
-        if self.pending is not None:
-            self.records[self.pending.related_email.lower()] = self.pending
-            self.pending = None
-
-    async def flush(self) -> None:
-        return None
-
-    async def refresh(self, _obj) -> None:
-        return None
-
-    async def rollback(self) -> None:
-        return None
-
-
-@dataclass
-class _FakeContext:
-    organisation_id: object
-    deal_id: object
-    session: _FakeSession
-    user_id: object
-    metadata: dict = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.metadata is None:
-            self.metadata = {}
-
-    @asynccontextmanager
-    async def acquire_session(self):
-        yield self.session
-
-
-def _make_context(
-    records: dict[str, CRMDealParticipant] | None = None,
-) -> tuple[_FakeContext, dict[str, CRMDealParticipant]]:
-    store: dict[str, CRMDealParticipant] = records if records is not None else {}
-    org_id = uuid4()
-    deal_id = uuid4()
-    session = _FakeSession(store, org_id, deal_id)
-    metadata = {
-        "_internal_guard_loaded": True,
-        "_internal_domains": set(),
-        "_internal_emails": set(),
-    }
-    context = _FakeContext(
-        organisation_id=org_id,
-        deal_id=deal_id,
-        session=session,
-        user_id=uuid4(),
-        metadata=metadata,
-    )
-    return context, store
-
-
-@pytest.mark.asyncio
-async def test_agent_upsert_creates_stakeholder_with_phone_number() -> None:
-    context, store = _make_context()
-
-    result = await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="new@customer.com",
-            name="New Person",
-            phone_number="+1 555-0001",
-        ),
-    )
-
-    assert result is not None
-    assert result["action"] == "created"
-    assert result["phone_number"] == "+1 555-0001"
-    assert store["new@customer.com"].phone_number == "+1 555-0001"
-
-
-@pytest.mark.asyncio
-async def test_agent_upsert_fills_missing_phone_number() -> None:
-    context, store = _make_context()
-
-    await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(email="nophone@customer.com", name="No Phone"),
-    )
-    assert store["nophone@customer.com"].phone_number is None
-
-    result = await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="nophone@customer.com",
-            phone_number="+1 555-0002",
-        ),
-    )
-
-    assert result is not None
-    assert result["action"] == "updated"
-    assert "phone_number" in result["updated_fields"]
-    assert store["nophone@customer.com"].phone_number == "+1 555-0002"
-
-
-@pytest.mark.asyncio
-async def test_agent_upsert_does_not_overwrite_phone_in_fill_missing_mode() -> None:
-    context, store = _make_context()
-
-    await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="hasphone@customer.com",
-            phone_number="+1 555-ORIGINAL",
-        ),
-    )
-
-    result = await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="hasphone@customer.com",
-            phone_number="+1 555-NEW",
-            only_fill_missing=True,
-        ),
-    )
-
-    assert result is not None
-    assert "phone_number" not in result.get("updated_fields", [])
-    assert store["hasphone@customer.com"].phone_number == "+1 555-ORIGINAL"
-
-
-@pytest.mark.asyncio
-async def test_agent_upsert_overwrites_phone_when_fill_missing_disabled() -> None:
-    context, store = _make_context()
-
-    await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="overwrite@customer.com",
-            phone_number="+1 555-OLD",
-        ),
-    )
-
-    result = await agent_upsert_stakeholder(
-        context=context,  # type: ignore[arg-type]
-        input_data=UpsertStakeholderInput(
-            email="overwrite@customer.com",
-            phone_number="+1 555-NEW",
-            only_fill_missing=False,
-        ),
-    )
-
-    assert result is not None
-    assert "phone_number" in result["updated_fields"]
-    assert store["overwrite@customer.com"].phone_number == "+1 555-NEW"
+    assert changed is False
+    assert stakeholder.phone_number == "+1 800-OLD"

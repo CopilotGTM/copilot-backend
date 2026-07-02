@@ -10,14 +10,12 @@ from src.agents.tools.crm.create_contact import create_create_contact
 from src.agents.tools.crm.create_deal import create_create_deal
 from src.agents.tools.crm.create_lead import create_create_lead
 from src.agents.tools.crm.create_stakeholder_if_missing import create_create_stakeholder_if_missing
-from src.agents.tools.crm.enrich_stakeholder import create_enrich_stakeholder
 from src.agents.tools.crm.get_deal_change_history import create_get_deal_change_history
 from src.agents.tools.crm.get_deal_details import create_get_deal_details
 from src.agents.tools.crm.get_deal_memory import create_get_deal_memory
 from src.agents.tools.crm.get_deal_summary import create_get_deal_summary
 from src.agents.tools.crm.get_pipeline_details import create_get_pipeline_details
 from src.agents.tools.crm.get_risks_blockers import create_get_existing_risks_blockers
-from src.agents.tools.crm.get_stakeholder_details import create_get_stakeholder_details
 from src.agents.tools.crm.list_deal_notes import create_list_deal_notes
 from src.agents.tools.crm.list_deals import create_list_deals
 from src.agents.tools.crm.list_leads import create_list_leads
@@ -34,7 +32,6 @@ from src.agents.tools.crm.update_deal_account import create_update_deal_account
 from src.agents.tools.crm.update_deal_fields import create_update_deal_fields
 from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
 from src.agents.tools.crm.update_deal_stage import create_update_deal_stage
-from src.agents.tools.crm.upsert_stakeholder import create_upsert_stakeholder
 
 __all__ = [
     # Deal tools
@@ -57,9 +54,6 @@ __all__ = [
     "create_update_deal_account",
     # Stakeholder tools
     "create_list_deal_stakeholders",
-    "create_get_stakeholder_details",
-    "create_upsert_stakeholder",
-    "create_enrich_stakeholder",
     # Contact tools
     "create_create_contact",
     "create_create_account",

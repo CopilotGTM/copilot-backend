@@ -21,6 +21,38 @@ def test_sync_deal_stakeholders_propagates_correlation_headers_to_rematching_tas
         async def sync_for_deal(self, deal_id):
             return _FakeSyncResult()
 
+    class _FakeEligibilityService:
+        def __init__(self, organisation_id):
+            self.organisation_id = organisation_id
+
+        async def get_deal_eligibility(self, deal_id):
+            return SimpleNamespace(is_eligible=True, reason=None)
+
+    class _FakeDownstreamJobService:
+        def __init__(self, organisation_id):
+            self.organisation_id = organisation_id
+
+        async def claim_rematch_jobs(self, **_kwargs):
+            return {
+                "calendar_job_id": "00000000-0000-0000-0000-000000000003",
+                "email_job_id": "00000000-0000-0000-0000-000000000004",
+                "calendar_dispatch_required": True,
+                "email_dispatch_required": True,
+            }
+
+    class _FakeTracker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self, *_args, **_kwargs):
+            return None
+
+        async def complete(self, *_args, **_kwargs):
+            return None
+
+        async def fail(self, *_args, **_kwargs):
+            return None
+
     dispatched: list[dict] = []
 
     def _capture_dispatch(*, kwargs=None, headers=None, **_extra):
@@ -28,6 +60,17 @@ def test_sync_deal_stakeholders_propagates_correlation_headers_to_rematching_tas
         return SimpleNamespace(id="task-id")
 
     mocker.patch.object(stakeholder_runtime, "StakeholderSyncService", _FakeService)
+    mocker.patch.object(
+        stakeholder_runtime,
+        "DealMappingEligibilityService",
+        _FakeEligibilityService,
+    )
+    mocker.patch.object(
+        stakeholder_runtime,
+        "DealMappingDownstreamJobService",
+        _FakeDownstreamJobService,
+    )
+    mocker.patch.object(stakeholder_runtime, "VisibleDealJobTracker", _FakeTracker)
     mocker.patch.object(
         stakeholder_runtime,
         "run_async",
@@ -61,6 +104,12 @@ def test_sync_deal_stakeholders_propagates_correlation_headers_to_rematching_tas
     assert dispatched[0]["kwargs"] == {
         "organisation_id": "00000000-0000-0000-0000-000000000001",
         "deal_id": "00000000-0000-0000-0000-000000000002",
+        "job_id": "00000000-0000-0000-0000-000000000003",
     }
     assert dispatched[0]["headers"] == {"request_id": "req-123"}
+    assert dispatched[1]["kwargs"] == {
+        "organisation_id": "00000000-0000-0000-0000-000000000001",
+        "deal_id": "00000000-0000-0000-0000-000000000002",
+        "job_id": "00000000-0000-0000-0000-000000000004",
+    }
     assert dispatched[1]["headers"] == {"request_id": "req-123"}

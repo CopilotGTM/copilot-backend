@@ -236,12 +236,21 @@ async def create_account(
                 duplicate_scope="strict_org",
             ),
         )
+        company = result.account
+        company_payload = company.model_dump()
+        if not company_payload.get("updated_at") and company_payload.get("created_at"):
+            company_payload["updated_at"] = company_payload["created_at"]
+        company_id = company_payload.get("company_id")
+        item = AccountListItem(
+            **company_payload,
+            contact_count=0,
+            deal_count=0,
+            pipeline_value=0.0,
+        )
         # AccountWriteService never commits because deal workflows may combine
         # account writes with participant/deal writes in one transaction.
         await service.session.commit()
 
-        company = result.account
-        company_id = getattr(company, "company_id", None)
         if company_id:
             try:
                 await dispatch_account_research_async(
@@ -261,12 +270,6 @@ async def create_account(
                     exc_info=True,
                 )
 
-        item = AccountListItem(
-            **company.model_dump(),
-            contact_count=0,
-            deal_count=0,
-            pipeline_value=0.0,
-        )
         return Response.created_response("Account created successfully", data=item)
     except AccountWriteServiceError as exc:
         return Response.error_response(

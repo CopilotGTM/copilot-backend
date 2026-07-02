@@ -9,6 +9,7 @@ Run an evidence-first close plan. Do not promise acceleration that the timeline 
 support.
 Start from the target close date and work backward.
 Treat tool names in brackets as optional hints, not mandatory calls.
+Bracket hints are examples, not hard constraints.
 
 ## Use this workflow
 
@@ -27,7 +28,7 @@ Treat tool names in brackets as optional hints, not mandatory calls.
   [GetDealDetails, GetDealChangeHistory, GetPipelineDetails]
 - Stakeholder readiness: economic buyer access, champion presence, technical evaluator coverage,
   and multi-threading depth.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 - Recent execution evidence: meetings, transcripts, emails, notes, and channel messages that show
   blockers, validation status, or paper process movement.
   [ListDealMeetings, GetMeetingTranscript, ListDealEmails, GetEmailDetails, ListDealNotes,

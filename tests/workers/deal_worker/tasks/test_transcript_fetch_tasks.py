@@ -99,12 +99,12 @@ class TestFetchMeetingTranscriptsOrgTaskConfig:
         assert fetch_meeting_transcripts_org_task.acks_late is True
 
     def test_task_soft_time_limit(self) -> None:
-        """Task should have soft_time_limit=600 (10 minutes)."""
-        assert fetch_meeting_transcripts_org_task.soft_time_limit == 600
+        """Task should have soft_time_limit=3000 (50 minutes)."""
+        assert fetch_meeting_transcripts_org_task.soft_time_limit == 3000
 
     def test_task_time_limit(self) -> None:
-        """Task should have time_limit=660 (11 minutes)."""
-        assert fetch_meeting_transcripts_org_task.time_limit == 660
+        """Task should have time_limit=3300 (55 minutes)."""
+        assert fetch_meeting_transcripts_org_task.time_limit == 3300
 
 
 # =============================================================================

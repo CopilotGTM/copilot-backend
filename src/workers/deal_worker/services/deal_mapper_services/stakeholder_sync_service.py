@@ -2,8 +2,8 @@
 
 The public task name still says "stakeholder sync", but the canonical deal-person
 state is now `CRMDealParticipant`. This service normalizes contact participants,
-copies durable contact profile snapshots, rejects internal participants, and queues
-stakeholder research without writing the old stakeholder table.
+links them to durable contacts, rejects internal participants, and queues
+contact research without writing the old stakeholder table.
 """
 
 from __future__ import annotations
@@ -48,10 +48,12 @@ class StakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return whether the deal sync completed without recorded errors."""
         return len(self.errors) == 0
 
     @property
     def requires_rematching(self) -> bool:
+        """Return whether new stakeholder participants require downstream rematching."""
         return self.created > 0
 
 
@@ -71,10 +73,12 @@ class OrgStakeholderSyncResult:
 
     @property
     def success(self) -> bool:
+        """Return whether every selected deal synced successfully."""
         return self.failed_deals == 0
 
     @property
     def requires_rematching(self) -> bool:
+        """Return whether any deal created new stakeholder participants."""
         return self.stakeholders_created > 0
 
 
@@ -92,7 +96,7 @@ class StakeholderSyncService:
         self._suppress_research_dispatch = suppress_research_dispatch
         self._org_sync_batch_size = max(1, org_sync_batch_size)
         self._internal_domains: set[str] | None = None
-        self._pending_research: list[tuple[UUID, UUID]] = []
+        self._pending_research: list[UUID] = []
 
     @staticmethod
     def _normalize_email(email: str) -> str:
@@ -105,6 +109,7 @@ class StakeholderSyncService:
         return str(getattr(value, "value", value))
 
     async def sync_for_organisation(self) -> OrgStakeholderSyncResult:
+        """Normalize participant-backed stakeholders for every open deal in the org."""
         result = OrgStakeholderSyncResult(organisation_id=self.organisation_id)
 
         deal_ids: list[UUID] = []
@@ -223,6 +228,7 @@ class StakeholderSyncService:
         return _NoopSavepoint()
 
     async def sync_for_deal(self, deal_id: UUID) -> StakeholderSyncResult:
+        """Normalize participant-backed stakeholders for a single deal."""
         async for session in acquire_org_async_session(self.organisation_id):
             try:
                 result = await self._sync_deal_internal(session, deal_id)
@@ -327,11 +333,37 @@ class StakeholderSyncService:
                 session.add(participant)
                 result.updated += 1
 
-            if not participant.stakeholder_research and not participant.last_researched_at:
-                self._pending_research.append((participant.participant_id, deal.deal_id))
+            if contact_id := await self._contact_id_needing_research(session, participant):
+                self._pending_research.append(contact_id)
                 result.created += 1
 
         return result
+
+    async def _contact_id_needing_research(
+        self,
+        session: AsyncSession,
+        participant: CRMDealParticipant,
+    ) -> UUID | None:
+        """Return the linked contact id when contact-owned research is missing.
+
+        The linked CRMContact is authoritative after the contact-owned research
+        migration; unlinked placeholders do not carry enough identity to run.
+        """
+        if not participant.related_local_id:
+            return None
+
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.contact_id) == participant.related_local_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        result = await session.execute(stmt)
+        contact = result.scalar_one_or_none()
+        if not contact:
+            return None
+        if contact.contact_research or contact.last_researched_at:
+            return None
+        return contact.contact_id
 
     async def _load_deal(self, session: AsyncSession, deal_id: UUID) -> CRMDeal | None:
         deal_participants_rel = cast(Any, CRMDeal.participants)
@@ -354,27 +386,26 @@ class StakeholderSyncService:
             self._pending_research.clear()
             return
         try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
+            from src.workers.deal_worker.utils.contact_research_dispatch import (
+                dispatch_contact_research_for_contact,
             )
 
-            for stakeholder_id, deal_id in self._pending_research:
+            for contact_id in self._pending_research:
                 try:
-                    await dispatch_stakeholder_research_async(
+                    await dispatch_contact_research_for_contact(
                         organisation_id=self.organisation_id,
-                        stakeholder_id=stakeholder_id,
-                        deal_id=deal_id,
+                        contact_id=contact_id,
+                        trigger="stakeholder_sync",
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s",
-                        stakeholder_id,
+                        "Failed to dispatch research for contact %s",
+                        contact_id,
                         exc_info=True,
                         extra={
-                            "event": "stakeholder_sync_research_dispatch_failed",
+                            "event": "stakeholder_sync_contact_research_dispatch_failed",
                             "organisation_id": str(self.organisation_id),
-                            "stakeholder_id": str(stakeholder_id),
-                            "deal_id": str(deal_id),
+                            "contact_id": str(contact_id),
                         },
                     )
         finally:
@@ -387,6 +418,7 @@ class StakeholderSyncService:
         email: str,
         manual_overrides: set[str] | None = None,
     ) -> bool:
+        _ = manual_overrides
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.email) == email,
@@ -397,37 +429,8 @@ class StakeholderSyncService:
             return False
 
         changed = False
-        override_fields = manual_overrides or set()
-        properties = getattr(contact, "properties", None) or {}
-
         changed |= self._set_if_different(stakeholder, "related_local_id", contact.contact_id)
         changed |= self._set_if_different(stakeholder, "contact_id", contact.contact_id)
-
-        contact_name = getattr(contact, "full_name", None)
-        if "name" not in override_fields and contact_name:
-            changed |= self._set_if_different(stakeholder, "related_name", contact_name)
-            if not getattr(stakeholder, "name", None):
-                changed |= self._set_if_different(stakeholder, "name", contact_name)
-
-        if "job_title" not in override_fields and getattr(contact, "job_title", None):
-            changed |= self._set_if_different(stakeholder, "job_title", contact.job_title)
-
-        phone = getattr(contact, "phone", None) or getattr(contact, "mobile_phone", None)
-        if "phone_number" not in override_fields and phone:
-            changed |= self._set_if_different(stakeholder, "phone_number", phone)
-
-        linkedin_url = getattr(contact, "linkedin_url", None)
-        if "linkedin_url" not in override_fields and linkedin_url:
-            changed |= self._set_if_different(stakeholder, "linkedin_url", linkedin_url)
-
-        department = properties.get("department")
-        if department:
-            changed |= self._set_if_different(stakeholder, "department", department)
-
-        external_links = properties.get("external_links")
-        if external_links:
-            changed |= self._set_if_different(stakeholder, "external_links", external_links)
-
         return changed
 
     @staticmethod

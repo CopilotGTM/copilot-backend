@@ -576,27 +576,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         description="Email of the related entity, if applicable.",
     )
     created_by_user_id: UUID | None = Field(default=None, index=True)
-    job_title: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Denormalized CRMContact job title snapshot for list reads.",
-    )
-    department: str | None = Field(default=None)
-    phone_number: str | None = Field(
-        default=None,
-        sa_column=Column(String(50), nullable=True),
-        description="Denormalized CRMContact phone snapshot for list reads.",
-    )
-    linkedin_url: str | None = Field(
-        default=None,
-        sa_column=Column(String(500), nullable=True),
-        description="Denormalized CRMContact LinkedIn profile URL snapshot for list reads.",
-    )
-    external_links: list[dict] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Denormalized CRMContact external links snapshot for list reads.",
-    )
     stance: str = Field(
         default="UNKNOWN",
         sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
@@ -624,16 +603,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
     approval_status: str = Field(
         default="APPROVED",
         sa_column=Column(String(64), nullable=False, index=True, server_default=text("'APPROVED'")),
-    )
-    stakeholder_research: str | None = Field(
-        default=None,
-        sa_column=Column(sa.Text, nullable=True),
-        description="Display/cache copy of the latest stakeholder research.",
-    )
-    last_researched_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Most recent time stakeholder research was completed.",
     )
 
     # Sync meta

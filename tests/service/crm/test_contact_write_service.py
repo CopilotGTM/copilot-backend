@@ -14,6 +14,7 @@ from src.service.crm.contacts.contracts import (
     ContactWriteContext,
     ContactWriteServiceError,
 )
+from src.service.crm.contacts.resolution_service import ContactIdentityResolutionResult
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
 
@@ -187,7 +188,135 @@ async def test_create_contact_gets_internal_integration_from_setup_service(monke
 
 
 @pytest.mark.asyncio
-async def test_create_contact_promotes_linkedin_url_to_profile_column() -> None:
+async def test_create_contact_promotes_linkedin_url_to_profile_column(monkeypatch) -> None:
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+        full_name="Jane Doe",
+        linkedin_url="https://linkedin.com/in/jane",
+    )
+    session = MagicMock()
+    service = ContactWriteService(session, org_id)
+
+    class FakeContactIdentityResolutionService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def resolve(self, _command):
+            return ContactIdentityResolutionResult(
+                status="resolved",
+                contact=contact,
+                created=True,
+                matched_by="apollo",
+            )
+
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.ContactIdentityResolutionService",
+        FakeContactIdentityResolutionService,
+    )
+
+    result = await service.create_contact(
+        ContactCreateCommand(
+            email="jane@example.com",
+            name="Jane Doe",
+            linkedin_url="https://linkedin.com/in/jane",
+        ),
+    )
+
+    assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_contact_linkedin_only_resolves_identity_before_writing(
+    monkeypatch,
+) -> None:
+    """Direct contact create should use the same LinkedIn resolver as stakeholder create."""
+    org_id = uuid4()
+    company_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@acme.com",
+        full_name="Jane Doe",
+        linkedin_url="https://linkedin.com/in/jane",
+    )
+    session = MagicMock()
+    service = ContactWriteService(session, org_id)
+    calls = []
+
+    class FakeContactIdentityResolutionService:
+        def __init__(self, session_arg, organisation_id_arg, **kwargs):
+            calls.append((session_arg, organisation_id_arg, kwargs))
+
+        async def resolve(self, command):
+            calls.append(command)
+            return ContactIdentityResolutionResult(
+                status="resolved",
+                contact=contact,
+                created=True,
+                matched_by="apollo",
+                created_account_id=company_id,
+            )
+
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.ContactIdentityResolutionService",
+        FakeContactIdentityResolutionService,
+        raising=False,
+    )
+
+    result = await service.create_contact(
+        ContactCreateCommand(
+            email=None,
+            name="Jane Doe",
+            linkedin_url="https://linkedin.com/in/jane",
+        ),
+        context=ContactWriteContext(source="api"),
+    )
+
+    assert result.contact is contact
+    assert result.created is True
+    assert result.matched_by == "apollo"
+    assert result.created_account_id == company_id
+    assert calls[0][0] is session
+    assert calls[0][1] == org_id
+    assert calls[1].linkedin_url == "https://linkedin.com/in/jane"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_contact_rejects_company_linkedin_url_before_resolution(monkeypatch) -> None:
+    """Service callers must reject company LinkedIn URLs before contact enrichment."""
+    org_id = uuid4()
+    session = MagicMock()
+    service = ContactWriteService(session, org_id)
+
+    class FakeContactIdentityResolutionService:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("Company LinkedIn URLs should not reach contact resolution")
+
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.ContactIdentityResolutionService",
+        FakeContactIdentityResolutionService,
+        raising=False,
+    )
+
+    with pytest.raises(ContactWriteServiceError) as exc_info:
+        await service.create_contact(
+            ContactCreateCommand(email=None, linkedin_url="https://linkedin.com/company/acme")
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Use a LinkedIn profile URL for contacts and stakeholders"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_contact_accepts_job_title_and_phone() -> None:
     org_id = uuid4()
     integration = KnowledgeIntegration(
         organisation_id=org_id,
@@ -207,39 +336,13 @@ async def test_create_contact_promotes_linkedin_url_to_profile_column() -> None:
         ContactCreateCommand(
             email="jane@example.com",
             name="Jane Doe",
-            linkedin_url="https://linkedin.com/in/jane",
-        ),
-    )
-
-    assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
-
-
-@pytest.mark.asyncio
-async def test_create_contact_accepts_job_title_but_not_phone() -> None:
-    org_id = uuid4()
-    integration = KnowledgeIntegration(
-        organisation_id=org_id,
-        integration_id=uuid4(),
-        name="Copilot CRM",
-    )
-    session = MagicMock()
-    session.execute = AsyncMock(side_effect=[_FakeResult(), _FakeResult(scalars=[integration])])
-    session.flush = AsyncMock()
-    session.refresh = AsyncMock()
-
-    service = ContactWriteService(session, org_id)
-    _disable_account_resolution(service)
-    _disable_contact_created_projection(service)
-
-    result = await service.create_contact(
-        ContactCreateCommand(email="jane@example.com", name="Jane Doe", job_title="CFO")
+            job_title="CFO",
+            phone="+15555550100",
+        )
     )
 
     assert result.contact.job_title == "CFO"
-    assert result.contact.phone is None
-
-    with pytest.raises(TypeError):
-        ContactCreateCommand(email="jane@example.com", phone="+15555550100")
+    assert result.contact.phone == "+15555550100"
 
 
 @pytest.mark.asyncio
@@ -264,6 +367,33 @@ async def test_create_contact_allows_missing_name_without_storing_email_as_name(
     assert result.contact.full_name is None
     assert result.contact.first_name is None
     assert result.contact.last_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_contact_allows_name_only_without_email_or_account_resolution() -> None:
+    """Name-only contact create stores a placeholder contact without research/account identity."""
+    org_id = uuid4()
+    integration = KnowledgeIntegration(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        name="Copilot CRM",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[integration]))
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    service = ContactWriteService(session, org_id)
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock()
+    _disable_contact_created_projection(service)
+
+    result = await service.create_contact(ContactCreateCommand(email=None, name="Jane Buyer"))
+
+    assert result.contact.email is None
+    assert result.contact.full_name == "Jane Buyer"
+    assert result.contact.first_name == "Jane"
+    assert result.contact.last_name == "Buyer"
+    service._account_writer.resolve_or_create_account_for_contact_email_with_result.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -490,7 +620,7 @@ async def test_find_or_create_by_email_creates_missing_contact() -> None:
     assert result.contact.full_name == "Buyer Name"
     assert result.contact.job_title == "CFO"
     assert result.contact.linkedin_url == "https://linkedin.com/in/buyer"
-    assert result.contact.phone is None
+    assert result.contact.phone == "+15555550100"
 
 
 @pytest.mark.asyncio
@@ -618,6 +748,32 @@ async def test_update_contact_stores_linkedin_url_in_profile_column_without_comm
     assert session.flush.await_count == 2
     session.refresh.assert_awaited_once_with(contact)
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_contact_rejects_company_linkedin_url() -> None:
+    """Contact updates should reject account LinkedIn URLs before mutating the row."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+
+    service = ContactWriteService(session, org_id)
+
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.update_contact(
+            contact.contact_id,
+            {"linkedin_url": "https://linkedin.com/company/acme"},
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.message == "Use a LinkedIn profile URL for contacts and stakeholders"
+    session.add.assert_not_called()
 
 
 @pytest.mark.asyncio

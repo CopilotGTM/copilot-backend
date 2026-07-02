@@ -12,7 +12,6 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.risks.contracts import (
     InvalidStatusTransitionError,
@@ -21,9 +20,6 @@ from src.service.crm.risks.contracts import (
 )
 from src.service.crm.risks.mapper import RiskBlockerMapper
 from src.service.crm.risks.write_service import add_risk_blocker_audit_entry
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    build_risk_blocker_timeline_event,
-)
 
 
 def _status_value(status: RiskBlockerStatus | str) -> str:
@@ -58,14 +54,7 @@ class RiskBlockerLifecycleService:
         if reason:
             details["reason"] = reason
         add_risk_blocker_audit_entry(item, "dismissed", details, context)
-        self.session.add(
-            build_risk_blocker_timeline_event(
-                organisation_id=self.organisation_id,
-                deal_id=item.deal_id,
-                risk_blocker=item,
-                event_type=TimelineEventType.BLOCKER_DISMISSED,
-            )
-        )
+        # Timeline is deprecated; create activity-feed projection instead.
         await self.session.flush()
         await self.session.refresh(item)
         await self._projection.upsert_risk_blocker_lifecycle(
@@ -98,14 +87,7 @@ class RiskBlockerLifecycleService:
             {"previous_status": previous_status, "resolution_notes": resolution_notes},
             context,
         )
-        self.session.add(
-            build_risk_blocker_timeline_event(
-                organisation_id=self.organisation_id,
-                deal_id=item.deal_id,
-                risk_blocker=item,
-                event_type=TimelineEventType.BLOCKER_RESOLVED,
-            )
-        )
+        # Timeline is deprecated; create activity-feed projection instead.
         await self.session.flush()
         await self.session.refresh(item)
         await self._projection.upsert_risk_blocker_lifecycle(

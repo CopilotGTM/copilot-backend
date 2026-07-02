@@ -19,7 +19,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
+from src.service.crm.contacts.resolution_service import ContactIdentityResolutionResult
 from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.errors import StakeholdersServiceError
@@ -87,8 +87,6 @@ def _participant(
         related_local_id=contact_id,
         related_email=email,
         related_name="Buyer",
-        job_title="Old Title",
-        linkedin_url="https://linkedin.com/in/old-buyer",
         approval_status=status,
         participant_source=StakeholderSource.MANUAL.value,
         stance="UNKNOWN",
@@ -334,8 +332,8 @@ async def test_create_stakeholder_writes_participant_not_deal_stakeholder() -> N
     assert result.participant_id == participant.participant_id
     assert result.email == "buyer@example.com"
     assert result.name == "Buyer"
-    assert result.job_title == "Old Title"
-    assert result.linkedin_url == "https://linkedin.com/in/old-buyer"
+    assert result.job_title is None
+    assert result.linkedin_url is None
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
     assert not session.committed
 
@@ -413,7 +411,6 @@ async def test_create_stakeholder_projects_added_activity_with_create_context(
             "created_via": "add_stakeholder_agent",
         }
     ]
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
 
 
 @pytest.mark.asyncio
@@ -459,20 +456,61 @@ async def test_create_stakeholder_allows_name_only_without_creating_contact() ->
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
 
 
+def test_profile_update_helper_does_not_write_participant_profile_without_contact() -> None:
+    """Profile edits should not write participant person snapshots without a contact."""
+    org_id = uuid4()
+    participant = _participant(
+        org_id=org_id,
+        deal_id=uuid4(),
+        integration_id=uuid4(),
+        email=None,
+    )
+    participant.related_name = "Old Placeholder"
+    service = StakeholderWriteService(_WriteSession(), org_id)  # type: ignore[arg-type]
+
+    service._apply_contact_profile_updates(
+        contact=None,
+        updates={
+            "name": "New Name",
+            "job_title": "New Title",
+            "phone_number": "222",
+            "linkedin_url": "https://linkedin.com/in/new",
+            "department": "New Department",
+            "external_links": [{"platform": "linkedin", "url": "https://linkedin.com/in/new"}],
+        },
+    )
+
+    assert participant.related_name == "Old Placeholder"
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "external_links")
+
+
 @pytest.mark.asyncio
-async def test_create_stakeholder_allows_linkedin_only_without_email() -> None:
+async def test_create_stakeholder_linkedin_only_resolves_contact_before_participant() -> None:
+    """LinkedIn-only create must resolve a contact before stakeholder row creation."""
     org_id = uuid4()
     deal_id = uuid4()
     integration_id = uuid4()
     linkedin_url = "https://linkedin.com/in/jane-buyer"
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=uuid4(),
+        email="jane@buyer.example",
+        full_name="Jane Buyer",
+        job_title="VP Finance",
+        linkedin_url=linkedin_url,
+    )
     participant = _participant(
         org_id=org_id,
         deal_id=deal_id,
         integration_id=integration_id,
-        email=None,
+        contact_id=contact.contact_id,
+        email=contact.email,
     )
-    participant.linkedin_url = linkedin_url
-    participant.related_local_id = None
     session = _WriteSession([_FakeResult()])
     service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
 
@@ -480,24 +518,76 @@ async def test_create_stakeholder_allows_linkedin_only_without_email() -> None:
         assert _linkedin_url == linkedin_url
         return None
 
+    async def fake_resolve_contact_identity(**kwargs) -> ContactIdentityResolutionResult:
+        assert kwargs["linkedin_url"] == linkedin_url
+        assert kwargs["email"] is None
+        return ContactIdentityResolutionResult(
+            status="resolved",
+            contact=contact,
+            created=True,
+            matched_by="apollo",
+        )
+
     async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
-        assert _kwargs["email"] is None
-        assert _kwargs["contact_id"] is None
-        assert _kwargs["linkedin_url"] == linkedin_url
+        assert _kwargs["email"] == "jane@buyer.example"
+        assert _kwargs["contact_id"] == contact.contact_id
+        assert "linkedin_url" not in _kwargs
         session.add(participant)
         return participant
 
+    async def fake_get_participant_contact(_participant: CRMDealParticipant) -> CRMContact:
+        """Return the resolved contact so the response uses contact-owned profile fields."""
+        return contact
+
     service._find_contact_by_linkedin_url = fake_find_contact_by_linkedin_url  # type: ignore[method-assign]
+    service._resolve_contact_identity = fake_resolve_contact_identity  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
 
     result = await service.create_stakeholder(
         deal_id,
         CreateStakeholderRequest(linkedin_url=linkedin_url),
     )
 
-    assert result.email is None
+    assert result.contact_id == contact.contact_id
+    assert result.email == "jane@buyer.example"
     assert result.linkedin_url == linkedin_url
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_linkedin_only_not_found_creates_no_participant() -> None:
+    """Unresolved LinkedIn-only create should fail instead of storing an empty participant."""
+    org_id = uuid4()
+    deal_id = uuid4()
+    linkedin_url = "https://linkedin.com/in/missing-buyer"
+    session = _WriteSession([_FakeResult()])
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    async def fake_find_contact_by_linkedin_url(_linkedin_url: str | None) -> None:
+        return None
+
+    async def fake_resolve_contact_identity(**_kwargs) -> ContactIdentityResolutionResult:
+        return ContactIdentityResolutionResult(
+            status="not_found",
+            error_detail="No matching person",
+        )
+
+    async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
+        pytest.fail("unresolved LinkedIn-only input must not create participant rows")
+
+    service._find_contact_by_linkedin_url = fake_find_contact_by_linkedin_url  # type: ignore[method-assign]
+    service._resolve_contact_identity = fake_resolve_contact_identity  # type: ignore[method-assign]
+    service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+
+    with pytest.raises(StakeholdersServiceError) as exc:
+        await service.create_stakeholder(
+            deal_id,
+            CreateStakeholderRequest(linkedin_url=linkedin_url),
+        )
+
+    assert exc.value.status_code == 404
+    assert session.added == []
 
 
 @pytest.mark.asyncio
@@ -538,22 +628,23 @@ async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile(mo
     async def fake_ensure_participant(**kwargs) -> CRMDealParticipant:
         assert kwargs["contact_id"] == contact.contact_id
         assert kwargs["email"] == "jane@buyer.example"
-        assert kwargs["name"] == "Jane Buyer"
-        assert kwargs["job_title"] == "VP Finance"
-        assert kwargs["phone_number"] == "+1 555-0101"
-        assert kwargs["linkedin_url"] == linkedin_url
-        assert kwargs["department"] == "Finance"
+        assert "linkedin_url" not in kwargs
+        assert "name" not in kwargs
+        assert "job_title" not in kwargs
+        assert "phone_number" not in kwargs
+        assert "department" not in kwargs
+        assert "external_links" not in kwargs
         participant.related_local_id = kwargs["contact_id"]
         participant.related_email = kwargs["email"]
-        participant.related_name = kwargs["name"]
-        participant.job_title = kwargs["job_title"]
-        participant.phone_number = kwargs["phone_number"]
-        participant.linkedin_url = kwargs["linkedin_url"]
-        participant.department = kwargs["department"]
         return participant
+
+    async def fake_get_participant_contact(_participant: CRMDealParticipant) -> CRMContact:
+        """Return the linked contact so the DTO uses contact-owned research."""
+        return contact
 
     service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
     monkeypatch.setattr(
         service,
         "_set_primary_contact_if_first_stakeholder",
@@ -568,8 +659,15 @@ async def test_create_stakeholder_from_linkedin_uses_existing_contact_profile(mo
     assert result.contact_id == contact.contact_id
     assert result.email == "jane@buyer.example"
     assert result.name == "Jane Buyer"
+    assert result.job_title == "VP Finance"
+    assert result.linkedin_url == linkedin_url
     assert result.stakeholder_research == "Existing contact research"
-    assert participant.stakeholder_research == "Existing contact research"
+    assert participant.related_name == "Buyer"
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "stakeholder_research")
 
 
 @pytest.mark.asyncio
@@ -614,24 +712,25 @@ async def test_create_stakeholder_from_email_uses_existing_contact_profile(monke
     async def fake_ensure_participant(**kwargs) -> CRMDealParticipant:
         assert kwargs["contact_id"] == contact.contact_id
         assert kwargs["email"] == "jane@buyer.example"
-        assert kwargs["name"] == "Jane Buyer"
-        assert kwargs["job_title"] == "VP Finance"
-        assert kwargs["phone_number"] == "+1 555-0101"
-        assert kwargs["linkedin_url"] == "https://linkedin.com/in/jane-buyer"
-        assert kwargs["department"] == "Finance"
+        assert "linkedin_url" not in kwargs
+        assert "name" not in kwargs
+        assert "job_title" not in kwargs
+        assert "phone_number" not in kwargs
+        assert "department" not in kwargs
+        assert "external_links" not in kwargs
         participant.related_local_id = kwargs["contact_id"]
         participant.related_email = kwargs["email"]
-        participant.related_name = kwargs["name"]
-        participant.job_title = kwargs["job_title"]
-        participant.phone_number = kwargs["phone_number"]
-        participant.linkedin_url = kwargs["linkedin_url"]
-        participant.department = kwargs["department"]
         return participant
+
+    async def fake_get_participant_contact(_participant: CRMDealParticipant) -> CRMContact:
+        """Return the linked contact so the DTO uses contact-owned research."""
+        return contact
 
     service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
     service._find_contact_by_email = fake_find_contact_by_email  # type: ignore[method-assign]
     service._ensure_contact_for_stakeholder = fake_ensure_contact  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
     monkeypatch.setattr(
         service,
         "_set_primary_contact_if_first_stakeholder",
@@ -646,8 +745,15 @@ async def test_create_stakeholder_from_email_uses_existing_contact_profile(monke
     assert result.contact_id == contact.contact_id
     assert result.email == "jane@buyer.example"
     assert result.name == "Jane Buyer"
+    assert result.job_title == "VP Finance"
+    assert result.linkedin_url == "https://linkedin.com/in/jane-buyer"
     assert result.stakeholder_research == "Existing contact research"
-    assert participant.stakeholder_research == "Existing contact research"
+    assert participant.related_name == "Buyer"
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "stakeholder_research")
 
 
 @pytest.mark.asyncio
@@ -662,7 +768,6 @@ async def test_create_stakeholder_does_not_extract_linkedin_from_external_links(
         email=None,
     )
     participant.related_name = "Jane Buyer"
-    participant.linkedin_url = None
     session = _WriteSession([_FakeResult()])
     service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
 
@@ -670,8 +775,8 @@ async def test_create_stakeholder_does_not_extract_linkedin_from_external_links(
         pytest.fail("external_links should not be used for LinkedIn matching on create")
 
     async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
-        assert _kwargs["linkedin_url"] is None
-        assert _kwargs["external_links"] is None
+        assert "linkedin_url" not in _kwargs
+        assert "external_links" not in _kwargs
         session.add(participant)
         return participant
 
@@ -687,7 +792,9 @@ async def test_create_stakeholder_does_not_extract_linkedin_from_external_links(
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_from_contact_id_copies_contact_profile(monkeypatch) -> None:
+async def test_create_stakeholder_from_contact_id_uses_contact_profile_without_snapshot(
+    monkeypatch,
+) -> None:
     org_id = uuid4()
     deal_id = uuid4()
     integration_id = uuid4()
@@ -731,22 +838,21 @@ async def test_create_stakeholder_from_contact_id_copies_contact_profile(monkeyp
     async def fake_ensure_participant(**kwargs) -> CRMDealParticipant:
         assert kwargs["contact_id"] == contact.contact_id
         assert kwargs["email"] == "buyer@example.com"
-        assert kwargs["name"] == "Existing Buyer"
-        assert kwargs["job_title"] == "VP Finance"
-        assert kwargs["phone_number"] == "+1 555-0101"
-        assert kwargs["linkedin_url"] == "https://linkedin.com/in/existing-buyer"
-        assert kwargs["department"] == "Finance"
-        assert kwargs["external_links"] is None
-        participant.related_name = kwargs["name"]
-        participant.job_title = kwargs["job_title"]
-        participant.phone_number = kwargs["phone_number"]
-        participant.linkedin_url = kwargs["linkedin_url"]
-        participant.department = kwargs["department"]
-        participant.external_links = kwargs["external_links"]
+        assert "linkedin_url" not in kwargs
+        assert "name" not in kwargs
+        assert "job_title" not in kwargs
+        assert "phone_number" not in kwargs
+        assert "department" not in kwargs
+        assert "external_links" not in kwargs
         return participant
+
+    async def fake_get_participant_contact(_participant: CRMDealParticipant) -> CRMContact:
+        """Return the linked contact so the DTO uses contact-owned research."""
+        return contact
 
     service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
     monkeypatch.setattr(
         service,
         "_set_primary_contact_if_first_stakeholder",
@@ -763,13 +869,22 @@ async def test_create_stakeholder_from_contact_id_copies_contact_profile(monkeyp
     assert result.name == "Existing Buyer"
     assert result.job_title == "VP Finance"
     assert result.linkedin_url == "https://linkedin.com/in/existing-buyer"
-    assert participant.stakeholder_research == "Existing research"
-    assert participant.last_researched_at == contact.last_researched_at
+    assert result.stakeholder_research == "Existing research"
+    assert participant.related_name == "Buyer"
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
+    assert not hasattr(participant, "department")
+    assert not hasattr(participant, "external_links")
+    assert not hasattr(participant, "stakeholder_research")
+    assert not hasattr(participant, "last_researched_at")
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_updates_existing_participant_without_approval_gate() -> None:
-    """Existing active participants should be updated in place instead of conflicted."""
+async def test_create_stakeholder_reactivates_existing_participant_without_profile_snapshot() -> (
+    None
+):
+    """Existing participants are reused without refreshing person profile fields."""
     org_id = uuid4()
     deal_id = uuid4()
     participant = _participant(
@@ -810,15 +925,16 @@ async def test_create_stakeholder_updates_existing_participant_without_approval_
 
     assert result.participant_id == participant.participant_id
     assert participant.related_email == "new@example.com"
-    assert participant.related_name == "New Buyer"
-    assert participant.job_title == "CFO"
+    assert participant.related_name == "Buyer"
+    assert not hasattr(participant, "job_title")
     assert participant.approval_status == ApprovalStatus.APPROVED.value
     assert participant.is_deleted is False
     assert participant.updated_at is not None
 
 
 @pytest.mark.asyncio
-async def test_update_stakeholder_updates_contact_profile_and_participant_behavior() -> None:
+async def test_update_stakeholder_updates_contact_profile_without_participant_profile() -> None:
+    """Contact-backed profile edits should not refresh participant snapshots."""
     org_id = uuid4()
     deal_id = uuid4()
     contact_id = uuid4()
@@ -838,7 +954,9 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
         phone="111",
         linkedin_url="https://linkedin.com/in/old-buyer",
     )
-    session = _WriteSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
+    session = _WriteSession(
+        [_FakeResult(scalar=participant), _FakeResult(scalar=contact), _FakeResult(scalar=contact)]
+    )
     service = StakeholderWriteService(session, org_id)  # type: ignore[arg-type]
 
     result = await service.update_stakeholder(
@@ -859,10 +977,14 @@ async def test_update_stakeholder_updates_contact_profile_and_participant_behavi
     assert contact.job_title == "CFO"
     assert contact.phone == "222"
     assert contact.linkedin_url == "https://linkedin.com/in/new-buyer"
-    assert participant.related_name == "New Buyer"
-    assert participant.job_title == "CFO"
-    assert participant.phone_number == "222"
-    assert participant.linkedin_url == "https://linkedin.com/in/new-buyer"
+    assert result.name == "New Buyer"
+    assert result.job_title == "CFO"
+    assert result.phone_number == "222"
+    assert result.linkedin_url == "https://linkedin.com/in/new-buyer"
+    assert participant.related_name == "Buyer"
+    assert not hasattr(participant, "job_title")
+    assert not hasattr(participant, "phone_number")
+    assert not hasattr(participant, "linkedin_url")
     assert participant.stance == "CHAMPION"
     assert participant.motivation == "Owns budget"
     assert not session.committed
@@ -913,7 +1035,6 @@ async def test_remove_stakeholder_soft_deletes_without_approval_gate(monkeypatch
             "created_via": "remove_stakeholder",
         }
     ]
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
 
 
 @pytest.mark.asyncio
@@ -978,7 +1099,6 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
     assert projected[0]["source"] == "api"
     assert projected[0]["source_label"] == "API"
     assert projected[0]["created_via"] == "stakeholder_add_contacts"
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
     assert not session.committed
 
 

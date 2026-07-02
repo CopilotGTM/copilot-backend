@@ -23,7 +23,6 @@ from .deal_insight_tasks import (
 )
 from .deal_mappers import (
     discover_calendar_contacts_accounts_task,
-    exclude_timeline_event_task,
     match_calendar_to_deals_all_orgs_task,
     match_calendar_to_deals_org_task,
     match_calendar_to_deals_task,
@@ -31,9 +30,6 @@ from .deal_mappers import (
     match_email_to_deals_task,
     sync_all_deals_stakeholders_org_task,
     sync_deal_stakeholders_task,
-    sync_deal_timeline_task,
-    sync_org_timeline_task,
-    trigger_timeline_sync_all_orgs_task,
 )
 
 # Meeting bot tasks are lightweight orchestration around calendar events,
@@ -85,11 +81,6 @@ __all__ = [
     # Risk/blocker extraction tasks
     "extract_deal_risks_blockers_task",
     "trigger_extraction_all_orgs",
-    # Timeline tasks
-    "sync_deal_timeline_task",
-    "sync_org_timeline_task",
-    "exclude_timeline_event_task",
-    "trigger_timeline_sync_all_orgs_task",
     # Transcript fetch tasks
     "fetch_meeting_transcripts_org_task",
     "trigger_transcript_fetch_all_orgs_task",

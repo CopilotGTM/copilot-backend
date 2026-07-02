@@ -33,7 +33,7 @@ Default pattern:
 
 Example:
 
-- Stakeholder coverage and influence signals `[ListDealStakeholders, GetStakeholderDetails]`
+- Stakeholder coverage and influence signals `[ListDealStakeholders]`
 
 Rule:
 

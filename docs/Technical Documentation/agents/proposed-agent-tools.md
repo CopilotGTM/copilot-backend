@@ -12,9 +12,7 @@ This document outlines new tools to be implemented for chat agents. Tools are ca
 | `GET_MEETING_DETAILS` | Org | Get meeting details including **summary**, prep, followup |
 | `GET_MEETING_TRANSCRIPT` | Org | Get meeting transcript text |
 | `GET_MEETING_DEAL_CONTEXT` | Org | Get deal context for a meeting |
-| `LIST_DEAL_STAKEHOLDERS` | Deal | List stakeholders for a deal |
-| `GET_STAKEHOLDER_DETAILS` | Org | Get detailed stakeholder info |
-| `LIST_DEAL_STAKEHOLDER_INSIGHTS` | Deal | List AI insights about stakeholders |
+| `LIST_DEAL_STAKEHOLDERS` | Deal | List stakeholders for a deal, optionally filtered to one person |
 | `LIST_DEAL_EMAILS` | Deal | List emails associated with a deal |
 | `GET_EMAIL_DETAILS` | Org | Get full email content |
 | `LIST_DEAL_NOTES` | Deal | List CRM notes for a deal |

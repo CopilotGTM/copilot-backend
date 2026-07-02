@@ -37,7 +37,6 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
-from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
@@ -47,8 +46,6 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
-from src.service.crm.timeline.deal_timeline_sync_service import build_meeting_timeline_event
-from src.service.crm.timeline.timeline_event_source_resolver import resolve_meeting_event_source
 from src.service.meeting_bot.recording_window import is_within_recording_dispatch_window
 from src.service.meeting_bot.session_service import (
     MeetingRecordingSessionService,
@@ -92,7 +89,7 @@ class DealMeetingMatcher:
         self._suppress_research_dispatch = suppress_research_dispatch
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
-        self._pending_research: list[tuple[UUID, UUID]] = []  # (participant_id, deal_id)
+        self._pending_research: list[UUID] = []  # contact_id
         # Recording rows are created inside the DB transaction, but the Celery
         # dispatch happens only after commit so workers never see rolled-back rows.
         self._pending_recording_event_ids: set[UUID] = set()
@@ -562,7 +559,8 @@ class DealMeetingMatcher:
             )
             session.add(participant)
             await session.flush()
-            self._pending_research.append((participant.participant_id, deal.deal_id))
+            if found_contact_id:
+                self._pending_research.append(found_contact_id)
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -636,27 +634,26 @@ class DealMeetingMatcher:
             self._pending_research.clear()
             return
         try:
-            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-                dispatch_stakeholder_research_async,
+            from src.workers.deal_worker.utils.contact_research_dispatch import (
+                dispatch_contact_research_for_contact,
             )
 
-            for stakeholder_id, deal_id in self._pending_research:
+            for contact_id in self._pending_research:
                 try:
-                    await dispatch_stakeholder_research_async(
+                    await dispatch_contact_research_for_contact(
                         organisation_id=self.organisation_id,
-                        stakeholder_id=stakeholder_id,
-                        deal_id=deal_id,
+                        contact_id=contact_id,
+                        trigger="calendar_discovery",
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to dispatch research for stakeholder %s",
-                        stakeholder_id,
+                        "Failed to dispatch research for contact %s",
+                        contact_id,
                         exc_info=True,
                         extra={
-                            "event": "deal_meeting_research_dispatch_failed",
+                            "event": "deal_meeting_contact_research_dispatch_failed",
                             "organisation_id": str(self.organisation_id),
-                            "stakeholder_id": str(stakeholder_id),
-                            "deal_id": str(deal_id),
+                            "contact_id": str(contact_id),
                         },
                     )
         finally:
@@ -1162,26 +1159,6 @@ class DealMeetingMatcher:
         """
         linked_count = 0
 
-        # Preload integration types for this batch (avoid N+1 queries)
-        integration_ids: set[UUID] = set()
-        for event in events:
-            evt_integration_id = getattr(event, "integration_id", None)
-            if evt_integration_id is not None:
-                integration_ids.add(evt_integration_id)
-            for state in getattr(event, "user_states", None) or []:
-                state_integration_id = getattr(state, "integration_id", None)
-                if state_integration_id is not None:
-                    integration_ids.add(state_integration_id)
-
-        integration_type_by_id: dict[UUID, Any] = {}
-        if integration_ids:
-            it_stmt = select(
-                col(KnowledgeIntegration.integration_id),
-                col(KnowledgeIntegration.integration_type),
-            ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
-            it_result = await session.execute(it_stmt)
-            integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
-
         for event in events:
             # Skip if already linked in a previous pass
             if event.event_id in linked_event_ids:
@@ -1222,32 +1199,7 @@ class DealMeetingMatcher:
 
             # Only proceed if insert succeeded (not a duplicate)
             if (getattr(result, "rowcount", 0) or 0) > 0:
-                # Timeline writes share the association transaction so the CRM view
-                # never shows a linked meeting without its corresponding activity.
-                calendar_integration_type = None
-                evt_int_id = getattr(event, "integration_id", None)
-                if evt_int_id is not None and evt_int_id in integration_type_by_id:
-                    calendar_integration_type = integration_type_by_id.get(evt_int_id)
-                else:
-                    user_states = getattr(event, "user_states", None) or []
-                    sorted_states = sorted(
-                        (s for s in user_states if getattr(s, "integration_id", None)),
-                        key=lambda s: str(s.integration_id),
-                    )
-                    if sorted_states:
-                        calendar_integration_type = integration_type_by_id.get(
-                            sorted_states[0].integration_id
-                        )
-
-                resolved_source = resolve_meeting_event_source(event, calendar_integration_type)
-                timeline_event = build_meeting_timeline_event(
-                    organisation_id=self.organisation_id,
-                    deal_id=deal.deal_id,
-                    association=new_assoc,
-                    event=event,
-                    event_source=resolved_source,
-                )
-                session.add(timeline_event)
+                # Timeline is deprecated; create activity-feed projection instead.
                 # Projection happens before commit with the association insert.
                 # Replay stays idempotent because the association ID is the feed ID.
                 await ActivityFeedProjectionService(

@@ -30,6 +30,10 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import Stakehol
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import ContactWriteContext
+from src.service.crm.contacts.resolution_service import (
+    ContactIdentityResolutionService,
+    ContactIdentityResolveCommand,
+)
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.participants.contracts import StakeholderWriteContext
@@ -174,12 +178,6 @@ class StakeholderWriteService:
         deal_id: UUID,
         contact_id: UUID | None,
         email: str | None,
-        name: str | None,
-        job_title: str | None = None,
-        phone_number: str | None = None,
-        linkedin_url: str | None = None,
-        department: str | None = None,
-        external_links: list[dict] | None = None,
         stance: str | None = None,
         decision_power: str | None = None,
         motivation: str | None = None,
@@ -215,7 +213,6 @@ class StakeholderWriteService:
             deal_id=deal_id,
             email=email_normalized,
             contact_id=contact_id,
-            linkedin_url=linkedin_url,
             include_deleted=True,
         )
         if participant:
@@ -224,12 +221,6 @@ class StakeholderWriteService:
             # the same participant ID for activity and research references.
             participant.related_local_id = participant.related_local_id or contact_id
             participant.related_email = email_normalized or participant.related_email
-            participant.related_name = name or participant.related_name
-            participant.job_title = job_title or participant.job_title
-            participant.department = department or participant.department
-            participant.phone_number = phone_number or participant.phone_number
-            participant.linkedin_url = linkedin_url or participant.linkedin_url
-            participant.external_links = external_links or participant.external_links
             participant.participant_source = participant_source
             participant.approval_status = approval_status
             participant.is_deleted = False
@@ -247,13 +238,7 @@ class StakeholderWriteService:
             deal_id=deal_id,
             participant_type=CRMParticipantType.CONTACT,
             related_local_id=contact_id,
-            related_name=name,
             related_email=email_normalized,
-            job_title=job_title,
-            department=department,
-            phone_number=phone_number,
-            linkedin_url=linkedin_url,
-            external_links=external_links,
             stance=stance or "UNKNOWN",
             decision_power=decision_power or "UNKNOWN",
             motivation=motivation,
@@ -345,7 +330,6 @@ class StakeholderWriteService:
         deal_id: UUID,
         email: str | None = None,
         contact_id: UUID | None = None,
-        linkedin_url: str | None = None,
         participant_id: UUID | None = None,
         include_deleted: bool = False,
     ) -> CRMDealParticipant | None:
@@ -371,13 +355,6 @@ class StakeholderWriteService:
                 identity_predicates.append(
                     func.lower(func.trim(col(CRMDealParticipant.related_email))) == email_normalized
                 )
-            if linkedin_url:
-                linkedin_normalized = clean_optional_string(linkedin_url)
-                if linkedin_normalized:
-                    identity_predicates.append(
-                        func.lower(func.trim(col(CRMDealParticipant.linkedin_url)))
-                        == linkedin_normalized.lower()
-                    )
             if not identity_predicates:
                 return None
             predicates.append(or_(*identity_predicates))
@@ -463,58 +440,45 @@ class StakeholderWriteService:
         self,
         *,
         contact: CRMContact | None,
-        participant: CRMDealParticipant,
         updates: dict,
     ) -> None:
-        """Write durable profile fields to contact first, then refresh snapshots."""
+        """Write durable profile fields only when a contact owns them."""
+        if not contact:
+            return
+
         if "name" in updates:
-            if contact:
-                contact.full_name = updates["name"]
-            participant.related_name = updates["name"]
+            contact.full_name = updates["name"]
 
         if "job_title" in updates:
-            if contact:
-                contact.job_title = updates["job_title"]
-            participant.job_title = updates["job_title"]
+            contact.job_title = updates["job_title"]
 
         if "phone_number" in updates:
-            if contact:
-                contact.phone = updates["phone_number"]
-            participant.phone_number = updates["phone_number"]
+            contact.phone = updates["phone_number"]
 
         if "linkedin_url" in updates:
-            if contact:
-                contact.linkedin_url = updates["linkedin_url"]
-            participant.linkedin_url = updates["linkedin_url"]
+            contact.linkedin_url = updates["linkedin_url"]
 
-        contact_properties = dict(contact.properties or {}) if contact else {}
+        contact_properties = dict(contact.properties or {})
         if "department" in updates:
-            if contact:
-                if updates["department"] is None:
-                    contact_properties.pop("department", None)
-                else:
-                    contact_properties["department"] = updates["department"]
-            participant.department = updates["department"]
+            if updates["department"] is None:
+                contact_properties.pop("department", None)
+            else:
+                contact_properties["department"] = updates["department"]
 
         if "external_links" in updates:
             serialized_links = serialize_external_links(updates["external_links"])
-            if contact:
-                if serialized_links is None:
-                    contact_properties.pop("external_links", None)
-                else:
-                    contact_properties["external_links"] = serialized_links
-            participant.external_links = serialized_links
+            if serialized_links is None:
+                contact_properties.pop("external_links", None)
+            else:
+                contact_properties["external_links"] = serialized_links
             linkedin_url = extract_linkedin_url(serialized_links)
             if linkedin_url:
                 # LinkedIn may arrive inside the generic external_links payload.
                 # Mirror it to the first-class field so later identity matching can
                 # find the same stakeholder without parsing the links blob.
-                if contact:
-                    contact.linkedin_url = linkedin_url
-                participant.linkedin_url = linkedin_url
+                contact.linkedin_url = linkedin_url
 
-        if contact:
-            contact.properties = contact_properties
+        contact.properties = contact_properties
 
     @staticmethod
     def _apply_participant_behavior_updates(
@@ -616,6 +580,31 @@ class StakeholderWriteService:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _resolve_contact_identity(
+        self,
+        *,
+        email: str | None,
+        linkedin_url: str | None,
+        name: str | None,
+    ):
+        """Resolve a contact through the contact-owned Apollo enrichment boundary."""
+        return await ContactIdentityResolutionService(
+            self.session,
+            self.organisation_id,
+        ).resolve(
+            ContactIdentityResolveCommand(
+                email=email,
+                linkedin_url=linkedin_url,
+                name=name,
+                context=ContactWriteContext(
+                    source="stakeholder",
+                    actor_user_id=self.user_id,
+                    source_label="Stakeholder",
+                    created_via="stakeholder_write_service",
+                ),
+            )
+        )
 
     @staticmethod
     def _contacts_conflict(*contacts: CRMContact | None) -> bool:
@@ -730,6 +719,20 @@ class StakeholderWriteService:
             # It gives the participant a stable contact link for future
             # research/profile refreshes.
             hydrate_from_contact(contact)
+        elif linkedin_url and not email_normalized:
+            resolution = await self._resolve_contact_identity(
+                email=email_normalized,
+                linkedin_url=linkedin_url,
+                name=name,
+            )
+            if resolution.status == "resolved" and resolution.contact:
+                contact = resolution.contact
+                hydrate_from_contact(contact)
+            else:
+                raise StakeholdersServiceError(
+                    resolution.error_detail or "Unable to resolve LinkedIn URL to a contact",
+                    status_code=404,
+                )
 
         # Guardrail: reject internal team members
         if email_normalized and await self._is_internal_email(email_normalized):
@@ -739,8 +742,8 @@ class StakeholderWriteService:
                 status_code=403,
             )
 
-        # Contact owns durable profile fields; participant keeps a deal-local
-        # snapshot for list reads.
+        # Contact owns durable profile fields. The participant keeps only deal
+        # membership and identity fields so create/update flows do not fork person data.
         contact_id = contact.contact_id if contact else None
         if email_normalized and not contact:
             contact = await self._ensure_contact_for_stakeholder(
@@ -760,7 +763,6 @@ class StakeholderWriteService:
             deal_id=deal_id,
             email=email_normalized,
             contact_id=contact_id,
-            linkedin_url=linkedin_url,
             include_deleted=True,
         )
         if existing_participant:
@@ -773,7 +775,6 @@ class StakeholderWriteService:
                 updates["name"] = name
             self._apply_contact_profile_updates(
                 contact=await self._get_participant_contact(existing_participant),
-                participant=existing_participant,
                 updates=updates,
             )
             self._apply_participant_behavior_updates(existing_participant, updates)
@@ -786,9 +787,6 @@ class StakeholderWriteService:
             existing_participant.participant_source = (
                 StakeholderSource.CRM.value if contact else StakeholderSource.MANUAL.value
             )
-            if contact and contact.contact_research:
-                existing_participant.stakeholder_research = contact.contact_research
-                existing_participant.last_researched_at = contact.last_researched_at
             existing_participant.approval_status = ACTIVE_STAKEHOLDER_STATUS
             existing_participant.is_deleted = False
             existing_participant.updated_at = datetime.now(UTC)
@@ -801,12 +799,6 @@ class StakeholderWriteService:
             deal_id=deal_id,
             contact_id=contact_id,
             email=email_normalized,
-            name=name,
-            job_title=request.job_title,
-            phone_number=request.phone_number,
-            linkedin_url=linkedin_url,
-            department=request.department,
-            external_links=None,
             stance=request.stance.value if hasattr(request.stance, "value") else request.stance,
             decision_power=(
                 request.decision_power.value
@@ -824,9 +816,6 @@ class StakeholderWriteService:
                 "Unable to create stakeholder participant for this deal",
                 status_code=500,
             )
-        if contact and contact.contact_research:
-            participant.stakeholder_research = contact.contact_research
-            participant.last_researched_at = contact.last_researched_at
 
         await self._set_primary_contact_if_first_stakeholder(deal_id, participant)
 
@@ -876,7 +865,6 @@ class StakeholderWriteService:
         contact = await self._get_participant_contact(participant)
         self._apply_contact_profile_updates(
             contact=contact,
-            participant=participant,
             updates=updates,
         )
         self._apply_participant_behavior_updates(participant, updates)
@@ -990,27 +978,10 @@ class StakeholderWriteService:
                 internal_integration_id=internal_integration_id,
             )
 
-            # Build a name from CRM contact fields so created rows always include a
-            # human-friendly identifier when possible.
-            name = (
-                contact.full_name
-                or " ".join(filter(None, [contact.first_name, contact.last_name]))
-                or None
-            )
-
-            properties = dict(contact.properties or {})
             participant = await self._ensure_deal_participant(
                 deal_id=deal_id,
                 contact_id=contact.contact_id,
                 email=contact.email,
-                name=name,
-                job_title=contact.job_title,
-                phone_number=contact.phone or contact.mobile_phone,
-                linkedin_url=contact.linkedin_url,
-                department=properties.get("department"),
-                external_links=properties.get("external_links")
-                if isinstance(properties.get("external_links"), list)
-                else None,
                 participant_source=StakeholderSource.CRM.value,
                 approval_status=ACTIVE_STAKEHOLDER_STATUS,
             )

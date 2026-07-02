@@ -96,6 +96,66 @@ PROJECTIONS: list[_Projection] = []
 
 
 @pytest.mark.asyncio
+async def test_existing_provider_enrichment_generates_summary_without_apollo(
+    monkeypatch,
+) -> None:
+    """Apollo data captured during create should feed the summary without a second lookup."""
+    workflow_module = import_module(
+        "src.workers.deal_worker.services.deal_insight_services.contact_research_service"
+    )
+    service_module = import_module("src.service.crm.contacts.research_service")
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+        profile_enrichment={
+            "provider": "apollo",
+            "name": "Ada Buyer",
+            "job_title": "VP Engineering",
+        },
+    )
+    load_session = _LoadSession(contact)
+    summary_session = _WriteSession(contact)
+    completion_session = _WriteSession(contact)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "acquire_org_async_session",
+        _SessionFactory(load_session, summary_session, completion_session),
+    )
+    PROJECTIONS.clear()
+    monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
+
+    async def provider_should_not_run(_payload):  # noqa: ANN001
+        raise AssertionError("existing provider enrichment should skip Apollo")
+
+    async def summary_generator(profile_enrichment):  # noqa: ANN001
+        assert profile_enrichment["name"] == "Ada Buyer"
+        return service_module.ContactResearchSummaryResult(
+            status="generated",
+            summary_markdown="## Ada Buyer\nVP Engineering at Acme.",
+        )
+
+    workflow = workflow_module.ContactResearchWorkflowService(
+        organisation_id,
+        provider_lookup=provider_should_not_run,
+        summary_generator=summary_generator,
+    )
+
+    result = await workflow.research_contact(contact_id, job_id=uuid4())
+
+    assert result.provider_status == "cached"
+    assert result.summary_status == "generated"
+    assert contact.contact_research == "## Ada Buyer\nVP Engineering at Acme."
+    assert summary_session.commits == 1
+    assert completion_session.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_success_persists_enrichment_when_summary_fails(monkeypatch) -> None:
     """Provider fields are durable even when the optional UI summary fails."""
     workflow_module = import_module(
@@ -171,7 +231,7 @@ async def test_provider_success_persists_enrichment_when_summary_fails(monkeypat
     assert contact.profile_enrichment["provider"] == "apollo"
     assert contact.profile_enrichment_source == "apollo"
     assert contact.profile_enriched_at is not None
-    assert contact.last_researched_at is not None
+    assert contact.last_researched_at is None
     assert contact.contact_research is None
     assert write_session.commits == 1
     assert completion_session.commits == 1
@@ -240,7 +300,8 @@ async def test_provider_not_found_marks_attempt_without_summary(monkeypatch) -> 
     assert result.provider_status == "not_found"
     assert result.summary_status == "skipped"
     assert summary_called is False
-    assert contact.last_researched_at is not None
+    assert contact.last_researched_at is None
+    assert contact.profile_enrichment["status"] == "not_found"
     assert contact.contact_research is None
     assert write_session.commits == 1
     assert completion_session.commits == 1

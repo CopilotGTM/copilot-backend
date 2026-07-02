@@ -1,7 +1,7 @@
 """Celery tasks for AI-powered risk/blocker extraction.
 
 This module provides Celery tasks that extract risks and blockers from
-deal timeline content (meetings, emails, Slack messages) using AI:
+deal activity content (meetings, emails, Slack messages) using AI:
     - Identifies potential risks and blockers
     - Classifies by category, severity, and type
     - Deduplicates against existing items

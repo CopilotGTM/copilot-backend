@@ -726,13 +726,13 @@ STEP 6: DISCOVER STAKEHOLDERS
   │ )                                                                       │
   └─────────────────────────────────────────────────────────────────────────┘
 
-STEP 7: CREATE TIMELINE EVENT
+STEP 7: CREATE ACTIVITY-FEED PROJECTION
 ═══════════════════════════════════════════════════════════════════════════════
 
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │ DealTimeline(                                                           │
+  │ CRMActivity projection(                                                 │
   │     deal_id = deal_id,                                                  │
-  │     event_type = EMAIL,                                                 │
+  │     activity_type = EMAIL,                                              │
   │     source_id = internet_message_id,                                    │
   │     event_datetime = email.received_at,                                 │
   │     title = email.subject,                                              │

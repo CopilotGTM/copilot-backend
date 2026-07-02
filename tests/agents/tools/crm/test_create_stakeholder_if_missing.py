@@ -6,8 +6,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.context import AgentContext
-from src.agents.tools.crm.create_stakeholder_if_missing import create_stakeholder_if_missing
-from src.agents.tools.crm.upsert_stakeholder import UpsertStakeholderInput
+from src.agents.tools.crm.create_stakeholder_if_missing import (
+    CreateStakeholderIfMissingInput,
+    create_stakeholder_if_missing,
+)
 
 
 class _AsyncSessionContext:
@@ -52,7 +54,7 @@ def _participant_only_stakeholder(participant_id: UUID) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_if_missing_uses_participant_id_for_research() -> None:
+async def test_create_stakeholder_if_missing_without_contact_skips_research() -> None:
     context = _context()
     deal_id = uuid4()
     participant_id = uuid4()
@@ -66,10 +68,6 @@ async def test_create_stakeholder_if_missing_uses_participant_id_for_research() 
         patch(
             "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
         ) as service_cls,
-        patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch.dispatch_stakeholder_research_async",
-            AsyncMock(return_value=uuid4()),
-        ) as research_dispatch,
     ):
         service = MagicMock()
         service._find_contact_participant = AsyncMock(return_value=None)
@@ -79,18 +77,13 @@ async def test_create_stakeholder_if_missing_uses_participant_id_for_research() 
         result = await create_stakeholder_if_missing(
             context=context,
             deal_id=str(deal_id),
-            input_data=UpsertStakeholderInput(
+            input_data=CreateStakeholderIfMissingInput(
                 email="buyer@acme.com",
                 name="Buyer Person",
                 job_title="VP Sales",
             ),
         )
 
-    research_dispatch.assert_awaited_once_with(
-        organisation_id=context.organisation_id,
-        stakeholder_id=participant_id,
-        deal_id=deal_id,
-    )
     assert result is not None
     assert result["action"] == "created"
     assert result["participant_id"] == str(participant_id)
@@ -118,15 +111,10 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
             "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
         ) as service_cls,
         patch(
-            "src.workers.deal_worker.utils.contact_research_dispatch."
-            "dispatch_contact_research_async",
+            "src.agents.tools.crm.create_stakeholder_if_missing."
+            "dispatch_contact_research_for_contact",
             AsyncMock(return_value=str(uuid4())),
         ) as contact_research_dispatch,
-        patch(
-            "src.workers.deal_worker.utils.stakeholder_research_dispatch."
-            "dispatch_stakeholder_research_async",
-            AsyncMock(return_value=uuid4()),
-        ) as stakeholder_research_dispatch,
     ):
         service = MagicMock()
         service._find_contact_participant = AsyncMock(return_value=None)
@@ -136,7 +124,7 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
         result = await create_stakeholder_if_missing(
             context=context,
             deal_id=str(deal_id),
-            input_data=UpsertStakeholderInput(
+            input_data=CreateStakeholderIfMissingInput(
                 email="buyer@acme.com",
                 name="Buyer Person",
                 job_title="VP Sales",
@@ -149,6 +137,5 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
         user_id=context.user_id,
         trigger="stakeholder_created",
     )
-    stakeholder_research_dispatch.assert_not_awaited()
     assert result is not None
     assert result["action"] == "created"

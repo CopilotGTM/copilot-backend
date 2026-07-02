@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -169,8 +169,8 @@ class TestMatchEmailToDealsTaskEligibility:
         tracker.complete.assert_awaited_once()
 
 
-class TestMatchEmailToDealsTaskTimelineSync:
-    def test_dispatches_deal_timeline_sync_after_successful_matching(self, monkeypatch) -> None:
+class TestMatchEmailToDealsTaskResult:
+    def test_successful_matching_does_not_dispatch_timeline_sync(self, monkeypatch) -> None:
         organisation_id = uuid4()
         deal_id = uuid4()
         eligibility = DealMappingEligibilityResult(
@@ -194,8 +194,6 @@ class TestMatchEmailToDealsTaskTimelineSync:
             complete=AsyncMock(),
             fail=AsyncMock(),
         )
-        timeline_task = SimpleNamespace(apply_async=Mock())
-
         monkeypatch.setattr(
             email_tasks,
             "DealMappingEligibilityService",
@@ -216,12 +214,6 @@ class TestMatchEmailToDealsTaskTimelineSync:
             "acquire_org_async_session",
             _session_generator_factory([SimpleNamespace()]),
         )
-        monkeypatch.setattr(
-            email_tasks,
-            "sync_deal_timeline_task",
-            timeline_task,
-            raising=False,
-        )
 
         result = match_email_to_deals_task(
             organisation_id=str(organisation_id),
@@ -230,12 +222,8 @@ class TestMatchEmailToDealsTaskTimelineSync:
         )
 
         assert result["status"] == "success"
-        assert result["timeline_sync_dispatched"] is True
-        timeline_task.apply_async.assert_called_once()
-        assert timeline_task.apply_async.call_args.kwargs["kwargs"] == {
-            "organisation_id": str(organisation_id),
-            "deal_id": str(deal_id),
-        }
+        assert "timeline_sync_dispatched" not in result
+        assert "timeline_sync_dispatch_error" not in result
 
 
 # Tests that don't require task imports - always run

@@ -74,6 +74,8 @@ class AccountResearchService:
         self,
         company_id: UUID,
         result: AccountProviderResearchResult,
+        *,
+        commit: bool = True,
     ) -> bool:
         """Persist structured provider fields and mark completed attempts."""
         company = await self._load_company(company_id)
@@ -82,14 +84,12 @@ class AccountResearchService:
 
         now = datetime.now(UTC)
         if result.status == "not_found":
-            company.last_researched_at = now
             await self.session.commit()
             return True
 
         if result.status != "found":
             return False
 
-        company.last_researched_at = now
         company.company_enriched_at = now
         company.company_enrichment_source = result.enrichment_source or "apollo"
         company.company_enrichment = dict(result.company_enrichment or {})
@@ -123,7 +123,10 @@ class AccountResearchService:
         if self._should_fill_empty(company.postal_code, result.postal_code):
             company.postal_code = result.postal_code
 
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return True
 
     async def persist_summary(
@@ -140,6 +143,7 @@ class AccountResearchService:
             return False
 
         company.account_summary = summary.summary_markdown
+        company.last_researched_at = datetime.now(UTC)
         await self.session.commit()
         return True
 
@@ -181,6 +185,7 @@ async def research_account_with_apollo(
         status: AccountProviderStatus = "not_found" if "no matching" in error.lower() else "error"
         return AccountProviderResearchResult(status=status, error_detail=error)
 
+    result["match_source"] = _match_source(payload)
     return AccountProviderResearchResult(
         status="found",
         enrichment_source="apollo",
@@ -206,6 +211,7 @@ def _company_enrichment(profile: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": "apollo",
         "apollo_id": profile.get("apollo_id"),
+        "match_source": profile.get("match_source"),
         "name": profile.get("name"),
         "domain": profile.get("domain"),
         "website": profile.get("website"),
@@ -217,6 +223,18 @@ def _company_enrichment(profile: dict[str, Any]) -> dict[str, Any]:
         "logo_url": profile.get("logo_url"),
         "raw": profile.get("raw") or {},
     }
+
+
+def _match_source(payload: AccountProviderResearchInput) -> str | None:
+    if payload.linkedin_url:
+        return "linkedin_url"
+    if payload.domain:
+        return "domain"
+    if payload.website:
+        return "website"
+    if payload.name:
+        return "name"
+    return None
 
 
 def _int_or_none(value: Any) -> int | None:

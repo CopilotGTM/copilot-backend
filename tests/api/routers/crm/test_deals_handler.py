@@ -147,7 +147,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         add_contacts_as_stakeholders=AsyncMock(
             return_value=SimpleNamespace(
                 total_added=1,
-                added=[SimpleNamespace(participant_id=participant_id)],
+                added=[SimpleNamespace(participant_id=participant_id, contact_id=contact_id)],
             )
         ),
         trigger_deal_mapping_if_ready=AsyncMock(),
@@ -194,7 +194,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     )
     monkeypatch.setattr(
         deals_handler_module,
-        "_dispatch_auto_stakeholder_research",
+        "_contact_research_job_response",
         dispatch_research,
         raising=False,
     )
@@ -222,8 +222,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     )
     dispatch_research.assert_awaited_once_with(
         organisation_id=write_service.organisation_id,
-        participant_id=participant_id,
-        deal_id=deal.deal_id,
+        contact_id=contact_id,
         user_id=write_service.actor_user_id,
     )
     assert session.commit.await_count == 2
@@ -315,7 +314,7 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
         add_contacts_as_stakeholders=AsyncMock(
             return_value=SimpleNamespace(
                 total_added=1,
-                added=[SimpleNamespace(participant_id=participant_id)],
+                added=[SimpleNamespace(participant_id=participant_id, contact_id=contact_id)],
             )
         ),
     )
@@ -348,7 +347,7 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
     )
     monkeypatch.setattr(
         deals_handler_module,
-        "_dispatch_auto_stakeholder_research",
+        "_contact_research_job_response",
         dispatch_research,
         raising=False,
     )
@@ -370,8 +369,7 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
     session.rollback.assert_awaited_once()
     dispatch_research.assert_awaited_once_with(
         organisation_id=write_service.organisation_id,
-        participant_id=participant_id,
-        deal_id=deal.deal_id,
+        contact_id=contact_id,
         user_id=write_service.actor_user_id,
     )
 
@@ -1978,7 +1976,7 @@ def test_get_deal_with_active_stakeholder_processing_jobs(
             job_id=uuid4(),
             deal_id=deal.deal_id,
             organisation_id=org_id,
-            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            job_type=DealJobType.CONTACT_RESEARCH,
             status=JobStatus.IN_PROGRESS,
         )
     )

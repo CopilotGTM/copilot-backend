@@ -2,7 +2,8 @@
 
 Called by stakeholder API routes and agent tools that need product stakeholder
 views. The storage row remains `CRMDealParticipant`; this service joins contact
-profile data only where detail views need durable person fields.
+profile data so list and detail reads both prefer durable person fields from
+`CRMContact`.
 """
 
 from __future__ import annotations
@@ -57,6 +58,29 @@ class StakeholderReadService:
         )
         contact_result = await self.session.execute(contact_stmt)
         return contact_result.scalar_one_or_none()
+
+    async def _get_participant_contacts(
+        self,
+        participants: list[CRMDealParticipant],
+    ) -> dict[UUID, CRMContact]:
+        """Load linked contacts for a stakeholder page in one org-scoped query."""
+        contact_ids = {
+            participant.related_local_id
+            for participant in participants
+            if participant.related_local_id is not None
+        }
+        if not contact_ids:
+            return {}
+
+        # List responses can contain caller-supplied deal IDs, so the contact
+        # join repeats the organisation predicate instead of trusting local IDs.
+        contact_stmt = select(CRMContact).where(
+            col(CRMContact.contact_id).in_(contact_ids),
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        contact_result = await self.session.execute(contact_stmt)
+        return {contact.contact_id: contact for contact in contact_result.scalars().all()}
 
     def _participant_detail(
         self,
@@ -118,11 +142,18 @@ class StakeholderReadService:
             stmt = stmt.limit(max(1, min(limit, 50)))
         result = await self.session.execute(stmt)
         participants = list(result.scalars().all())
+        contacts_by_id = await self._get_participant_contacts(participants)
 
         return StakeholderListResponse(
             company_domain=company_domain,
             company_name=company_name,
-            stakeholders=[self._participant_detail(participant) for participant in participants],
+            stakeholders=[
+                self._participant_detail(
+                    participant,
+                    contact=contacts_by_id.get(participant.related_local_id),
+                )
+                for participant in participants
+            ],
         )
 
     async def get_stakeholder_detail(

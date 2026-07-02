@@ -12,7 +12,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 
 
 class ContactDealInvolvement(BaseModel):
@@ -357,10 +358,34 @@ class CreateContactRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    email: str = Field(..., description="Email address (required)")
+    email: str | None = Field(None, description="Email address when already known")
     name: str | None = Field(None, description="Full name when already known")
     job_title: str | None = Field(None, description="Job title when already known")
     linkedin_url: str | None = Field(None, description="LinkedIn profile URL when already known")
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for contact records."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> CreateContactRequest:
+        """Require an email, LinkedIn URL, or placeholder name before contact creation."""
+        if self.email and self.email.strip():
+            return self
+        if self.linkedin_url and self.linkedin_url.strip():
+            return self
+        if self.name and self.name.strip():
+            return self
+        raise ValueError("email, LinkedIn URL, or name is required")
 
 
 class UpdateContactRequest(BaseModel):
@@ -380,6 +405,19 @@ class UpdateContactRequest(BaseModel):
     linkedin_url: str | None = None
     company_name: str | None = None
     company_id: UUID | None = None
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for contact records."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
 
 
 class AddContactToDealRequest(BaseModel):

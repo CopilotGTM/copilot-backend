@@ -23,12 +23,6 @@ deal.process_deal_emails_task               # Match emails to deals (org-wide)
 deal.trigger_deal_meeting_processing_all_orgs  # Periodic trigger for all orgs
 deal.trigger_deal_email_processing_all_orgs    # Periodic trigger for all orgs
 
-# Deal Worker Tasks - Timeline
-deal.sync_deal_timeline                     # Sync timeline for single deal
-deal.sync_org_timeline                      # Sync timeline for all org deals
-deal.trigger_timeline_sync_all_orgs         # Periodic trigger for all orgs
-deal.exclude_timeline_event                 # Mark timeline event excluded
-
 # Deal Worker Tasks - Stakeholders
 stakeholder.sync_from_meeting_task          # Sync stakeholders from meeting
 stakeholder.analyze_deal_stakeholders_task  # AI analysis for deal
@@ -98,22 +92,7 @@ These tasks associate external data (meetings, emails) with CRM deals.
 
 ---
 
-### 3. Timeline Tasks (Deal Worker)
-
-Timeline events are created to show chronological history of a deal.
-
-| Task | Purpose | Notes |
-|------|---------|-------|
-| `deal.sync_deal_timeline` | Backfill timeline for deal | Used for repair/backfill |
-| `deal.sync_org_timeline` | Backfill timeline for org | Batch processing |
-| `deal.trigger_timeline_sync_all_orgs` | Periodic org-wide sync | Every hour at :30 |
-| `deal.exclude_timeline_event` | Soft-hide event | When association rejected |
-
-**Important**: Timeline events are created **INLINE** during matching (not via these tasks). These tasks are for backfill/repair only.
-
----
-
-### 4. Stakeholder Tasks (Deal Worker)
+### 3. Stakeholder Tasks (Deal Worker)
 
 Stakeholders are external people involved in deals (customers, partners).
 
@@ -349,12 +328,6 @@ Return DealSummaryData
 :00 - deal.trigger_deal_meeting_processing_all_orgs
 :00 - deal.trigger_deal_email_processing_all_orgs
 :00 - stakeholder.trigger_analysis_all_orgs
-```
-
-### Deal Worker (Every Hour)
-
-```
-:30 - deal.trigger_timeline_sync_all_orgs
 ```
 
 ### Deal Worker (Daily)

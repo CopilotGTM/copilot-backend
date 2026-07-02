@@ -34,9 +34,6 @@ from src.service.crm.jobs.stakeholder_job_visibility_service import (
 )
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
-from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
-    dispatch_stakeholder_research_async,
-)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -101,7 +98,7 @@ def _job_summary(job: Any) -> dict[str, str]:
 def _research_job_summary(
     job_id: UUID | str | None,
     *,
-    job_type: str = "stakeholder_research",
+    job_type: str = "contact_research",
 ) -> dict[str, str | None] | None:
     if not job_id:
         return None
@@ -128,10 +125,6 @@ def _stakeholder_name(stakeholder: Any) -> str:
     return str(stakeholder.name or stakeholder.email or stakeholder.participant_id)
 
 
-def _has_enrichable_identity(stakeholder: Any) -> bool:
-    return bool(getattr(stakeholder, "email", None) or getattr(stakeholder, "linkedin_url", None))
-
-
 def _has_rematch_identity(stakeholder: Any) -> bool:
     return bool(getattr(stakeholder, "email", None))
 
@@ -148,7 +141,7 @@ def _created_stakeholder_result(
     stakeholder: Any,
     processing_jobs: list[Any],
     research_job_id: UUID | str | None,
-    research_job_type: str = "stakeholder_research",
+    research_job_type: str = "contact_research",
     processing_error: str | None = None,
     research_error: str | None = None,
 ) -> dict[str, Any]:
@@ -278,7 +271,7 @@ async def add_stakeholder_direct(
             processing_jobs: list[Any] = []
             processing_error = None
             research_job_id = None
-            research_job_type = "stakeholder_research"
+            research_job_type = "contact_research"
             research_error = None
 
             if _has_rematch_identity(stakeholder):
@@ -300,37 +293,23 @@ async def add_stakeholder_direct(
                         "add_stakeholder_direct: stakeholder created but processing dispatch failed"
                     )
 
-            if contact_id := _stakeholder_contact_id(stakeholder):
-                try:
-                    from src.workers.deal_worker.utils.contact_research_dispatch import (
-                        dispatch_contact_research_async,
-                    )
+            try:
+                from src.workers.deal_worker.utils.contact_research_dispatch import (
+                    dispatch_contact_research_for_contact,
+                )
 
-                    research_job_id = await dispatch_contact_research_async(
-                        organisation_id=organisation_id,
-                        contact_id=contact_id,
-                        user_id=user_id,
-                        trigger="stakeholder_created",
-                    )
-                    research_job_type = "contact_research"
-                except Exception as exc:
-                    research_error = str(exc)
-                    logger.exception(
-                        "add_stakeholder_direct: stakeholder created but contact research dispatch failed"
-                    )
-            elif _has_enrichable_identity(stakeholder):
-                try:
-                    research_job_id = await dispatch_stakeholder_research_async(
-                        organisation_id=organisation_id,
-                        stakeholder_id=stakeholder.participant_id,
-                        deal_id=deal_uuid,
-                        user_id=user_id,
-                    )
-                except Exception as exc:
-                    research_error = str(exc)
-                    logger.exception(
-                        "add_stakeholder_direct: stakeholder created but research dispatch failed"
-                    )
+                research_job_id = await dispatch_contact_research_for_contact(
+                    organisation_id=organisation_id,
+                    contact_id=_stakeholder_contact_id(stakeholder),
+                    user_id=user_id,
+                    trigger="stakeholder_created",
+                )
+                research_job_type = "contact_research"
+            except Exception as exc:
+                research_error = str(exc)
+                logger.exception(
+                    "add_stakeholder_direct: stakeholder created but contact research dispatch failed"
+                )
 
             return _created_stakeholder_result(
                 deal_id=deal_uuid,

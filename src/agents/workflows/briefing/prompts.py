@@ -57,7 +57,6 @@ Heuristics:
 - list_deal_stakeholders (map people)
 - get_meeting_transcript (deep dive only if needed)
 - get_email_details (deep dive only if needed)
-- get_stakeholder_details (deep dive only if needed)
 - search_internal_knowledge (product/enablement)
 - search_internet (ONLY for Discovery / First Call — see rules)
 
@@ -68,7 +67,7 @@ Heuristics:
 3) Always: `list_deal_emails(deal_id, limit=20)`.
    - Identify open loops, promised follow-ups, objections.
 4) Always: `list_deal_notes` to capture manual notes and stakeholder references.
-5) Stakeholders: call `list_deal_stakeholders(deal_id)` if attendees are unclear OR you need decision mapping.
+5) Stakeholders: call `list_deal_stakeholders(deal_id)` if attendees are unclear OR you need decision mapping. Use its `query` or `stakeholder_id` arguments for one-person stakeholder follow-up.
 6) Deep dives (only when they change the plan):
    - transcript only when you need verbatim evidence for a blocker/requirement
    - email details only when a thread impacts next steps

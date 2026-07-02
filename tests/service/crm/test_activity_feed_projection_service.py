@@ -177,14 +177,22 @@ async def test_stakeholder_added_projection_writes_deal_and_contact_activity_lin
         related_local_id=contact_id,
         related_name="Jane Buyer",
         related_email="jane@example.com",
-        job_title="CFO",
         participant_source="MANUAL",
         created_at=occurred_at,
+    )
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        full_name="Jane Contact",
+        email="jane.contact@example.com",
+        job_title="Chief Finance Officer",
     )
     session = _FakeSession()
 
     await ActivityFeedProjectionService(session, organisation_id).upsert_stakeholder_added(
         participant,
+        contact=contact,
         actor_user_id=actor_user_id,
         source="agent",
         created_via="add_stakeholder_agent",
@@ -193,9 +201,9 @@ async def test_stakeholder_added_projection_writes_deal_and_contact_activity_lin
     values = _compiled_values(session.statements[0])
     assert values["activity_id"] == participant_id
     assert values["activity_type"] == "EVENT"
-    assert values["title"] == "Stakeholder added: Jane Buyer"
-    assert values["summary"] == "jane@example.com"
-    assert values["preview"] == "jane@example.com"
+    assert values["title"] == "Stakeholder added: Jane Contact"
+    assert values["summary"] == "jane.contact@example.com"
+    assert values["preview"] == "jane.contact@example.com"
     assert values["occurred_at"] == occurred_at
     assert values["source_type"] == "STAKEHOLDER_ADDED"
     assert values["source_record_id"] == str(participant_id)
@@ -203,9 +211,9 @@ async def test_stakeholder_added_projection_writes_deal_and_contact_activity_lin
     assert values["display_payload"] == {
         "participant_id": str(participant_id),
         "contact_id": str(contact_id),
-        "stakeholder_name": "Jane Buyer",
-        "email": "jane@example.com",
-        "job_title": "CFO",
+        "stakeholder_name": "Jane Contact",
+        "email": "jane.contact@example.com",
+        "job_title": "Chief Finance Officer",
         "participant_source": "MANUAL",
         "mutation_source": "agent",
         "created_via": "add_stakeholder_agent",
@@ -236,7 +244,6 @@ async def test_stakeholder_removed_projection_writes_distinct_activity() -> None
         related_local_id=contact_id,
         related_name="Jane Buyer",
         related_email="jane@example.com",
-        job_title="CFO",
         participant_source="MANUAL",
         updated_at=removed_at,
     )

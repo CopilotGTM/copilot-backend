@@ -151,7 +151,7 @@ async def test_get_active_stakeholder_processing_jobs_returns_visible_jobs_only(
             user_id=user_id,
             deal_id=deal_id,
             stakeholder_id=stakeholder_id,
-            job_type=DealJobType.STAKEHOLDER_RESEARCH,
+            job_type=DealJobType.CONTACT_RESEARCH,
             status=JobStatus.IN_PROGRESS,
         ),
         _job(
@@ -259,26 +259,26 @@ async def test_get_active_stakeholder_processing_jobs_hides_incomplete_unenqueue
 
 
 @pytest.mark.asyncio
-async def test_get_active_stakeholder_research_job_is_scoped_to_stakeholder() -> None:
-    """Research lookup should filter by stakeholder id for the requested deal."""
+async def test_get_active_contact_research_job_is_scoped_to_contact() -> None:
+    """Research lookup should filter by contact id in job metadata."""
     org_id = uuid4()
     user_id = uuid4()
     deal_id = uuid4()
-    stakeholder_id = uuid4()
+    contact_id = uuid4()
     research_job = _job(
         organisation_id=org_id,
         user_id=user_id,
         deal_id=deal_id,
-        stakeholder_id=stakeholder_id,
-        job_type=DealJobType.STAKEHOLDER_RESEARCH,
+        job_type=DealJobType.CONTACT_RESEARCH,
         status=JobStatus.IN_PROGRESS,
+        metadata={"contact_id": str(contact_id)},
     )
     service = DealJobService(_Session([research_job]), org_id, user_id)
 
-    active = await service.get_active_stakeholder_research_job(deal_id, stakeholder_id)
+    active = await service.get_active_contact_research_job(contact_id)
 
     assert active == {
         "job_id": research_job.job_id,
-        "job_type": "stakeholder_research",
+        "job_type": "contact_research",
         "status": "in_progress",
     }
