@@ -461,6 +461,19 @@ def test_crm_change_workflow_skill_biases_toward_confirmation_when_uncertain() -
     assert "if there are no doubts" in instructions
 
 
+def test_crm_change_workflow_skill_routes_pasted_identity_urls() -> None:
+    """CRM mutation routing should not ask for email when URLs are usable identities."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    instructions = skill.instructions
+
+    assert "Identity URL Routing" in instructions
+    assert "company LinkedIn pages" in instructions
+    assert "LinkedIn profile pages are enough" in instructions
+    assert "Do not ask for email first" in instructions
+
+
 def test_crm_deal_analysis_workflow_skill_loads() -> None:
     """The crm-deal-analysis-workflow skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))

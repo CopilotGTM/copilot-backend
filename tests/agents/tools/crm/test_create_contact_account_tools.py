@@ -209,6 +209,60 @@ async def test_create_account_direct_allows_domain_only_create() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_account_direct_allows_linkedin_only_create() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    account = SimpleNamespace(
+        company_id=uuid4(),
+        name="Acme",
+        domain="acme.com",
+        website="https://acme.com",
+        industry=None,
+        linkedin_url="https://linkedin.com/company/acme",
+    )
+
+    with (
+        patch("src.agents.tools.crm.create_account.AccountReadService") as reader_cls,
+        patch("src.agents.tools.crm.create_account.AccountWriteService") as writer_cls,
+    ):
+        reader = MagicMock()
+        reader.find_accounts_by_name = AsyncMock(return_value=[])
+        reader_cls.return_value = reader
+        writer = MagicMock()
+        writer.create_account = AsyncMock(
+            return_value=AccountWriteResult(account=account, created=True, matched_by="linkedin")
+        )
+        writer_cls.return_value = writer
+
+        result = await create_account_direct(
+            context=context,
+            name=None,
+            linkedin_url=" https://linkedin.com/company/acme ",
+        )
+
+    reader.find_accounts_by_name.assert_not_called()
+    writer.create_account.assert_awaited_once_with(
+        AccountCreateCommand(
+            name=None,
+            domain=None,
+            website=None,
+            linkedin_url="https://linkedin.com/company/acme",
+        ),
+        context=AccountWriteContext(
+            source="agent_tool",
+            actor_user_id=context.user_id,
+            created_via="chat_tool",
+            duplicate_scope="internal_only",
+        ),
+    )
+    org_session.commit.assert_awaited_once()
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
 async def test_create_account_direct_rejects_missing_identity() -> None:
     context = _context()
 
@@ -216,7 +270,7 @@ async def test_create_account_direct_rejects_missing_identity() -> None:
 
     assert result == {
         "status": "error",
-        "message": "Account name, domain, or website is required.",
+        "message": "Account name, domain, website, or LinkedIn URL is required.",
     }
     context.acquire_session.assert_not_called()
 
@@ -338,6 +392,105 @@ async def test_create_contact_direct_allows_missing_name() -> None:
     command = contact_writer.create_contact.call_args.args[0]
     assert command == ContactCreateCommand(email="jane@acme.com", name=None)
     assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_create_contact_direct_allows_linkedin_without_email() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    contact = SimpleNamespace(
+        contact_id=uuid4(),
+        email=None,
+        full_name="Jane Buyer",
+        job_title=None,
+        company_name=None,
+        company_id=None,
+    )
+
+    with (
+        patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
+        patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
+    ):
+        contact_reader = MagicMock()
+        contact_reader.find_contact_by_email = AsyncMock(return_value=None)
+        contact_reader_cls.return_value = contact_reader
+        contact_writer = MagicMock()
+        contact_writer.create_contact = AsyncMock(
+            return_value=ContactWriteResult(contact=contact, created=True, matched_by="linkedin")
+        )
+        contact_writer_cls.return_value = contact_writer
+
+        result = await create_contact_direct(
+            context=context,
+            email=None,
+            name=None,
+            linkedin_url="https://linkedin.com/in/jane-buyer",
+        )
+
+    contact_reader.find_contact_by_email.assert_not_called()
+    contact_writer.create_contact.assert_awaited_once()
+    command = contact_writer.create_contact.call_args.args[0]
+    assert command == ContactCreateCommand(
+        email=None,
+        name=None,
+        linkedin_url="https://linkedin.com/in/jane-buyer",
+    )
+    org_session.commit.assert_awaited_once()
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_create_contact_direct_allows_name_only_contact() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    contact = SimpleNamespace(
+        contact_id=uuid4(),
+        email=None,
+        full_name="Jane Buyer",
+        job_title=None,
+        company_name=None,
+        company_id=None,
+    )
+
+    with (
+        patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
+        patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
+    ):
+        contact_reader = MagicMock()
+        contact_reader.find_contact_by_email = AsyncMock(return_value=None)
+        contact_reader_cls.return_value = contact_reader
+        contact_writer = MagicMock()
+        contact_writer.create_contact = AsyncMock(
+            return_value=ContactWriteResult(contact=contact, created=True, matched_by="created")
+        )
+        contact_writer_cls.return_value = contact_writer
+
+        result = await create_contact_direct(context=context, email=None, name="Jane Buyer")
+
+    contact_reader.find_contact_by_email.assert_not_called()
+    command = contact_writer.create_contact.call_args.args[0]
+    assert command == ContactCreateCommand(email=None, name="Jane Buyer")
+    org_session.commit.assert_awaited_once()
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_create_contact_direct_rejects_missing_identity() -> None:
+    context = _context()
+
+    result = await create_contact_direct(context=context, email=None, name=None)
+
+    assert result == {
+        "status": "error",
+        "message": "Contact name, email, or LinkedIn URL is required.",
+    }
+    context.acquire_session.assert_not_called()
 
 
 def test_create_contact_direct_has_no_account_selection_inputs() -> None:

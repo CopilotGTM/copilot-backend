@@ -454,7 +454,10 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_ACCOUNT,
-        description="Create or reuse a CRM account once the user provides a name, domain, or website.",
+        description=(
+            "Create or reuse a CRM account once the user provides a name, domain, website, "
+            "or company LinkedIn URL."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -463,33 +466,30 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "website": {"type": "string"},
                 "industry": {"type": "string"},
                 "linkedin_url": {"type": "string"},
-                "phone": {"type": "string"},
-                "country": {"type": "string"},
             },
-            "required": ["name"],
+            "required": [],
             "additionalProperties": False,
         },
         factory_builder=_build_create_account_factory,
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.CREATE_CONTACT,
-        description="Create or reuse a CRM contact once the user provides name and email.",
+        description=(
+            "Create or reuse a CRM contact once the user provides a name, email, "
+            "or LinkedIn profile URL."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "email": {"type": "string"},
                 "name": {"type": "string"},
                 "job_title": {"type": "string"},
-                "phone": {"type": "string"},
                 "linkedin_url": {"type": "string"},
-                "account_id": {"type": "string"},
-                "account_name": {"type": "string"},
-                "account_domain": {"type": "string"},
                 "deal_id": {"type": "string"},
                 "deal_name": {"type": "string"},
                 "relationship_role": {"type": "string"},
             },
-            "required": ["email", "name"],
+            "required": [],
             "additionalProperties": False,
         },
         factory_builder=_build_create_contact_factory,
@@ -543,7 +543,8 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.ADD_STAKEHOLDER,
         description=(
-            "Create an external stakeholder directly on an existing deal once the email is known."
+            "Create an external stakeholder directly on an existing deal once a name, email, "
+            "or LinkedIn profile URL is known."
         ),
         parameters={
             "type": "object",
@@ -551,6 +552,7 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "deal_id": {"type": "string"},
                 "deal_name": {"type": "string"},
                 "email": {"type": "string"},
+                "linkedin_url": {"type": "string"},
                 "name": {"type": "string"},
                 "job_title": {"type": "string"},
                 "phone_number": {"type": "string"},
@@ -583,7 +585,7 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                     "items": {"type": "string"},
                 },
             },
-            "required": ["deal_id", "deal_name", "email"],
+            "required": ["deal_id", "deal_name"],
             "additionalProperties": False,
         },
         factory_builder=_build_add_stakeholder_factory,

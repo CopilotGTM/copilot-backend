@@ -70,6 +70,32 @@ def test_create_deal_voice_schema_is_available_for_direct_write() -> None:
     )
 
 
+def test_create_account_voice_schema_accepts_url_only_identity() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.CREATE_ACCOUNT.value]
+    assert schema["description"].startswith("Create or reuse a CRM account")
+    assert schema["parameters"]["required"] == []
+    assert "domain" in schema["parameters"]["properties"]
+    assert "website" in schema["parameters"]["properties"]
+    assert "linkedin_url" in schema["parameters"]["properties"]
+    assert "phone" not in schema["parameters"]["properties"]
+    assert "country" not in schema["parameters"]["properties"]
+
+
+def test_create_contact_voice_schema_accepts_name_email_or_linkedin() -> None:
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.CREATE_CONTACT.value]
+    assert schema["description"].startswith("Create or reuse a CRM contact")
+    assert schema["parameters"]["required"] == []
+    assert "email" in schema["parameters"]["properties"]
+    assert "name" in schema["parameters"]["properties"]
+    assert "linkedin_url" in schema["parameters"]["properties"]
+    assert "account_id" not in schema["parameters"]["properties"]
+    assert "phone" not in schema["parameters"]["properties"]
+
+
 def test_list_deals_voice_schema_supports_expected_close_date_sort() -> None:
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
@@ -110,7 +136,8 @@ def test_add_stakeholder_voice_schema_is_available_for_direct_write() -> None:
 
     schema = schemas[ToolName.ADD_STAKEHOLDER.value]
     assert schema["description"].startswith("Create an external stakeholder")
-    assert schema["parameters"]["required"] == ["deal_id", "deal_name", "email"]
+    assert schema["parameters"]["required"] == ["deal_id", "deal_name"]
+    assert "linkedin_url" in schema["parameters"]["properties"]
     assert "job_title" in schema["parameters"]["properties"]
     assert "UNKNOWN" in schema["parameters"]["properties"]["stance"]["enum"]
 
