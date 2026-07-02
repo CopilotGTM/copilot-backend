@@ -466,7 +466,7 @@ function Deploy-WithHelm {
     $releaseExists = $LASTEXITCODE -eq 0
     if ($helmStatus -match "pending-upgrade|pending-install|pending-rollback") {
         Write-Warning "Helm release is in pending state. Rolling back to unlock..."
-        helm rollback copilot-backend -n $NAMESPACE --no-hooks
+        helm rollback $HELM_RELEASE_NAME -n $NAMESPACE --wait --timeout 20m --no-hooks
         Start-Sleep -Seconds 10
         $releaseExists = $true
     }
@@ -524,7 +524,8 @@ function Deploy-WithHelm {
 
     $helmArgs = @(
         "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
-        "--namespace", $NAMESPACE
+        "--namespace", $NAMESPACE,
+        "--timeout", "20m"
     )
 
     if ($releaseExists) {
@@ -588,6 +589,7 @@ function Deploy-WithHelm {
             "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "chat-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
@@ -595,6 +597,7 @@ function Deploy-WithHelm {
             "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "chat-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
@@ -622,6 +625,8 @@ function Deploy-WithHelm {
         "--set", "organization-worker.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.image.repository=$lightRepo",
         "--set", "chat-worker.image.tag=$IMAGE_TAG",
+        "--set", "chat-beat.image.repository=$lightRepo",
+        "--set", "chat-beat.image.tag=$IMAGE_TAG",
         "--set", "integrations-worker.image.repository=$integrationsRepo",
         "--set", "integrations-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.image.repository=$lightRepo",
@@ -671,20 +676,21 @@ function Deploy-WithHelm {
     # Wait a moment for pods to be created
     Start-Sleep -Seconds 10
     
-    $workerDeployments = @(
+    $rolloutDeployments = @(
+        "copilot-backend",
         "copilot-backend-knowledge-extract-worker",
         "copilot-backend-knowledge-upload-worker",
         "copilot-backend-chat-worker",
+        "copilot-backend-chat-beat",
         "copilot-backend-organization-worker",
         "copilot-backend-integrations-worker",
         "copilot-backend-deal-worker"
     )
 
-    Write-Host "Restarting worker deployments to ensure latest values are applied..."
-    foreach ($deployment in $workerDeployments) {
+    Write-Host "Waiting for API and worker deployments updated by Helm..."
+    foreach ($deployment in $rolloutDeployments) {
         kubectl get deployment $deployment -n $NAMESPACE *> $null
         if ($LASTEXITCODE -eq 0) {
-            kubectl rollout restart deployment $deployment -n $NAMESPACE
             kubectl rollout status deployment $deployment -n $NAMESPACE --timeout=300s
         }
         else {
@@ -692,7 +698,7 @@ function Deploy-WithHelm {
         }
     }
     
-    Write-Success "Worker restarts completed"
+    Write-Success "API and worker rollouts completed"
     
     # Verify GPU configuration was applied
     Write-Host "Verifying GPU configuration..."

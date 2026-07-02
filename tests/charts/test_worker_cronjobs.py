@@ -13,6 +13,13 @@ import subprocess
 from pathlib import Path
 
 import yaml
+from src.workers.deal_worker.scheduled_jobs import SCHEDULED_JOBS as DEAL_SCHEDULED_JOBS
+from src.workers.integrations_worker.scheduled_jobs import (
+    SCHEDULED_JOBS as INTEGRATIONS_SCHEDULED_JOBS,
+)
+from src.workers.knowledge_worker.scheduled_jobs import (
+    SCHEDULED_JOBS as KNOWLEDGE_SCHEDULED_JOBS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,6 +55,21 @@ def _render_worker_cronjobs(values_file: str = "charts/application/values-dev.ya
 
 def _render_prod_worker_cronjobs() -> list[dict]:
     return _render_worker_cronjobs("charts/application/values-prod.yaml")
+
+
+def test_chart_cronjob_names_match_worker_schedule_registries() -> None:
+    """Every Helm CronJob name must resolve in the worker cron dispatcher."""
+    values = yaml.safe_load(
+        (REPO_ROOT / "charts" / "application" / "values.yaml").read_text(encoding="utf-8")
+    )
+
+    assert {job["name"] for job in values["knowledgeCronJobs"]["jobs"]} <= set(
+        KNOWLEDGE_SCHEDULED_JOBS
+    )
+    assert {job["name"] for job in values["integrationsCronJobs"]["jobs"]} <= set(
+        INTEGRATIONS_SCHEDULED_JOBS
+    )
+    assert {job["name"] for job in values["dealCronJobs"]["jobs"]} <= set(DEAL_SCHEDULED_JOBS)
 
 
 def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
