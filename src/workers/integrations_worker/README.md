@@ -10,7 +10,8 @@ This README is intentionally short. The detailed architecture docs live in:
 
 ## What This Worker Owns
 
-- recurring calendar, email, and messaging sync
+- event/post-connect calendar and email sync
+- recurring messaging sync
 - recurring token refresh maintenance
 - HubSpot CRM post-connect initial sync
 - Salesforce CRM post-connect initial sync
@@ -21,10 +22,10 @@ It does not own the OAuth callback itself. The API layer accepts the callback, s
 ## Live Queues
 
 - `integrations`
-  - scheduled Tier 1 coordinators
-  - Tier 2 per-org sync jobs
+  - scheduled coordinators
+  - per-org sync jobs
 - `integrations_priority`
-  - single-integration manual refresh jobs
+  - single-integration event/post-connect/manual refresh jobs
   - HubSpot/Salesforce CRM post-connect chains
   - CRM chain terminators
 
@@ -32,15 +33,11 @@ Queue routing lives in [config.py](./config.py).
 
 ## Current Task Families
 
-### Three-tier scheduled sync
+### Sync tasks
 
 - calendar
-  - `sync_calendar_all_orgs`
-  - `sync_calendar_org`
   - `sync_calendar_integration`
 - email
-  - `sync_email_all_orgs`
-  - `sync_email_org`
   - `sync_email_integration`
 - messaging channels
   - `sync_messaging_channels_all_orgs`
@@ -87,8 +84,6 @@ Source of truth:
 Current fixed jobs:
 
 - refresh tokens
-- calendar sync
-- email sync
 - messaging channel sync
 - deal message sync
 - HubSpot deal schema fan-out
@@ -113,7 +108,8 @@ Salesforce CRM fetchers currently cover schema, pipelines, users, accounts, cont
 ## Operational Rules
 
 - never hold a DB session during a provider API call
-- Tier 1 jobs fan out; Tier 2 jobs work per-org; Tier 3 jobs are single-integration
+- email/calendar sync runs through single-integration event/post-connect dispatch; their old all-org/org fanout modules are deprecated under `tasks/deprecated`
+- remaining Tier 1 jobs fan out; Tier 2 jobs work per-org; Tier 3 jobs are single-integration
 - CRM initial-sync status is written only by the chain terminators
 - task limits and retry policy are defined centrally in [config.py](./config.py)
 
