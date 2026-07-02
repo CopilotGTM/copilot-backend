@@ -179,6 +179,7 @@ class FakeContact:
         linkedin_url: str | None = None,
         contact_research: str | None = None,
         last_researched_at: datetime | None = None,
+        properties: dict[str, Any] | None = None,
     ):
         self.contact_id = contact_id
         self.organisation_id = organisation_id
@@ -190,6 +191,7 @@ class FakeContact:
         self.linkedin_url = linkedin_url
         self.contact_research = contact_research
         self.last_researched_at = last_researched_at
+        self.properties = properties or {}
 
 
 class FakeInsight:
@@ -432,9 +434,14 @@ class FakeStakeholdersService:
             stakeholder.is_deleted = False
             stakeholder.source = StakeholderSource.MANUAL
             stakeholder.name = name
-            stakeholder.job_title = request.job_title
-            stakeholder.phone_number = request.phone_number
-            stakeholder.department = request.department
+            if contact:
+                stakeholder.job_title = contact.job_title
+                stakeholder.phone_number = contact.phone
+                stakeholder.department = (contact.properties or {}).get("department")
+            else:
+                stakeholder.job_title = request.job_title
+                stakeholder.phone_number = request.phone_number
+                stakeholder.department = request.department
             stakeholder.stance = request.stance
             stakeholder.decision_power = request.decision_power
             stakeholder.motivation = request.motivation

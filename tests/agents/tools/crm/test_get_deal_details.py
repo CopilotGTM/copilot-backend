@@ -265,7 +265,6 @@ class TestGetDealDetails:
             email="old@example.com",
         )
         stakeholder.related_local_id = contact_id
-        stakeholder.job_title = "Old Title"
         contact = CRMContact(
             organisation_id=mock_context.organisation_id,
             integration_id=UUID("99999999-9999-9999-9999-999999999999"),

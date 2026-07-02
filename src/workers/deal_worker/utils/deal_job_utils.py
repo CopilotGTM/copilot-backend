@@ -735,10 +735,7 @@ def build_briefing_context_string(
         Formatted context string for the briefing agent
     """
     stakeholder_info = "\n".join(
-        [
-            f"- {s.related_name} ({s.job_title}): {s.stance} (Temp: {s.temperature})"
-            for s in stakeholders
-        ]
+        [f"- {s.related_name}: {s.stance} (Temp: {s.temperature})" for s in stakeholders]
     )
 
     # Get attendees for the upcoming meeting
@@ -808,9 +805,7 @@ def build_summary_context_string(
     """
     stakeholder_info = ""
     if stakeholders:
-        stakeholder_info = "\n".join(
-            [f"- {s.related_name} ({s.job_title}): {s.stance}" for s in stakeholders]
-        )
+        stakeholder_info = "\n".join([f"- {s.related_name}: {s.stance}" for s in stakeholders])
 
     attendees_info = ""
     if event.data_payload and event.data_payload.get("attendees"):

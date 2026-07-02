@@ -244,16 +244,15 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
 @pytest.mark.asyncio
 async def test_get_stakeholder_detail_includes_phone_number() -> None:
     service = _read_service()
+    contact_id = uuid4()
+    organisation_id = service.organisation_id
     participant = SimpleNamespace(
         participant_id=uuid4(),
         deal_id=uuid4(),
-        related_local_id=None,
+        organisation_id=organisation_id,
+        related_local_id=contact_id,
         related_email="detail@example.com",
         related_name="Detail",
-        job_title="CTO",
-        phone_number="+49 30 12345678",
-        department="Engineering",
-        external_links=None,
         stance="CHAMPION",
         decision_power="DECISION_MAKER",
         motivation="Scale infra",
@@ -271,8 +270,22 @@ async def test_get_stakeholder_detail_includes_phone_number() -> None:
         created_at=None,
         updated_at=None,
     )
-    result_mock = SimpleNamespace(scalar_one_or_none=lambda: participant)
-    service.session.execute = AsyncMock(return_value=result_mock)
+    contact = CRMContact(
+        contact_id=contact_id,
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        email="detail@example.com",
+        full_name="Detail",
+        job_title="CTO",
+        phone="+49 30 12345678",
+        properties={"department": "Engineering"},
+    )
+    service.session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(scalar_one_or_none=lambda: participant),
+            SimpleNamespace(scalar_one_or_none=lambda: contact),
+        ]
+    )
 
     result = await service.get_stakeholder_detail(participant.deal_id, participant.participant_id)
 
