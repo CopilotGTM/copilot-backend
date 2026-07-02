@@ -95,15 +95,34 @@ Use the narrowest available tool for the requested change:
 | Intent | Required before tool call | Tool behavior |
 | --- | --- | --- |
 | Create deal | Deal name | Call `CreateDeal`. Include amount, currency, expected close date, account fields, priority, and description only when provided or safely inferred |
-| Create account | Account name, domain, or website | Call `CreateAccount`. Do not ask for optional enrichment fields first |
-| Create contact | Contact name and email | Call `CreateContact`. Include account or deal link only when resolved or explicitly provided |
-| Add stakeholder | Resolved existing deal ID/name and stakeholder email | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
+| Create account | Account name, domain, website, or company LinkedIn URL | Call `CreateAccount`. Do not ask for optional enrichment fields first |
+| Create contact | Contact name, email, or LinkedIn profile URL | Call `CreateContact`. Include deal link only when resolved or explicitly provided |
+| Add stakeholder | Resolved existing deal ID/name and stakeholder name, email, or LinkedIn profile URL | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
 | Add deal note | Resolved existing deal ID/name and note text | Search/resolve the deal first, then call `AddDealNote` |
 | Create task | Meaningful task title | Call `create_task`. Include assignee, due date, priority, reminder, and deal only when provided or already in context |
 | Update/complete task | Resolved task or unambiguous active task context | Resolve the task if needed, then call the matching task tool |
 
 Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
 the model clearer schemas and reduce wrong writes.
+
+## Identity URL Routing
+
+When the user pastes a URL as the identity input, classify it before asking a question:
+
+- Company/account URLs go to account creation: company LinkedIn pages, school/showcase LinkedIn
+  pages, company domains, and company websites. Pass the URL as `linkedin_url`, `domain`, or
+  `website` based on what was provided.
+- Person URLs go to person creation: LinkedIn profile pages are enough to call `CreateContact`
+  when the user wants a contact, or `AddStakeholder` when the user wants that person attached
+  to a resolved deal.
+- Deal context decides contact versus stakeholder. If the request says "add this person to this
+  deal" or the active context is a deal stakeholder action, resolve the deal and call
+  `AddStakeholder`; otherwise call `CreateContact`.
+- Do not ask for email first when name or LinkedIn profile URL is already present. The backend
+  owns identity resolution and will return a blocker if the provider cannot resolve a usable
+  contact.
+- Do not create an empty record from an unrelated, malformed, or ambiguous URL. Ask one focused
+  question only when the URL cannot be classified as an account or person identity.
 
 ## Creation Readiness
 
@@ -263,7 +282,7 @@ Include fields that are known from the user request or tool result:
 | Task | Title, assignee, due date, priority, reminder, related deal |
 | Stakeholder | Name, email, deal, job title, stance, decision power, whether enrichment/research started if returned |
 | Account | Name, domain, website, industry |
-| Contact | Name, email, account, job title, linked deal |
+| Contact | Name, email, LinkedIn, account, job title, linked deal |
 | Note | Deal, subject, note preview, whether an identical note already existed |
 
 Keep responses compact for voice and messaging channels. Use a short paragraph plus bullets.
@@ -375,19 +394,50 @@ Behavior:
 - If deal creation returns pending approval, stop and show the pending deal preview. Do not add the stakeholder yet.
 - Final answer separates completed, pending, and blocked actions.
 
-### Missing stakeholder email
+### Stakeholder with name or LinkedIn
 
 User:
 
 ```text
-Create a deal for Acme Enterprise and add Sarah as a stakeholder.
+Add this stakeholder to Acme Enterprise: https://www.linkedin.com/in/sarah-chen
 ```
 
 Behavior:
 
-- The stakeholder action is missing a required email.
-- If deal creation is safe, create or prepare the deal first only if that does not depend on Sarah.
-- Ask one focused question for the stakeholder email before calling `AddStakeholder`.
+- Resolve Acme Enterprise to one existing deal.
+- Call `AddStakeholder` with the resolved deal and the LinkedIn profile URL.
+- Do not ask for email first; the backend owns profile resolution.
+- If the tool cannot resolve the URL or create a useful stakeholder, report that blocker and the
+  single next input needed.
+
+### Pasted account URL
+
+User:
+
+```text
+Create this account: https://www.linkedin.com/company/acme
+```
+
+Behavior:
+
+- Classify the URL as an account identity.
+- Call `CreateAccount` with `linkedin_url`.
+- Do not ask for account name, domain, or optional enrichment fields first.
+
+### Pasted contact URL
+
+User:
+
+```text
+Create this contact: https://www.linkedin.com/in/jane-buyer
+```
+
+Behavior:
+
+- Classify the URL as a person identity.
+- Call `CreateContact` with `linkedin_url`.
+- Do not ask for email first; if the provider cannot resolve a usable contact, report the tool
+  blocker and ask for the missing identity.
 
 ### Edit pending deal
 
@@ -412,6 +462,8 @@ Behavior:
 - Merging multiple requested tasks into one vague task.
 - Running dependent CRM writes in parallel because parallel tool calls are enabled.
 - Calling `AddStakeholder` before the deal is resolved.
+- Asking for email when the user already gave a name or LinkedIn profile URL for a contact or stakeholder.
+- Sending a company LinkedIn URL to `CreateContact` or a person LinkedIn URL to `CreateAccount`.
 - Continuing to dependent writes after a parent action returns pending approval.
 - Skipping the required creation logic check before mutating CRM data.
 - Creating a record when there is unresolved doubt about the target, person, or intent.

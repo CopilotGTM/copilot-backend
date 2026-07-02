@@ -195,16 +195,20 @@ async def create_account_direct(
 
     cleaned_name = _clean_optional(name)
     cleaned_website = _clean_optional(website)
+    cleaned_linkedin_url = _clean_optional(linkedin_url)
     normalized_domain = _normalize_domain(domain or cleaned_website)
-    if not cleaned_name and not normalized_domain and not cleaned_website:
-        return {"status": "error", "message": "Account name, domain, or website is required."}
+    if not any((cleaned_name, normalized_domain, cleaned_website, cleaned_linkedin_url)):
+        return {
+            "status": "error",
+            "message": "Account name, domain, website, or LinkedIn URL is required.",
+        }
 
     command = AccountCreateCommand(
         name=cleaned_name,
         domain=normalized_domain,
         website=cleaned_website,
         industry=_clean_optional(industry),
-        linkedin_url=_clean_optional(linkedin_url),
+        linkedin_url=cleaned_linkedin_url,
     )
 
     async with context.acquire_session() as org_session:
@@ -214,12 +218,7 @@ async def create_account_direct(
             if normalized_domain:
                 existing = await reader.find_accounts_by_domain(normalized_domain)
             else:
-                if cleaned_name is None:
-                    return {
-                        "status": "error",
-                        "message": "Account name, domain, or website is required.",
-                    }
-                existing = await reader.find_accounts_by_name(cleaned_name)
+                existing = await reader.find_accounts_by_name(cleaned_name) if cleaned_name else []
             if existing:
                 result = _account_result(existing[0], status="exists")
             else:
@@ -266,7 +265,7 @@ def create_create_account(
         industry: str | None = None,
         linkedin_url: str | None = None,
     ) -> dict[str, Any]:
-        """Create an internal CRM account once a name, domain, or website is known."""
+        """Create an internal CRM account once a name, domain, website, or LinkedIn URL is known."""
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateAccount",

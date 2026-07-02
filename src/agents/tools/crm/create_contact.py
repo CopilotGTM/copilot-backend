@@ -221,10 +221,11 @@ async def create_contact_direct(
 
     cleaned_email = _clean_optional(email)
     cleaned_name = _clean_optional(name)
-    if not cleaned_email:
-        return {"status": "error", "message": "Contact email is required."}
+    cleaned_linkedin_url = _clean_optional(linkedin_url)
+    if not any((cleaned_email, cleaned_name, cleaned_linkedin_url)):
+        return {"status": "error", "message": "Contact name, email, or LinkedIn URL is required."}
 
-    normalized_email = cleaned_email.lower()
+    normalized_email = cleaned_email.lower() if cleaned_email else None
     parsed_deal_id = _parse_uuid(deal_id)
     if deal_id and parsed_deal_id is None:
         return {"status": "error", "message": "deal_id must be a valid UUID."}
@@ -234,7 +235,11 @@ async def create_contact_direct(
         contact_writer = ContactWriteService(org_session, organisation_id)
         deal_linker = ContactDealLinkService(org_session, organisation_id)
         try:
-            contact = await contact_reader.find_contact_by_email(normalized_email)
+            contact = (
+                await contact_reader.find_contact_by_email(normalized_email)
+                if normalized_email
+                else None
+            )
             status = "exists" if contact else "created"
 
             if not contact:
@@ -243,7 +248,7 @@ async def create_contact_direct(
                         email=normalized_email,
                         name=cleaned_name,
                         job_title=_clean_optional(job_title),
-                        linkedin_url=_clean_optional(linkedin_url),
+                        linkedin_url=cleaned_linkedin_url,
                     ),
                     context=ContactWriteContext(
                         source="agent_tool",
@@ -311,7 +316,7 @@ def create_create_contact(
         deal_name: str | None = None,
         relationship_role: str | None = None,
     ) -> dict[str, Any]:
-        """Create an internal CRM contact directly once email is known."""
+        """Create an internal CRM contact once name, email, or LinkedIn profile URL is known."""
         result = await execute_with_capabilities(
             capabilities_getter(),
             tool_name="CreateContact",
