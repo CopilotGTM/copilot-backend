@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.crm.participants.stakeholder_adapter import participant_to_stakeholder_detail_dict
 
 
 class _AsyncSessionContext:
@@ -160,6 +161,34 @@ async def test_list_deal_stakeholders_prefers_linked_contact_profile_and_researc
     assert result[0]["linkedin_url"] == "https://linkedin.com/in/contact-owner"
     assert result[0]["external_links"] == [{"platform": "other", "url": "https://x.example"}]
     assert result[0]["stakeholder_research"] == "Fresh contact research"
+
+
+def test_stakeholder_adapter_ignores_legacy_participant_profile_snapshots() -> None:
+    """Participant-owned person snapshots should not leak into stakeholder reads."""
+    org_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    participant = _participant(org_id, integration_id, deal_id, uuid4())
+    for field, value in {
+        "job_title": "Stale stakeholder title",
+        "phone_number": "+1 555 stale",
+        "department": "Stale department",
+        "linkedin_url": "https://linkedin.com/in/stale",
+        "external_links": [{"url": "https://stale.example"}],
+        "stakeholder_research": "Stale participant research",
+        "last_researched_at": "2026-01-01",
+    }.items():
+        object.__setattr__(participant, field, value)
+
+    payload = participant_to_stakeholder_detail_dict(participant)
+
+    assert payload["job_title"] is None
+    assert payload["phone_number"] is None
+    assert payload["department"] is None
+    assert payload["linkedin_url"] is None
+    assert payload["external_links"] is None
+    assert payload["stakeholder_research"] is None
+    assert payload["last_researched_at"] is None
 
 
 @pytest.mark.asyncio
