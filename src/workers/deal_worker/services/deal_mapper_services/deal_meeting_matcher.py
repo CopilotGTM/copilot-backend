@@ -635,12 +635,12 @@ class DealMeetingMatcher:
             return
         try:
             from src.workers.deal_worker.utils.contact_research_dispatch import (
-                dispatch_contact_research_async,
+                dispatch_contact_research_for_contact,
             )
 
             for contact_id in self._pending_research:
                 try:
-                    await dispatch_contact_research_async(
+                    await dispatch_contact_research_for_contact(
                         organisation_id=self.organisation_id,
                         contact_id=contact_id,
                         trigger="calendar_discovery",

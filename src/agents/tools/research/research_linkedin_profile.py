@@ -3,7 +3,7 @@
 This tool allows agents to research LinkedIn profiles without updating any database.
 It's designed for general research queries like "tell me about this person on LinkedIn".
 
-Unlike enrich_stakeholder, this tool:
+Unlike the automatic CRM enrichment pipeline, this tool:
 - Does NOT require organisation context
 - Does NOT update any database records
 - Simply returns LinkedIn profile information for research purposes

@@ -265,7 +265,7 @@ def test_stakeholder_mapping_skill_uses_data_first_tool_guidance() -> None:
     skill = next(s for s in skills if s.name == "stakeholder-mapping")
     assert "Use the best available tools for each data signal." in skill.instructions
     assert "Bracket hints are examples, not hard constraints." in skill.instructions
-    assert "[ListDealStakeholders, GetStakeholderDetails]" in skill.instructions
+    assert "[ListDealStakeholders]" in skill.instructions
 
 
 def test_pipeline_review_skill_loads() -> None:

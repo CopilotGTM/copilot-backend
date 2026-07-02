@@ -8,6 +8,7 @@ description: Perform structured competitor comparison using internal knowledge, 
 Run an evidence-first competitive analysis. Do not generate positioning from assumptions or generic
 marketing claims.
 Treat tool names in brackets as optional hints, not mandatory calls.
+Bracket hints are examples, not hard constraints.
 
 ## Use this workflow
 

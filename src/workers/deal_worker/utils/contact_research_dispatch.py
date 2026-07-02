@@ -27,6 +27,26 @@ CONTACT_RESEARCH_COOLDOWN_DAYS = 30
 ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.IN_PROGRESS)
 
 
+async def dispatch_contact_research_for_contact(
+    *,
+    organisation_id: UUID,
+    contact_id: UUID | None,
+    user_id: UUID | None = None,
+    trigger: str,
+    force_refresh: bool = False,
+) -> str | None:
+    """Post-commit helper for callers that may or may not have a linked contact."""
+    if contact_id is None:
+        return None
+    return await dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        user_id=user_id,
+        trigger=trigger,
+        force_refresh=force_refresh,
+    )
+
+
 async def dispatch_contact_research_async(
     *,
     organisation_id: UUID,

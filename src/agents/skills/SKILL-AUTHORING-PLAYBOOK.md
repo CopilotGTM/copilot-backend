@@ -181,7 +181,7 @@ List the data signals needed, grouped by category. Add tool hints in brackets as
 - Deal baseline and timeline reliability: current stage, amount, close timeline.
   [GetDealDetails, GetDealChangeHistory]
 - Stakeholder coverage and authority signals: who is involved, roles, influence.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 ```
 
 **Step 3 — Score/Analyze each dimension.**
@@ -268,7 +268,7 @@ Describe the **data signal** first, then add tool names as **optional bracket hi
 
 ```markdown
 - Stakeholder coverage and authority signals: who is involved, role completeness, influence level.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 ```
 
 ### Why data-first, not tool-first

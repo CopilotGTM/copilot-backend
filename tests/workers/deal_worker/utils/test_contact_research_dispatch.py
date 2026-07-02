@@ -62,6 +62,65 @@ class _SessionSource:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_for_contact_skips_missing_contact_id(monkeypatch) -> None:
+    """Post-commit callers without a linked contact should not open a DB session."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    def fail_session(_organisation_id):  # noqa: ANN001
+        raise AssertionError("missing contact_id should skip dispatch before session acquisition")
+
+    monkeypatch.setattr(dispatch_module, "acquire_org_async_session", fail_session)
+
+    job_id = await dispatch_module.dispatch_contact_research_for_contact(
+        organisation_id=uuid4(),
+        contact_id=None,
+        trigger="stakeholder_created",
+    )
+
+    assert job_id is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_for_contact_delegates_to_contact_research(monkeypatch) -> None:
+    """Post-commit callers should use one helper around contact-owned research."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    user_id = uuid4()
+    calls = []
+
+    async def fake_dispatch_contact_research_async(**kwargs):  # noqa: ANN001
+        calls.append(kwargs)
+        return "queued-job"
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "dispatch_contact_research_async",
+        fake_dispatch_contact_research_async,
+    )
+
+    job_id = await dispatch_module.dispatch_contact_research_for_contact(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        user_id=user_id,
+        trigger="stakeholder_created",
+        force_refresh=True,
+    )
+
+    assert job_id == "queued-job"
+    assert calls == [
+        {
+            "organisation_id": organisation_id,
+            "contact_id": contact_id,
+            "user_id": user_id,
+            "trigger": "stakeholder_created",
+            "force_refresh": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_skips_free_provider_subdomain(monkeypatch) -> None:
     """Automatic contact research should not enqueue jobs for personal email domains."""
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module

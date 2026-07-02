@@ -24,7 +24,7 @@ Every claim must trace back to a transcript excerpt, meeting detail, or attendee
 - Full transcript: speaker-attributed dialogue for quoting and pattern analysis.
   [GetMeetingTranscript]
 - Attendee context: stakeholder roles, influence levels, and engagement history.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 - Deal baseline: current stage, amount, and recent changes for momentum assessment.
   [GetDealDetails, GetDealChangeHistory]
 

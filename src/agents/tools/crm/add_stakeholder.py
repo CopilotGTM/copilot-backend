@@ -293,24 +293,23 @@ async def add_stakeholder_direct(
                         "add_stakeholder_direct: stakeholder created but processing dispatch failed"
                     )
 
-            if contact_id := _stakeholder_contact_id(stakeholder):
-                try:
-                    from src.workers.deal_worker.utils.contact_research_dispatch import (
-                        dispatch_contact_research_async,
-                    )
+            try:
+                from src.workers.deal_worker.utils.contact_research_dispatch import (
+                    dispatch_contact_research_for_contact,
+                )
 
-                    research_job_id = await dispatch_contact_research_async(
-                        organisation_id=organisation_id,
-                        contact_id=contact_id,
-                        user_id=user_id,
-                        trigger="stakeholder_created",
-                    )
-                    research_job_type = "contact_research"
-                except Exception as exc:
-                    research_error = str(exc)
-                    logger.exception(
-                        "add_stakeholder_direct: stakeholder created but contact research dispatch failed"
-                    )
+                research_job_id = await dispatch_contact_research_for_contact(
+                    organisation_id=organisation_id,
+                    contact_id=_stakeholder_contact_id(stakeholder),
+                    user_id=user_id,
+                    trigger="stakeholder_created",
+                )
+                research_job_type = "contact_research"
+            except Exception as exc:
+                research_error = str(exc)
+                logger.exception(
+                    "add_stakeholder_direct: stakeholder created but contact research dispatch failed"
+                )
 
             return _created_stakeholder_result(
                 deal_id=deal_uuid,

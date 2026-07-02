@@ -224,7 +224,7 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
         ) as job_service_cls,
         patch(
             "src.workers.deal_worker.utils.contact_research_dispatch."
-            "dispatch_contact_research_async",
+            "dispatch_contact_research_for_contact",
             AsyncMock(return_value=str(research_job_id)),
         ) as contact_research_dispatch,
     ):
@@ -345,7 +345,7 @@ async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fai
             "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
         ) as job_service_cls,
         patch(
-            "src.workers.deal_worker.utils.contact_research_dispatch.dispatch_contact_research_async",
+            "src.workers.deal_worker.utils.contact_research_dispatch.dispatch_contact_research_for_contact",
             AsyncMock(side_effect=RuntimeError("broker down")),
         ),
     ):

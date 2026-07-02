@@ -8,6 +8,7 @@ description: Perform forecast-integrity pipeline intelligence with risk prioriti
 Run an evidence-first pipeline review. Do not perform a full deep-dive on every deal.
 Default to breadth over depth.
 Treat tool names in brackets as optional hints, not mandatory calls.
+Bracket hints are examples, not hard constraints.
 
 ## Use this workflow
 

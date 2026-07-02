@@ -18,7 +18,7 @@ Prefer collecting concrete signals before assigning any color. Treat tool names 
 - Deal baseline and stage context: current stage, amount, close date, ownership, and stage progression history.
   [GetDealDetails, GetDealChangeHistory]
 - Stakeholder map and engagement: who is involved, roles, influence levels, and recency of engagement.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 - Interaction timeline and momentum: meeting cadence, last activity dates, communication gaps.
   [ListDealMeetings, ListMeetingsByDate, ListDealEmails, ListDealChannelMessages]
 - Next steps and commitments: explicit actions with owners and dates from recent meetings and notes.

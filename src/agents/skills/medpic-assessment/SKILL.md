@@ -18,7 +18,7 @@ Prefer describing and collecting data signals. Treat tool names in brackets as o
 - Deal baseline and timeline reliability: current stage, amount, close timeline, ownership, and recent stage/timeline changes.
   [GetDealDetails, GetDealChangeHistory]
 - Stakeholder coverage and authority signals: who is involved, role completeness, influence level, and likely budget authority.
-  [ListDealStakeholders, GetStakeholderDetails]
+  [ListDealStakeholders]
 - Interaction momentum and decision trail: meeting cadence, recency, decisions, objections, and explicit next steps.
   [ListDealMeetings, GetMeetingSummary]
 - Verbatim proof for critical claims: speaker-attributed quotes for pain, criteria, champion behavior, and buyer authority language.

@@ -325,7 +325,7 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
     )
 
 
-async def _dispatch_auto_contact_research(
+async def _contact_research_job_response(
     *,
     organisation_id: UUID,
     contact_id: UUID,
@@ -334,10 +334,10 @@ async def _dispatch_auto_contact_research(
     """Dispatch contact-owned research for contacts attached during deal creation."""
     try:
         from src.workers.deal_worker.utils.contact_research_dispatch import (
-            dispatch_contact_research_async,
+            dispatch_contact_research_for_contact,
         )
 
-        job_id = await dispatch_contact_research_async(
+        job_id = await dispatch_contact_research_for_contact(
             organisation_id=organisation_id,
             contact_id=contact_id,
             user_id=user_id,
@@ -1264,7 +1264,7 @@ async def create_deal(
                     exc_info=True,
                 )
             for contact_id in inline_contact_ids:
-                await _dispatch_auto_contact_research(
+                await _contact_research_job_response(
                     organisation_id=service.organisation_id,
                     contact_id=contact_id,
                     user_id=service.actor_user_id,

@@ -6,8 +6,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.context import AgentContext
-from src.agents.tools.crm.create_stakeholder_if_missing import create_stakeholder_if_missing
-from src.agents.tools.crm.upsert_stakeholder import UpsertStakeholderInput
+from src.agents.tools.crm.create_stakeholder_if_missing import (
+    CreateStakeholderIfMissingInput,
+    create_stakeholder_if_missing,
+)
 
 
 class _AsyncSessionContext:
@@ -75,7 +77,7 @@ async def test_create_stakeholder_if_missing_without_contact_skips_research() ->
         result = await create_stakeholder_if_missing(
             context=context,
             deal_id=str(deal_id),
-            input_data=UpsertStakeholderInput(
+            input_data=CreateStakeholderIfMissingInput(
                 email="buyer@acme.com",
                 name="Buyer Person",
                 job_title="VP Sales",
@@ -109,8 +111,8 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
             "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
         ) as service_cls,
         patch(
-            "src.workers.deal_worker.utils.contact_research_dispatch."
-            "dispatch_contact_research_async",
+            "src.agents.tools.crm.create_stakeholder_if_missing."
+            "dispatch_contact_research_for_contact",
             AsyncMock(return_value=str(uuid4())),
         ) as contact_research_dispatch,
     ):
@@ -122,7 +124,7 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
         result = await create_stakeholder_if_missing(
             context=context,
             deal_id=str(deal_id),
-            input_data=UpsertStakeholderInput(
+            input_data=CreateStakeholderIfMissingInput(
                 email="buyer@acme.com",
                 name="Buyer Person",
                 job_title="VP Sales",

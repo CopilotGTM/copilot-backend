@@ -85,24 +85,20 @@ def _to_deal_job_response(job: Any) -> DealJobResponse:
     )
 
 
-def _has_cached_contact_research(stakeholder: StakeholderDetail) -> bool:
-    return bool(stakeholder.stakeholder_research or stakeholder.last_researched_at)
-
-
-async def _dispatch_auto_contact_research(
+async def _contact_research_job_response(
     *,
     organisation_id: UUID,
-    contact_id: UUID,
+    contact_id: UUID | None,
     user_id: UUID | None,
     force_refresh: bool = False,
 ) -> DealJobResponse | None:
     """Dispatch canonical contact research for a contact-backed stakeholder."""
     try:
         from src.workers.deal_worker.utils.contact_research_dispatch import (
-            dispatch_contact_research_async,
+            dispatch_contact_research_for_contact,
         )
 
-        job_id = await dispatch_contact_research_async(
+        job_id = await dispatch_contact_research_for_contact(
             organisation_id=organisation_id,
             contact_id=contact_id,
             user_id=user_id,
@@ -121,7 +117,7 @@ async def _dispatch_auto_contact_research(
             "Failed to dispatch contact research",
             extra={
                 "organisation_id": str(organisation_id),
-                "contact_id": str(contact_id),
+                "contact_id": str(contact_id) if contact_id else None,
             },
             exc_info=True,
         )
@@ -340,8 +336,7 @@ async def create_stakeholder(
                 deal_id,
                 stakeholder.participant_id,
             )
-        if stakeholder.contact_id and not _has_cached_contact_research(stakeholder):
-            research_job = await _dispatch_auto_contact_research(
+            research_job = await _contact_research_job_response(
                 organisation_id=service.organisation_id,
                 contact_id=stakeholder.contact_id,
                 user_id=user_ids.user_id,
@@ -534,7 +529,7 @@ async def trigger_stakeholder_contact_research(
                 response=response,
             )
 
-        job = await _dispatch_auto_contact_research(
+        job = await _contact_research_job_response(
             organisation_id=service.organisation_id,
             contact_id=UUID(str(contact_id)),
             user_id=user_ids.user_id,

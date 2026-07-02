@@ -194,7 +194,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     )
     monkeypatch.setattr(
         deals_handler_module,
-        "_dispatch_auto_contact_research",
+        "_contact_research_job_response",
         dispatch_research,
         raising=False,
     )
@@ -347,7 +347,7 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
     )
     monkeypatch.setattr(
         deals_handler_module,
-        "_dispatch_auto_contact_research",
+        "_contact_research_job_response",
         dispatch_research,
         raising=False,
     )

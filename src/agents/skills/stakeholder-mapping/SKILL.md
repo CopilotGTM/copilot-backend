@@ -8,6 +8,7 @@ description: Perform evidence-based stakeholder power mapping and coverage gap d
 Run an evidence-first stakeholder mapping assessment. Do not infer authority, role, or engagement
 from title alone.
 Treat tool names in brackets as optional hints, not mandatory calls.
+Bracket hints are examples, not hard constraints.
 
 ## Use this workflow
 
@@ -22,8 +23,9 @@ Treat tool names in brackets as optional hints, not mandatory calls.
 
 2. Gather evidence before analyzing.
 - Stakeholder enumeration and known attributes: name, title, role fields, department, relationship
-  history.
-  [ListDealStakeholders, GetStakeholderDetails]
+  history. Use the same stakeholder list tool with a person query when the user asks about one
+  stakeholder.
+  [ListDealStakeholders]
 - Deal context and existing notes that may mention ownership, authority, or internal relationship
   history.
   [GetDealDetails, ListDealNotes]

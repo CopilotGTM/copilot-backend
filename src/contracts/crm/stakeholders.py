@@ -47,6 +47,7 @@ class StakeholderDetail(BaseModel):
     name: str | None = None
     job_title: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided")
+    department: str | None = None
     linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance

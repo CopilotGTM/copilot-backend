@@ -191,10 +191,16 @@ class TestCreateStakeholder:
         )
         fake_stakeholders_service.add_contact(contact)
 
-        resp = client.post(
-            f"/users/crm/deals/{test_deal_id}/stakeholders",
-            json={"contact_id": str(contact.contact_id)},
-        )
+        with patch(
+            "src.workers.deal_worker.utils.contact_research_dispatch."
+            "dispatch_contact_research_for_contact",
+            new_callable=AsyncMock,
+        ) as dispatch_contact_research:
+            dispatch_contact_research.return_value = None
+            resp = client.post(
+                f"/users/crm/deals/{test_deal_id}/stakeholders",
+                json={"contact_id": str(contact.contact_id)},
+            )
 
         assert resp.status_code == 201
         body = resp.json()
@@ -211,6 +217,13 @@ class TestCreateStakeholder:
             "stakeholder_sync",
         ]
         assert body["data"]["research_job"] is None
+        dispatch_contact_research.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            contact_id=contact.contact_id,
+            user_id=test_user_ids["user_id"],
+            trigger="stakeholder_created",
+            force_refresh=False,
+        )
 
     def test_create_stakeholder_from_contact_id_dispatches_contact_research_when_missing(
         self,
@@ -234,7 +247,7 @@ class TestCreateStakeholder:
 
         with patch(
             "src.workers.deal_worker.utils.contact_research_dispatch."
-            "dispatch_contact_research_async",
+            "dispatch_contact_research_for_contact",
             new_callable=AsyncMock,
         ) as dispatch_contact_research:
             dispatch_contact_research.return_value = str(research_job_id)
@@ -1185,7 +1198,7 @@ class TestTriggerStakeholderContactResearch:
 
         with patch(
             "src.workers.deal_worker.utils.contact_research_dispatch."
-            "dispatch_contact_research_async",
+            "dispatch_contact_research_for_contact",
             new_callable=AsyncMock,
             return_value=str(job_id),
         ) as dispatch_research:
