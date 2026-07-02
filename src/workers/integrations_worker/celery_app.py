@@ -1,7 +1,14 @@
+"""Celery application bootstrap for the integrations worker.
+
+This module is imported by Celery before task discovery. Keep environment and
+logging setup ahead of config creation so local overrides and worker-scoped logs
+apply consistently to every registered integrations task.
+"""
+
 from celery.signals import worker_ready, worker_shutdown
 from dotenv import load_dotenv
 
-# Load environment variables first
+# Load .env before importing config-backed modules so local overrides are visible.
 load_dotenv(override=True)
 
 from src.infra.utils.logger import configure_logging, resolve_celery_component
@@ -22,7 +29,6 @@ config = IntegrationsWorkerConfig()
 # Define the tasks module for auto-discovery
 tasks_module = "src.workers.integrations_worker.tasks"
 
-# Create the Celery app for the Integrations Worker
 app = create_celery_app("integrations_worker", config, tasks_module)
 
 WORKER_COMPONENT = resolve_celery_component(app.main)
@@ -72,12 +78,12 @@ def worker_shutdown_handler(sender=None, **kwargs):
         )
 
 
-# Explicitly import task modules to ensure registration
-# Three-tier architecture: calendar, email, messaging, and CRM schema sync tasks
+# Explicitly import active task modules to ensure registration.
+# Calendar/email expose only single-integration event/post-connect tasks here.
 from .tasks import (
-    calendar,  # noqa: F401, E402 - three-tier calendar sync
+    calendar,  # noqa: F401, E402 - calendar single-integration sync
     crm,  # noqa: F401, E402 - three-tier CRM schema sync (HubSpot)
-    email,  # noqa: F401, E402 - three-tier email sync
+    email,  # noqa: F401, E402 - email single-integration sync
     messaging,  # noqa: F401, E402 - three-tier messaging sync
     token_refresh,  # noqa: F401, E402
 )

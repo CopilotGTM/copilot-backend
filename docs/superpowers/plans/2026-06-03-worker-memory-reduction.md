@@ -151,11 +151,7 @@ For each worker, pass only modules that actually define `@app.task` functions. E
 
 ```python
 task_modules = [
-    "src.workers.integrations_worker.tasks.calendar.all_orgs_task",
-    "src.workers.integrations_worker.tasks.calendar.org_task",
     "src.workers.integrations_worker.tasks.calendar.integration_task",
-    "src.workers.integrations_worker.tasks.email.all_orgs_task",
-    "src.workers.integrations_worker.tasks.email.org_task",
     "src.workers.integrations_worker.tasks.email.integration_task",
     "src.workers.integrations_worker.tasks.token_refresh",
 ]

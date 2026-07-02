@@ -58,6 +58,9 @@ from src.service.integrations.sync_health import (
 from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
     CommunicationDealMappingTriggerService,
 )
+from src.workers.deal_worker.utils.communication_contact_materialization_dispatch import (
+    dispatch_communication_contact_materialization_async,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 
@@ -236,6 +239,14 @@ def sync_email_org_task(
                     if sync_result.get("messages_synced", 0) > 0 or sync_result.get(
                         "changed_email_ids"
                     ):
+                        sync_result[
+                            "communication_contact_materialization_task_id"
+                        ] = await dispatch_communication_contact_materialization_async(
+                            organisation_id=org_id,
+                            integration_id=info.integration_id,
+                            changed_email_ids=sync_result.get("changed_email_ids", []),
+                            trigger_source="incremental_sync",
+                        )
                         communication_deal_mapping = (
                             await CommunicationDealMappingTriggerService(
                                 org_id

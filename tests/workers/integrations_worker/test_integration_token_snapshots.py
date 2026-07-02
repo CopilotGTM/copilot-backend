@@ -10,9 +10,6 @@ from src.service.integrations.providers.token_resolution import IntegrationToken
 from src.workers.integrations_worker.tasks.calendar.integration_task import (
     IntegrationFetchData as CalendarIntegrationFetchData,
 )
-from src.workers.integrations_worker.tasks.calendar.org_task import (
-    IntegrationFetchData as CalendarOrgFetchData,
-)
 from src.workers.integrations_worker.tasks.messaging.channels_integration_task import (
     IntegrationFetchData as MessagingIntegrationFetchData,
 )
@@ -28,19 +25,6 @@ def test_detached_integration_snapshots_preserve_scopes_for_token_info() -> None
     credentials = {"access_token": "access-token", "refresh_token": "refresh-token"}
 
     snapshots = [
-        CalendarOrgFetchData(
-            integration_id=integration_id,
-            connection_id="calendar-connection",
-            integration_type=IntegrationType.OUTLOOK_CALENDAR,
-            integration_type_value=IntegrationType.OUTLOOK_CALENDAR.value,
-            provider="outlook",
-            is_initial=False,
-            last_synced_at=None,
-            calendar_delta_link="delta",
-            credentials=credentials,
-            access_token_expires_at=None,
-            scopes=scopes,
-        ),
         CalendarIntegrationFetchData(
             integration_id=integration_id,
             connection_id="calendar-connection",

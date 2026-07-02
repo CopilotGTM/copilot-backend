@@ -18,16 +18,6 @@ from src.workers.base.worker_config import BaseWorkerConfig
 
 TASK_LIMITS: dict[str, dict] = {
     # ── Tier 1: coordinators (query approved orgs → fan out) ──
-    "integrations.sync_calendar_all_orgs": {
-        "soft": 120,
-        "hard": 180,
-        "retries": 0,
-    },
-    "integrations.sync_email_all_orgs": {
-        "soft": 120,
-        "hard": 180,
-        "retries": 0,
-    },
     "integrations.sync_messaging_channels_all_orgs": {
         "soft": 120,
         "hard": 180,
@@ -44,18 +34,6 @@ TASK_LIMITS: dict[str, dict] = {
         "retries": 0,
     },
     # ── Tier 2: per-org (external API calls, pagination, persistence) ──
-    "integrations.sync_calendar_org": {
-        "soft": 600,
-        "hard": 660,
-        "retries": 2,
-        "retry_delay": 120,
-    },
-    "integrations.sync_email_org": {
-        "soft": 1800,
-        "hard": 1860,
-        "retries": 2,
-        "retry_delay": 120,
-    },
     "integrations.sync_messaging_channels_org": {
         "soft": 900,
         "hard": 960,
@@ -301,8 +279,6 @@ TASK_LIMITS: dict[str, dict] = {
     },
 }
 
-CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
-
 
 class IntegrationsWorkerConfig(BaseWorkerConfig):
     """Configuration for the Integrations Worker."""
@@ -402,30 +378,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
             },
-            # Calendar sync tasks (three-tier architecture)
-            CALENDAR_SYNC_TASK: {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_calendar_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
+            # Calendar sync tasks (event/post-connect integration dispatch)
             "integrations.sync_calendar_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "queue": "integrations_priority",  # Priority queue for event/post-connect/manual triggers
                 "routing_key": "integrations_priority",
             },
-            # Email sync tasks (three-tier architecture)
-            "integrations.sync_email_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_email_org": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
+            # Email sync tasks (event/post-connect integration dispatch)
             "integrations.sync_email_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "queue": "integrations_priority",  # Priority queue for event/post-connect/manual triggers
                 "routing_key": "integrations_priority",
             },
             # CRM schema sync tasks (HubSpot)

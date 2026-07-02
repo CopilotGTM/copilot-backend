@@ -1,40 +1,9 @@
-"""
-Calendar sync tasks following the three-tier architecture.
+"""Active calendar sync task exports.
 
-This module provides:
-- sync_calendar_all_orgs_task (Tier 1): Global coordinator, triggered by the scheduler
-- sync_calendar_org_task (Tier 2): Organization-level processor
-- sync_calendar_integration_task (Tier 3): Manual trigger for single integration
-
-Architecture:
-    Scheduler (every 15 min)
-        |
-    sync_calendar_all_orgs_task [Tier 1]
-        |
-    sync_calendar_org_task [Tier 2] (one per org, async dispatch)
-        |
-    CalendarSyncService (direct call, for each integration)
-
-Usage:
-    # Scheduled sync (via Kubernetes CronJob)
-    "task": "integrations.sync_calendar_all_orgs"
-
-    # Manual org sync
-    sync_calendar_org_task.delay(organisation_id="uuid")
-
-    # Manual integration sync
-    sync_calendar_integration_task.delay(
-        organisation_id="uuid",
-        integration_id="uuid"
-    )
+Calendar sync now runs from event/post-connect integration dispatch. The old
+all-org and org fanout tasks live under `tasks.deprecated.calendar`.
 """
 
-from .all_orgs_task import sync_calendar_all_orgs_task
 from .integration_task import sync_calendar_integration_task
-from .org_task import sync_calendar_org_task
 
-__all__ = [
-    "sync_calendar_all_orgs_task",
-    "sync_calendar_org_task",
-    "sync_calendar_integration_task",
-]
+__all__ = ["sync_calendar_integration_task"]

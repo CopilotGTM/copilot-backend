@@ -4,12 +4,8 @@ Tasks for the integrations worker.
 This module exports all integration-related Celery tasks.
 """
 
-# Calendar sync tasks (three-tier architecture)
-from .calendar import (
-    sync_calendar_all_orgs_task,
-    sync_calendar_integration_task,
-    sync_calendar_org_task,
-)
+# Calendar sync tasks (event/post-connect integration dispatch)
+from .calendar import sync_calendar_integration_task
 
 # CRM schema + record sync tasks (HubSpot)
 from .crm import (
@@ -40,12 +36,8 @@ from .crm import (
     sync_salesforce_users_task,
 )
 
-# Email sync tasks (three-tier architecture)
-from .email import (
-    sync_email_all_orgs_task,
-    sync_email_integration_task,
-    sync_email_org_task,
-)
+# Email sync tasks (event/post-connect integration dispatch)
+from .email import sync_email_integration_task
 from .google_subscription_tasks import (
     ensure_google_subscription_task,
     renew_google_subscriptions_all_task,
@@ -77,9 +69,7 @@ __all__ = [
     "refresh_tokens_task",
     "refresh_tokens_org_task",
     "refresh_token_task",
-    # Calendar sync (three-tier architecture)
-    "sync_calendar_all_orgs_task",
-    "sync_calendar_org_task",
+    # Calendar sync (event/post-connect integration dispatch)
     "sync_calendar_integration_task",
     # Messaging channels sync (three-tier architecture)
     "sync_messaging_channels_all_orgs_task",
@@ -89,9 +79,7 @@ __all__ = [
     "sync_deal_messages_all_orgs_task",
     "sync_deal_messages_org_task",
     "sync_deal_messages_integration_task",
-    # Email sync (three-tier architecture)
-    "sync_email_all_orgs_task",
-    "sync_email_org_task",
+    # Email sync (event/post-connect integration dispatch)
     "sync_email_integration_task",
     # Google webhook subscription management
     "ensure_google_subscription_task",
