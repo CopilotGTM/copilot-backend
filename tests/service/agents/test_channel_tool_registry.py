@@ -43,6 +43,13 @@ def test_interactive_stage_update_stays_available_on_slack_and_teams() -> None:
     assert CHANNEL_ONLY_TOOLS[ToolName.UPDATE_DEAL_STAGE] == {"teams", "slack"}
 
 
+def test_general_agent_does_not_expose_visualization_card_tool() -> None:
+    assert "create_visualization_card" not in {
+        tool_name.value for tool_name in AGENT_TOOLS["GeneralAgent"]
+    }
+    assert "create_visualization_card" not in {tool_name.value for tool_name in CHANNEL_ONLY_TOOLS}
+
+
 def test_create_deal_is_available_on_web_voice_whatsapp_slack_and_teams() -> None:
     assert CHANNEL_ONLY_TOOLS[ToolName.CREATE_DEAL] == {
         "teams",

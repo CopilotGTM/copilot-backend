@@ -13,9 +13,6 @@ if TYPE_CHECKING:
         create_list_chat_attachments,
         create_read_chat_attachment,
     )
-    from src.agents.tools.communication.create_visualization_card import (
-        create_create_visualization_card,
-    )
     from src.agents.tools.communication.fetch_teams_chat_messages import (
         create_fetch_teams_chat_messages,
     )
@@ -62,10 +59,6 @@ _EXPORTS = {
     "create_fetch_teams_chat_messages": (
         "src.agents.tools.communication.fetch_teams_chat_messages",
         "create_fetch_teams_chat_messages",
-    ),
-    "create_create_visualization_card": (
-        "src.agents.tools.communication.create_visualization_card",
-        "create_create_visualization_card",
     ),
     "create_send_email": (
         "src.agents.tools.communication.send_email",

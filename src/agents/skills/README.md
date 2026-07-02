@@ -80,30 +80,6 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `crm-deal-analysis-workflow` | Read-only CRM/deal evidence gathering and synthesis | Hardcoded CRM/deal analysis prompt guidance |
 | `email-meeting-workflow` | Email writing/sending, meeting invite routing, and recipient resolution | Hardcoded email and meeting prompt rules |
 
----
-
-## Proposed Skills (Roadmap)
-
-### 1. Visualization Guide
-
-**Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
-
-**Why**: Currently 6 lines in the prompt for chart type selection. A skill provides richer guidance on data preparation, chart selection, and formatting — loaded only when the model creates a visualization.
-
-**Workflow**:
-1. Assess data shape (categories, time series, part-to-whole, ranking).
-2. Select appropriate chart type.
-3. Prepare data in the required format.
-4. Call `CreateVisualizationCard` with correct parameters.
-
-**References**:
-- `chart-selection-guide.md` — decision tree for chart type by data shape
-- `data-preparation.md` — formatting requirements per chart type
-
-**Value**: Low-Medium — only worth building if visualization quality is inconsistent.
-
----
-
 ## Security contract
 
 Skills must not bypass tool-level org/deal boundaries.

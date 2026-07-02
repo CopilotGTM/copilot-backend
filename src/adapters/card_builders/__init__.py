@@ -9,19 +9,9 @@ from src.adapters.card_builders.base import (
     FormCardBuilder,
     FormDefinition,
     FormField,
-    VisualizationCardBuilder,
-    VisualizationDefinition,
-    VisualizationPoint,
-    VisualizationSeries,
 )
-from src.adapters.card_builders.slack_card_builder import (
-    SlackFormCardBuilder,
-    SlackVisualizationCardBuilder,
-)
-from src.adapters.card_builders.teams_card_builder import (
-    TeamsFormCardBuilder,
-    TeamsVisualizationCardBuilder,
-)
+from src.adapters.card_builders.slack_card_builder import SlackFormCardBuilder
+from src.adapters.card_builders.teams_card_builder import TeamsFormCardBuilder
 
 
 def get_card_builder(channel: str) -> FormCardBuilder:
@@ -46,32 +36,11 @@ def get_card_builder(channel: str) -> FormCardBuilder:
     raise ValueError(f"No card builder for channel: {channel}. Supported: teams, slack")
 
 
-def get_visualization_card_builder(channel: str) -> VisualizationCardBuilder:
-    """Get the appropriate visualization card builder for a channel."""
-    channel = channel.lower()
-
-    if channel == "teams":
-        return TeamsVisualizationCardBuilder()
-    if channel == "slack":
-        return SlackVisualizationCardBuilder()
-
-    raise ValueError(
-        f"No visualization card builder for channel: {channel}. Supported: teams, slack"
-    )
-
-
 __all__ = [
     "FormCardBuilder",
     "FormDefinition",
     "FormField",
-    "VisualizationCardBuilder",
-    "VisualizationDefinition",
-    "VisualizationPoint",
-    "VisualizationSeries",
     "TeamsFormCardBuilder",
-    "TeamsVisualizationCardBuilder",
     "SlackFormCardBuilder",
-    "SlackVisualizationCardBuilder",
     "get_card_builder",
-    "get_visualization_card_builder",
 ]
