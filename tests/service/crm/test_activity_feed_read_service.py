@@ -100,7 +100,6 @@ async def test_list_object_activities_reads_activity_links_joined_to_activity_pr
     statements = [str(call.args[0]) for call in session.execute.await_args_list]
     assert all("crm_activity_links" in statement for statement in statements)
     assert all("crm_activities" in statement for statement in statements)
-    assert all("deal_timeline_events" not in statement for statement in statements)
 
 
 @pytest.mark.asyncio

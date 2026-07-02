@@ -1,4 +1,4 @@
-"""Tests for Deal Timeline API handler.
+"""Deprecated tests for Deal Timeline API handler.
 
 Focuses on:
 - List endpoint with filtering (event_types, date range, include_excluded)

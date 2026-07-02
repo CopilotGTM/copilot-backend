@@ -1,4 +1,4 @@
-# CRM Activity Feed Missing Projections
+# Deprecated CRM Activity Feed Missing Projections
 
 ## Goal
 

@@ -73,7 +73,6 @@ These surfaces currently depend on `DealStakeholder`, `deal_stakeholders`, or ol
 - `src/service/crm/internal/deal_write_service.py`
 - `src/service/crm/access/leads_access_service.py`
 - `src/service/crm/insights/stakeholder_insight_service.py`
-- `src/service/crm/timeline/deal_timeline_sync_service.py`
 - `src/service/crm/jobs/deal_job_service.py`
 - `src/service/crm/jobs/stakeholder_job_visibility_service.py`
 - `src/workers/deal_worker/services/deal_mapper_services/stakeholder_sync_service.py`
@@ -498,7 +497,6 @@ Implementation note:
 - Modify: `src/service/crm/jobs/deal_job_service.py`
 - Modify: `src/service/crm/jobs/stakeholder_job_visibility_service.py`
 - Modify: `src/service/crm/insights/stakeholder_insight_service.py`
-- Modify: `src/service/crm/timeline/deal_timeline_sync_service.py`
 - Modify: `src/workers/deal_worker/services/deal_mapper_services/stakeholder_sync_service.py`
 - Modify: `src/workers/deal_worker/services/deal_mapper_services/deal_meeting_matcher.py` for calendar-event matching; this checkout has no separate `deal_calendar_matcher.py`.
 - Modify: `src/workers/deal_worker/services/deal_mapper_services/deal_email_matcher.py`

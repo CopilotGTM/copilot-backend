@@ -1,4 +1,4 @@
-"""Tests for DealTimelineSyncService builder functions.
+"""Deprecated tests for DealTimelineSyncService builder functions.
 
 Tests the standalone builder functions that create timeline events:
 - build_email_timeline_event

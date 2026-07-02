@@ -1,4 +1,4 @@
-"""Deal timeline service for managing and querying deal timeline events."""
+"""Deprecated deal timeline service for managing old timeline events."""
 
 from __future__ import annotations
 

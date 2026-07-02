@@ -1,4 +1,4 @@
-"""Task: Timeline Sync Tasks.
+"""Deprecated timeline sync tasks.
 
 This module provides Celery tasks for syncing timeline events to deals.
 

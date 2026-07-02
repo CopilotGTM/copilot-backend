@@ -263,7 +263,7 @@ def test_get_risk_blocker_success(client: TestClient, risks_dependency_overrides
     item = create_risk_blocker(deal_id, org_id, title="Test Risk")
     service.add_item(item)
 
-    resp = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}")
+    resp = client.get(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["title"] == "Test Risk"
@@ -274,7 +274,7 @@ def test_get_risk_blocker_not_found(client: TestClient, risks_dependency_overrid
     """Test getting non-existent risk/blocker returns 404."""
     non_existent_id = uuid4()
 
-    resp = client.get(f"/users/crm/risks-blockers/{non_existent_id}")
+    resp = client.get(f"/users/crm/deals/risks-blockers/{non_existent_id}")
     assert resp.status_code == 404, resp.text
 
 
@@ -293,7 +293,7 @@ def test_create_risk_success(client: TestClient, risks_dependency_overrides):
         "description": "Risk description",
     }
     resp = client.post(f"/users/crm/deals/{deal_id}/risks-blockers", json=payload)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
     data = body["data"]
@@ -311,7 +311,7 @@ def test_create_blocker_success(client: TestClient, risks_dependency_overrides):
         "title": "New Blocker",
     }
     resp = client.post(f"/users/crm/deals/{deal_id}/risks-blockers", json=payload)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     data = body["data"]
     assert data["item_type"] == "BLOCKER"
@@ -332,7 +332,7 @@ def test_create_risk_with_all_fields(client: TestClient, risks_dependency_overri
         "assigned_team": "Engineering",
     }
     resp = client.post(f"/users/crm/deals/{deal_id}/risks-blockers", json=payload)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     data = body["data"]
     assert data["category"] == "TECHNICAL"
@@ -361,7 +361,7 @@ def test_create_risk_title_exactly_max(client: TestClient, risks_dependency_over
         "title": "x" * 500,
     }
     resp = client.post(f"/users/crm/deals/{deal_id}/risks-blockers", json=payload)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
 
 def test_create_risk_missing_title(client: TestClient, risks_dependency_overrides):
@@ -441,7 +441,7 @@ def test_update_risk_title(client: TestClient, risks_dependency_overrides):
     service.add_item(item)
 
     payload = {"title": "Updated Title"}
-    resp = client.patch(f"/users/crm/risks-blockers/{item.risk_blocker_id}", json=payload)
+    resp = client.patch(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}", json=payload)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["title"] == "Updated Title"
@@ -457,7 +457,7 @@ def test_update_risk_severity(client: TestClient, risks_dependency_overrides):
     service.add_item(item)
 
     payload = {"severity": "CRITICAL"}
-    resp = client.patch(f"/users/crm/risks-blockers/{item.risk_blocker_id}", json=payload)
+    resp = client.patch(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}", json=payload)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["severity"] == "CRITICAL"
@@ -468,7 +468,7 @@ def test_update_risk_not_found(client: TestClient, risks_dependency_overrides):
     non_existent_id = uuid4()
 
     payload = {"title": "Updated Title"}
-    resp = client.patch(f"/users/crm/risks-blockers/{non_existent_id}", json=payload)
+    resp = client.patch(f"/users/crm/deals/risks-blockers/{non_existent_id}", json=payload)
     assert resp.status_code == 404, resp.text
 
 
@@ -481,7 +481,7 @@ def test_update_risk_empty_body(client: TestClient, risks_dependency_overrides):
     item = create_risk_blocker(deal_id, org_id, title="Original")
     service.add_item(item)
 
-    resp = client.patch(f"/users/crm/risks-blockers/{item.risk_blocker_id}", json={})
+    resp = client.patch(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}", json={})
     assert resp.status_code == 200, resp.text
 
 
@@ -499,7 +499,7 @@ def test_dismiss_success(client: TestClient, risks_dependency_overrides):
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/dismiss")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/dismiss")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["status"] == "DISMISSED"
@@ -515,9 +515,9 @@ def test_dismiss_records_closure_fields(client: TestClient, risks_dependency_ove
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/dismiss")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/dismiss")
     assert resp.status_code == 200, resp.text
-    detail_resp = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}")
+    detail_resp = client.get(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}")
     detail = detail_resp.json()["data"]
     assert detail["status"] == "DISMISSED"
     assert detail["closed_at"] is not None
@@ -528,7 +528,7 @@ def test_dismiss_not_found(client: TestClient, risks_dependency_overrides):
     """Test dismissing non-existent item returns 404."""
     non_existent_id = uuid4()
 
-    resp = client.post(f"/users/crm/risks-blockers/{non_existent_id}/dismiss")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{non_existent_id}/dismiss")
     assert resp.status_code == 404, resp.text
 
 
@@ -548,10 +548,12 @@ def test_resolve_success(client: TestClient, risks_dependency_overrides):
     service.add_item(item)
 
     payload = {"resolution_notes": "Resolved by implementing mitigation strategy."}
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json=payload)
+    resp = client.post(
+        f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/resolve", json=payload
+    )
     assert resp.status_code == 200, resp.text
 
-    detail = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}").json()["data"]
+    detail = client.get(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}").json()["data"]
     assert detail["status"] == "RESOLVED"
     assert "mitigation" in detail["resolution_notes"]
     assert detail["closed_at"] is not None
@@ -570,7 +572,9 @@ def test_resolve_from_in_progress(client: TestClient, risks_dependency_overrides
     service.add_item(item)
 
     payload = {"resolution_notes": "Completed the work to address this."}
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json=payload)
+    resp = client.post(
+        f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/resolve", json=payload
+    )
     assert resp.status_code == 200, resp.text
 
 
@@ -584,7 +588,9 @@ def test_resolve_notes_too_short(client: TestClient, risks_dependency_overrides)
     service.add_item(item)
 
     payload = {"resolution_notes": "Too short"}  # 9 chars
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json=payload)
+    resp = client.post(
+        f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/resolve", json=payload
+    )
     assert resp.status_code == 422, resp.text
 
 
@@ -598,7 +604,9 @@ def test_resolve_notes_exactly_min(client: TestClient, risks_dependency_override
     service.add_item(item)
 
     payload = {"resolution_notes": "Exactly 10"}  # 10 chars
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json=payload)
+    resp = client.post(
+        f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/resolve", json=payload
+    )
     assert resp.status_code == 200, resp.text
 
 
@@ -611,7 +619,7 @@ def test_resolve_missing_notes(client: TestClient, risks_dependency_overrides):
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/resolve", json={})
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/resolve", json={})
     assert resp.status_code == 422, resp.text
 
 
@@ -620,7 +628,7 @@ def test_resolve_not_found(client: TestClient, risks_dependency_overrides):
     non_existent_id = uuid4()
 
     payload = {"resolution_notes": "This will fail."}
-    resp = client.post(f"/users/crm/risks-blockers/{non_existent_id}/resolve", json=payload)
+    resp = client.post(f"/users/crm/deals/risks-blockers/{non_existent_id}/resolve", json=payload)
     assert resp.status_code == 404, resp.text
 
 
@@ -638,10 +646,10 @@ def test_reopen_resolved_success(client: TestClient, risks_dependency_overrides)
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.RESOLVED)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/reopen")
     assert resp.status_code == 200, resp.text
 
-    detail = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}").json()["data"]
+    detail = client.get(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}").json()["data"]
     assert detail["status"] == "OPEN"
     assert detail["closed_at"] is None
     assert detail["closed_by_user_id"] is None
@@ -658,7 +666,7 @@ def test_reopen_dismissed_success(client: TestClient, risks_dependency_overrides
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.DISMISSED)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/reopen")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["status"] == "OPEN"
@@ -673,7 +681,7 @@ def test_reopen_from_open_fails(client: TestClient, risks_dependency_overrides):
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.OPEN)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/reopen")
     assert resp.status_code == 400, resp.text
 
 
@@ -686,7 +694,7 @@ def test_reopen_from_in_progress_fails(client: TestClient, risks_dependency_over
     item = create_risk_blocker(deal_id, org_id, status=RiskBlockerStatus.IN_PROGRESS)
     service.add_item(item)
 
-    resp = client.post(f"/users/crm/risks-blockers/{item.risk_blocker_id}/reopen")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}/reopen")
     assert resp.status_code == 400, resp.text
 
 
@@ -694,7 +702,7 @@ def test_reopen_not_found(client: TestClient, risks_dependency_overrides):
     """Test reopening non-existent item returns 404."""
     non_existent_id = uuid4()
 
-    resp = client.post(f"/users/crm/risks-blockers/{non_existent_id}/reopen")
+    resp = client.post(f"/users/crm/deals/risks-blockers/{non_existent_id}/reopen")
     assert resp.status_code == 404, resp.text
 
 
@@ -712,13 +720,13 @@ def test_delete_success(client: TestClient, risks_dependency_overrides):
     item = create_risk_blocker(deal_id, org_id)
     service.add_item(item)
 
-    resp = client.delete(f"/users/crm/risks-blockers/{item.risk_blocker_id}")
+    resp = client.delete(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["message"] == "Risk/blocker deleted successfully"
 
     # Verify it's gone
-    resp2 = client.get(f"/users/crm/risks-blockers/{item.risk_blocker_id}")
+    resp2 = client.get(f"/users/crm/deals/risks-blockers/{item.risk_blocker_id}")
     assert resp2.status_code == 404
 
 
@@ -726,7 +734,7 @@ def test_delete_not_found(client: TestClient, risks_dependency_overrides):
     """Test deleting non-existent item returns 404."""
     non_existent_id = uuid4()
 
-    resp = client.delete(f"/users/crm/risks-blockers/{non_existent_id}")
+    resp = client.delete(f"/users/crm/deals/risks-blockers/{non_existent_id}")
     assert resp.status_code == 404, resp.text
 
 
@@ -750,7 +758,7 @@ def test_full_lifecycle_ai_extracted_to_resolved(client: TestClient, risks_depen
 
     # Resolve directly
     payload = {"resolution_notes": "Addressed and mitigated."}
-    resp = client.post(f"/users/crm/risks-blockers/{item_id}/resolve", json=payload)
+    resp = client.post(f"/users/crm/deals/risks-blockers/{item_id}/resolve", json=payload)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "RESOLVED"
 
@@ -776,13 +784,13 @@ def test_audit_trail_persists_across_transitions(client: TestClient, risks_depen
     item_id = item.risk_blocker_id
 
     client.post(
-        f"/users/crm/risks-blockers/{item_id}/resolve",
+        f"/users/crm/deals/risks-blockers/{item_id}/resolve",
         json={"resolution_notes": "Mitigated for now."},
     )
-    client.post(f"/users/crm/risks-blockers/{item_id}/reopen")
-    client.post(f"/users/crm/risks-blockers/{item_id}/dismiss")
+    client.post(f"/users/crm/deals/risks-blockers/{item_id}/reopen")
+    client.post(f"/users/crm/deals/risks-blockers/{item_id}/dismiss")
 
-    detail = client.get(f"/users/crm/risks-blockers/{item_id}").json()["data"]
+    detail = client.get(f"/users/crm/deals/risks-blockers/{item_id}").json()["data"]
     actions = [entry["action"] for entry in detail["audit_trail"]]
     assert actions == ["opened", "resolved", "reopened", "dismissed"]
     assert detail["modification_count"] == 3
@@ -800,19 +808,19 @@ def test_full_lifecycle_reopen_and_resolve_again(client: TestClient, risks_depen
 
     # Resolve
     resp1 = client.post(
-        f"/users/crm/risks-blockers/{item_id}/resolve",
+        f"/users/crm/deals/risks-blockers/{item_id}/resolve",
         json={"resolution_notes": "First resolution."},
     )
     assert resp1.status_code == 200
 
     # Reopen
-    resp2 = client.post(f"/users/crm/risks-blockers/{item_id}/reopen")
+    resp2 = client.post(f"/users/crm/deals/risks-blockers/{item_id}/reopen")
     assert resp2.status_code == 200
     assert resp2.json()["data"]["status"] == "OPEN"
 
     # Resolve again
     resp3 = client.post(
-        f"/users/crm/risks-blockers/{item_id}/resolve",
+        f"/users/crm/deals/risks-blockers/{item_id}/resolve",
         json={"resolution_notes": "Second resolution."},
     )
     assert resp3.status_code == 200
@@ -830,11 +838,11 @@ def test_dismiss_then_reopen(client: TestClient, risks_dependency_overrides):
     item_id = item.risk_blocker_id
 
     # Dismiss
-    resp1 = client.post(f"/users/crm/risks-blockers/{item_id}/dismiss")
+    resp1 = client.post(f"/users/crm/deals/risks-blockers/{item_id}/dismiss")
     assert resp1.status_code == 200
     assert resp1.json()["data"]["status"] == "DISMISSED"
 
     # Reopen (changed mind, want to track it)
-    resp2 = client.post(f"/users/crm/risks-blockers/{item_id}/reopen")
+    resp2 = client.post(f"/users/crm/deals/risks-blockers/{item_id}/reopen")
     assert resp2.status_code == 200
     assert resp2.json()["data"]["status"] == "OPEN"

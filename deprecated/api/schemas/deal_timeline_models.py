@@ -1,4 +1,4 @@
-"""Deal Timeline API response models for timeline events."""
+"""Deprecated deal timeline API response models."""
 
 from __future__ import annotations
 

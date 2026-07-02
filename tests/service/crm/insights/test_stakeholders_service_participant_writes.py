@@ -19,7 +19,6 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
 from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.errors import StakeholdersServiceError
@@ -411,7 +410,6 @@ async def test_create_stakeholder_projects_added_activity_with_create_context(
             "created_via": "add_stakeholder_agent",
         }
     ]
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
 
 
 @pytest.mark.asyncio
@@ -975,7 +973,6 @@ async def test_remove_stakeholder_soft_deletes_without_approval_gate(monkeypatch
             "created_via": "remove_stakeholder",
         }
     ]
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
 
 
 @pytest.mark.asyncio
@@ -1040,7 +1037,6 @@ async def test_add_contacts_as_stakeholders_writes_participants() -> None:
     assert projected[0]["source"] == "api"
     assert projected[0]["source_label"] == "API"
     assert projected[0]["created_via"] == "stakeholder_add_contacts"
-    assert not any(isinstance(obj, DealTimelineEvent) for obj in session.added)
     assert not session.committed
 
 

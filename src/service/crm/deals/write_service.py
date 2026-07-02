@@ -182,6 +182,14 @@ class DealWriteService:
         return currency
 
     @staticmethod
+    def _parse_datetime(value: Any) -> str:
+        return DealCustomFieldWriteService.parse_datetime(value)
+
+    @staticmethod
+    def _parse_currency(value: Any) -> float:
+        return DealCustomFieldWriteService.parse_currency(value)
+
+    @staticmethod
     def _validate_probability(value: Any) -> None:
         if value is None:
             return

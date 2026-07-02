@@ -944,7 +944,7 @@ async def get_deals_stats(
     - Core business context (amount, status, probability)
     - Sales process details (stage, pipeline, forecast)
     - Ownership and associations
-    - Activity timeline
+    - Activity and history context
     - Custom properties and metrics
     - Deal summary data (if generated)
     - Active deal-level jobs (for SSE reconnection)
@@ -1601,7 +1601,7 @@ async def assign_deal_owner(
     a comprehensive deal summary including:
     - Overall deal narrative and progression
     - Key themes across meetings
-    - Relationship timeline
+    - Relationship progression
     - Critical decisions made
     - Outstanding items and risks
     - Recommended next steps

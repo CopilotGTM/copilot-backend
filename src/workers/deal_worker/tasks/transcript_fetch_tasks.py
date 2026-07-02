@@ -83,7 +83,7 @@ def fetch_meeting_transcripts_org_task(
 
     # Acquire distributed lock
     lock_key = f"task_lock:fetch_meeting_transcripts_org:{organisation_id}"
-    if not acquire_task_lock(lock_key, ttl=660):
+    if not acquire_task_lock(lock_key, ttl=3300):
         logger.info(
             "Transcript fetch job already running for organisation",
             extra={

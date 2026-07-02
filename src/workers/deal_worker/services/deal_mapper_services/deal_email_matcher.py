@@ -44,12 +44,9 @@ from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailDirection,
     Email,
 )
-from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
-from src.service.crm.timeline.deal_timeline_sync_service import build_email_timeline_event
-from src.service.crm.timeline.timeline_event_source_resolver import resolve_email_event_source
 from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_for_users,
@@ -967,7 +964,6 @@ class DealEmailMatcher:
         session: AsyncSession,
         email: Email,
         match: EmailMatchResult,
-        integration_type: Any | None = None,
     ) -> DealEmailAssociation | None:
         """
         Create a DealEmailAssociation for a matched email-deal pair.
@@ -976,9 +972,7 @@ class DealEmailMatcher:
             session: Database session to use for inserts.
             email: Email object to create association for.
             match: EmailMatchResult with deal and score info.
-            integration_type: Optional integration type for timeline event.
-
-        Also creates a corresponding timeline event in the same transaction.
+        Activity-feed projection is created in the same transaction.
 
         Returns the created association or None if it already exists.
         """
@@ -1028,22 +1022,10 @@ class DealEmailMatcher:
         )
         result = await session.execute(stmt)
 
-        # Skip timeline side-effects for duplicates so progress indicators stay
+        # Skip activity side-effects for duplicates so progress indicators stay
         # aligned with true first-write events.
         if (getattr(result, "rowcount", 0) or 0) > 0:
-            # Keep timeline + last-contact updates in the same transaction as
-            # the insert so recovery remains replay-safe.
-            resolved_source = resolve_email_event_source(integration_type)
-            timeline_event = build_email_timeline_event(
-                organisation_id=self.organisation_id,
-                deal_id=match.deal_id,
-                association=association,
-                email=email,
-                event_source=resolved_source,
-            )
-            session.add(timeline_event)
-            # Keep the legacy timeline and new activity feed in the same insert
-            # transaction so either both surfaces show the email, or neither does.
+            # Timeline is deprecated; create activity-feed projection instead.
             await ActivityFeedProjectionService(
                 session,
                 self.organisation_id,
@@ -1086,8 +1068,6 @@ class DealEmailMatcher:
         # Phase 1: Setup - Build maps and get emails (single session)
         # =================================================================
         emails: list[Email] = []
-        integration_type_by_id: dict[UUID, Any] = {}
-
         async for session in acquire_org_async_session(self.organisation_id):
             # Step 1: Build stakeholder maps
             await self._build_stakeholder_maps(session)
@@ -1117,18 +1097,6 @@ class DealEmailMatcher:
                 )
                 return stats
 
-            # Preload integration types for this batch (avoid N+1 queries)
-            integration_ids = {
-                e.integration_id for e in emails if getattr(e, "integration_id", None)
-            }
-            if integration_ids:
-                it_stmt = select(
-                    KnowledgeIntegration.integration_id,
-                    KnowledgeIntegration.integration_type,
-                ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
-                it_result = await session.execute(it_stmt)
-                integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
-
             # No commit needed - read-only operations
             # Session closes here, connection returns to pool
 
@@ -1155,7 +1123,6 @@ class DealEmailMatcher:
                             session,
                             email,
                             match,
-                            integration_type=integration_type_by_id.get(email.integration_id),
                         )
                         if association:
                             stats["associations_created"] += 1
@@ -1317,17 +1284,6 @@ class DealEmailMatcher:
             )
             return stats
 
-        # Preload integration types
-        integration_ids = {e.integration_id for e in emails if getattr(e, "integration_id", None)}
-        integration_type_by_id: dict[UUID, Any] = {}
-        if integration_ids:
-            it_stmt = select(
-                KnowledgeIntegration.integration_id,
-                KnowledgeIntegration.integration_type,
-            ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
-            it_result = await session.execute(it_stmt)
-            integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
-
         # Match and create associations
         for email_record in emails:
             stats["emails_processed"] += 1
@@ -1348,7 +1304,6 @@ class DealEmailMatcher:
                         session,
                         email_record,
                         match,
-                        integration_type=integration_type_by_id.get(email_record.integration_id),
                     )
                     if association:
                         stats["associations_created"] += 1

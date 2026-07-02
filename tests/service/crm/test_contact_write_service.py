@@ -215,7 +215,7 @@ async def test_create_contact_promotes_linkedin_url_to_profile_column() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_contact_accepts_job_title_but_not_phone() -> None:
+async def test_create_contact_accepts_job_title_and_phone() -> None:
     org_id = uuid4()
     integration = KnowledgeIntegration(
         organisation_id=org_id,
@@ -232,14 +232,16 @@ async def test_create_contact_accepts_job_title_but_not_phone() -> None:
     _disable_contact_created_projection(service)
 
     result = await service.create_contact(
-        ContactCreateCommand(email="jane@example.com", name="Jane Doe", job_title="CFO")
+        ContactCreateCommand(
+            email="jane@example.com",
+            name="Jane Doe",
+            job_title="CFO",
+            phone="+15555550100",
+        )
     )
 
     assert result.contact.job_title == "CFO"
-    assert result.contact.phone is None
-
-    with pytest.raises(TypeError):
-        ContactCreateCommand(email="jane@example.com", phone="+15555550100")
+    assert result.contact.phone == "+15555550100"
 
 
 @pytest.mark.asyncio
@@ -490,7 +492,7 @@ async def test_find_or_create_by_email_creates_missing_contact() -> None:
     assert result.contact.full_name == "Buyer Name"
     assert result.contact.job_title == "CFO"
     assert result.contact.linkedin_url == "https://linkedin.com/in/buyer"
-    assert result.contact.phone is None
+    assert result.contact.phone == "+15555550100"
 
 
 @pytest.mark.asyncio

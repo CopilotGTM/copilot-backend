@@ -51,7 +51,6 @@ from src.api.routers.crm import (
     deal_memory_router,
     deal_notes_router,
     deal_participants_router,
-    deal_timeline_router,
     deals_router,
     lead_forms_router,
     lead_ingestion_keys_router,
@@ -315,7 +314,8 @@ def create_fastapi_app():
     fastapp.include_router(stakeholders_router, prefix="/users/crm/deals", tags=["stakeholders"])
     fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["meetings"])
     fastapp.include_router(tasks_router, prefix="/users/crm", tags=["tasks"])
-    fastapp.include_router(deal_timeline_router, prefix="/users/crm/deals", tags=["timeline"])
+    # Legacy deal timeline routes are deprecated here. Source writes now create
+    # activity-feed projections; the deal activity handler will be added later.
     fastapp.include_router(deal_memory_router, prefix="/users/crm/deals", tags=["deal-memory"])
     fastapp.include_router(deal_notes_router, prefix="/users/crm/deals", tags=["deal-notes"])
     fastapp.include_router(deal_assets_router, prefix="/users/crm/deals", tags=["deal-assets"])

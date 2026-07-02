@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -16,7 +17,6 @@ from src.workers.deal_worker.tasks.deal_mappers.calendar_contact_account_discove
     discover_calendar_contacts_accounts_task,
     should_run_calendar_discovery,
 )
-from src.workers.integrations_worker.tasks.calendar import org_task
 
 ORG_ID = UUID("11111111-1111-1111-1111-111111111111")
 INTEGRATION_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -282,7 +282,7 @@ def test_calendar_discovery_task_is_owned_by_deal_worker_queue() -> None:
 
 
 def test_calendar_discovery_is_not_wired_from_org_sync_task() -> None:
-    names = org_task.sync_calendar_org_task.run.__code__.co_names
+    source = Path("src/workers/integrations_worker/tasks/calendar/org_task.py").read_text()
 
-    assert "prepare_calendar_discovery_job" not in names
-    assert "deal.discover_calendar_contacts_accounts" not in org_task.__dict__.values()
+    assert "prepare_calendar_discovery_job" not in source
+    assert "deal.discover_calendar_contacts_accounts" not in source

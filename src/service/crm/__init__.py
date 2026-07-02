@@ -18,15 +18,6 @@ from src.service.crm.jobs.deal_meeting_job_service import (
     DealMeetingJobService,
     DealMeetingJobServiceError,
 )
-from src.service.crm.timeline.deal_timeline_service import (
-    DealTimelineService,
-    DealTimelineServiceError,
-)
-from src.service.crm.timeline.deal_timeline_sync_service import (
-    DealTimelineSyncService,
-    build_email_timeline_event,
-    build_meeting_timeline_event,
-)
 
 __all__ = [
     "DealReadService",
@@ -36,11 +27,6 @@ __all__ = [
     "DealMeetingJobService",
     "DealMeetingJobServiceError",
     "DealJobSSEService",
-    "DealTimelineService",
-    "DealTimelineServiceError",
-    "DealTimelineSyncService",
-    "build_email_timeline_event",
-    "build_meeting_timeline_event",
     "TasksAccessService",
 ]
 

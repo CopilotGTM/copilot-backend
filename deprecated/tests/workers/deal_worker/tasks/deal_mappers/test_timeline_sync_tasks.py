@@ -1,4 +1,4 @@
-"""Tests for timeline sync tasks.
+"""Deprecated tests for timeline sync tasks.
 
 Tests for:
 - trigger_timeline_sync_all_orgs_task (Tier 1)

@@ -1,4 +1,4 @@
-"""Deal timeline sync service for batch timeline operations.
+"""Deprecated deal timeline sync service for batch timeline operations.
 
 This service handles batch creation and synchronization of timeline events
 from existing associations. It's designed for:

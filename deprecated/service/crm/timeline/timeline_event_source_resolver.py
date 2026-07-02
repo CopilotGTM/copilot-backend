@@ -1,4 +1,4 @@
-"""Timeline event source resolution.
+"""Deprecated timeline event source resolution.
 
 Historically, timeline creation defaulted to Google/Gmail sources. That caused
 provider mis-labeling (e.g., Outlook meetings shown as Google).

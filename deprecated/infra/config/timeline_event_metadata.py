@@ -1,4 +1,4 @@
-"""Timeline event source metadata.
+"""Deprecated timeline event source metadata.
 
 Provides lightweight display metadata (e.g., icon/logo URL) for timeline event sources.
 This keeps the frontend simple and consistent across surfaces that render timeline events.

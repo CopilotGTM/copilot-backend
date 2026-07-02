@@ -3,7 +3,7 @@
 Tool for listing CRM notes associated with a specific deal.
 
 Notes are stored in the canonical CRM notes source table (`crm_notes`). The
-activity feed keeps a separate projection for timeline display.
+activity feed keeps a separate projection for chronological display.
 
 SECURITY BOUNDARIES:
 - organisation_id: Always from context (immutable). Prevents cross-org data access.

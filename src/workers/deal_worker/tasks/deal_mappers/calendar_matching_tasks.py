@@ -48,37 +48,11 @@ from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibil
 from src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher import (
     DealMeetingMatcher,
 )
-from src.workers.deal_worker.tasks.deal_mappers.timeline_sync_tasks import (
-    sync_deal_timeline_task,
-)
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
 )
 
 logger = get_logger(__name__)
-
-
-def _dispatch_deal_timeline_sync(*, organisation_id: str, deal_id: str) -> tuple[bool, str | None]:
-    try:
-        sync_deal_timeline_task.apply_async(
-            kwargs={
-                "organisation_id": organisation_id,
-                "deal_id": deal_id,
-            },
-            headers=correlation_headers(),
-        )
-        return True, None
-    except Exception as exc:
-        logger.warning(
-            "Failed to dispatch deal timeline sync after calendar matching",
-            extra={
-                "event": "calendar_matching_timeline_sync_dispatch_failed",
-                "organisation_id": organisation_id,
-                "deal_id": deal_id,
-                "failure_reason": str(exc),
-            },
-        )
-        return False, str(exc)
 
 
 @app.task(
@@ -278,13 +252,6 @@ def match_calendar_to_deals_task(
                 "meetings_linked": stats.get("meetings_linked", 0),
                 "cancelled_rejected": stats.get("cancelled_rejected", 0),
             }
-            timeline_dispatched, timeline_error = _dispatch_deal_timeline_sync(
-                organisation_id=organisation_id,
-                deal_id=deal_id,
-            )
-            result["timeline_sync_dispatched"] = timeline_dispatched
-            if timeline_error:
-                result["timeline_sync_dispatch_error"] = timeline_error
             await tracker.complete(result, "saving_meeting_links", "Saving meeting links")
             return result
 

@@ -48,9 +48,6 @@ from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher im
 from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
     DealMappingEligibilityService,
 )
-from src.workers.deal_worker.tasks.deal_mappers.timeline_sync_tasks import (
-    sync_deal_timeline_task,
-)
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
 )
@@ -60,29 +57,6 @@ from src.workers.deal_worker.utils.pipeline_dispatch import (
 )
 
 logger = get_logger(__name__)
-
-
-def _dispatch_deal_timeline_sync(*, organisation_id: str, deal_id: str) -> tuple[bool, str | None]:
-    try:
-        sync_deal_timeline_task.apply_async(
-            kwargs={
-                "organisation_id": organisation_id,
-                "deal_id": deal_id,
-            },
-            headers=correlation_headers(),
-        )
-        return True, None
-    except Exception as exc:
-        logger.warning(
-            "Failed to dispatch deal timeline sync after email matching",
-            extra={
-                "event": "email_matching_timeline_sync_dispatch_failed",
-                "organisation_id": organisation_id,
-                "deal_id": deal_id,
-                "failure_reason": str(exc),
-            },
-        )
-        return False, str(exc)
 
 
 @app.task(
@@ -392,13 +366,6 @@ def match_email_to_deals_task(
                 "emails_matched": stats.get("emails_matched", 0),
                 "associations_created": stats.get("associations_created", 0),
             }
-            timeline_dispatched, timeline_error = _dispatch_deal_timeline_sync(
-                organisation_id=organisation_id,
-                deal_id=deal_id,
-            )
-            result["timeline_sync_dispatched"] = timeline_dispatched
-            if timeline_error:
-                result["timeline_sync_dispatch_error"] = timeline_error
             await tracker.complete(result, "saving_email_links", "Saving email links")
             return result
 

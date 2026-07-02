@@ -19,7 +19,6 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
-from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extraction_service import (
     AI_EXTRACTION_ACTOR_NAME,
     AUTOMATED_PIPELINE_USER_ID,
@@ -116,29 +115,19 @@ def test_extraction_seeds_opened_audit_entry_with_system_actor() -> None:
     assert item.risk_blocker_data["unique_modifiers"] == [str(AUTOMATED_PIPELINE_USER_ID)]
 
 
-def test_extraction_emits_timeline_event_matching_item_type() -> None:
-    """RISK extractions emit RISK_FLAGGED, BLOCKER extractions emit BLOCKER_ADDED."""
+def test_extraction_adds_only_risk_blocker_record() -> None:
+    """The legacy sync helper no longer writes timeline rows."""
     service = RiskBlockerExtractionService(organisation_id=uuid4())
 
-    risk_session = _CapturingSession()
+    session = _CapturingSession()
     service.create_risk_blocker_from_extracted(
-        session=risk_session,
+        session=session,
         deal_id=uuid4(),
         extracted=_build_extracted(item_type=RiskBlockerType.RISK),
         source_type=RiskBlockerSource.MEETING_GOOGLE,
     )
-    risk_event_types = {getattr(o, "event_type", None) for o in risk_session.added}
-    assert TimelineEventType.RISK_FLAGGED in risk_event_types
-
-    blocker_session = _CapturingSession()
-    service.create_risk_blocker_from_extracted(
-        session=blocker_session,
-        deal_id=uuid4(),
-        extracted=_build_extracted(item_type=RiskBlockerType.BLOCKER),
-        source_type=RiskBlockerSource.MEETING_GOOGLE,
-    )
-    blocker_event_types = {getattr(o, "event_type", None) for o in blocker_session.added}
-    assert TimelineEventType.BLOCKER_ADDED in blocker_event_types
+    assert len(session.added) == 1
+    assert isinstance(session.added[0], DealRiskBlocker)
 
 
 def test_automated_pipeline_user_id_is_the_project_sentinel() -> None:

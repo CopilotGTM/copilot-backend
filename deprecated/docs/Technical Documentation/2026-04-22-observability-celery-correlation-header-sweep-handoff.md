@@ -1,4 +1,4 @@
-# Observability Celery Correlation Header Sweep Handoff
+# Deprecated Observability Celery Correlation Header Sweep Handoff
 
 Date: `2026-04-22`
 Worktree: `D:\CopilotGTM\copilot-backend-observability-hardening`

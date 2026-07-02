@@ -1,4 +1,4 @@
-"""Deal Timeline API handler - endpoints for accessing deal timeline events."""
+"""Deprecated deal timeline API handler - endpoints for old timeline events."""
 
 from __future__ import annotations
 

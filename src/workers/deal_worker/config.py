@@ -71,11 +71,6 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal.send_meeting_recording",
             "deal.send_unsent_meeting_recordings_org",
             "deal.trigger_send_unsent_meeting_recordings_all_orgs",
-            # Timeline event tasks
-            "deal.sync_deal_timeline",
-            "deal.sync_org_timeline",
-            "deal.exclude_timeline_event",
-            "deal.trigger_timeline_sync_all_orgs",
             # Risk/Blocker extraction trigger
             "risk_blocker.trigger_extraction_all_orgs",
             # Transcript fetch tasks

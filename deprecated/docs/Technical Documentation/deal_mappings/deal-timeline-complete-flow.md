@@ -1,4 +1,4 @@
-# Deal Timeline - Complete Flow Documentation
+# Deprecated Deal Timeline - Complete Flow Documentation
 
 This document provides a comprehensive overview of how Deal Timeline events are created, synced, and served in the CopilotGTM backend.
 

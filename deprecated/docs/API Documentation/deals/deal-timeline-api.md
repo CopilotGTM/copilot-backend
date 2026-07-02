@@ -1,4 +1,4 @@
-# Deal Timeline API
+# Deprecated Deal Timeline API
 
 This API returns the unified, denormalized timeline for a deal. The timeline includes communications (emails, meetings), CRM lifecycle events (deal created, stage changes), and insights events (risks, blockers, stakeholders). Both list and detail endpoints return the same `TimelineEvent` shape—the detail endpoint simply returns enriched `event_data`.
 

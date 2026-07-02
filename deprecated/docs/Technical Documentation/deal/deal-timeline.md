@@ -1,4 +1,4 @@
-# Deal Timeline Creation
+# Deprecated Deal Timeline Creation
 
 This document details the architecture, logic, and workflows for creating and managing Deal Timeline events in the Copilot backend.
 
