@@ -30,6 +30,10 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import Stakehol
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import ContactWriteContext
+from src.service.crm.contacts.resolution_service import (
+    ContactIdentityResolutionService,
+    ContactIdentityResolveCommand,
+)
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.participants.contracts import StakeholderWriteContext
@@ -577,6 +581,31 @@ class StakeholderWriteService:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _resolve_contact_identity(
+        self,
+        *,
+        email: str | None,
+        linkedin_url: str | None,
+        name: str | None,
+    ):
+        """Resolve a contact through the contact-owned Apollo enrichment boundary."""
+        return await ContactIdentityResolutionService(
+            self.session,
+            self.organisation_id,
+        ).resolve(
+            ContactIdentityResolveCommand(
+                email=email,
+                linkedin_url=linkedin_url,
+                name=name,
+                context=ContactWriteContext(
+                    source="stakeholder",
+                    actor_user_id=self.user_id,
+                    source_label="Stakeholder",
+                    created_via="stakeholder_write_service",
+                ),
+            )
+        )
+
     @staticmethod
     def _contacts_conflict(*contacts: CRMContact | None) -> bool:
         """Return true when strong identity fields point at different contacts."""
@@ -690,6 +719,20 @@ class StakeholderWriteService:
             # It gives the participant a stable contact link for future
             # research/profile refreshes.
             hydrate_from_contact(contact)
+        elif linkedin_url and not email_normalized:
+            resolution = await self._resolve_contact_identity(
+                email=email_normalized,
+                linkedin_url=linkedin_url,
+                name=name,
+            )
+            if resolution.status == "resolved" and resolution.contact:
+                contact = resolution.contact
+                hydrate_from_contact(contact)
+            else:
+                raise StakeholdersServiceError(
+                    resolution.error_detail or "Unable to resolve LinkedIn URL to a contact",
+                    status_code=404,
+                )
 
         # Guardrail: reject internal team members
         if email_normalized and await self._is_internal_email(email_normalized):

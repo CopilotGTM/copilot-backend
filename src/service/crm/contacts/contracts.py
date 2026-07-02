@@ -8,14 +8,14 @@ from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 
-ContactMatchedBy = Literal["email", "explicit_id", "created"]
+ContactMatchedBy = Literal["email", "linkedin", "apollo", "explicit_id", "created"]
 
 
 @dataclass(frozen=True)
 class ContactCreateCommand:
     """Canonical contact-create payload shared by API, tools, and workflows."""
 
-    email: str
+    email: str | None
     name: str | None = None
     job_title: str | None = None
     phone: str | None = None

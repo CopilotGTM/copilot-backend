@@ -45,6 +45,19 @@ def _company_payload() -> dict:
     }
 
 
+class _CommitExpiringCompany:
+    """Test double for async SQLAlchemy rows that expire attributes on commit."""
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.expired = False
+
+    def model_dump(self) -> dict:
+        if self.expired:
+            raise AssertionError("company was serialized after commit")
+        return self.payload
+
+
 def test_create_account_request_accepts_name_or_web_identity() -> None:
     assert CreateAccountRequest(name="Acme").name == "Acme"
     assert CreateAccountRequest(name="Acme", domain="acme.com").domain == "acme.com"
@@ -53,22 +66,52 @@ def test_create_account_request_accepts_name_or_web_identity() -> None:
         "https://acme.com"
     )
     assert CreateAccountRequest(website="https://acme.com").website == "https://acme.com"
+    assert (
+        CreateAccountRequest(linkedin_url="https://linkedin.com/company/acme").linkedin_url
+        == "https://linkedin.com/company/acme"
+    )
 
 
 def test_create_account_request_rejects_missing_identity() -> None:
     with pytest.raises(ValidationError) as exc_info:
         CreateAccountRequest(name="   ")
 
-    assert "name, domain, or website is required" in str(exc_info.value)
+    assert "name, domain, website, or LinkedIn URL is required" in str(exc_info.value)
+
+
+def test_create_account_request_rejects_person_linkedin_url() -> None:
+    """Account create should not accept a person profile as account identity."""
+    with pytest.raises(ValidationError) as exc_info:
+        CreateAccountRequest(linkedin_url="https://www.linkedin.com/in/jane-buyer")
+
+    assert "Use a LinkedIn company, school, or showcase URL for accounts" in str(exc_info.value)
+
+
+def test_update_account_request_rejects_person_linkedin_url() -> None:
+    """Account update should keep person profile URLs off company records."""
+    with pytest.raises(ValidationError) as exc_info:
+        UpdateAccountRequest(linkedin_url="https://www.linkedin.com/in/jane-buyer")
+
+    assert "Use a LinkedIn company, school, or showcase URL for accounts" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
-async def test_create_account_commits_session_after_service_write() -> None:
+async def test_create_account_commits_session_after_service_write(monkeypatch) -> None:
     user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
     company = SimpleNamespace(model_dump=lambda: _company_payload())
     service = SimpleNamespace(
         session=SimpleNamespace(commit=AsyncMock()),
         create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
+    )
+
+    async def noop_dispatch(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        accounts_handler,
+        "dispatch_account_research_async",
+        noop_dispatch,
+        raising=False,
     )
 
     response = await create_account(
@@ -108,7 +151,8 @@ async def test_create_account_commits_session_after_service_write() -> None:
 async def test_create_account_dispatches_account_research_after_commit(monkeypatch) -> None:
     user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
     company_id = uuid4()
-    company = SimpleNamespace(company_id=company_id, model_dump=lambda: _company_payload())
+    company_payload = {**_company_payload(), "company_id": company_id}
+    company = SimpleNamespace(company_id=company_id, model_dump=lambda: company_payload)
     service = SimpleNamespace(
         session=SimpleNamespace(commit=AsyncMock()),
         create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
@@ -149,6 +193,92 @@ async def test_create_account_dispatches_account_research_after_commit(monkeypat
             "commit_count_at_dispatch": 1,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_account_uses_precommit_snapshot_for_response(monkeypatch) -> None:
+    """Async SQLAlchemy expires rows on commit; response shaping must not lazy-load them."""
+    user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    company_payload = _company_payload()
+    company = _CommitExpiringCompany(company_payload)
+
+    async def commit_and_expire():
+        company.expired = True
+
+    service = SimpleNamespace(
+        session=SimpleNamespace(commit=AsyncMock(side_effect=commit_and_expire)),
+        create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
+    )
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        calls.append({**kwargs, "commit_count_at_dispatch": service.session.commit.await_count})
+
+    monkeypatch.setattr(
+        accounts_handler,
+        "dispatch_account_research_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    response = await create_account(
+        response=FastAPIResponse(),
+        body=CreateAccountRequest(name="Acme", domain="acme.com"),
+        user_ids=user_ids,
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status == "SUCCESS"
+    assert response.data.company_id == company_payload["company_id"]
+    assert calls == [
+        {
+            "organisation_id": user_ids.organisation_id,
+            "company_id": company_payload["company_id"],
+            "user_id": user_ids.user_id,
+            "trigger": "account_created",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_account_response_tolerates_missing_updated_at(monkeypatch) -> None:
+    user_ids = SimpleNamespace(user_id=uuid4(), organisation_id=uuid4())
+    company_payload = _company_payload()
+    company_payload.pop("updated_at")
+    company = SimpleNamespace(
+        company_id=company_payload["company_id"],
+        model_dump=lambda: company_payload,
+    )
+    service = SimpleNamespace(
+        session=SimpleNamespace(commit=AsyncMock()),
+        create_account=AsyncMock(return_value=AccountWriteResult(company, True, "created")),
+    )
+
+    async def noop_dispatch(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        accounts_handler,
+        "dispatch_account_research_async",
+        noop_dispatch,
+        raising=False,
+    )
+
+    response = await create_account(
+        response=FastAPIResponse(),
+        body=CreateAccountRequest(linkedin_url="https://www.linkedin.com/company/acme"),
+        user_ids=user_ids,
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status == "SUCCESS"
+    assert response.data.updated_at == company_payload["created_at"]
+    service.session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

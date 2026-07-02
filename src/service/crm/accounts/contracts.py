@@ -17,7 +17,15 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 # migrated to the new account module. Not every mode is used in this first slice.
 AccountCreateMode = Literal["strict", "resolve_or_create"]
 AccountDuplicateScope = Literal["strict_org", "internal_only", "resolve_or_create"]
-AccountMatchedBy = Literal["domain", "name", "explicit_id", "copied_source", "created"]
+AccountMatchedBy = Literal[
+    "domain",
+    "name",
+    "linkedin",
+    "apollo",
+    "explicit_id",
+    "copied_source",
+    "created",
+]
 
 
 @dataclass(frozen=True)

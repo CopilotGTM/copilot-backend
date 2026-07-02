@@ -19,6 +19,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     StakeholderSource,
 )
+from src.service.crm.contacts.resolution_service import ContactIdentityResolutionResult
 from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.errors import StakeholdersServiceError
@@ -488,18 +489,28 @@ def test_profile_update_helper_does_not_write_participant_profile_without_contac
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_allows_linkedin_only_without_email_snapshot() -> None:
+async def test_create_stakeholder_linkedin_only_resolves_contact_before_participant() -> None:
+    """LinkedIn-only create must resolve a contact before stakeholder row creation."""
     org_id = uuid4()
     deal_id = uuid4()
     integration_id = uuid4()
     linkedin_url = "https://linkedin.com/in/jane-buyer"
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=uuid4(),
+        email="jane@buyer.example",
+        full_name="Jane Buyer",
+        job_title="VP Finance",
+        linkedin_url=linkedin_url,
+    )
     participant = _participant(
         org_id=org_id,
         deal_id=deal_id,
         integration_id=integration_id,
-        email=None,
+        contact_id=contact.contact_id,
+        email=contact.email,
     )
-    participant.related_local_id = None
     session = _WriteSession([_FakeResult()])
     service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
 
@@ -507,25 +518,76 @@ async def test_create_stakeholder_allows_linkedin_only_without_email_snapshot() 
         assert _linkedin_url == linkedin_url
         return None
 
+    async def fake_resolve_contact_identity(**kwargs) -> ContactIdentityResolutionResult:
+        assert kwargs["linkedin_url"] == linkedin_url
+        assert kwargs["email"] is None
+        return ContactIdentityResolutionResult(
+            status="resolved",
+            contact=contact,
+            created=True,
+            matched_by="apollo",
+        )
+
     async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
-        assert _kwargs["email"] is None
-        assert _kwargs["contact_id"] is None
+        assert _kwargs["email"] == "jane@buyer.example"
+        assert _kwargs["contact_id"] == contact.contact_id
         assert "linkedin_url" not in _kwargs
         session.add(participant)
         return participant
 
+    async def fake_get_participant_contact(_participant: CRMDealParticipant) -> CRMContact:
+        """Return the resolved contact so the response uses contact-owned profile fields."""
+        return contact
+
     service._find_contact_by_linkedin_url = fake_find_contact_by_linkedin_url  # type: ignore[method-assign]
+    service._resolve_contact_identity = fake_resolve_contact_identity  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+    service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
 
     result = await service.create_stakeholder(
         deal_id,
         CreateStakeholderRequest(linkedin_url=linkedin_url),
     )
 
-    assert result.email is None
-    assert result.linkedin_url is None
-    assert not hasattr(participant, "linkedin_url")
+    assert result.contact_id == contact.contact_id
+    assert result.email == "jane@buyer.example"
+    assert result.linkedin_url == linkedin_url
     assert any(isinstance(obj, CRMDealParticipant) for obj in session.added)
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_linkedin_only_not_found_creates_no_participant() -> None:
+    """Unresolved LinkedIn-only create should fail instead of storing an empty participant."""
+    org_id = uuid4()
+    deal_id = uuid4()
+    linkedin_url = "https://linkedin.com/in/missing-buyer"
+    session = _WriteSession([_FakeResult()])
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    async def fake_find_contact_by_linkedin_url(_linkedin_url: str | None) -> None:
+        return None
+
+    async def fake_resolve_contact_identity(**_kwargs) -> ContactIdentityResolutionResult:
+        return ContactIdentityResolutionResult(
+            status="not_found",
+            error_detail="No matching person",
+        )
+
+    async def fake_ensure_participant(**_kwargs) -> CRMDealParticipant:
+        pytest.fail("unresolved LinkedIn-only input must not create participant rows")
+
+    service._find_contact_by_linkedin_url = fake_find_contact_by_linkedin_url  # type: ignore[method-assign]
+    service._resolve_contact_identity = fake_resolve_contact_identity  # type: ignore[method-assign]
+    service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
+
+    with pytest.raises(StakeholdersServiceError) as exc:
+        await service.create_stakeholder(
+            deal_id,
+            CreateStakeholderRequest(linkedin_url=linkedin_url),
+        )
+
+    assert exc.value.status_code == 404
+    assert session.added == []
 
 
 @pytest.mark.asyncio

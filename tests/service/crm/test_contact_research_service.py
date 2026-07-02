@@ -218,6 +218,45 @@ async def test_provider_result_does_not_overwrite_existing_job_title() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_result_fills_empty_email_and_preserves_match_metadata() -> None:
+    """Apollo work email and match metadata stay in contact-owned provider enrichment."""
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email=None,
+        linkedin_url="https://linkedin.com/in/ada-buyer",
+    )
+    session = _WriteSession(contact)
+
+    persisted = await ContactResearchService(session, organisation_id).persist_provider_result(
+        contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            profile_enrichment={
+                "provider": "apollo",
+                "apollo_id": "person_123",
+                "match_source": "linkedin_url",
+            },
+            enrichment_source="apollo",
+            email="ada@acme.com",
+            name="Ada Buyer",
+            linkedin_url="https://linkedin.com/in/ada-buyer",
+        ),
+    )
+
+    assert persisted is True
+    assert contact.email == "ada@acme.com"
+    assert contact.profile_enrichment["apollo_id"] == "person_123"
+    assert contact.profile_enrichment["match_source"] == "linkedin_url"
+    assert contact.profile_enriched_at is not None
+    assert contact.last_researched_at is None
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_result_stays_on_contact_without_updating_stakeholder_snapshots() -> None:
     """Contact enrichment should not refresh participant profile snapshots."""
     organisation_id = uuid4()
@@ -246,6 +285,8 @@ async def test_provider_result_stays_on_contact_without_updating_stakeholder_sna
     assert contact.full_name == "Ada Buyer"
     assert contact.job_title == "VP Engineering"
     assert contact.linkedin_url == "https://linkedin.com/in/ada-buyer"
+    assert contact.profile_enriched_at is not None
+    assert contact.last_researched_at is None
     assert session.statements == []
     assert session.commits == 1
 
@@ -273,5 +314,6 @@ async def test_summary_stays_on_contact_without_updating_stakeholder_research_sn
 
     assert persisted is True
     assert contact.contact_research == "## Ada Buyer\nResearch profile"
+    assert contact.last_researched_at is not None
     assert session.statements == []
     assert session.commits == 1

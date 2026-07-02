@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, NamedTuple
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
+from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 
 
 class DealTeamMember(BaseModel):
@@ -821,6 +822,19 @@ class CreateStakeholderRequest(BaseModel):
         json_schema_extra={"ui_category": "legacy", "ui_component": "tags"},
     )
 
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for stakeholder identity."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
+
     @model_validator(mode="after")
     def require_identity(self) -> CreateStakeholderRequest:
         """Require one explicit person key unless a CRM contact was selected."""
@@ -874,6 +888,19 @@ class UpdateStakeholderRequest(BaseModel):
         None,
         description="External profile links (LinkedIn, Twitter, etc.)",
     )
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for stakeholder identity."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
 
 
 class AvailableContactItem(BaseModel):

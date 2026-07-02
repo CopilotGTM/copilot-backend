@@ -336,11 +336,11 @@ async def create_stakeholder(
                 deal_id,
                 stakeholder.participant_id,
             )
-            research_job = await _contact_research_job_response(
-                organisation_id=service.organisation_id,
-                contact_id=stakeholder.contact_id,
-                user_id=user_ids.user_id,
-            )
+        research_job = await _contact_research_job_response(
+            organisation_id=service.organisation_id,
+            contact_id=stakeholder.contact_id,
+            user_id=user_ids.user_id,
+        )
 
         return Response.created_response(
             message="Stakeholder created successfully",

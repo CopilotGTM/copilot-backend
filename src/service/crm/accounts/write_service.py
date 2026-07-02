@@ -36,10 +36,14 @@ from src.service.crm.mutations.contracts import (
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import AccountMutationPolicy
 from src.service.crm.utils.account import (
+    ACCOUNT_LINKEDIN_URL_ERROR,
     clean_optional_string,
+    is_account_linkedin_url,
     normalize_account_domain,
     normalize_company_name,
 )
+
+AccountIdentityResolutionService = None
 
 
 class AccountWriteService:
@@ -90,7 +94,60 @@ class AccountWriteService:
         *,
         context: AccountWriteContext | None = None,
     ) -> AccountWriteResult:
-        """Create an internal CRM account after tenant-scoped duplicate checks."""
+        """Create or resolve an internal CRM account from web and LinkedIn identity."""
+        linkedin_url = clean_optional_string(command.linkedin_url)
+        if linkedin_url and not is_account_linkedin_url(linkedin_url):
+            raise AccountWriteServiceError(ACCOUNT_LINKEDIN_URL_ERROR, status_code=400)
+
+        if linkedin_url:
+            resolver_cls = globals().get("AccountIdentityResolutionService")
+            if resolver_cls is None:
+                from src.service.crm.accounts.resolution_service import (
+                    AccountIdentityResolutionService as ImportedAccountIdentityResolutionService,
+                )
+                from src.service.crm.accounts.resolution_service import (
+                    AccountIdentityResolveCommand,
+                )
+
+                resolver_cls = ImportedAccountIdentityResolutionService
+            else:
+                from src.service.crm.accounts.resolution_service import (
+                    AccountIdentityResolveCommand,
+                )
+            resolution = await resolver_cls(
+                self.session,
+                self.organisation_id,
+                account_writer=self,
+            ).resolve(
+                AccountIdentityResolveCommand(
+                    name=command.name,
+                    domain=command.domain,
+                    website=command.website,
+                    linkedin_url=command.linkedin_url,
+                    context=context,
+                )
+            )
+            if resolution.status == "resolved" and resolution.account:
+                return AccountWriteResult(
+                    resolution.account,
+                    resolution.created,
+                    resolution.matched_by or "apollo",
+                )
+            if not any([command.name, command.domain, command.website]):
+                raise AccountWriteServiceError(
+                    resolution.error_detail or "Unable to resolve LinkedIn URL to an account",
+                    status_code=404,
+                )
+
+        return await self._create_account_record(command, context=context)
+
+    async def _create_account_record(
+        self,
+        command: AccountCreateCommand,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> AccountWriteResult:
+        """Create the CRMCompany row after identity resolution has already run."""
         cleaned_name = clean_optional_string(command.name)
         raw_domain = command.domain or command.website
         normalized = normalize_account_domain(raw_domain)
@@ -257,6 +314,11 @@ class AccountWriteService:
                     data={"company_id": str(duplicate.company_id)},
                 )
 
+        if linkedin_url := clean_optional_string(updates.get("linkedin_url")):
+            if not is_account_linkedin_url(linkedin_url):
+                raise AccountWriteServiceError(ACCOUNT_LINKEDIN_URL_ERROR, status_code=400)
+            updates["linkedin_url"] = linkedin_url
+
         allowed_fields = {
             "name",
             "domain",
@@ -349,6 +411,9 @@ class AccountWriteService:
         industry = clean_optional_string(account_payload.get("industry"))
         country = clean_optional_string(account_payload.get("country"))
         normalized_name = normalize_company_name(name)
+
+        if linkedin_url and not is_account_linkedin_url(linkedin_url):
+            raise AccountWriteServiceError(ACCOUNT_LINKEDIN_URL_ERROR, status_code=400)
 
         if not domain:
             if not name:

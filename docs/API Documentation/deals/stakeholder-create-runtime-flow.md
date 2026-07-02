@@ -19,6 +19,12 @@ Create accepts these identity inputs:
 - `linkedin_url`
 - `name`
 
+`linkedin_url` is person-level only. Frontend and agent callers should send
+only LinkedIn profile URLs such as `linkedin.com/in/...` or
+`linkedin.com/pub/...`; company, school, and showcase LinkedIn pages belong on
+account records. The backend rejects account-style LinkedIn URLs here with
+`Use a LinkedIn profile URL for contacts and stakeholders`.
+
 The write path is now an upsert by strong identity. If the same deal already has
 a participant matching contact ID, email, or LinkedIn, create updates/reactivates
 that participant instead of returning a duplicate conflict.

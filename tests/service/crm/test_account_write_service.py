@@ -17,6 +17,7 @@ from src.service.crm.accounts.contracts import (
     AccountWriteContext,
     AccountWriteServiceError,
 )
+from src.service.crm.accounts.resolution_service import AccountIdentityResolutionResult
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
 
@@ -260,6 +261,103 @@ async def test_create_account_derives_name_from_domain_when_name_missing() -> No
 
     assert result.account.name == "acme.com"
     assert result.account.domain == "acme.com"
+
+
+@pytest.mark.asyncio
+async def test_create_account_linkedin_only_resolves_identity_before_writing(
+    monkeypatch,
+) -> None:
+    """Direct account create should resolve LinkedIn before creating an account row."""
+    organisation_id = uuid4()
+    company = CRMCompany(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        company_id=uuid4(),
+        name="Acme",
+        domain="acme.com",
+        linkedin_url="https://linkedin.com/company/acme",
+    )
+    session = SimpleNamespace(add=MagicMock())
+    service = AccountWriteService(session, organisation_id)
+    calls = []
+
+    class FakeAccountIdentityResolutionService:
+        def __init__(self, session_arg, organisation_id_arg, **kwargs):
+            calls.append((session_arg, organisation_id_arg, kwargs))
+
+        async def resolve(self, command):
+            calls.append(command)
+            return AccountIdentityResolutionResult(
+                status="resolved",
+                account=company,
+                created=True,
+                matched_by="apollo",
+            )
+
+    monkeypatch.setattr(
+        "src.service.crm.accounts.write_service.AccountIdentityResolutionService",
+        FakeAccountIdentityResolutionService,
+        raising=False,
+    )
+
+    result = await service.create_account(
+        AccountCreateCommand(linkedin_url="https://linkedin.com/company/acme"),
+        context=AccountWriteContext(source="api"),
+    )
+
+    assert result.account is company
+    assert result.created is True
+    assert result.matched_by == "apollo"
+    assert calls[0][0] is session
+    assert calls[0][1] == organisation_id
+    assert calls[1].linkedin_url == "https://linkedin.com/company/acme"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_account_rejects_person_linkedin_url_before_resolution(monkeypatch) -> None:
+    """Service callers must reject person LinkedIn URLs before account enrichment."""
+    organisation_id = uuid4()
+    session = SimpleNamespace(add=MagicMock())
+    service = AccountWriteService(session, organisation_id)
+
+    class FakeAccountIdentityResolutionService:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("Person LinkedIn URLs should not reach account resolution")
+
+    monkeypatch.setattr(
+        "src.service.crm.accounts.write_service.AccountIdentityResolutionService",
+        FakeAccountIdentityResolutionService,
+        raising=False,
+    )
+
+    with pytest.raises(AccountWriteServiceError) as exc_info:
+        await service.create_account(
+            AccountCreateCommand(linkedin_url="https://linkedin.com/in/jane-buyer")
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Use a LinkedIn company, school, or showcase URL for accounts"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_account_rejects_person_linkedin_url_even_with_domain() -> None:
+    """A valid domain must not make a person LinkedIn URL storable on an account."""
+    organisation_id = uuid4()
+    service = AccountWriteService(SimpleNamespace(add=MagicMock()), organisation_id)
+
+    with pytest.raises(AccountWriteServiceError) as exc_info:
+        await service.create_account(
+            AccountCreateCommand(
+                name="Acme",
+                domain="acme.com",
+                linkedin_url="https://linkedin.com/in/jane-buyer",
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Use a LinkedIn company, school, or showcase URL for accounts"
 
 
 @pytest.mark.asyncio
@@ -590,6 +688,31 @@ async def test_update_account_rejects_domain_owned_by_another_account() -> None:
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.data == {"company_id": str(other.company_id)}
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_account_rejects_person_linkedin_url() -> None:
+    """Account updates should reject person profile URLs before mutating the row."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    company = _company(organisation_id, integration_id)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(first=company)),
+        add=MagicMock(),
+        flush=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = AccountWriteService(session, organisation_id)
+
+    with pytest.raises(AccountWriteServiceError) as exc_info:
+        await service.update_account(
+            company.company_id,
+            {"linkedin_url": "https://linkedin.com/in/jane-buyer"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Use a LinkedIn company, school, or showcase URL for accounts"
     session.add.assert_not_called()
 
 

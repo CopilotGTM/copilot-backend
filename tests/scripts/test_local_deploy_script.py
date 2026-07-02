@@ -48,3 +48,10 @@ def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> 
     assert "[bool]$RunStartupJobs = $false" in script_text
     assert "if (-not $RunStartupJobs) {" in full_deploy_args
     assert '"--no-hooks"' in full_deploy_args
+
+
+def test_full_local_deploy_does_not_force_second_worker_restart() -> None:
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "kubectl rollout restart deployment $deployment -n $NAMESPACE" not in script_text
+    assert "Waiting for worker deployments updated by Helm" in script_text

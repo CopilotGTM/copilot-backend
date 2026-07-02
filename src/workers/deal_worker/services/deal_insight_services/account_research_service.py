@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from src.agents.workflows.account_research_summary import AccountResearchSummaryAgent
@@ -53,6 +54,7 @@ class _AccountResearchSnapshot:
     domain: str | None
     website: str | None
     linkedin_url: str | None
+    company_enrichment: dict[str, Any]
 
 
 class AccountResearchWorkflowService:
@@ -80,50 +82,56 @@ class AccountResearchWorkflowService:
         if snapshot is None:
             raise AccountResearchWorkflowError("Account not found", retryable=False)
 
-        if not snapshot.domain and not snapshot.linkedin_url:
+        if snapshot.company_enrichment:
+            provider_status = "cached"
+            company_enrichment = snapshot.company_enrichment
+        elif not snapshot.domain and not snapshot.linkedin_url:
             return AccountResearchWorkflowResult(
                 provider_status="skipped",
                 summary_status="skipped",
             )
-
-        provider_result = await self.provider_lookup(
-            AccountProviderResearchInput(
-                organisation_id=self.organisation_id,
-                company_id=snapshot.company_id,
-                name=snapshot.name,
-                domain=snapshot.domain,
-                website=snapshot.website,
-                linkedin_url=snapshot.linkedin_url,
-            )
-        )
-
-        if provider_result.status == "error":
-            raise AccountResearchWorkflowError(
-                provider_result.error_detail or "Account provider research failed",
-                retryable=True,
+        else:
+            provider_result = await self.provider_lookup(
+                AccountProviderResearchInput(
+                    organisation_id=self.organisation_id,
+                    company_id=snapshot.company_id,
+                    name=snapshot.name,
+                    domain=snapshot.domain,
+                    website=snapshot.website,
+                    linkedin_url=snapshot.linkedin_url,
+                )
             )
 
-        async for session in acquire_org_async_session(self.organisation_id):
-            await AccountResearchService(session, self.organisation_id).persist_provider_result(
-                snapshot.company_id,
-                provider_result,
-            )
-            break
+            if provider_result.status == "error":
+                raise AccountResearchWorkflowError(
+                    provider_result.error_detail or "Account provider research failed",
+                    retryable=True,
+                )
 
-        if provider_result.status != "found" or not provider_result.company_enrichment:
+            async for session in acquire_org_async_session(self.organisation_id):
+                await AccountResearchService(session, self.organisation_id).persist_provider_result(
+                    snapshot.company_id,
+                    provider_result,
+                )
+                break
+
+            provider_status = provider_result.status
+            company_enrichment = provider_result.company_enrichment or {}
+
+        if provider_status not in {"found", "cached"} or not company_enrichment:
             await self._record_completion_activity(
                 snapshot.company_id,
                 job_id=job_id,
-                provider_status=provider_result.status,
+                provider_status=provider_status,
             )
             return AccountResearchWorkflowResult(
-                provider_status=provider_result.status,
+                provider_status=provider_status,
                 summary_status="skipped",
             )
 
         summary_result = await self._generate_summary(
             snapshot.company_id,
-            provider_result.company_enrichment,
+            company_enrichment,
         )
         if summary_result.status == "generated":
             async for session in acquire_org_async_session(self.organisation_id):
@@ -136,10 +144,10 @@ class AccountResearchWorkflowService:
         await self._record_completion_activity(
             snapshot.company_id,
             job_id=job_id,
-            provider_status=provider_result.status,
+            provider_status=provider_status,
         )
         return AccountResearchWorkflowResult(
-            provider_status=provider_result.status,
+            provider_status=provider_status,
             summary_status=summary_result.status,
             summary_markdown=summary_result.summary_markdown,
         )
@@ -185,6 +193,7 @@ class AccountResearchWorkflowService:
                 domain=domain,
                 website=account.website,
                 linkedin_url=linkedin_url,
+                company_enrichment=dict(account.company_enrichment or {}),
             )
         return None
 

@@ -330,47 +330,9 @@ async def create_contact(
                 created_via="contacts_app",
             ),
         )
-        # The write service stages all changes on the request session; the router commits only
-        # after the mutation succeeds so validation failures can cleanly roll back.
-        await service.org_session.commit()
         contact = result.contact
-        try:
-            await dispatch_contact_research_async(
-                organisation_id=user_ids.organisation_id,
-                contact_id=contact.contact_id,
-                user_id=user_ids.user_id,
-                trigger="contact_created",
-            )
-        except Exception:
-            logger.warning(
-                "Contact research dispatch failed after contact create",
-                extra={
-                    "event": "contact_research_dispatch_failed",
-                    "organisation_id": str(user_ids.organisation_id),
-                    "contact_id": str(contact.contact_id),
-                },
-                exc_info=True,
-            )
-        if result.created_account_id:
-            try:
-                await dispatch_account_research_async(
-                    organisation_id=user_ids.organisation_id,
-                    company_id=result.created_account_id,
-                    user_id=user_ids.user_id,
-                    trigger="contact_created_account",
-                )
-            except Exception:
-                logger.warning(
-                    "Account research dispatch failed after contact-created account",
-                    extra={
-                        "event": "account_research_dispatch_failed",
-                        "organisation_id": str(user_ids.organisation_id),
-                        "company_id": str(result.created_account_id),
-                        "contact_id": str(contact.contact_id),
-                    },
-                    exc_info=True,
-                )
-
+        contact_created_at = contact.created_at
+        contact_updated_at = getattr(contact, "updated_at", None) or contact_created_at
         data = ContactMutationItem(
             contact_id=contact.contact_id,
             first_name=contact.first_name,
@@ -386,9 +348,51 @@ async def create_contact(
             owner_name=getattr(contact, "owner_name", None),
             deal_count=0,
             source="manual",
-            created_at=contact.created_at,
-            updated_at=contact.updated_at,
+            created_at=contact_created_at,
+            updated_at=contact_updated_at,
         )
+        # The write service stages all changes on the request session; the router commits only
+        # after the mutation succeeds so validation failures can cleanly roll back.
+        await service.org_session.commit()
+        if data.email or body.linkedin_url:
+            try:
+                await dispatch_contact_research_async(
+                    organisation_id=user_ids.organisation_id,
+                    contact_id=data.contact_id,
+                    user_id=user_ids.user_id,
+                    trigger="contact_created",
+                )
+            except Exception:
+                logger.warning(
+                    "Contact research dispatch failed after contact create",
+                    extra={
+                        "event": "contact_research_dispatch_failed",
+                        "organisation_id": str(user_ids.organisation_id),
+                        "contact_id": str(data.contact_id),
+                    },
+                    exc_info=True,
+                )
+        account_research_company_id = result.created_account_id or data.company_id
+        if account_research_company_id:
+            try:
+                await dispatch_account_research_async(
+                    organisation_id=user_ids.organisation_id,
+                    company_id=account_research_company_id,
+                    user_id=user_ids.user_id,
+                    trigger="contact_created_account",
+                )
+            except Exception:
+                logger.warning(
+                    "Account research dispatch failed after contact-created account",
+                    extra={
+                        "event": "account_research_dispatch_failed",
+                        "organisation_id": str(user_ids.organisation_id),
+                        "company_id": str(account_research_company_id),
+                        "contact_id": str(data.contact_id),
+                    },
+                    exc_info=True,
+                )
+
         return Response.created_response(message="Contact created", data=data)
     except ContactWriteServiceError as e:
         # Service errors are expected validation or conflict failures, but the session may

@@ -402,6 +402,22 @@ class FakeStakeholdersService:
         contact = self._contacts.get(contact_id) if contact_id else None
         if contact_id and not contact:
             raise StakeholdersServiceError("Contact not found", status_code=404)
+        if not contact and request.linkedin_url:
+            contact = next(
+                (
+                    candidate
+                    for candidate in self._contacts.values()
+                    if candidate.linkedin_url
+                    and candidate.linkedin_url.strip().lower()
+                    == request.linkedin_url.strip().lower()
+                ),
+                None,
+            )
+            if not contact and not email:
+                raise StakeholdersServiceError(
+                    "Unable to resolve LinkedIn URL to a contact",
+                    status_code=404,
+                )
         if contact:
             email = contact.email.lower().strip() if contact.email else email
             name = name or contact.full_name

@@ -14,7 +14,7 @@ from src.api.routers.crm.contacts_handler import (
     list_contacts,
     search_contact_create_candidates,
 )
-from src.api.schemas.crm_contact_models import CreateContactRequest
+from src.api.schemas.crm_contact_models import CreateContactRequest, UpdateContactRequest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -70,11 +70,46 @@ class _FakeContactWriteService:
 
 
 class _AsyncCall:
-    def __init__(self) -> None:
+    def __init__(self, on_call=None) -> None:
         self.count = 0
+        self.on_call = on_call
 
     async def __call__(self) -> None:
         self.count += 1
+        if self.on_call:
+            self.on_call()
+
+
+class _CommitExpiringContact:
+    """Test double for async SQLAlchemy objects that expire attributes on commit."""
+
+    _tracked_fields = {
+        "contact_id",
+        "first_name",
+        "last_name",
+        "full_name",
+        "email",
+        "job_title",
+        "phone",
+        "company_name",
+        "company_id",
+        "lifecycle_stage",
+        "owner_name",
+        "created_at",
+        "updated_at",
+    }
+
+    def __init__(self, **fields):
+        self.expired = False
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+    def __getattribute__(self, name):
+        if name in object.__getattribute__(self, "_tracked_fields") and object.__getattribute__(
+            self, "expired"
+        ):
+            raise AssertionError(f"{name} was accessed after commit")
+        return object.__getattribute__(self, name)
 
 
 def test_create_contact_request_accepts_email_without_name() -> None:
@@ -88,6 +123,39 @@ def test_create_contact_request_accepts_email_without_name() -> None:
     assert request.name is None
     assert request.job_title == "CFO"
     assert request.linkedin_url == "https://linkedin.com/in/buyer"
+
+
+def test_create_contact_request_accepts_linkedin_without_email() -> None:
+    """Contact create treats LinkedIn as a resolvable identity input."""
+    request = CreateContactRequest(linkedin_url="https://linkedin.com/in/buyer")
+
+    assert request.email is None
+    assert request.linkedin_url == "https://linkedin.com/in/buyer"
+
+
+def test_create_contact_request_accepts_name_without_email_or_linkedin() -> None:
+    """Name-only contact create is a non-researchable placeholder."""
+    request = CreateContactRequest(name="Jane Buyer")
+
+    assert request.name == "Jane Buyer"
+    assert request.email is None
+    assert request.linkedin_url is None
+
+
+def test_create_contact_request_rejects_company_linkedin_url() -> None:
+    """Contact create should not accept a company page as person identity."""
+    with pytest.raises(ValidationError) as exc_info:
+        CreateContactRequest(linkedin_url="https://www.linkedin.com/company/acme")
+
+    assert "Use a LinkedIn profile URL for contacts and stakeholders" in str(exc_info.value)
+
+
+def test_update_contact_request_rejects_company_linkedin_url() -> None:
+    """Contact update should keep account LinkedIn URLs off person records."""
+    with pytest.raises(ValidationError) as exc_info:
+        UpdateContactRequest(linkedin_url="https://www.linkedin.com/company/acme")
+
+    assert "Use a LinkedIn profile URL for contacts and stakeholders" in str(exc_info.value)
 
 
 def test_create_contact_request_rejects_removed_api_fields() -> None:
@@ -203,6 +271,202 @@ async def test_create_contact_handler_dispatches_research_after_commit(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_contact_handler_dispatches_linkedin_contact_without_email(
+    monkeypatch,
+) -> None:
+    """LinkedIn-resolved contacts should reach centralized research dispatch without email."""
+    org_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email=None,
+        full_name="LinkedIn Buyer",
+        linkedin_url="https://linkedin.com/in/buyer",
+        profile_enrichment={"provider": "apollo", "name": "LinkedIn Buyer"},
+    )
+    service = _FakeContactWriteService(contact)
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        calls.append(
+            {
+                **kwargs,
+                "commit_count_at_dispatch": service.org_session.commit.count,
+            }
+        )
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(linkedin_url="https://linkedin.com/in/buyer"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.email is None  # type: ignore[union-attr]
+    assert calls == [
+        {
+            "organisation_id": org_id,
+            "contact_id": contact.contact_id,
+            "user_id": user_id,
+            "trigger": "contact_created",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_contact_response_tolerates_missing_updated_at(monkeypatch) -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    now = datetime(2026, 6, 25, 10, 0, tzinfo=UTC)
+    contact = SimpleNamespace(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        first_name=None,
+        last_name=None,
+        full_name="LinkedIn Buyer",
+        email="buyer@example.com",
+        job_title=None,
+        phone=None,
+        company_name=None,
+        company_id=None,
+        lifecycle_stage=None,
+        created_at=now,
+    )
+    service = _FakeContactWriteService(contact)  # type: ignore[arg-type]
+
+    async def noop_dispatch(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        noop_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(linkedin_url="https://linkedin.com/in/buyer"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.data.updated_at == now  # type: ignore[union-attr]
+    assert service.org_session.commit.count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_uses_precommit_snapshot_for_response(monkeypatch) -> None:
+    """Async SQLAlchemy expires rows on commit; response shaping must not lazy-load them."""
+    org_id = uuid4()
+    user_id = uuid4()
+    contact_id = uuid4()
+    now = datetime(2026, 7, 2, 10, 0, tzinfo=UTC)
+    contact = _CommitExpiringContact(
+        contact_id=contact_id,
+        first_name="Jane",
+        last_name="Buyer",
+        full_name="Jane Buyer",
+        email="jane@example.com",
+        job_title="CFO",
+        phone=None,
+        company_name=None,
+        company_id=None,
+        lifecycle_stage=None,
+        owner_name=None,
+        created_at=now,
+        updated_at=now,
+    )
+    service = _FakeContactWriteService(contact)  # type: ignore[arg-type]
+    service.org_session.commit = _AsyncCall(on_call=lambda: setattr(contact, "expired", True))
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        calls.append({**kwargs, "commit_count_at_dispatch": service.org_session.commit.count})
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(email="jane@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.contact_id == contact_id  # type: ignore[union-attr]
+    assert result.data.email == "jane@example.com"  # type: ignore[union-attr]
+    assert calls == [
+        {
+            "organisation_id": org_id,
+            "contact_id": contact_id,
+            "user_id": user_id,
+            "trigger": "contact_created",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_skips_research_for_name_only_contact(monkeypatch) -> None:
+    """Name-only contacts have no email/domain identity, so no research job should be queued."""
+    org_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email=None,
+        full_name="Jane Buyer",
+    )
+    service = _FakeContactWriteService(contact)
+
+    async def fail_contact_dispatch(**_kwargs):
+        raise AssertionError("name-only contacts should not dispatch contact research")
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fail_contact_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(name="Jane Buyer"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.data.email is None  # type: ignore[union-attr]
+    assert service.org_session.commit.count == 1
+
+
+@pytest.mark.asyncio
 async def test_create_contact_handler_dispatches_account_research_for_created_account(
     monkeypatch,
 ) -> None:
@@ -227,6 +491,72 @@ async def test_create_contact_handler_dispatches_account_research_for_created_ac
         )
 
     service.create_contact = create_contact_with_account
+    contact_calls: list[dict] = []
+    account_calls: list[dict] = []
+
+    async def fake_contact_dispatch(**kwargs):
+        contact_calls.append(kwargs)
+
+    async def fake_account_dispatch(**kwargs):
+        account_calls.append(
+            {
+                **kwargs,
+                "commit_count_at_dispatch": service.org_session.commit.count,
+            }
+        )
+
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_research_async",
+        fake_contact_dispatch,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_account_research_async",
+        fake_account_dispatch,
+        raising=False,
+    )
+
+    result = await create_contact(
+        body=CreateContactRequest(email="buyer@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert len(contact_calls) == 1
+    assert account_calls == [
+        {
+            "organisation_id": org_id,
+            "company_id": company_id,
+            "user_id": user_id,
+            "trigger": "contact_created_account",
+            "commit_count_at_dispatch": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_dispatches_account_research_for_linked_account(
+    monkeypatch,
+) -> None:
+    """Contact create should hand linked accounts to the account dispatcher after commit."""
+    org_id = uuid4()
+    user_id = uuid4()
+    company_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        company_id=company_id,
+        company_name="Acme",
+    )
+    service = _FakeContactWriteService(contact)
     contact_calls: list[dict] = []
     account_calls: list[dict] = []
 

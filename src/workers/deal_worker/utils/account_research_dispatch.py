@@ -49,7 +49,7 @@ async def dispatch_account_research_async(
         if not domain and not linkedin_url:
             return None
 
-        if not force_refresh and _is_recent(account.last_researched_at):
+        if not force_refresh and account.account_summary and _is_recent(account.last_researched_at):
             return None
 
         existing = await session.execute(

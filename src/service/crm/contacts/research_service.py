@@ -18,6 +18,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.service.crm.utils.identity import normalize_email
 from src.service.enrichment.apollo import apollo_enrich_person
 
 ContactProviderStatus = Literal["found", "not_found", "error"]
@@ -33,7 +34,7 @@ class ContactProviderResearchInput:
 
     organisation_id: UUID
     contact_id: UUID
-    email: str
+    email: str | None = None
     name: str | None = None
     company_name: str | None = None
     company_domain: str | None = None
@@ -48,6 +49,7 @@ class ContactProviderResearchResult:
     error_detail: str | None = None
     profile_enrichment: dict[str, Any] | None = None
     enrichment_source: str | None = None
+    email: str | None = None
     name: str | None = None
     first_name: str | None = None
     last_name: str | None = None
@@ -77,6 +79,8 @@ class ContactResearchService:
         self,
         contact_id: UUID,
         result: ContactProviderResearchResult,
+        *,
+        commit: bool = True,
     ) -> bool:
         """Persist structured provider fields and mark successful research attempts.
 
@@ -90,7 +94,13 @@ class ContactResearchService:
 
         now = datetime.now(UTC)
         if result.status == "not_found":
-            contact.last_researched_at = now
+            contact.profile_enriched_at = now
+            contact.profile_enrichment_source = result.enrichment_source or "apollo"
+            contact.profile_enrichment = {
+                "provider": result.enrichment_source or "apollo",
+                "status": "not_found",
+                "error_detail": result.error_detail,
+            }
             contact.contact_research = None
             await self.session.commit()
             return True
@@ -98,7 +108,6 @@ class ContactResearchService:
         if result.status != "found":
             return False
 
-        contact.last_researched_at = now
         contact.profile_enriched_at = now
         contact.profile_enrichment_source = result.enrichment_source or "apollo"
         contact.profile_enrichment = dict(result.profile_enrichment or {})
@@ -109,12 +118,18 @@ class ContactResearchService:
             contact.first_name = result.first_name
         if self._should_fill(contact.last_name, result.last_name):
             contact.last_name = result.last_name
+        if self._should_fill_empty(contact.email, result.email):
+            contact.email = normalize_email(result.email)
         if self._should_fill_empty(contact.job_title, result.job_title):
             contact.job_title = result.job_title
         if self._should_fill(contact.linkedin_url, result.linkedin_url):
             contact.linkedin_url = result.linkedin_url
 
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
+            await self.session.refresh(contact)
         return True
 
     async def persist_summary(
@@ -131,6 +146,7 @@ class ContactResearchService:
             return False
 
         contact.contact_research = summary.summary_markdown
+        contact.last_researched_at = datetime.now(UTC)
         # Keep new research markdown contact-owned. Participant research remains
         # only a legacy fallback until all stakeholder reads join CRMContact.
         await self.session.commit()
@@ -175,10 +191,12 @@ async def research_contact_with_apollo(
         return ContactProviderResearchResult(status=status, error_detail=error)
 
     job_title = _resolve_job_title(result)
+    result["match_source"] = _match_source(payload)
     return ContactProviderResearchResult(
         status="found",
         profile_enrichment=_profile_enrichment(result, job_title),
         enrichment_source="apollo",
+        email=result.get("email"),
         name=result.get("name"),
         first_name=result.get("first_name"),
         last_name=result.get("last_name"),
@@ -194,6 +212,8 @@ def _profile_enrichment(profile: dict[str, Any], job_title: str | None) -> dict[
     return {
         "provider": "apollo",
         "apollo_id": profile.get("apollo_id"),
+        "match_source": profile.get("match_source"),
+        "email": profile.get("email"),
         "name": profile.get("name"),
         "first_name": profile.get("first_name"),
         "last_name": profile.get("last_name"),
@@ -225,6 +245,16 @@ def _resolve_job_title(profile: dict[str, Any]) -> str | None:
         if current_title:
             return str(current_title)
 
+    return None
+
+
+def _match_source(payload: ContactProviderResearchInput) -> str | None:
+    if payload.linkedin_url:
+        return "linkedin_url"
+    if payload.email:
+        return "email"
+    if payload.name:
+        return "name"
     return None
 
 

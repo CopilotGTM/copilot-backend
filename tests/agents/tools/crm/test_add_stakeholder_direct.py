@@ -256,7 +256,7 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
 
 
 @pytest.mark.asyncio
-async def test_add_stakeholder_direct_does_not_research_linkedin_only_stakeholder() -> None:
+async def test_add_stakeholder_direct_does_not_research_unlinked_linkedin_placeholder() -> None:
     context = _context()
     deal_id = uuid4()
     stakeholder_id = uuid4()

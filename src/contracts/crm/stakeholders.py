@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
+from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 
 
 class StakeholderLink(BaseModel):
@@ -81,6 +82,19 @@ class CreateStakeholderCommand(BaseModel):
     motivation: str | None = None
     pain_points: list[str] | None = None
 
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for stakeholder identity."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
+
     @model_validator(mode="after")
     def require_identity(self) -> CreateStakeholderCommand:
         """Require one explicit person key unless a CRM contact was selected."""
@@ -104,6 +118,19 @@ class UpdateStakeholderCommand(BaseModel):
     motivation: str | None = None
     pain_points: list[str] | None = None
     external_links: list[StakeholderLink] | None = None
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def validate_linkedin_url(cls, value: str | None) -> str | None:
+        """Accept only person profile LinkedIn URLs for stakeholder identity."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not is_person_linkedin_url(cleaned):
+            raise ValueError(PERSON_LINKEDIN_URL_ERROR)
+        return cleaned
 
 
 class SkippedContact(BaseModel):

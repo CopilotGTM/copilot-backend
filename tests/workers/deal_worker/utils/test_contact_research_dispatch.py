@@ -1,5 +1,8 @@
+"""Regression tests for the shared contact research dispatch boundary."""
+
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -15,9 +18,11 @@ class _Result:
         self.rows = rows or []
 
     def scalars(self):
+        """Return self so tests can mimic SQLAlchemy's scalar result chain."""
         return self
 
     def all(self):
+        """Return all queued rows for active-job lookup assertions."""
         return self.rows
 
 
@@ -29,15 +34,19 @@ class _Session:
         self.commits = 0
 
     async def get(self, _model, _item_id):  # noqa: ANN001
+        """Return the configured contact for dispatcher load checks."""
         return self.contact
 
     async def execute(self, _stmt):  # noqa: ANN001
+        """Return active jobs without evaluating SQLAlchemy expressions."""
         return _Result(self.active_jobs)
 
     def add(self, row):
+        """Capture the job row that dispatch should persist."""
         self.added.append(row)
 
     async def commit(self):
+        """Record commits so tests prove job creation persists once."""
         self.commits += 1
 
 
@@ -47,6 +56,7 @@ class _Projection:
         PROJECTIONS.append(self)
 
     async def upsert_contact_enrichment_triggered(self, contact, **kwargs):  # noqa: ANN001
+        """Record projection calls without touching activity-feed storage."""
         self.calls.append((contact, kwargs))
 
 
@@ -67,6 +77,7 @@ async def test_dispatch_for_contact_skips_missing_contact_id(monkeypatch) -> Non
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
 
     def fail_session(_organisation_id):  # noqa: ANN001
+        """Fail if a missing contact enters DB-backed dispatch logic."""
         raise AssertionError("missing contact_id should skip dispatch before session acquisition")
 
     monkeypatch.setattr(dispatch_module, "acquire_org_async_session", fail_session)
@@ -82,7 +93,7 @@ async def test_dispatch_for_contact_skips_missing_contact_id(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_dispatch_for_contact_delegates_to_contact_research(monkeypatch) -> None:
-    """Post-commit callers should use one helper around contact-owned research."""
+    """Linked contact IDs should flow through the shared dispatcher boundary."""
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
 
     organisation_id = uuid4()
@@ -91,6 +102,7 @@ async def test_dispatch_for_contact_delegates_to_contact_research(monkeypatch) -
     calls = []
 
     async def fake_dispatch_contact_research_async(**kwargs):  # noqa: ANN001
+        """Capture low-level dispatcher kwargs for boundary assertions."""
         calls.append(kwargs)
         return "queued-job"
 
@@ -194,6 +206,100 @@ async def test_dispatch_reuses_active_contact_job(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_queues_summary_when_provider_enriched_but_research_missing(
+    monkeypatch,
+) -> None:
+    """Fresh Apollo enrichment should not block the missing LLM research summary."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+        profile_enrichment={"provider": "apollo", "headline": "Revenue leader"},
+        profile_enriched_at=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        last_researched_at=datetime(2026, 7, 2, 10, 1, tzinfo=UTC),
+        contact_research=None,
+    )
+    session = _Session(contact)
+    sent: list[tuple[str, dict]] = []
+
+    async def fake_send(task_name, **kwargs):  # noqa: ANN001
+        """Capture broker sends without requiring a running worker queue."""
+        sent.append((task_name, kwargs))
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact.contact_id,
+        user_id=user_id,
+        trigger="contact_created",
+    )
+
+    assert job_id is not None
+    assert len(session.added) == 1
+    assert sent[0][0] == "contact_research.process_job"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_queues_summary_for_provider_enriched_contact_without_email(
+    monkeypatch,
+) -> None:
+    """LinkedIn-created contacts with cached provider data can still get LLM summaries."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email=None,
+        linkedin_url="https://linkedin.com/in/no-email",
+        profile_enrichment={"provider": "apollo", "name": "No Email Buyer"},
+        contact_research=None,
+    )
+    session = _Session(contact)
+    sent: list[tuple[str, dict]] = []
+
+    async def fake_send(task_name, **kwargs):  # noqa: ANN001
+        """Capture broker sends without requiring a running worker queue."""
+        sent.append((task_name, kwargs))
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact.contact_id,
+        user_id=user_id,
+        trigger="contact_created",
+    )
+
+    assert job_id is not None
+    assert len(session.added) == 1
+    assert session.added[0].job_metadata["normalized_email"] is None
+    assert sent[0][0] == "contact_research.process_job"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_creates_contact_research_job(monkeypatch) -> None:
     """Business-domain contacts should enqueue a contact-scoped research job."""
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
@@ -210,6 +316,7 @@ async def test_dispatch_creates_contact_research_job(monkeypatch) -> None:
     sent: list[tuple[str, dict]] = []
 
     async def fake_send(task_name, **kwargs):  # noqa: ANN001
+        """Capture broker sends without requiring a running worker queue."""
         sent.append((task_name, kwargs))
 
     monkeypatch.setattr(
@@ -262,6 +369,7 @@ async def test_dispatch_creates_contact_research_job(monkeypatch) -> None:
 
 
 def test_contact_research_has_no_scheduled_retry_route() -> None:
+    """Contact research should run only from explicit dispatch, not scheduled retries."""
     assert "contact-research-retry" not in SCHEDULED_JOBS
     routes = DealWorkerConfig().task_routes
     assert "contact_research.process_job" in routes
