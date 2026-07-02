@@ -22,12 +22,11 @@ python -m scripts.run_org_migrations --all || {
     exit 1
 }
 
-# Conditionally run super admin deployment only if SUPER_ADMIN_EMAIL present.
+# Conditionally run super admin initialization only if SUPER_ADMIN_EMAIL present.
 if [ -n "${SUPER_ADMIN_EMAIL:-}" ]; then
     echo "[startup] SUPER_ADMIN_EMAIL detected; running super admin initialization..."
-    # The deploy_with_super_admin script already runs migrations again; skip duplicate by exporting flag if supported later.
-    python -m scripts.admin.deploy_with_super_admin || {
-        echo "[startup][ERROR] Super admin deployment failed" >&2
+    python -m scripts.admin.init_super_admin || {
+        echo "[startup][ERROR] Super admin initialization failed" >&2
         exit 1
     }
 else

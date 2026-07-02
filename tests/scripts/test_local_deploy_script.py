@@ -39,6 +39,16 @@ def test_full_local_deploy_keeps_bootstrap_install_values() -> None:
     assert '"--create-namespace"' in full_deploy_args
     assert "api.secrets.REDIS_HOST=$($env:REDIS_HOST)" in full_deploy_args
     assert "global.redis.host=$($env:REDIS_HOST)" in full_deploy_args
+    assert (
+        "chat-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)"
+        in full_deploy_args
+    )
+    assert (
+        "chat-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        in full_deploy_args
+    )
+    assert "chat-beat.image.repository=$lightRepo" in full_deploy_args
+    assert "chat-beat.image.tag=$IMAGE_TAG" in full_deploy_args
 
 
 def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> None:
@@ -46,12 +56,23 @@ def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> 
     full_deploy_args = _full_deploy_helm_args(script_text)
 
     assert "[bool]$RunStartupJobs = $false" in script_text
+    assert '"--timeout", "20m"' in full_deploy_args
     assert "if (-not $RunStartupJobs) {" in full_deploy_args
     assert '"--no-hooks"' in full_deploy_args
+
+
+def test_pending_release_rollback_waits_before_next_upgrade() -> None:
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "helm rollback $HELM_RELEASE_NAME -n $NAMESPACE --wait --timeout 20m --no-hooks" in (
+        script_text
+    )
 
 
 def test_full_local_deploy_does_not_force_second_worker_restart() -> None:
     script_text = SCRIPT_PATH.read_text(encoding="utf-8")
 
     assert "kubectl rollout restart deployment $deployment -n $NAMESPACE" not in script_text
-    assert "Waiting for worker deployments updated by Helm" in script_text
+    assert "Waiting for API and worker deployments updated by Helm" in script_text
+    assert '"copilot-backend",' in script_text
+    assert '"copilot-backend-chat-beat",' in script_text

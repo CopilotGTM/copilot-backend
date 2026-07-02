@@ -116,7 +116,7 @@ api:
   jobs:
     startup:
       enabled: true
-      hook: "post-install,post-upgrade"
+      hook: "post-install,pre-upgrade"
       hookWeight: "1"
       command: ["/bin/bash", "-c"]
       args:
@@ -503,8 +503,6 @@ dealCronJobs:
       schedule: "10 */3 * * *"
     - name: email-attachment-extraction
       schedule: "20,50 * * * *"
-    - name: stakeholder-research-retry
-      schedule: "20 * * * *"
     - name: meeting-bot-fallback
       schedule: "0 20 * * *"
     - name: sales-dashboard-snapshot
