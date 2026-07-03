@@ -151,6 +151,15 @@ integrations-worker:
       cpu: "2000m"
       memory: "6Gi"
 
+integrationsCronJobs:
+  jobs:
+    - name: refresh-tokens
+      schedule: "0 */4 * * *"
+    - name: renew-microsoft-graph-subscriptions
+      schedule: "0 */12 * * *"
+    - name: renew-google-subscriptions
+      schedule: "0 2 * * *"
+
 deal-worker:
   config:
     concurrency: 1
@@ -167,6 +176,17 @@ deal-worker:
     limits:
       cpu: "1000m"
       memory: "3Gi"
+
+dealCronJobs:
+  jobs:
+    - name: deal-mapping
+      schedule: "3 */2 * * *"
+    - name: stale-deal-job-cleanup
+      schedule: "45 * * * *"
+    - name: meeting-bot-fallback
+      schedule: "0 20 * * *"
+    - name: sales-dashboard-snapshot
+      schedule: "15 1 * * *"
 
 deal-beat:
   enabled: false
