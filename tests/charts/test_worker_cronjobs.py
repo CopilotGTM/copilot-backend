@@ -72,16 +72,14 @@ def test_chart_cronjob_names_match_worker_schedule_registries() -> None:
     assert {job["name"] for job in values["dealCronJobs"]["jobs"]} <= set(DEAL_SCHEDULED_JOBS)
 
 
-def test_integrations_cronjobs_render_with_production_job_hardening() -> None:
-    """Assert integrations CronJob keeps strict production restart and deadline settings."""
+def test_allowed_prod_integrations_cronjob_renders_with_hardening() -> None:
+    """Assert remaining integrations CronJob keeps strict production hardening."""
     cronjobs = _render_prod_worker_cronjobs()
-    deal_messages = next(
-        doc
-        for doc in cronjobs
-        if doc["metadata"]["name"] == "copilot-backend-sync-deal-messages-all-orgs"
+    token_refresh = next(
+        doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-refresh-tokens"
     )
 
-    spec = deal_messages["spec"]
+    spec = token_refresh["spec"]
     job_spec = spec["jobTemplate"]["spec"]
 
     assert spec["timeZone"] == "Etc/UTC"
@@ -126,53 +124,25 @@ def test_microsoft_graph_subscription_renewal_cronjob_renders_dispatch_contract(
     ]
 
 
-def test_hubspot_core_incremental_cronjob_renders_dispatch_contract() -> None:
-    """Assert HubSpot incremental polling is deployed as a hardened integrations CronJob."""
+def test_prod_integration_sync_polling_cronjobs_are_not_rendered() -> None:
+    """Prod uses the same reduced integrations CronJob set as dev."""
     cronjobs = _render_prod_worker_cronjobs()
-    incremental = next(
-        doc
-        for doc in cronjobs
-        if doc["metadata"]["name"] == "copilot-backend-sync-hubspot-core-incremental"
-    )
+    cronjob_names = {doc["metadata"]["name"] for doc in cronjobs}
 
-    container = incremental["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
-
-    assert incremental["spec"]["schedule"] == "*/10 * * * *"
-    assert incremental["spec"]["concurrencyPolicy"] == "Forbid"
-    assert container["command"] == [
-        "python",
-        "-m",
-        "src.workers.integrations_worker.cron_dispatch",
-        "--job",
-        "sync-hubspot-core-incremental-all-orgs",
-    ]
-
-
-def test_hubspot_delete_reconciliation_cronjob_renders_dispatch_contract() -> None:
-    """Assert slow HubSpot delete reconciliation is deployed as an integrations CronJob."""
-    cronjobs = _render_prod_worker_cronjobs()
-    reconciliation = next(
-        doc
-        for doc in cronjobs
-        if doc["metadata"]["name"] == "copilot-backend-reconcile-hubspot-deletions"
-    )
-
-    container = reconciliation["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
-
-    assert reconciliation["spec"]["schedule"] == "17 */12 * * *"
-    assert reconciliation["spec"]["concurrencyPolicy"] == "Forbid"
-    assert container["command"] == [
-        "python",
-        "-m",
-        "src.workers.integrations_worker.cron_dispatch",
-        "--job",
-        "reconcile-hubspot-deletions-all-orgs",
-    ]
+    assert "copilot-backend-sync-messaging-channels-all-orgs" not in cronjob_names
+    assert "copilot-backend-sync-deal-messages-all-orgs" not in cronjob_names
+    assert "copilot-backend-sync-hubspot-core-incremental" not in cronjob_names
+    assert "copilot-backend-reconcile-hubspot-deletions" not in cronjob_names
 
 
 def test_deal_cronjobs_render_with_production_job_hardening() -> None:
-    """Assert deal-mapping and attachment CronJobs still render hardened settings."""
+    """Assert remaining prod deal CronJobs still render hardened settings."""
     cronjobs = _render_prod_worker_cronjobs()
+    cronjob_names = {doc["metadata"]["name"] for doc in cronjobs}
+
+    assert "copilot-backend-deal-memory-backfill" not in cronjob_names
+    assert "copilot-backend-email-attachment-extraction" not in cronjob_names
+
     deal_mapping = next(
         doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-deal-mapping"
     )
@@ -188,13 +158,6 @@ def test_deal_cronjobs_render_with_production_job_hardening() -> None:
     assert job_spec["backoffLimit"] == 1
     assert job_spec["activeDeadlineSeconds"] == 300
     assert job_spec["ttlSecondsAfterFinished"] == 900
-
-    email_attachments = next(
-        doc
-        for doc in cronjobs
-        if doc["metadata"]["name"] == "copilot-backend-email-attachment-extraction"
-    )
-    assert email_attachments["spec"]["schedule"] == "20,50 * * * *"
 
     meeting_bot_fallback = next(
         doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-meeting-bot-fallback"
