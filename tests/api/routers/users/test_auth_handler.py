@@ -85,15 +85,13 @@ async def test_login_success_returns_default_contact_list_columns(user_auth_test
     ]
     assert result.data.user_preferences["crm"]["deals"]["list"]["columns"] == [
         "name",
-        "company.name",
-        "stage.name",
+        "company_name",
+        "stage",
         "amount",
         "expected_close_date",
-        "owner.name",
-        "primary_contact.name",
+        "owner",
+        "primary_contact_name",
         "last_activity_at",
-        "deal_status",
-        "pipeline.name",
     ]
     assert result.data.user_preferences["crm"]["tasks"]["list"]["columns"] == [
         "subject",

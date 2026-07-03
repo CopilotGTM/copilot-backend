@@ -159,15 +159,13 @@ forecast category, and probability as default table columns:
 ```python
 DEFAULT_DEAL_LIST_COLUMNS = [
     "name",
-    "company.name",
-    "stage.name",
+    "company_name",
+    "stage",
     "amount",
     "expected_close_date",
-    "owner.name",
-    "primary_contact.name",
+    "owner",
+    "primary_contact_name",
     "last_activity_at",
-    "deal_status",
-    "pipeline.name",
 ]
 ```
 
@@ -176,15 +174,13 @@ DEFAULT_DEAL_LIST_COLUMNS = [
 | Column ID | Payload Path |
 | --- | --- |
 | `name` | `item.name` |
-| `company.name` | `item.company_name` |
-| `stage.name` | `item.stage_label ?? item.stage_name` |
+| `company_name` | `item.company_name` |
+| `stage` | `item.stage_label ?? item.stage_name` |
 | `amount` | `item.amount`, plus `item.currency` / `item.currency_symbol` |
 | `expected_close_date` | `item.expected_close_date` |
-| `owner.name` | `item.owner_details[0]?.name` |
-| `primary_contact.name` | `item.primary_contact_name` |
+| `owner` | `item.owner_details[0]?.name` |
+| `primary_contact_name` | `item.primary_contact_name` |
 | `last_activity_at` | `item.last_activity_at` |
-| `deal_status` | `item.deal_status` |
-| `pipeline.name` | `item.pipeline_label ?? item.pipeline_name` |
 
 `probability` and `forecast_category` remain available on list rows for existing clients
 and optional future columns, but they are not part of the backend default. `deal_health`
@@ -291,15 +287,13 @@ Extend the existing normalized preference object:
       "list": {
         "columns": [
           "name",
-          "company.name",
-          "stage.name",
+          "company_name",
+          "stage",
           "amount",
           "expected_close_date",
-          "owner.name",
-          "primary_contact.name",
-          "last_activity_at",
-          "deal_status",
-          "pipeline.name"
+          "owner",
+          "primary_contact_name",
+          "last_activity_at"
         ]
       }
     },

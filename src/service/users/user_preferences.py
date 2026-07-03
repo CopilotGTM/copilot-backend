@@ -34,15 +34,13 @@ DEFAULT_ACCOUNT_LIST_COLUMNS = [
 
 DEFAULT_DEAL_LIST_COLUMNS = [
     "name",
-    "company.name",
-    "stage.name",
+    "company_name",
+    "stage",
     "amount",
     "expected_close_date",
-    "owner.name",
-    "primary_contact.name",
+    "owner",
+    "primary_contact_name",
     "last_activity_at",
-    "deal_status",
-    "pipeline.name",
 ]
 
 DEFAULT_TASK_LIST_COLUMNS = [

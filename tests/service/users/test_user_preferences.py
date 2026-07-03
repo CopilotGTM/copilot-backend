@@ -36,15 +36,13 @@ def test_normalize_user_preferences_adds_default_account_list_columns() -> None:
 def test_normalize_user_preferences_adds_default_deal_list_columns() -> None:
     assert normalize_user_preferences({})["crm"]["deals"]["list"]["columns"] == [
         "name",
-        "company.name",
-        "stage.name",
+        "company_name",
+        "stage",
         "amount",
         "expected_close_date",
-        "owner.name",
-        "primary_contact.name",
+        "owner",
+        "primary_contact_name",
         "last_activity_at",
-        "deal_status",
-        "pipeline.name",
     ]
 
 
