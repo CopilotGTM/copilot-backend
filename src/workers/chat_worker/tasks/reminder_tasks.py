@@ -4,7 +4,7 @@ poll_due_reminders (Beat, every 5s):
   - Pops due items from the ZSET and dispatches execute_reminder per item.
   - Lightweight: one Redis call, no DB, no per-org fan-out.
 
-recovery_sweep_reminders (Beat, every 5 min):
+recovery_sweep_reminders (manual repair task):
   - Re-syncs the ZSET from DB for all approved orgs.
   - Handles Redis restart, missed ZADDs, or any drift.
 
