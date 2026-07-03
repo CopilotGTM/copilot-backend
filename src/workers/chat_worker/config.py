@@ -1,4 +1,3 @@
-from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -92,14 +91,6 @@ class ChatWorkerConfig(BaseWorkerConfig):
             "recovery-sweep-reminders": {
                 "task": "chat.recovery_sweep_reminders",
                 "schedule": 300.0,
-                "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
-                },
-            },
-            "cleanup-stale-chat-jobs": {
-                "task": "chat.cleanup_stale_jobs_all_orgs",
-                "schedule": crontab(minute="0,30"),
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",

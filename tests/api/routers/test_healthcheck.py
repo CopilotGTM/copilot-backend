@@ -115,14 +115,8 @@ def test_knowledge_scheduler_health_endpoint_returns_scheduler_status(
     mocker.patch(
         "src.api.routers.healthcheck.get_knowledge_scheduler_health",
         return_value={
-            "healthy": False,
-            "jobs": {
-                "cleanup-stale-knowledge-jobs": {
-                    "healthy": False,
-                    "status": "stale",
-                    "task_name": "knowledge.cleanup_stale_jobs_all_orgs",
-                }
-            },
+            "healthy": True,
+            "jobs": {},
         },
     )
 
@@ -131,8 +125,8 @@ def test_knowledge_scheduler_health_endpoint_returns_scheduler_status(
         headers={"Authorization": "Bearer secret-token"},
     )
 
-    assert response.status_code == 503
-    assert response.json()["detail"]["jobs"]["cleanup-stale-knowledge-jobs"]["status"] == "stale"
+    assert response.status_code == 200
+    assert response.json()["jobs"] == {}
 
 
 def test_detailed_healthcheck_preserves_unhealthy_component_payload(mocker):

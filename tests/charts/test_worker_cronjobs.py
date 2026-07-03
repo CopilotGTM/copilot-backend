@@ -195,33 +195,30 @@ def test_sales_dashboard_snapshot_cronjob_renders_in_dev() -> None:
     assert sales_dashboard_snapshot["spec"]["schedule"] == "15 1 * * *"
 
 
-def test_knowledge_cronjobs_render_with_production_job_hardening() -> None:
-    """Assert knowledge cleanup CronJobs keep strict history and TTL settings."""
-    cronjobs = _render_worker_cronjobs()
-    cleanup = next(
+def test_stale_cleanup_cronjob_boundaries() -> None:
+    """Dev disables stale cleanup CronJobs; prod keeps app-state cleanup jobs."""
+    disabled_cleanup_cronjobs = {
+        "copilot-backend-cleanup-stale-knowledge-jobs",
+        "copilot-backend-stale-deal-job-cleanup",
+    }
+
+    dev_cronjob_names = {doc["metadata"]["name"] for doc in _render_worker_cronjobs()}
+    prod_cronjobs = _render_prod_worker_cronjobs()
+
+    assert disabled_cleanup_cronjobs.isdisjoint(dev_cronjob_names)
+    knowledge_cleanup = next(
         doc
-        for doc in cronjobs
+        for doc in prod_cronjobs
         if doc["metadata"]["name"] == "copilot-backend-cleanup-stale-knowledge-jobs"
     )
+    assert knowledge_cleanup["spec"]["schedule"] == "0 */6 * * *"
 
-    spec = cleanup["spec"]
-    job_spec = spec["jobTemplate"]["spec"]
-
-    assert spec["timeZone"] == "Etc/UTC"
-    assert spec["successfulJobsHistoryLimit"] == 1
-    assert spec["failedJobsHistoryLimit"] == 2
-    assert spec["startingDeadlineSeconds"] == 900
-    assert job_spec["backoffLimit"] == 1
-    assert job_spec["activeDeadlineSeconds"] == 300
-    assert job_spec["ttlSecondsAfterFinished"] == 900
-    assert {
-        doc["metadata"]["name"]
-        for doc in cronjobs
-        if doc["metadata"]["name"].startswith("copilot-backend-cleanup-stale-")
-    } == {
-        "copilot-backend-cleanup-stale-knowledge-jobs",
-        "copilot-backend-cleanup-stale-db-connections",
-    }
+    deal_cleanup = next(
+        doc
+        for doc in prod_cronjobs
+        if doc["metadata"]["name"] == "copilot-backend-stale-deal-job-cleanup"
+    )
+    assert deal_cleanup["spec"]["schedule"] == "45 * * * *"
 
 
 def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:

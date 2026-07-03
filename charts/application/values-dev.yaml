@@ -144,12 +144,7 @@ integrationsCronJobs:
       schedule: "0 2 * * *"
 
 knowledgeCronJobs:
-  jobs:
-    - name: cleanup-stale-knowledge-jobs
-      schedule: "0,30 * * * *"
-    - name: cleanup-stale-db-connections-every-10-min
-      resourceName: cleanup-stale-db-connections
-      schedule: "*/10 * * * *"
+  jobs: []
 
 deal-worker:
   # Actual usage: 3m CPU, 744Mi memory
@@ -165,8 +160,6 @@ deal-worker:
 
 dealCronJobs:
   jobs:
-    - name: stale-deal-job-cleanup
-      schedule: "45 * * * *"
     - name: meeting-bot-fallback
       schedule: "0 20 * * *"
     - name: sales-dashboard-snapshot

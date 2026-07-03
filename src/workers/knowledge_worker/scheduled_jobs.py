@@ -21,14 +21,8 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
     "cleanup-stale-knowledge-jobs": ScheduledJob(
         name="cleanup-stale-knowledge-jobs",
         task_name="knowledge.cleanup_stale_jobs_all_orgs",
-        schedule="0,30 * * * *",
-        max_lag_seconds=40 * 60,
-    ),
-    "cleanup-stale-db-connections-every-10-min": ScheduledJob(
-        name="cleanup-stale-db-connections-every-10-min",
-        task_name="knowledge.cleanup_stale_connections",
-        schedule="*/10 * * * *",
-        max_lag_seconds=20 * 60,
+        schedule="0 */6 * * *",
+        max_lag_seconds=7 * 60 * 60,
     ),
 }
 
