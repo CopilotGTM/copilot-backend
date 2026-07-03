@@ -42,12 +42,6 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         schedule="10 */3 * * *",
         max_lag_seconds=4 * 60 * 60,
     ),
-    "email-attachment-extraction": ScheduledJob(
-        name="email-attachment-extraction",
-        task_name="deal_asset.extract_email_attachments_all_orgs",
-        schedule="20,50 * * * *",
-        max_lag_seconds=45 * 60,
-    ),
     "meeting-bot-fallback": ScheduledJob(
         name="meeting-bot-fallback",
         task_name="deal.trigger_send_unsent_meeting_recordings_all_orgs",

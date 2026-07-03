@@ -439,12 +439,7 @@ knowledgeCronJobs:
     limits:
       cpu: "250m"
       memory: "256Mi"
-  jobs:
-    - name: cleanup-stale-knowledge-jobs
-      schedule: "0,30 * * * *"
-    - name: cleanup-stale-db-connections-every-10-min
-      resourceName: cleanup-stale-db-connections
-      schedule: "*/10 * * * *"
+  jobs: []
 
 # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
 deal-worker:
@@ -497,12 +492,8 @@ dealCronJobs:
   jobs:
     - name: deal-mapping
       schedule: "3 */2 * * *"
-    - name: stale-deal-job-cleanup
-      schedule: "45 * * * *"
     - name: deal-memory-backfill
       schedule: "10 */3 * * *"
-    - name: email-attachment-extraction
-      schedule: "20,50 * * * *"
     - name: meeting-bot-fallback
       schedule: "0 20 * * *"
     - name: sales-dashboard-snapshot

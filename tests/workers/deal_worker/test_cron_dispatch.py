@@ -19,15 +19,10 @@ def test_get_scheduled_job_returns_deal_mapping_definition() -> None:
     assert job.kwargs == {}
 
 
-def test_get_scheduled_job_returns_email_attachment_extraction_definition() -> None:
-    """email-attachment-extraction should resolve to the new attachment pipeline task."""
-    job = get_scheduled_job("email-attachment-extraction")
-
-    assert job.name == "email-attachment-extraction"
-    assert job.task_name == "deal_asset.extract_email_attachments_all_orgs"
-    assert job.schedule == "20,50 * * * *"
-    assert job.queue == "deal"
-    assert job.kwargs == {}
+def test_email_attachment_extraction_schedule_is_disabled() -> None:
+    """Email attachment extraction is event-driven; fixed polling stays disabled."""
+    with pytest.raises(KeyError):
+        get_scheduled_job("email-attachment-extraction")
 
 
 def test_get_scheduled_job_returns_nightly_meeting_bot_fallback_definition() -> None:
@@ -63,6 +58,18 @@ def test_timeline_sync_schedule_is_disabled() -> None:
     """Legacy timeline sync stays disabled after timeline deprecation."""
     with pytest.raises(KeyError):
         get_scheduled_job("timeline-sync")
+
+
+def test_get_scheduled_job_returns_stale_deal_job_cleanup_definition() -> None:
+    """Prod keeps stale deal cleanup scheduled as app-state remediation."""
+    job = get_scheduled_job("stale-deal-job-cleanup")
+
+    assert job.name == "stale-deal-job-cleanup"
+    assert job.task_name == "deal.cleanup_stale_jobs_all_orgs"
+    assert job.schedule == "45 * * * *"
+    assert job.max_lag_seconds == 90 * 60
+    assert job.queue == "deal"
+    assert job.kwargs == {}
 
 
 def test_get_scheduled_job_rejects_unknown_job_name() -> None:

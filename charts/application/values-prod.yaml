@@ -177,6 +177,11 @@ deal-worker:
       cpu: "1000m"
       memory: "3Gi"
 
+knowledgeCronJobs:
+  jobs:
+    - name: cleanup-stale-knowledge-jobs
+      schedule: "0 */6 * * *"
+
 dealCronJobs:
   jobs:
     - name: deal-mapping
