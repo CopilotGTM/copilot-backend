@@ -749,15 +749,13 @@ order. The current backend default is:
 ```json
 [
   "name",
-  "company.name",
-  "stage.name",
+  "company_name",
+  "stage",
   "amount",
   "expected_close_date",
-  "owner.name",
-  "primary_contact.name",
-  "last_activity_at",
-  "deal_status",
-  "pipeline.name"
+  "owner",
+  "primary_contact_name",
+  "last_activity_at"
 ]
 ```
 
@@ -766,15 +764,13 @@ These column IDs map to `DealListItem` fields as follows:
 | Column ID | Payload Path | Notes |
 |-----------|--------------|-------|
 | `name` | `item.name` | Deal name. Link to deal detail. |
-| `company.name` | `item.company_name` | Associated account/company. |
-| `stage.name` | `item.stage_label ?? item.stage_name` | Use labels when available. |
+| `company_name` | `item.company_name` | Associated account/company. |
+| `stage` | `item.stage_label ?? item.stage_name` | Use labels when available. |
 | `amount` | `item.amount`, `item.currency`, `item.currency_symbol` | Currency-decorated value. |
 | `expected_close_date` | `item.expected_close_date` | Forecasted close date. |
-| `owner.name` | `item.owner_details[0]?.name` | Owner list is usually 0..1 item. |
-| `primary_contact.name` | `item.primary_contact_name` | Primary contact display snapshot. |
+| `owner` | `item.owner_details[0]?.name` | Owner list is usually 0..1 item. |
+| `primary_contact_name` | `item.primary_contact_name` | Primary contact display snapshot. |
 | `last_activity_at` | `item.last_activity_at` | Last known deal activity timestamp. |
-| `deal_status` | `item.deal_status` | Open/won/lost/closed. |
-| `pipeline.name` | `item.pipeline_label ?? item.pipeline_name` | Useful when multiple pipelines exist. |
 
 `probability` and `forecast_category` are still returned on list rows for
 compatibility but are not default table columns. `deal_health` and

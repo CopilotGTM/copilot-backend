@@ -117,15 +117,13 @@ Not required
           "list": {
             "columns": [
               "name",
-              "company.name",
-              "stage.name",
+              "company_name",
+              "stage",
               "amount",
               "expected_close_date",
-              "owner.name",
-              "primary_contact.name",
-              "last_activity_at",
-              "deal_status",
-              "pipeline.name"
+              "owner",
+              "primary_contact_name",
+              "last_activity_at"
             ]
           }
         },
@@ -200,15 +198,13 @@ Not required
           "list": {
             "columns": [
               "name",
-              "company.name",
-              "stage.name",
+              "company_name",
+              "stage",
               "amount",
               "expected_close_date",
-              "owner.name",
-              "primary_contact.name",
-              "last_activity_at",
-              "deal_status",
-              "pipeline.name"
+              "owner",
+              "primary_contact_name",
+              "last_activity_at"
             ]
           }
         },
