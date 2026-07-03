@@ -79,18 +79,12 @@ class ChatWorkerConfig(BaseWorkerConfig):
         }
 
         # Beat schedule — periodic tasks run by the scheduler
+        # copilotgtm: Recovery sweep stays manual; if Redis drift becomes common,
+        # replace it with targeted repair instead of scheduled all-org DB polling.
         self.beat_schedule = {
             "poll-due-reminders": {
                 "task": "chat.poll_due_reminders",
-                "schedule": 5.0,
-                "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
-                },
-            },
-            "recovery-sweep-reminders": {
-                "task": "chat.recovery_sweep_reminders",
-                "schedule": 300.0,
+                "schedule": 60.0,
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",

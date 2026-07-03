@@ -327,8 +327,8 @@ chat-worker:
 
 # Chat Beat Scheduler (Celery Beat for reminder polling)
 # Runs periodic tasks defined in ChatWorkerConfig.beat_schedule:
-# - chat.poll_due_reminders: Every 5 seconds (pops due reminders from Redis ZSET)
-# - chat.recovery_sweep_reminders: Every 5 minutes (re-syncs ZSET from DB)
+# - chat.poll_due_reminders: Every 60 seconds (pops due reminders from Redis ZSET)
+# - chat.recovery_sweep_reminders: Manual repair task only, not scheduled
 chat-beat:
   enabled: true
   replicaCount: 1

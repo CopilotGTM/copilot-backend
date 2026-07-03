@@ -1,10 +1,10 @@
 """Celery tasks for firing due reminders using a Redis sorted set scheduler.
 
-poll_due_reminders (Beat, every 5s):
+poll_due_reminders (Beat, every 60s):
   - Pops due items from the ZSET and dispatches execute_reminder per item.
   - Lightweight: one Redis call, no DB, no per-org fan-out.
 
-recovery_sweep_reminders (Beat, every 5 min):
+recovery_sweep_reminders (manual repair task):
   - Re-syncs the ZSET from DB for all approved orgs.
   - Handles Redis restart, missed ZADDs, or any drift.
 
@@ -38,13 +38,15 @@ logger = logging.getLogger(__name__)
 )
 def poll_due_reminders_task() -> dict[str, Any]:
     """Pop due reminders from the Redis ZSET and dispatch execution tasks."""
-    from src.infra.messaging.reminder_schedule import pop_due_reminders
+    from src.infra.messaging.reminder_schedule import pop_due_reminders, schedule_reminder
 
-    claimed = pop_due_reminders(time.time())
+    now = time.time()
+    claimed = pop_due_reminders(now, limit=500)
     if not claimed:
         return {"status": "idle", "dispatched": 0}
 
     dispatched = 0
+    requeued = 0
     for org_id, reminder_id in claimed:
         try:
             # Preserve scheduler/task correlation so per-reminder execution can be traced back to poller runs.
@@ -59,6 +61,8 @@ def poll_due_reminders_task() -> dict[str, Any]:
             )
             dispatched += 1
         except Exception as e:
+            schedule_reminder(UUID(org_id), UUID(reminder_id), now)
+            requeued += 1
             logger.error(
                 "Failed to dispatch reminder %s for org %s: %s",
                 reminder_id,
@@ -67,7 +71,12 @@ def poll_due_reminders_task() -> dict[str, Any]:
             )
 
     logger.info("Polled %d due reminders, dispatched %d", len(claimed), dispatched)
-    return {"status": "dispatched", "claimed": len(claimed), "dispatched": dispatched}
+    return {
+        "status": "dispatched",
+        "claimed": len(claimed),
+        "dispatched": dispatched,
+        "requeued": requeued,
+    }
 
 
 @app.task(
