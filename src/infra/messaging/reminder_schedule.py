@@ -1,7 +1,7 @@
 """Redis sorted set scheduling layer for user reminders.
 
 DB remains the source of truth; this ZSET is a disposable timing index.
-On Redis restart, the recovery_sweep task re-populates it from the DB.
+On Redis restart, the manual recovery_sweep task can re-populate it from the DB.
 
 Uses the existing connection pool from redis_client.get_redis_client().
 """

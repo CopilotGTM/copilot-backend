@@ -84,7 +84,7 @@ class ChatWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             "poll-due-reminders": {
                 "task": "chat.poll_due_reminders",
-                "schedule": 5.0,
+                "schedule": 60.0,
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",
