@@ -28,6 +28,13 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: {{ $.Values.serviceAccount.name | default (include "webservice.fullname" $) }}
+      {{- $priorityClassName := $.Values.priorityClassName | default "" }}
+      {{- if and (not $priorityClassName) ($.Values.global.priorityClasses.enabled | default false) }}
+      {{- $priorityClassName = $.Values.global.priorityClasses.api.name }}
+      {{- end }}
+      {{- if $priorityClassName }}
+      priorityClassName: {{ $priorityClassName | quote }}
+      {{- end }}
       containers:
         - name: {{ $jobName }}-container
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"

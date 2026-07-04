@@ -39,6 +39,11 @@ global:
   secretName: "" # Will be populated by parent chart
   celery:
     enableEvents: false
+  priorityClasses:
+    enabled: false
+    worker:
+      name: copilot-worker
+      preemptionPolicy: Never
 
 resources:
   limits:
@@ -47,6 +52,8 @@ resources:
   requests:
     cpu: 128m
     memory: 256Mi
+
+priorityClassName: ""
 
 probes:
   enabled: true

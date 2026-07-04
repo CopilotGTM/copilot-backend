@@ -26,6 +26,13 @@ spec:
       {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
       serviceAccountName: {{ .Values.serviceAccount.name | default (include "worker.fullname" .) }}
       {{- end }}
+      {{- $priorityClassName := .Values.priorityClassName | default "" }}
+      {{- if and (not $priorityClassName) (.Values.global.priorityClasses.enabled | default false) }}
+      {{- $priorityClassName = .Values.global.priorityClasses.worker.name }}
+      {{- end }}
+      {{- if $priorityClassName }}
+      priorityClassName: {{ $priorityClassName | quote }}
+      {{- end }}
       {{- if .Values.shutdown.enabled }}
       terminationGracePeriodSeconds: {{ .Values.shutdown.gracefulPeriodSeconds | default 600 }}
       {{- end }}

@@ -1,0 +1,19 @@
+{{- if .Values.global.priorityClasses.enabled -}}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.global.priorityClasses.api.name }}
+value: {{ .Values.global.priorityClasses.api.value }}
+globalDefault: false
+preemptionPolicy: {{ .Values.global.priorityClasses.api.preemptionPolicy | default "PreemptLowerPriority" }}
+description: "Keeps the CopilotGTM API schedulable ahead of background workers."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.global.priorityClasses.worker.name }}
+value: {{ .Values.global.priorityClasses.worker.value }}
+globalDefault: false
+preemptionPolicy: {{ .Values.global.priorityClasses.worker.preemptionPolicy | default "Never" }}
+description: "Lower priority for CopilotGTM background workers and batch jobs."
+{{- end }}

@@ -129,6 +129,14 @@ function Write-Error {
     Write-Host "❌ $Message" -ForegroundColor Red
 }
 
+function Assert-CommandSucceeded {
+    param([string]$Step)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "$Step failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+}
+
 function Test-Prerequisites {
     Write-Header "Checking Prerequisites"
 
@@ -178,6 +186,7 @@ function Test-Prerequisites {
     # Check if Docker is running
     try {
         docker ps | Out-Null
+        Assert-CommandSucceeded "Docker daemon check"
     } catch {
         Write-Error "Docker is not running. Please start Docker."
         exit 1
@@ -204,6 +213,7 @@ function Connect-ToACR {
 
     # Login to ACR
     az acr login --name $ACR_NAME
+    Assert-CommandSucceeded "ACR login"
     Write-Success "Logged into ACR: $ACR_LOGIN_SERVER"
 }
 
@@ -214,13 +224,17 @@ function Build-AndPushImage {
         # Legacy behavior: build single full image (default Dockerfile target)
         Write-Host "Building image: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
         docker build -t "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" $PSScriptRoot\..\..
+        Assert-CommandSucceeded "Docker build for $IMAGE_REPOSITORY"
 
         # Also tag as latest for this local deployment
         docker tag "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+        Assert-CommandSucceeded "Docker latest tag for $IMAGE_REPOSITORY"
 
         Write-Host "Pushing image to ACR..."
         docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+        Assert-CommandSucceeded "Docker push for $IMAGE_REPOSITORY`:$IMAGE_TAG"
         docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+        Assert-CommandSucceeded "Docker push for $IMAGE_REPOSITORY`:latest"
 
         Write-Success "Image pushed: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
         return
@@ -262,12 +276,16 @@ function Build-AndPushImage {
 
         Write-Host "Building $repo (target: $target) => $ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG"
         docker build --target $target -t "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG" $PSScriptRoot\..\..
+        Assert-CommandSucceeded "Docker build for $repo"
 
         docker tag "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$repo`:latest"
+        Assert-CommandSucceeded "Docker latest tag for $repo"
 
         Write-Host "Pushing $repo to ACR..."
         docker push "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG"
+        Assert-CommandSucceeded "Docker push for $repo`:$IMAGE_TAG"
         docker push "$ACR_LOGIN_SERVER/$repo`:latest"
+        Assert-CommandSucceeded "Docker push for $repo`:latest"
     }
 
     Write-Success "Separated images pushed with tag: $IMAGE_TAG"
@@ -488,6 +506,22 @@ function Deploy-WithHelm {
     $knowledgeRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$KNOWLEDGE_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
     $lightRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$LIGHT_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
     $integrationsRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$INTEGRATIONS_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
+    $devSafetyOverrides = @()
+    if ($DeployEnvironment -eq "dev") {
+        $devSafetyOverrides = @(
+            "--set", "api.replicaCount=1",
+            "--set", "api.pdb.enabled=false",
+            "--set", "api.strategy.maxUnavailable=0",
+            "--set", "global.priorityClasses.enabled=true",
+            "--set", "global.priorityClasses.api.name=copilot-api-critical",
+            "--set", "global.priorityClasses.api.value=100000",
+            "--set", "global.priorityClasses.api.preemptionPolicy=PreemptLowerPriority",
+            "--set", "global.priorityClasses.worker.name=copilot-worker",
+            "--set", "global.priorityClasses.worker.value=1000",
+            "--set", "global.priorityClasses.worker.preemptionPolicy=Never",
+            "--set", "chat-worker.priorityClassName=copilot-api-critical"
+        )
+    }
 
     if ($QuickApiOnly) {
         Write-Host "Quick API-only mode: reusing existing Helm values and updating only the API image..."
@@ -502,6 +536,7 @@ function Deploy-WithHelm {
             "--set", "global.celery.enableEvents=false",
             "--no-hooks"
         )
+        $helmArgs += $devSafetyOverrides
 
         $helmResult = & helm @helmArgs
         $helmExitCode = $LASTEXITCODE
@@ -615,6 +650,7 @@ function Deploy-WithHelm {
         "--set", "deal-worker.autoscaling.enabled=true",
         "--set", "chat-worker.autoscaling.enabled=true"
     )
+    $helmArgs += $devSafetyOverrides
 
     $helmArgs += @(
         "--set", "knowledge-extract-worker.image.repository=$knowledgeRepo",

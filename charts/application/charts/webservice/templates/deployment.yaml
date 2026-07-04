@@ -13,7 +13,7 @@ spec:
     {{- if eq (default "RollingUpdate" .Values.strategy.type) "RollingUpdate" }}
     rollingUpdate:
       maxSurge: {{ .Values.strategy.maxSurge | default 1 }}
-      maxUnavailable: {{ .Values.strategy.maxUnavailable | default 1 }}
+      maxUnavailable: {{ if hasKey .Values.strategy "maxUnavailable" }}{{ .Values.strategy.maxUnavailable }}{{ else }}1{{ end }}
     {{- end }}
   {{- end }}
   selector:
@@ -31,6 +31,22 @@ spec:
     spec:
       terminationGracePeriodSeconds: 60
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- $priorityClassName := .Values.priorityClassName | default "" }}
+      {{- if and (not $priorityClassName) (.Values.global.priorityClasses.enabled | default false) }}
+      {{- $priorityClassName = .Values.global.priorityClasses.api.name }}
+      {{- end }}
+      {{- if $priorityClassName }}
+      priorityClassName: {{ $priorityClassName | quote }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew | default 1 }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey | default "kubernetes.io/hostname" | quote }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable | default "ScheduleAnyway" | quote }}
+          labelSelector:
+            matchLabels:
+              {{- include "webservice.selectorLabels" . | nindent 14 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
