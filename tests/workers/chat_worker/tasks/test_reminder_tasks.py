@@ -55,3 +55,39 @@ def test_poll_due_reminders_uses_larger_batch_and_requeues_dispatch_failures(
         "dispatched": 0,
         "requeued": 1,
     }
+
+
+def test_recovery_sweep_without_scope_does_not_scan_tenant_databases(
+    monkeypatch,
+) -> None:
+    def fail_if_called(_coro):
+        raise AssertionError("no-arg recovery sweep should not open database sessions")
+
+    monkeypatch.setattr(reminder_tasks, "run_async", fail_if_called)
+
+    result = reminder_tasks.recovery_sweep_reminders_task()
+
+    assert result == {
+        "status": "skipped",
+        "reason": "organisation_id or all_orgs=True is required",
+        "orgs_scanned": 0,
+        "reminders_synced": 0,
+    }
+
+
+def test_recovery_sweep_with_invalid_org_id_does_not_scan_tenant_databases(
+    monkeypatch,
+) -> None:
+    def fail_if_called(_coro):
+        raise AssertionError("invalid recovery sweep should not open database sessions")
+
+    monkeypatch.setattr(reminder_tasks, "run_async", fail_if_called)
+
+    result = reminder_tasks.recovery_sweep_reminders_task(organisation_id="not-a-uuid")
+
+    assert result == {
+        "status": "failed",
+        "reason": "organisation_id must be a valid UUID",
+        "orgs_scanned": 0,
+        "reminders_synced": 0,
+    }
