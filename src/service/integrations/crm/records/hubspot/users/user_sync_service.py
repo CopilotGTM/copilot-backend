@@ -226,9 +226,9 @@ class HubSpotUserRecordSyncService:
                 owner = match.owner
                 pk = owner_pk_map.get(owner.external_id)
                 if pk is None:
-                    # Writer dropped this row (dup-email collision) — skip
-                    # the backfill too; deal rows will backfill on a later
-                    # successful run.
+                    # Writer can still skip impossible identity collisions
+                    # (for example no email but already-claimed app UUID).
+                    # Avoid backfilling a deal FK until a source mapping exists.
                     continue
                 owner_mapping[owner.external_id] = (
                     pk,
@@ -302,7 +302,6 @@ class HubSpotUserRecordSyncService:
             return {}
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == organisation_id,
-            col(CRMUser.integration_id) == integration_id,
             col(CRMUser.is_deleted) == False,  # noqa: E712
             col(CRMUser.user_id).in_(set(external_to_local.values())),
         )

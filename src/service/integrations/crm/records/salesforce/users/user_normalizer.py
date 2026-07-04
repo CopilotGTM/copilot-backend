@@ -18,22 +18,36 @@ logger = get_logger(__name__)
 
 def normalize_users(
     raw_users: Iterable[dict[str, Any]],
-) -> tuple[list[NormalizedSalesforceUser], int]:
+) -> tuple[list[NormalizedSalesforceUser], int, int]:
+    """Normalize active Salesforce users and count malformed/inactive skips.
+
+    Salesforce sync treats `IsActive=false` users as out-of-scope so onboarding
+    a new org cannot create CRM identities for former employees.
+    """
     normalized: list[NormalizedSalesforceUser] = []
     skipped_malformed = 0
+    skipped_inactive = 0
     for raw in raw_users:
-        user = _normalize_one(raw)
+        user, skip_reason = _normalize_one(raw)
         if user is None:
-            skipped_malformed += 1
+            if skip_reason == "inactive":
+                skipped_inactive += 1
+            else:
+                skipped_malformed += 1
             continue
         normalized.append(user)
-    return normalized, skipped_malformed
+    return normalized, skipped_malformed, skipped_inactive
 
 
 def resolve_matches(
     users: Iterable[NormalizedSalesforceUser],
     email_index: dict[str, Any],
 ) -> list[UserMatchResult]:
+    """Attach an optional app-user UUID by normalized email.
+
+    The email index is org-scoped by the caller; matching here must not reach
+    across organisations.
+    """
     results: list[UserMatchResult] = []
     for user in users:
         matched = email_index.get(user.email) if user.email is not None else None
@@ -48,6 +62,7 @@ def build_owner_backfill_mapping(
 ) -> tuple[
     dict[str, tuple[UUID, str | None, None, str | None]], dict[str, tuple[UUID, None, None, None]]
 ]:
+    """Build provider-id to local-user mappings for owner FK backfills."""
     owner_mapping: dict[str, tuple[UUID, str | None, None, str | None]] = {}
     fk_only_mapping: dict[str, tuple[UUID, None, None, None]] = {}
     for user in users:
@@ -60,16 +75,17 @@ def build_owner_backfill_mapping(
 
 
 def normalize_email(raw: Any) -> str | None:
+    """Return the canonical email key used for app-user and CRM-user matching."""
     if not isinstance(raw, str):
         return None
     cleaned = raw.strip().lower()
     return cleaned or None
 
 
-def _normalize_one(raw: object) -> NormalizedSalesforceUser | None:
+def _normalize_one(raw: object) -> tuple[NormalizedSalesforceUser | None, str | None]:
     if not isinstance(raw, dict):
         logger.warning("Skipping non-dict Salesforce user payload")
-        return None
+        return None, "malformed"
 
     external_id = _coerce_id(raw.get("Id"))
     if external_id is None:
@@ -77,7 +93,13 @@ def _normalize_one(raw: object) -> NormalizedSalesforceUser | None:
             "Skipping malformed Salesforce user (no usable Id)",
             extra={"raw_keys": list(raw.keys())},
         )
-        return None
+        return None, "malformed"
+    if not _coerce_bool(raw.get("IsActive")):
+        logger.info(
+            "Skipping inactive Salesforce user",
+            extra={"user_external_id": external_id},
+        )
+        return None, "inactive"
 
     first_name = _coerce_str(raw.get("FirstName"))
     last_name = _coerce_str(raw.get("LastName"))
@@ -94,7 +116,7 @@ def _normalize_one(raw: object) -> NormalizedSalesforceUser | None:
         last_name=last_name,
         full_name=full_name,
         user_role=user_role,
-        is_active=_coerce_bool(raw.get("IsActive")),
+        is_active=True,
         source_created_at=_parse_salesforce_timestamp(raw.get("CreatedDate")),
         source_modified_at=_parse_salesforce_timestamp(raw.get("LastModifiedDate")),
         properties={
@@ -103,7 +125,7 @@ def _normalize_one(raw: object) -> NormalizedSalesforceUser | None:
             "salesforce_user_type": user_type,
         },
         data_payload=raw,
-    )
+    ), None
 
 
 def _extract_profile_name(raw: dict[str, Any]) -> str | None:

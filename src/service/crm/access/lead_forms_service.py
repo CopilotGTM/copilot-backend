@@ -39,9 +39,9 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadStatus,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.internal.internal_crm_user_service import (
-    InternalCRMUserService,
-    InternalCRMUserServiceError,
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
 )
 
 logger = get_logger("lead_forms_service")
@@ -323,15 +323,15 @@ class LeadFormsService:
         if self.actor_user_id is None:
             return None
 
-        user_service = InternalCRMUserService(
-            org_session=self.org_session,
-            master_session=self.master_session,
-            organisation_id=self.organisation_id,
-            actor_user_id=self.actor_user_id,
-        )
         try:
-            crm_user = await user_service.ensure_crm_user(self.actor_user_id)
-        except InternalCRMUserServiceError as exc:
+            crm_user = await ensure_app_user_crm_identity(
+                org_session=self.org_session,
+                master_session=self.master_session,
+                organisation_id=self.organisation_id,
+                app_user_id=self.actor_user_id,
+                actor_user_id=self.actor_user_id,
+            )
+        except CRMUserIdentityResolutionError as exc:
             raise LeadFormsServiceError(exc.message, exc.status_code) from exc
         return crm_user.user_id
 

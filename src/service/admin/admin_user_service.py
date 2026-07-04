@@ -25,6 +25,7 @@ from src.domain.models.admin_user_models import (
 from src.domain.models.master_tables import (
     AdminUserStatus,
     Organisation,
+    SupabaseUserStatus,
     SuperAdmin,
     User,
     UserActionHistory,
@@ -36,6 +37,8 @@ from src.infra.config.constant import AdminUserErrors
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.crm_user_service import build_user_display_name
+from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 
 logger = get_logger(__name__)
 
@@ -167,7 +170,8 @@ class AdminUserService:
             UserAlreadyExistsError: If user email already exists
             AdminUserServiceError: If Supabase user creation fails
         """
-        logger.info(f"Attempting to create user: {user_data.email}")
+        normalized_email = user_data.email.strip().lower()
+        logger.info(f"Attempting to create user: {normalized_email}")
 
         # Check if organisation exists
         organisation = await self._session.get(Organisation, user_data.organisation_id)
@@ -179,7 +183,7 @@ class AdminUserService:
 
         # Check if user already exists in local DB
         result = await self._session.execute(
-            select(User).where(typing_cast(ColumnElement[bool], User.email == user_data.email))
+            select(User).where(func.lower(col(User.email)) == normalized_email)
         )
         existing_user = result.scalars().first()
         if existing_user:
@@ -190,13 +194,15 @@ class AdminUserService:
 
         crm_user_id = await self._resolve_crm_user_id_for_new_user(
             organisation_id=user_data.organisation_id,
-            email=user_data.email,
+            email=normalized_email,
         )
         if crm_user_id is not None:
             conflicting_user = await self._session.get(User, crm_user_id)
             if conflicting_user is not None:
                 raise UserIdentityConflictError(
-                    "CRM user identity is already linked to another application user.",
+                    "CRM user identity for this email already uses an application user ID "
+                    "with a different email. Resolve the identity conflict before creating "
+                    "the user.",
                     error_code="CRM_USER_ID_ALREADY_LINKED",
                 )
 
@@ -204,7 +210,7 @@ class AdminUserService:
         temp_password = user_auth.generate_temporary_password()
 
         supabase_user_id = user_auth.create_supabase_user(
-            email=user_data.email,
+            email=normalized_email,
             password=temp_password,
             first_name=user_data.first_name,
             last_name=user_data.last_name,
@@ -219,6 +225,7 @@ class AdminUserService:
 
         # Create local user record
         create_payload = user_data.model_dump(exclude_none=True)
+        create_payload["email"] = normalized_email
         if crm_user_id is not None:
             create_payload["user_id"] = crm_user_id
         new_user = User(
@@ -237,6 +244,11 @@ class AdminUserService:
             details={"admin_id": str(admin_id)},
         )
         self._session.add(history_entry)
+
+        await self._ensure_internal_crm_for_new_app_user(
+            new_user,
+            create_crm_user=crm_user_id is None,
+        )
 
         await self._session.commit()
         await self._session.refresh(new_user)
@@ -257,7 +269,7 @@ class AdminUserService:
 
         async for org_session in acquire_org_async_session(organisation_id):
             stmt = (
-                select(CRMUser.user_id)
+                select(col(CRMUser.user_id))
                 .where(
                     col(CRMUser.organisation_id) == organisation_id,
                     col(CRMUser.is_deleted).is_not(True),
@@ -267,12 +279,13 @@ class AdminUserService:
                 .distinct()
             )
             rows = (await org_session.execute(stmt)).all()
-            crm_user_ids = {row[0] for row in rows}
+            crm_user_ids: set[UUID] = {typing_cast(UUID, row[0]) for row in rows}
 
             if len(crm_user_ids) == 0:
                 return None
             if len(crm_user_ids) == 1:
-                return next(iter(crm_user_ids))
+                single_crm_user_id: UUID = next(iter(crm_user_ids))
+                return single_crm_user_id
 
             raise UserIdentityConflictError(
                 "Multiple CRM users with this email exist in the organisation. "
@@ -281,6 +294,46 @@ class AdminUserService:
             )
 
         return None
+
+    async def _ensure_internal_crm_for_new_app_user(
+        self,
+        app_user: User,
+        *,
+        create_crm_user: bool,
+    ) -> None:
+        async for org_session in acquire_org_async_session(app_user.organisation_id):
+            setup = await InternalCRMSetupService(
+                org_session,
+                app_user.organisation_id,
+                app_user.user_id,
+            ).setup_internal_crm(commit=False)
+            if not create_crm_user:
+                commit = getattr(org_session, "commit", None)
+                if commit is not None:
+                    await commit()
+                return
+
+            crm_user = CRMUser(
+                user_id=app_user.user_id,
+                organisation_id=app_user.organisation_id,
+                integration_id=setup.integration.integration_id,
+                email=str(app_user.email) if app_user.email else None,
+                first_name=app_user.first_name,
+                last_name=app_user.last_name,
+                full_name=build_user_display_name(app_user),
+                user_role=(
+                    app_user.user_role.value if hasattr(app_user.user_role, "value") else None
+                ),
+                job_title=app_user.job_title,
+                is_active=app_user.status == SupabaseUserStatus.ACTIVE,
+                is_deleted=False,
+            )
+            org_session.add(crm_user)
+            await org_session.flush()
+            commit = getattr(org_session, "commit", None)
+            if commit is not None:
+                await commit()
+            return
 
     async def get_user(self, user_id: UUID) -> UserResponse:
         """Get a user by ID.

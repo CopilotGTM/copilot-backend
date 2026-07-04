@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.crm.accounts.contracts import (
     AccountCreateCommand,
     AccountWriteContext,
@@ -42,6 +43,10 @@ from src.service.crm.utils.account import (
     normalize_account_domain,
     normalize_company_name,
 )
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 
 AccountIdentityResolutionService = None
 
@@ -49,10 +54,16 @@ AccountIdentityResolutionService = None
 class AccountWriteService:
     """Canonical tenant-scoped account writer for internal CRM account records."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        master_session: AsyncSession | None = None,
+    ):
         """Bind writes to one org-scoped session without taking commit ownership."""
         self.session = session
         self.organisation_id = organisation_id
+        self.master_session = master_session
         self._mutation_events = CRMMutationEventService(session, organisation_id)
         self._projection = ActivityFeedProjectionService(session, organisation_id)
 
@@ -184,11 +195,13 @@ class AccountWriteService:
             self.organisation_id,
             AUTOMATED_PIPELINE_USER_ID,
         ).get_or_create_internal_integration()
-        owner_id = (
-            context.actor_user_id
-            if context and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
-            else None
-        )
+        owner_id = None
+        if (
+            context
+            and context.actor_user_id
+            and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
+        ):
+            owner_id = (await self._resolve_actor_crm_user(context.actor_user_id)).user_id
 
         company_kwargs: dict[str, Any] = {
             "domain": command.domain,
@@ -220,6 +233,18 @@ class AccountWriteService:
         await self._projection.upsert_account_created(company)
         await self._record_account_create_event(company, context=context)
         return AccountWriteResult(account=company, created=True, matched_by="created")
+
+    async def _resolve_actor_crm_user(self, actor_user_id: UUID) -> CRMUser:
+        try:
+            return await ensure_app_user_crm_identity(
+                org_session=self.session,
+                master_session=self.master_session,
+                organisation_id=self.organisation_id,
+                app_user_id=actor_user_id,
+                actor_user_id=actor_user_id,
+            )
+        except CRMUserIdentityResolutionError as exc:
+            raise AccountWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
     async def resolve_or_create_account_for_contact_email(
         self,

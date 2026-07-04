@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -90,6 +91,7 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
 async def test_create_contact_assigns_actor_owner_when_not_system_user() -> None:
     org_id = uuid4()
     actor_user_id = uuid4()
+    crm_user_id = uuid4()
     integration = KnowledgeIntegration(
         organisation_id=org_id,
         integration_id=uuid4(),
@@ -108,6 +110,9 @@ async def test_create_contact_assigns_actor_owner_when_not_system_user() -> None
     service = ContactWriteService(session, org_id)
     _disable_account_resolution(service)
     _disable_contact_created_projection(service)
+    service._resolve_actor_crm_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(user_id=crm_user_id)
+    )
 
     result = await service.create_contact(
         ContactCreateCommand(email="buyer@example.com"),
@@ -119,9 +124,10 @@ async def test_create_contact_assigns_actor_owner_when_not_system_user() -> None
         ),
     )
 
-    assert result.contact.owner_id == actor_user_id
+    assert result.contact.owner_id == crm_user_id
     assert result.contact.owner_name == "Jane Owner"
     assert result.contact.owner_email == "jane@example.com"
+    service._resolve_actor_crm_user.assert_awaited_once_with(actor_user_id)  # type: ignore[attr-defined]
     added_rows = [call.args[0] for call in session.add.call_args_list]
     assert any(row is result.contact for row in added_rows)
     assert not any(row.__class__.__name__ == "CRMUser" for row in added_rows)
