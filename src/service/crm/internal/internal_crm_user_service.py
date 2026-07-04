@@ -1,7 +1,8 @@
-"""Internal CRM user mapping service.
+"""App-user to CRM-user identity service.
 
-For organizations using the internal CRM (no HubSpot/Salesforce), this service
-manages the sync of app users (public.users) to CRM users (org_*.crm_users).
+This service resolves Copilot app users (public.users) to canonical CRM users
+(org_*.crm_users). If a provider-created row already uses the same local UUID,
+that row is reused instead of creating an internal CRM duplicate.
 
 MVP Flow:
 - On first deal creation with owner, bulk sync ALL org users to crm_users
@@ -39,7 +40,7 @@ class InternalCRMUserServiceError(Exception):
 
 
 class InternalCRMUserService:
-    """Manages CRM user records for internal CRM (no external CRM integration).
+    """Manages canonical CRM user records for Copilot app users.
 
     This service syncs app users from public.users to the org's crm_users table,
     allowing them to be assigned as deal owners.
