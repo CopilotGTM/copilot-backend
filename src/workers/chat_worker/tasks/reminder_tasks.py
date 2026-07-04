@@ -87,12 +87,37 @@ def poll_due_reminders_task() -> dict[str, Any]:
     soft_time_limit=120,
     time_limit=180,
 )
-def recovery_sweep_reminders_task() -> dict[str, Any]:
-    """Re-sync the Redis ZSET from DB for all approved orgs.
+def recovery_sweep_reminders_task(
+    organisation_id: str | None = None,
+    all_orgs: bool = False,
+) -> dict[str, Any]:
+    """Re-sync the Redis ZSET from DB for one org, or all orgs when explicit.
 
     Idempotent — ZADD with the same score is a no-op if the member exists.
     Covers: Redis restart, missed ZADD on creation, any inconsistency.
     """
+    if not organisation_id and not all_orgs:
+        logger.info("Skipping reminder recovery sweep without an explicit scope")
+        return {
+            "status": "skipped",
+            "reason": "organisation_id or all_orgs=True is required",
+            "orgs_scanned": 0,
+            "reminders_synced": 0,
+        }
+
+    target_org_id: UUID | None = None
+    if organisation_id:
+        try:
+            target_org_id = UUID(organisation_id)
+        except ValueError:
+            logger.warning("Skipping reminder recovery sweep with invalid organisation_id")
+            return {
+                "status": "failed",
+                "reason": "organisation_id must be a valid UUID",
+                "orgs_scanned": 0,
+                "reminders_synced": 0,
+            }
+
     logger.info("Starting reminder recovery sweep")
 
     async def _sweep() -> dict[str, Any]:
@@ -115,13 +140,16 @@ def recovery_sweep_reminders_task() -> dict[str, Any]:
         # Look ahead 10 min (2x sweep interval) to ensure comfortable overlap
         horizon = datetime.now(UTC) + timedelta(minutes=10)
 
-        org_ids: list[UUID] = []
-        async for session in acquire_master_async_session():
-            stmt = select(col(Organisation.organisation_id)).where(
-                col(Organisation.status) == OrganisationStatus.APPROVED
-            )
-            result = await session.execute(stmt)
-            org_ids = [row[0] for row in result.all()]
+        if target_org_id:
+            org_ids = [target_org_id]
+        else:
+            org_ids: list[UUID] = []
+            async for session in acquire_master_async_session():
+                stmt = select(col(Organisation.organisation_id)).where(
+                    col(Organisation.status) == OrganisationStatus.APPROVED
+                )
+                result = await session.execute(stmt)
+                org_ids = [row[0] for row in result.all()]
 
         total_synced = 0
         for org_id in org_ids:
