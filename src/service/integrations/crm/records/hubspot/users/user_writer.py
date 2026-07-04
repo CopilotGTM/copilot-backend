@@ -1,9 +1,9 @@
 """Active-snapshot writer for CRM users from HubSpot owners.
 
-Scoped to `(organisation_id, integration_id, is_deleted=false)` on every
-statement. The writer does not skip owners without a `public.users` match —
-it mints a fresh `user_id = uuid4()` for those rows so every non-malformed
-HubSpot owner becomes addressable via `crm_users.user_id`.
+Source mappings are scoped to the provider integration. The canonical
+`crm_users` row can come from HubSpot, another provider, or the internal CRM
+integration; provider external IDs attach to that local user through
+`crm_source_object_mappings`.
 
 Identity convergence (design):
 
