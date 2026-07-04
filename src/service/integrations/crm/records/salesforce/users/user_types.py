@@ -54,6 +54,7 @@ class UserSyncResult(RecordSyncResult):
     users_matched_public: int = 0
     users_minted_uuid: int = 0
     skipped_malformed: int = 0
+    skipped_inactive: int = 0
     skipped_dup_email: int = 0
     app_user_index_size: int = 0
     deal_backfill_rows_updated: int = 0
@@ -73,6 +74,7 @@ class UserSyncResult(RecordSyncResult):
                 "users_matched_public": self.users_matched_public,
                 "users_minted_uuid": self.users_minted_uuid,
                 "skipped_malformed": self.skipped_malformed,
+                "skipped_inactive": self.skipped_inactive,
                 "skipped_dup_email": self.skipped_dup_email,
                 "app_user_index_size": self.app_user_index_size,
                 "deal_backfill_rows_updated": self.deal_backfill_rows_updated,

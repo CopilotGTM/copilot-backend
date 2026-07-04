@@ -44,7 +44,7 @@ def _normalized_user(
 
 
 @pytest.mark.asyncio
-async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match() -> None:
+async def test_writer_mints_uuid_for_unmatched_and_maps_duplicate_public_match() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
     matched_user_id = uuid4()
@@ -73,6 +73,7 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005A": existing})  # type: ignore[method-assign]
+    writer._load_existing_rows_by_email = AsyncMock(return_value={})  # type: ignore[attr-defined]
 
     result = await writer.apply(
         matches=[
@@ -104,8 +105,8 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
         all_external_ids=["005A", "005B", "005C"],
     )
 
-    assert result.users_updated == 1
-    assert result.skipped_dup_email == 1
+    assert result.users_updated == 2
+    assert result.skipped_dup_email == 0
     assert result.users_created == 1
     assert result.users_minted_uuid == 1
     created_rows = [call.args[0] for call in session.add.call_args_list]
@@ -116,10 +117,66 @@ async def test_writer_mints_uuid_for_unmatched_and_skips_duplicate_public_match(
     mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
     mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
     mapped_external_ids = [row.external_id for row in mapped_rows]
-    assert mapped_external_ids == ["005A", "005C"]
+    assert mapped_external_ids == ["005A", "005B", "005C"]
     assert mapped_rows[0].external_object_type == CRMSourceObjectType.USER
     assert mapped_rows[0].local_object_type == CRMSourceObjectType.USER
     assert mapped_rows[0].local_object_id == existing.user_id
+    assert mapped_rows[1].local_object_id == existing.user_id
+
+
+@pytest.mark.asyncio
+async def test_writer_maps_duplicate_email_provider_users_to_one_crm_user() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceUserWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+    writer._load_existing_rows_by_user_ids = AsyncMock(return_value={})  # type: ignore[attr-defined]
+    writer._load_existing_rows_by_email = AsyncMock(return_value={})  # type: ignore[attr-defined]
+
+    result = await writer.apply(
+        matches=[
+            UserMatchResult(
+                user=_normalized_user(
+                    external_id="005A",
+                    email="Owner@Acme.com",
+                    is_active=True,
+                ),
+                matched_app_user_id=None,
+            ),
+            UserMatchResult(
+                user=_normalized_user(
+                    external_id="005B",
+                    email="owner@acme.com",
+                    is_active=True,
+                ),
+                matched_app_user_id=None,
+            ),
+        ],
+        all_external_ids=["005A", "005B"],
+    )
+
+    assert result.users_created == 1
+    assert result.users_updated == 1
+    assert result.skipped_dup_email == 0
+    created_rows = [call.args[0] for call in session.add.call_args_list]
+    assert len(created_rows) == 1
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert [row.external_id for row in mapped_rows] == ["005A", "005B"]
+    assert {row.local_object_id for row in mapped_rows} == {created_rows[0].user_id}
 
 
 @pytest.mark.asyncio
@@ -160,6 +217,7 @@ async def test_writer_deactivates_missing_rows_but_keeps_present_inactive_rows()
     writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
         return_value={"005A": existing_inactive, "005B": stale_missing}
     )
+    writer._load_existing_rows_by_email = AsyncMock(return_value={})  # type: ignore[attr-defined]
 
     result = await writer.apply(
         matches=[
@@ -210,6 +268,7 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
     mapping_helper.mark_missing_deleted = AsyncMock()
     writer.source_mappings = mapping_helper
     writer._load_existing_rows = AsyncMock(return_value={"005B": stale_missing})  # type: ignore[method-assign]
+    writer._load_existing_rows_by_email = AsyncMock(return_value={})  # type: ignore[attr-defined]
 
     result = await writer.apply(
         matches=[
@@ -229,6 +288,66 @@ async def test_writer_can_skip_missing_deactivation_for_single_user_cdc() -> Non
     assert result.users_created == 1
     assert result.users_deactivated == 0
     assert stale_missing.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_writer_reuses_existing_local_crm_user_when_provider_mapping_is_missing() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    app_user_id = uuid4()
+    existing = CRMUser(
+        user_id=app_user_id,
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        email="owner@acme.com",
+        full_name="Existing App User",
+        is_active=True,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforceUserWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(return_value={})  # type: ignore[method-assign]
+    writer._load_existing_rows_by_user_ids = AsyncMock(  # type: ignore[attr-defined]
+        return_value={app_user_id: existing}
+    )
+    writer._load_existing_rows_by_email = AsyncMock(return_value={})  # type: ignore[attr-defined]
+
+    result = await writer.apply(
+        matches=[
+            UserMatchResult(
+                user=_normalized_user(
+                    external_id="005A",
+                    email="owner@acme.com",
+                    is_active=True,
+                ),
+                matched_app_user_id=app_user_id,
+            )
+        ],
+        all_external_ids=["005A"],
+    )
+
+    assert result.users_created == 0
+    assert result.users_updated == 1
+    assert result.users_matched_public == 1
+    assert existing.full_name == "Alex Morgan"
+    session.add.assert_not_called()
+    mapping_helper.bulk_upsert_integration_mappings.assert_awaited_once()
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert len(mapped_rows) == 1
+    assert mapped_rows[0].external_id == "005A"
+    assert mapped_rows[0].local_object_id == app_user_id
 
 
 @pytest.mark.asyncio

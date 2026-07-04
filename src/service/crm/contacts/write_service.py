@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
@@ -31,6 +32,10 @@ from src.service.crm.mutations.contracts import (
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import ContactMutationPolicy
 from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 from src.service.crm.utils.identity import normalize_email
 from src.service.crm.utils.person import split_full_name
 
@@ -40,11 +45,17 @@ ContactIdentityResolutionService = None
 class ContactWriteService:
     """Canonical tenant-scoped contact writer for internal CRM contact records."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        master_session: AsyncSession | None = None,
+    ):
         """Bind writes to one org-scoped session without taking commit ownership."""
         self.org_session = org_session
         self.organisation_id = organisation_id
-        self._account_writer = AccountWriteService(org_session, organisation_id)
+        self.master_session = master_session
+        self._account_writer = AccountWriteService(org_session, organisation_id, master_session)
         self._mutation_events = CRMMutationEventService(org_session, organisation_id)
         self._projection = ActivityFeedProjectionService(org_session, organisation_id)
 
@@ -131,11 +142,13 @@ class ContactWriteService:
             self.organisation_id,
             AUTOMATED_PIPELINE_USER_ID,
         ).get_or_create_internal_integration()
-        owner_id = (
-            context.actor_user_id
-            if context and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
-            else None
-        )
+        owner_id = None
+        if (
+            context
+            and context.actor_user_id
+            and context.actor_user_id != AUTOMATED_PIPELINE_USER_ID
+        ):
+            owner_id = (await self._resolve_actor_crm_user(context.actor_user_id)).user_id
         owner_name = (
             context.actor_name.strip()
             if owner_id and context and context.actor_name and context.actor_name.strip()
@@ -196,6 +209,18 @@ class ContactWriteService:
             account.company_id if account and account_result and account_result.created else None
         )
         return ContactWriteResult(contact, True, "created", created_account_id)
+
+    async def _resolve_actor_crm_user(self, actor_user_id: UUID) -> CRMUser:
+        try:
+            return await ensure_app_user_crm_identity(
+                org_session=self.org_session,
+                master_session=self.master_session,
+                organisation_id=self.organisation_id,
+                app_user_id=actor_user_id,
+                actor_user_id=actor_user_id,
+            )
+        except CRMUserIdentityResolutionError as exc:
+            raise ContactWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
     async def find_or_create_contact_by_email(
         self,

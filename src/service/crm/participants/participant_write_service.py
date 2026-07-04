@@ -23,13 +23,16 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
-from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 from src.service.crm.participants.contracts import (
     ParticipantServiceError,
     ParticipantSkipped,
     ParticipantWriteResult,
 )
 from src.service.crm.utils.account import clean_optional_string
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 from src.service.crm.utils.identity import normalize_email
 
 logger = get_logger(__name__)
@@ -362,13 +365,16 @@ class ParticipantWriteService:
                 raise ParticipantServiceError(
                     "Master session required for user participants", status_code=500
                 )
-            user_service = InternalCRMUserService(
-                org_session=self.session,
-                master_session=self.master_session,
-                organisation_id=self.organisation_id,
-                actor_user_id=self.actor_user_id,
-            )
-            crm_user = await user_service.ensure_crm_user(related_id)
+            try:
+                crm_user = await ensure_app_user_crm_identity(
+                    org_session=self.session,
+                    master_session=self.master_session,
+                    organisation_id=self.organisation_id,
+                    app_user_id=related_id,
+                    actor_user_id=self.actor_user_id,
+                )
+            except CRMUserIdentityResolutionError as exc:
+                raise ParticipantServiceError(exc.message, status_code=exc.status_code) from exc
 
             return crm_user.user_id, crm_user.full_name, crm_user.email
 

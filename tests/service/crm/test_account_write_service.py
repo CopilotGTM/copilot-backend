@@ -103,6 +103,7 @@ async def test_create_account_accepts_typed_command() -> None:
 async def test_create_account_assigns_actor_owner_when_not_system_user() -> None:
     organisation_id = uuid4()
     actor_user_id = uuid4()
+    crm_user_id = uuid4()
     integration = _integration(organisation_id)
 
     session = SimpleNamespace(
@@ -118,6 +119,9 @@ async def test_create_account_assigns_actor_owner_when_not_system_user() -> None
     )
     service = AccountWriteService(session, organisation_id)
     _stub_account_created_projection(service)
+    service._resolve_actor_crm_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(user_id=crm_user_id)
+    )
 
     result = await service.create_account(
         AccountCreateCommand(name="Acme"),
@@ -129,9 +133,10 @@ async def test_create_account_assigns_actor_owner_when_not_system_user() -> None
         ),
     )
 
-    assert result.account.owner_id == actor_user_id
+    assert result.account.owner_id == crm_user_id
     assert result.account.owner_name == "Jane Owner"
     assert result.account.owner_email == "jane@example.com"
+    service._resolve_actor_crm_user.assert_awaited_once_with(actor_user_id)  # type: ignore[attr-defined]
     added_rows = [call.args[0] for call in session.add.call_args_list]
     assert result.account in added_rows
     assert not any(row.__class__.__name__ == "CRMUser" for row in added_rows)

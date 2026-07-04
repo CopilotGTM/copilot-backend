@@ -84,7 +84,7 @@ class SalesforceUserRecordSyncService:
             instance_url=context.instance_url,
         ).fetch_all()
 
-        normalized, skipped_malformed = normalize_users(raw_users)
+        normalized, skipped_malformed, skipped_inactive = normalize_users(raw_users)
         match_results = resolve_matches(normalized, email_index)
         all_external_ids = [user.external_id for user in normalized]
 
@@ -111,6 +111,7 @@ class SalesforceUserRecordSyncService:
             users_matched_public=write_result.users_matched_public,
             users_minted_uuid=write_result.users_minted_uuid,
             skipped_malformed=skipped_malformed,
+            skipped_inactive=skipped_inactive,
             skipped_dup_email=write_result.skipped_dup_email,
             app_user_index_size=len(email_index),
             deal_backfill_rows_updated=backfill_result["rows_updated"],
@@ -129,6 +130,7 @@ class SalesforceUserRecordSyncService:
                 "users_matched_public": result.users_matched_public,
                 "users_minted_uuid": result.users_minted_uuid,
                 "skipped_malformed": result.skipped_malformed,
+                "skipped_inactive": result.skipped_inactive,
                 "skipped_dup_email": result.skipped_dup_email,
                 "app_user_index_size": result.app_user_index_size,
             },
@@ -246,7 +248,7 @@ class SalesforceUserRecordSyncService:
     ) -> UserSyncResult:
         started_at = datetime.now(UTC)
         email_index = await self._load_app_user_email_index(organisation_id)
-        normalized, skipped_malformed = normalize_users([raw_user])
+        normalized, skipped_malformed, skipped_inactive = normalize_users([raw_user])
         match_results = resolve_matches(normalized, email_index)
 
         write_result, backfill_result = await self._persist_single(
@@ -271,6 +273,7 @@ class SalesforceUserRecordSyncService:
             users_matched_public=write_result.users_matched_public,
             users_minted_uuid=write_result.users_minted_uuid,
             skipped_malformed=skipped_malformed,
+            skipped_inactive=skipped_inactive,
             skipped_dup_email=write_result.skipped_dup_email,
             app_user_index_size=len(email_index),
             deal_backfill_rows_updated=backfill_result["rows_updated"],
@@ -385,9 +388,8 @@ class SalesforceUserRecordSyncService:
             return {}
         rows = []
         for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
-            stmt = select(CRMUser.user_id).where(
+            stmt = select(col(CRMUser.user_id)).where(
                 col(CRMUser.organisation_id) == organisation_id,
-                col(CRMUser.integration_id) == integration_id,
                 col(CRMUser.is_deleted) == False,  # noqa: E712
                 col(CRMUser.user_id).in_(local_ids),
             )

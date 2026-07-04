@@ -241,7 +241,7 @@ async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_
             new=AsyncMock(return_value=integration),
         ),
         patch(
-            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            "src.service.crm.deals.write_service.ensure_app_user_crm_identity",
             new=AsyncMock(return_value=crm_user),
         ),
     ):

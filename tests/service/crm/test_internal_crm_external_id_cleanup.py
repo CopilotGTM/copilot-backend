@@ -72,6 +72,7 @@ async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> N
     assert not hasattr(task, "external_id")
     assert task.deal_id == deal.deal_id
     assert task.title == "Follow up"
+    assert task.created_by_user_id == owner_crm_user_id
     assert task.assigned_to_user_id == owner_crm_user_id
     assert task.owner_user_id == owner_crm_user_id
     assert not hasattr(task, "owner_external_id")

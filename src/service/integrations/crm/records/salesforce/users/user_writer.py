@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
@@ -58,11 +58,35 @@ class SalesforceUserWriter:
         all_external_ids: Iterable[str],
         deactivate_missing: bool = True,
     ) -> UserWriteResult:
+        """Upsert Salesforce users into `crm_users` using one local row per email.
+
+        Multiple Salesforce `User.Id` values can represent the same human, so
+        source mappings converge on the canonical CRM row instead of minting
+        duplicate local identities.
+        """
         result = UserWriteResult()
         now = datetime.now(UTC)
 
         existing_by_external = await self._load_existing_rows()
-        claimed_user_ids: set[UUID] = {row.user_id for row in existing_by_external.values()}
+        mapped_user_ids = {row.user_id for row in existing_by_external.values()}
+        matched_user_ids = {
+            match.matched_app_user_id for match in matches if match.matched_app_user_id is not None
+        }
+        existing_by_user_id = await self._load_existing_rows_by_user_ids(
+            matched_user_ids - mapped_user_ids
+        )
+        existing_by_email = await self._load_existing_rows_by_email(
+            {_normalized_email(match.user.email) for match in matches if match.user.email}
+        )
+        claimed_user_ids: set[UUID] = set(mapped_user_ids)
+        canonical_by_email: dict[str, CRMUser] = {}
+        # Salesforce can expose multiple User.Id values for one human/email.
+        # Canonicalize by normalized email so every provider id maps to one
+        # stable local crm_users.user_id.
+        for row in [*existing_by_external.values(), *existing_by_user_id.values()]:
+            if row.email:
+                canonical_by_email.setdefault(_normalized_email(row.email), row)
+        canonical_by_email.update(existing_by_email)
         mapping_rows: list[IntegrationMappingUpsert] = []
 
         for match in matches:
@@ -76,11 +100,54 @@ class SalesforceUserWriter:
                 self._apply_updates(existing, user, now=now)
                 existing.is_deleted = False
                 mapping_rows.append(self._source_mapping_row(user, existing.user_id, now=now))
+                if user.email:
+                    canonical_by_email[_normalized_email(user.email)] = existing
                 if was_deleted or (incoming_active and not was_active):
                     result.users_reactivated += 1
                 else:
                     result.users_updated += 1
                 continue
+
+            email_key = _normalized_email(user.email) if user.email else None
+            existing_email_row = canonical_by_email.get(email_key) if email_key else None
+            if existing_email_row is not None:
+                incoming_active = user.is_active
+                was_active = bool(existing_email_row.is_active)
+                was_deleted = bool(existing_email_row.is_deleted)
+                self._apply_updates(existing_email_row, user, now=now)
+                existing_email_row.is_deleted = False
+                mapping_rows.append(
+                    self._source_mapping_row(user, existing_email_row.user_id, now=now)
+                )
+                claimed_user_ids.add(existing_email_row.user_id)
+                if match.matched_app_user_id == existing_email_row.user_id:
+                    result.users_matched_public += 1
+                if was_deleted or (incoming_active and not was_active):
+                    result.users_reactivated += 1
+                else:
+                    result.users_updated += 1
+                continue
+
+            if match.matched_app_user_id is not None:
+                existing_local = existing_by_user_id.get(match.matched_app_user_id)
+                if existing_local is not None:
+                    incoming_active = user.is_active
+                    was_active = bool(existing_local.is_active)
+                    was_deleted = bool(existing_local.is_deleted)
+                    self._apply_updates(existing_local, user, now=now)
+                    existing_local.is_deleted = False
+                    mapping_rows.append(
+                        self._source_mapping_row(user, existing_local.user_id, now=now)
+                    )
+                    claimed_user_ids.add(existing_local.user_id)
+                    if user.email:
+                        canonical_by_email[_normalized_email(user.email)] = existing_local
+                    result.users_matched_public += 1
+                    if was_deleted or (incoming_active and not was_active):
+                        result.users_reactivated += 1
+                    else:
+                        result.users_updated += 1
+                    continue
 
             user_id, came_from_public = self._resolve_user_id(match, claimed_user_ids)
             if user_id is None:
@@ -100,6 +167,8 @@ class SalesforceUserWriter:
             self.session.add(row)
             mapping_rows.append(self._source_mapping_row(user, row.user_id, now=now))
             claimed_user_ids.add(user_id)
+            if user.email:
+                canonical_by_email[_normalized_email(user.email)] = row
             result.users_created += 1
             if came_from_public:
                 result.users_matched_public += 1
@@ -165,7 +234,6 @@ class SalesforceUserWriter:
         for local_ids in iter_chunks(set(external_to_local.values()), LOCAL_ID_QUERY_CHUNK_SIZE):
             stmt = select(CRMUser).where(
                 col(CRMUser.organisation_id) == self.organisation_id,
-                col(CRMUser.integration_id) == self.integration_id,
                 col(CRMUser.user_id).in_(local_ids),
             )
             rows.extend((await self.session.execute(stmt)).scalars().all())
@@ -175,6 +243,33 @@ class SalesforceUserWriter:
         return {
             local_to_external[row.user_id]: row for row in rows if row.user_id in local_to_external
         }
+
+    async def _load_existing_rows_by_user_ids(self, user_ids: set[UUID]) -> dict[UUID, CRMUser]:
+        if not user_ids:
+            return {}
+        rows: list[CRMUser] = []
+        for local_ids in iter_chunks(user_ids, LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMUser).where(
+                col(CRMUser.organisation_id) == self.organisation_id,
+                col(CRMUser.user_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
+        return {row.user_id: row for row in rows}
+
+    async def _load_existing_rows_by_email(self, emails: set[str]) -> dict[str, CRMUser]:
+        normalized_emails = {email for email in emails if email}
+        if not normalized_emails:
+            return {}
+        stmt = select(CRMUser).where(
+            col(CRMUser.organisation_id) == self.organisation_id,
+            func.lower(func.btrim(CRMUser.email)).in_(normalized_emails),
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        result: dict[str, CRMUser] = {}
+        for row in rows:
+            if row.email:
+                result.setdefault(_normalized_email(row.email), row)
+        return result
 
     def _source_mapping_row(
         self,
@@ -236,3 +331,7 @@ class SalesforceUserWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = user.properties
+
+
+def _normalized_email(email: str) -> str:
+    return email.strip().lower()

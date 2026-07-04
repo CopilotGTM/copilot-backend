@@ -234,7 +234,7 @@ async def test_assign_owner_updates_snapshot_syncs_projection_and_records_one_ev
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            "src.service.crm.deals.write_service.ensure_app_user_crm_identity",
             AsyncMock(return_value=crm_user),
         )
         result = await service.assign_owner(deal.deal_id, owner_user_id)
@@ -286,7 +286,7 @@ async def test_assign_owner_same_owner_is_noop_without_timestamp_or_event() -> N
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            "src.service.crm.deals.write_service.ensure_app_user_crm_identity",
             AsyncMock(return_value=crm_user),
         )
         result = await service.assign_owner(deal.deal_id, owner_user_id)
@@ -372,7 +372,7 @@ async def test_assign_owner_preserves_participant_projection_error_status() -> N
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "src.service.crm.deals.write_service.InternalCRMUserService.ensure_crm_user",
+            "src.service.crm.deals.write_service.ensure_app_user_crm_identity",
             AsyncMock(return_value=crm_user),
         )
         with pytest.raises(DealWriteServiceError) as exc_info:

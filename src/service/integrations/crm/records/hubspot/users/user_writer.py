@@ -20,8 +20,9 @@ Two passes:
     - existing row (keyed by source mapping)  → update, mark active
     - no existing row                          → insert with resolved or
                                                  freshly minted user_id
-    - duplicate user_id collision (two owners → same already-claimed id) →
-      skip, count, WARNING log
+    - duplicate email / app user id                  → reuse the canonical
+                                                       local crm_users row and
+                                                       attach both source ids
 
   Pass B — active-snapshot deactivation
     - any prior mapped row whose provider id isn't in the HubSpot snapshot
@@ -34,7 +35,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
@@ -42,6 +43,10 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
+from src.service.integrations.crm.records.common.query_chunks import (
+    LOCAL_ID_QUERY_CHUNK_SIZE,
+    iter_chunks,
+)
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.users.user_types import (
     NormalizedHubSpotOwner,
@@ -78,16 +83,35 @@ class HubSpotUserWriter:
         matches: list[OwnerMatchResult],
         all_external_ids: Iterable[str],
     ) -> UserWriteResult:
+        """Upsert HubSpot owners into `crm_users` using one local row per email.
+
+        HubSpot owners without app users are still addressable in CRM, but
+        duplicate owner ids for the same email share one canonical local UUID.
+        """
         result = UserWriteResult()
         now = datetime.now(UTC)
 
         existing_by_external = await self._load_existing_rows()
+        mapped_user_ids = {row.user_id for row in existing_by_external.values()}
+        matched_user_ids = {
+            match.matched_app_user_id for match in matches if match.matched_app_user_id is not None
+        }
+        existing_by_user_id = await self._load_existing_rows_by_user_ids(
+            matched_user_ids - mapped_user_ids
+        )
+        existing_by_email = await self._load_existing_rows_by_email(
+            {_normalized_email(match.owner.email) for match in matches if match.owner.email}
+        )
 
-        # Track claimed user_ids so two owners resolving to the same
-        # public.users.user_id (rare — two HubSpot owners sharing an email)
-        # don't PK-collide during insert. Seed with user_ids already present
-        # on existing rows.
-        claimed_user_ids: set[UUID] = {row.user_id for row in existing_by_external.values()}
+        # Track user_ids and emails claimed in this run. Multiple provider
+        # owner ids can share one email, but they must converge to one local
+        # CRM user row so downstream owner FKs remain stable.
+        claimed_user_ids: set[UUID] = set(mapped_user_ids)
+        canonical_by_email: dict[str, CRMUser] = {}
+        for row in [*existing_by_external.values(), *existing_by_user_id.values()]:
+            if row.email:
+                canonical_by_email.setdefault(_normalized_email(row.email), row)
+        canonical_by_email.update(existing_by_email)
 
         for match in matches:
             owner = match.owner
@@ -99,12 +123,51 @@ class HubSpotUserWriter:
                 self._apply_updates(existing, owner, now=now)
                 existing.is_deleted = False
                 await self._upsert_source_mapping(owner, existing.user_id, now=now)
+                if owner.email:
+                    canonical_by_email[_normalized_email(owner.email)] = existing
                 if was_deleted or not was_active:
                     existing.is_active = True
                     result.users_reactivated += 1
                 else:
                     result.users_updated += 1
                 continue
+
+            email_key = _normalized_email(owner.email) if owner.email else None
+            existing_email_row = canonical_by_email.get(email_key) if email_key else None
+            if existing_email_row is not None:
+                was_active = bool(existing_email_row.is_active)
+                was_deleted = bool(existing_email_row.is_deleted)
+                self._apply_updates(existing_email_row, owner, now=now)
+                existing_email_row.is_deleted = False
+                await self._upsert_source_mapping(owner, existing_email_row.user_id, now=now)
+                claimed_user_ids.add(existing_email_row.user_id)
+                if match.matched_app_user_id == existing_email_row.user_id:
+                    result.users_matched_public += 1
+                if was_deleted or not was_active:
+                    existing_email_row.is_active = True
+                    result.users_reactivated += 1
+                else:
+                    result.users_updated += 1
+                continue
+
+            if match.matched_app_user_id is not None:
+                existing_local = existing_by_user_id.get(match.matched_app_user_id)
+                if existing_local is not None:
+                    was_active = bool(existing_local.is_active)
+                    was_deleted = bool(existing_local.is_deleted)
+                    self._apply_updates(existing_local, owner, now=now)
+                    existing_local.is_deleted = False
+                    await self._upsert_source_mapping(owner, existing_local.user_id, now=now)
+                    claimed_user_ids.add(existing_local.user_id)
+                    if owner.email:
+                        canonical_by_email[_normalized_email(owner.email)] = existing_local
+                    result.users_matched_public += 1
+                    if was_deleted or not was_active:
+                        existing_local.is_active = True
+                        result.users_reactivated += 1
+                    else:
+                        result.users_updated += 1
+                    continue
 
             user_id, came_from_public = self._resolve_user_id(match, claimed_user_ids)
             if user_id is None:
@@ -124,6 +187,8 @@ class HubSpotUserWriter:
             self.session.add(row)
             await self._upsert_source_mapping(owner, row.user_id, now=now)
             claimed_user_ids.add(user_id)
+            if owner.email:
+                canonical_by_email[_normalized_email(owner.email)] = row
             result.users_created += 1
             if came_from_public:
                 result.users_matched_public += 1
@@ -169,8 +234,8 @@ class HubSpotUserWriter:
     ) -> tuple[UUID | None, bool]:
         """Return `(user_id, came_from_public)`.
 
-        - Matched owner → reuse `matched_app_user_id`; if already claimed in
-          this run, return (None, _) so the caller can count + skip.
+        - Matched owner → reuse `matched_app_user_id`; duplicate emails are
+          handled before this method by reusing the canonical CRM row.
         - Unmatched owner (no email or no public match) → mint a fresh UUID.
           `uuid4()` collisions against already-claimed ids are astronomically
           unlikely, but we still loop defensively.
@@ -196,7 +261,6 @@ class HubSpotUserWriter:
             return {}
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
-            col(CRMUser.integration_id) == self.integration_id,
             col(CRMUser.user_id).in_(set(external_to_local.values())),
         )
         rows = (await self.session.execute(stmt)).scalars().all()
@@ -206,6 +270,35 @@ class HubSpotUserWriter:
         return {
             local_to_external[row.user_id]: row for row in rows if row.user_id in local_to_external
         }
+
+    async def _load_existing_rows_by_user_ids(self, user_ids: set[UUID]) -> dict[UUID, CRMUser]:
+        """Existing org CRM users keyed by local UUID, regardless of source."""
+        if not user_ids:
+            return {}
+        rows: list[CRMUser] = []
+        for local_ids in iter_chunks(user_ids, LOCAL_ID_QUERY_CHUNK_SIZE):
+            stmt = select(CRMUser).where(
+                col(CRMUser.organisation_id) == self.organisation_id,
+                col(CRMUser.user_id).in_(local_ids),
+            )
+            rows.extend((await self.session.execute(stmt)).scalars().all())
+        return {row.user_id: row for row in rows}
+
+    async def _load_existing_rows_by_email(self, emails: set[str]) -> dict[str, CRMUser]:
+        """Existing org CRM users keyed by normalized email, regardless of source."""
+        normalized_emails = {email for email in emails if email}
+        if not normalized_emails:
+            return {}
+        stmt = select(CRMUser).where(
+            col(CRMUser.organisation_id) == self.organisation_id,
+            func.lower(func.btrim(CRMUser.email)).in_(normalized_emails),
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        result: dict[str, CRMUser] = {}
+        for row in rows:
+            if row.email:
+                result.setdefault(_normalized_email(row.email), row)
+        return result
 
     async def _upsert_source_mapping(
         self,
@@ -276,3 +369,7 @@ class HubSpotUserWriter:
         row.synced_at = now
         row.last_seen_at = now
         row.properties = owner.properties
+
+
+def _normalized_email(email: str) -> str:
+    return email.strip().lower()

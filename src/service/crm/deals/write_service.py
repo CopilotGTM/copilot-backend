@@ -32,10 +32,13 @@ from src.service.crm.deals.owner_service import DealOwnerService
 from src.service.crm.deals.stage_service import DealStageService
 from src.service.crm.internal.deal_participant_service import DealParticipantServiceError
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
-from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 from src.service.crm.mutations.policies import DealMutationPolicy
 from src.service.crm.participants.contracts import ParticipantServiceError
 from src.service.crm.utils.account import normalize_account_domain, normalize_company_name
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 
 logger = get_logger(__name__)
 
@@ -393,13 +396,16 @@ class DealWriteService:
         crm_user = None
 
         if owner_user_id:
-            user_service = InternalCRMUserService(
-                org_session=self.session,
-                master_session=self.master_session,
-                organisation_id=self.organisation_id,
-                actor_user_id=self.actor_user_id,
-            )
-            crm_user = await user_service.ensure_crm_user(owner_user_id)
+            try:
+                crm_user = await ensure_app_user_crm_identity(
+                    org_session=self.session,
+                    master_session=self.master_session,
+                    organisation_id=self.organisation_id,
+                    app_user_id=owner_user_id,
+                    actor_user_id=self.actor_user_id,
+                )
+            except CRMUserIdentityResolutionError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
         # The deal row is written before participants so downstream participant
         # services can validate a real deal_id in the same transaction.
@@ -1060,14 +1066,16 @@ class DealWriteService:
 
         crm_user = None
         if owner_user_id:
-            # Ensure CRM user exists
-            user_service = InternalCRMUserService(
-                org_session=self.session,
-                master_session=self.master_session,
-                organisation_id=self.organisation_id,
-                actor_user_id=self.actor_user_id,
-            )
-            crm_user = await user_service.ensure_crm_user(owner_user_id)
+            try:
+                crm_user = await ensure_app_user_crm_identity(
+                    org_session=self.session,
+                    master_session=self.master_session,
+                    organisation_id=self.organisation_id,
+                    app_user_id=owner_user_id,
+                    actor_user_id=self.actor_user_id,
+                )
+            except CRMUserIdentityResolutionError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
 
         owner_result = self._owners.apply_owner(deal=deal, crm_user=crm_user)
         if not owner_result.changed:

@@ -9,7 +9,7 @@ from src.service.integrations.crm.records.salesforce.users.user_normalizer impor
 
 
 def test_normalize_users_maps_profile_name_and_lowercases_email() -> None:
-    normalized, skipped = normalize_users(
+    normalized, skipped, skipped_inactive = normalize_users(
         [
             {
                 "Id": "005A",
@@ -17,7 +17,7 @@ def test_normalize_users_maps_profile_name_and_lowercases_email() -> None:
                 "FirstName": "Alex",
                 "LastName": "Morgan",
                 "Name": "Alex Morgan",
-                "IsActive": False,
+                "IsActive": True,
                 "UserType": "Standard",
                 "ProfileId": "00ePROFILE",
                 "Profile": {"Name": "Sales User"},
@@ -27,18 +27,36 @@ def test_normalize_users_maps_profile_name_and_lowercases_email() -> None:
     )
 
     assert skipped == 0
+    assert skipped_inactive == 0
     assert len(normalized) == 1
     user = normalized[0]
     assert user.external_id == "005A"
     assert user.email == "owner@acme.com"
     assert user.user_role == "Sales User"
-    assert user.is_active is False
+    assert user.is_active is True
     assert user.properties["salesforce_profile_id"] == "00ePROFILE"
     assert user.properties["salesforce_user_type"] == "Standard"
 
 
+def test_normalize_users_skips_inactive_salesforce_users() -> None:
+    normalized, skipped, skipped_inactive = normalize_users(
+        [
+            {
+                "Id": "005A",
+                "Email": "inactive@acme.com",
+                "Name": "Inactive User",
+                "IsActive": False,
+            }
+        ]
+    )
+
+    assert normalized == []
+    assert skipped == 0
+    assert skipped_inactive == 1
+
+
 def test_resolve_matches_reuses_public_user_id_when_email_matches() -> None:
-    normalized, _ = normalize_users(
+    normalized, _, _ = normalize_users(
         [
             {
                 "Id": "005A",
@@ -58,7 +76,7 @@ def test_resolve_matches_reuses_public_user_id_when_email_matches() -> None:
 
 
 def test_build_owner_backfill_mapping_uses_crm_user_as_canonical_owner() -> None:
-    normalized, _ = normalize_users(
+    normalized, _, _ = normalize_users(
         [
             {
                 "Id": "005A",

@@ -53,7 +53,8 @@ class OwnerMatchResult:
     """Owner paired with an optional `public.users` match.
 
     `matched_app_user_id is None` means "no existing app user for this email";
-    the writer will mint a fresh UUID for that case (it no longer skips).
+    the writer reuses an existing CRM row with the same email when present,
+    otherwise it mints one fresh UUID for that canonical email identity.
     """
 
     owner: NormalizedHubSpotOwner
@@ -68,13 +69,13 @@ class UserWriteResult:
     users_updated: int = 0
     users_reactivated: int = 0
     users_deactivated: int = 0
-    # Of `users_created`, how many user_ids came from an existing public.users
-    # row vs. were minted fresh. The two must sum to users_created.
+    # Provider owners matched to an existing public.users row. The CRM user may
+    # be newly created or an existing local row that only needed provider mapping.
     users_matched_public: int = 0
+    # Provider-only CRM users created with fresh local UUIDs.
     users_minted_uuid: int = 0
-    # Two HubSpot owners share an email that resolves to the same
-    # public.users.user_id. First wins; rest are dropped (can't insert two
-    # crm_users rows with the same PK).
+    # Should stay zero in normal sync: duplicate provider owners with the same
+    # email are mapped to the same local CRM user instead of being dropped.
     skipped_dup_email: int = 0
 
 

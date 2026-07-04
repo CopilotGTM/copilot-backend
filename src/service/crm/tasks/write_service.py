@@ -22,14 +22,14 @@ from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import DEFAULT_TIMEZONE, resolve_timezone_name
 from src.service.crm.access.crm_user_service import build_user_display_name
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
-from src.service.crm.internal.internal_crm_user_service import (
-    InternalCRMUserService,
-    InternalCRMUserServiceError,
-)
 from src.service.crm.tasks.contracts import TaskReadRecord, TaskWriteServiceError
 from src.service.crm.tasks.notification_service import TaskNotificationService
 from src.service.crm.tasks.read_service import TaskReadService
 from src.service.crm.tasks.reminder_service import TaskReminderService
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 
 logger = get_logger("task_write_service")
 
@@ -92,6 +92,7 @@ class TaskWriteService:
             payload.get("owner_user_id") if "owner_user_id" in payload else self.actor_user_id
         )
         owner_id, owner_name, owner_email = await self._resolve_owner(owner_user_id)
+        actor_crm_user_id, _, _ = await self._resolve_owner(self.actor_user_id)
         due_at, due_date, is_all_day, due_metadata = self._normalize_due_payload(payload)
 
         now = datetime.now(UTC)
@@ -138,7 +139,7 @@ class TaskWriteService:
             assigned_to_user_id=None if external_assignee_email else owner_id,
             assigned_to_email=external_assignee_email or owner_email,
             assigned_to_name=external_assignee_name or owner_name,
-            created_by_user_id=self.actor_user_id,
+            created_by_user_id=actor_crm_user_id,
             owner_user_id=owner_id,
             owner_email=owner_email,
             completed_by_user_id=completed_by_user_id,
@@ -442,21 +443,19 @@ class TaskWriteService:
             if user.organisation_id != self.organisation_id:
                 raise TaskWriteServiceError("User not in organisation", 403)
 
-            crm_user_id: UUID | None = None
             try:
-                user_service = InternalCRMUserService(
+                crm_user = await ensure_app_user_crm_identity(
                     org_session=self.session,
                     master_session=master_session,
                     organisation_id=self.organisation_id,
+                    app_user_id=user_id,
                     actor_user_id=self.actor_user_id,
                 )
-                crm_user = await user_service.ensure_crm_user(user_id)
-                crm_user_id = crm_user.user_id
-            except InternalCRMUserServiceError:
-                logger.debug("Could not resolve task assignee to crm_users", exc_info=True)
+            except CRMUserIdentityResolutionError as exc:
+                raise TaskWriteServiceError(exc.message, exc.status_code) from exc
 
             return (
-                crm_user_id,
+                crm_user.user_id,
                 build_user_display_name(user),
                 str(user.email),
             )

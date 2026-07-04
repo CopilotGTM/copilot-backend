@@ -77,9 +77,7 @@ class InternalCRMUserService:
         setup_service = InternalCRMSetupService(
             self.session, self.organisation_id, self.actor_user_id
         )
-        integration = await setup_service.get_internal_integration()
-        if not integration:
-            raise InternalCRMUserServiceError("Internal CRM is not configured", status_code=409)
+        integration = await setup_service.get_or_create_internal_integration()
         self._integration_id = integration.integration_id
         return self._integration_id
 
@@ -100,11 +98,9 @@ class InternalCRMUserService:
         return count > 0
 
     async def get_crm_user_by_app_user_id(self, user_id: UUID) -> CRMUser | None:
-        """Look up an internal CRM user by the matching app user UUID."""
-        integration_id = await self._get_internal_integration_id()
+        """Look up the canonical CRM user by the matching app user UUID."""
         stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
-            col(CRMUser.integration_id) == integration_id,
             col(CRMUser.user_id) == user_id,
             col(CRMUser.is_deleted).is_not(True),
         )
@@ -130,26 +126,18 @@ class InternalCRMUserService:
         if not app_user:
             return None
 
+        existing = await self.get_crm_user_by_app_user_id(user_id)
+        if existing:
+            self._apply_app_user_fields(existing, app_user, datetime.now(UTC))
+            return existing
+
         now = datetime.now(UTC)
         crm_user = CRMUser(
             user_id=app_user.user_id,
             organisation_id=self.organisation_id,
             integration_id=integration_id,
         )
-        crm_user.email = str(app_user.email) if app_user.email else None
-        crm_user.first_name = app_user.first_name
-        crm_user.last_name = app_user.last_name
-        crm_user.full_name = build_user_display_name(app_user)
-        crm_user.user_role = (
-            app_user.user_role.value if hasattr(app_user.user_role, "value") else None
-        )
-        crm_user.job_title = app_user.job_title
-        crm_user.is_active = app_user.status == SupabaseUserStatus.ACTIVE
-        crm_user.source_created_at = now
-        crm_user.source_modified_at = now
-        crm_user.synced_at = now
-        crm_user.last_seen_at = now
-        crm_user.is_deleted = False
+        self._apply_app_user_fields(crm_user, app_user, now)
 
         self.session.add(crm_user)
         await self.session.flush()
@@ -189,7 +177,6 @@ class InternalCRMUserService:
         # Cache the current user set once per call to avoid full table scans per app user.
         existing_stmt = select(CRMUser).where(
             col(CRMUser.organisation_id) == self.organisation_id,
-            col(CRMUser.integration_id) == integration_id,
         )
         existing_result = await self.session.execute(existing_stmt)
         existing_crm_users = {cu.user_id: cu for cu in existing_result.scalars().all()}
@@ -207,21 +194,7 @@ class InternalCRMUserService:
                     integration_id=integration_id,
                 )
 
-            # Keep crm_users row aligned with public.users metadata for display and identity.
-            crm_user.email = str(app_user.email) if app_user.email else None
-            crm_user.first_name = app_user.first_name
-            crm_user.last_name = app_user.last_name
-            crm_user.full_name = build_user_display_name(app_user)
-            crm_user.user_role = (
-                app_user.user_role.value if hasattr(app_user.user_role, "value") else None
-            )
-            crm_user.job_title = app_user.job_title
-            crm_user.is_active = app_user.status == SupabaseUserStatus.ACTIVE
-            crm_user.source_created_at = crm_user.source_created_at or now
-            crm_user.source_modified_at = now
-            crm_user.synced_at = now
-            crm_user.last_seen_at = now
-            crm_user.is_deleted = False
+            self._apply_app_user_fields(crm_user, app_user, now)
 
             self.session.add(crm_user)
             synced_count += 1
@@ -259,6 +232,14 @@ class InternalCRMUserService:
         # Step 1: Check if user already exists in crm_users
         crm_user = await self.get_crm_user_by_app_user_id(user_id)
         if crm_user:
+            stmt = select(User).where(
+                col(User.user_id) == user_id,
+                col(User.organisation_id) == self.organisation_id,
+            )
+            result = await self.master_session.execute(stmt)
+            app_user = result.scalars().first()
+            if app_user:
+                self._apply_app_user_fields(crm_user, app_user, datetime.now(UTC))
             return crm_user
 
         # Step 2: User not found - check if we should auto-sync
@@ -293,3 +274,20 @@ class InternalCRMUserService:
                 "before assigning them to deals.",
                 status_code=400,
             )
+
+    @staticmethod
+    def _apply_app_user_fields(crm_user: CRMUser, app_user: User, now: datetime) -> None:
+        crm_user.email = str(app_user.email) if app_user.email else None
+        crm_user.first_name = app_user.first_name
+        crm_user.last_name = app_user.last_name
+        crm_user.full_name = build_user_display_name(app_user)
+        crm_user.user_role = (
+            app_user.user_role.value if hasattr(app_user.user_role, "value") else None
+        )
+        crm_user.job_title = app_user.job_title
+        crm_user.is_active = app_user.status == SupabaseUserStatus.ACTIVE
+        crm_user.source_created_at = crm_user.source_created_at or now
+        crm_user.source_modified_at = now
+        crm_user.synced_at = now
+        crm_user.last_seen_at = now
+        crm_user.is_deleted = False
