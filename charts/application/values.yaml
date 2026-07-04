@@ -7,6 +7,16 @@ global:
     usePassword: true                                # Set true to create TriggerAuthentication for password
   celery:
     enableEvents: true
+  priorityClasses:
+    enabled: false
+    api:
+      name: copilot-api-critical
+      value: 100000
+      preemptionPolicy: PreemptLowerPriority
+    worker:
+      name: copilot-worker
+      value: 1000
+      preemptionPolicy: Never
   # Must match the api chart secret name (<fullname>-secret) so workers & KEDA reference an existing secret
   secretName: "copilot-backend-secret"
 
@@ -32,7 +42,7 @@ api:
   strategy:
     type: RollingUpdate
     maxSurge: 1         # Allow 1 extra pod during rollout
-    maxUnavailable: 1   # Allow 1 pod to be unavailable during rollout
+    maxUnavailable: 0   # Keep an API endpoint available during rollout
 
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
@@ -306,6 +316,7 @@ chat-worker:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages", "voice_realtime"]
     concurrency: 5
+  priorityClassName: copilot-api-critical
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:
     create: false

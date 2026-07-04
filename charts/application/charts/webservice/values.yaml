@@ -27,7 +27,19 @@ replicaCount: 2  # Minimum 2 for high availability during restarts
 strategy:
   type: RollingUpdate
   maxSurge: 1         # Allow 1 extra pod during rollout
-  maxUnavailable: 1   # Allow 1 pod to be unavailable during rollout
+  maxUnavailable: 0   # Keep an endpoint available during rollout
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+priorityClassName: ""
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
 
 image:
   repository: "copilotgtmacrdev.azurecr.io/copilot-backend"

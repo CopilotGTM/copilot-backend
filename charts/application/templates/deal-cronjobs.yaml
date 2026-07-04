@@ -36,6 +36,9 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: {{ $worker.serviceAccount.name | default "copilot-workers" }}
+          {{- if $root.Values.global.priorityClasses.enabled }}
+          priorityClassName: {{ $root.Values.global.priorityClasses.worker.name | quote }}
+          {{- end }}
           containers:
             - name: {{ $job.name }}
               image: "{{ $worker.image.repository }}:{{ $worker.image.tag }}"
