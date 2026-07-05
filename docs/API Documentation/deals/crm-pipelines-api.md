@@ -2,7 +2,7 @@
 
 > Version: 2.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-04-08
+> Last Updated: 2026-07-05
 
 ---
 
@@ -31,6 +31,20 @@ Invariants the API enforces:
 1. **Exactly one default exists** — organisations are seeded with a `Default Pipeline` during provisioning, and it cannot be left without a default.
 2. **`is_default` cannot be cleared directly** — you cannot PATCH `is_default: false` on the current default. Instead, you PATCH `is_default: true` on another pipeline, and the API atomically demotes the previous default inside the same transaction.
 3. **The default pipeline cannot be deleted** — you must promote another pipeline to default first, then delete the old one.
+4. **Only usable pipelines can become default or receive new internal deals** — a usable internal CRM pipeline has at least one `open`, one `won`, and one `lost` stage.
+
+### Usable vs draft pipelines
+
+Admins can create a pipeline before finishing its stages. If the pipeline does not yet contain at least one `open`, one `won`, and one `lost` stage, the API treats it as a draft:
+
+- `is_active = false`
+- `properties.usable_for_internal_deals = false`
+- it cannot be promoted to default
+- deal creation rejects it with `409`
+
+Adding the missing stage states makes the pipeline active and usable. This keeps setup simple for admins while preventing API clients, agents, imports, or future mobile surfaces from creating deals in a broken sales process.
+
+CSV import and provider pipeline sync follow the same usability flag without rejecting source data: an imported or externally-synced pipeline with an incomplete shape is still stored, but it is marked inactive/unusable until the required stage states exist.
 
 ### User journey
 
@@ -40,7 +54,7 @@ The three supported flows this API powers:
 |------|-------------|----------------|
 | **Use default as-is** | Keep the pre-seeded "Default Pipeline" unchanged | `GET /pipelines` |
 | **Customise default** | Rename the default pipeline, rename/add/delete its stages | `PATCH /pipelines/{id}`, `POST/PATCH/DELETE /pipelines/{id}/stages/...` |
-| **Create own pipeline** | Create a brand-new pipeline with custom stages, optionally promote to default | `POST /pipelines`, `PATCH /pipelines/{id}` |
+| **Create own pipeline** | Create a brand-new pipeline with custom stages, clone an existing one, optionally promote to default | `POST /pipelines`, `POST /pipelines/{id}/clone`, `PATCH /pipelines/{id}` |
 
 ### Related APIs
 
@@ -199,7 +213,7 @@ Deletes are **always soft** (`is_deleted = true`). `CRMDealStageHistory` rows ke
 | Pipeline | Any non-deleted deal with `pipeline_id = :target` | `409` — "Cannot delete pipeline: N deal(s) still reference it." |
 | Stage | Any non-deleted deal with `stage_id = :target` | `409` — "Cannot delete stage: N deal(s) are currently in this stage. Move or delete those deals first." |
 
-There is **no migration path** on stage delete — you cannot tell the API "delete stage X and move its deals to stage Y". Callers must move the deals individually via the deals API first, then retry the delete.
+Stage delete does not move deals implicitly. Call `POST /pipelines/{pipeline_id}/stages/{stage_id}/move-deals` first when retiring a stage that still contains deals, then retry the delete.
 
 When a pipeline is deleted successfully, the API cascade-soft-deletes all of its stages in the same transaction. This is safe because the pipeline-level guard already confirmed no deals reference the pipeline, which implies no deals reference its stages either.
 
@@ -233,7 +247,7 @@ Exactly one pipeline per organisation has `is_default = true`. This flag drives:
 
 ### `is_active` (pipeline)
 
-Reserved for a future "archive without delete" feature. For now, all pipelines created via this API have `is_active = true`. The field is returned in responses but not settable through the request body.
+For internal CRM pipelines, `is_active` means the pipeline is usable for new internal deals. A pipeline becomes active only when it has at least one `open`, one `won`, and one `lost` stage. Empty or incomplete pipelines are draft/unusable and return `is_active = false`. The field is returned in responses but not settable through the request body.
 
 ### Field Nullability Reference
 
@@ -243,6 +257,8 @@ Reserved for a future "archive without delete" feature. For now, all pipelines c
 |-------|------------|-----------|
 | `label` | Yes | No label provided at creation (defaults to `name`) |
 | `display_order` | Yes | Not set (the list endpoint sorts nulls last) |
+| `updated_at` | No | Never; use this as the version for reorder/concurrency requests |
+| `deal_count` | Yes | Null on mutation responses that do not recompute counts; list endpoints return zero when no non-deleted deals reference the pipeline |
 
 **PipelineStageItem fields:**
 
@@ -251,6 +267,7 @@ Reserved for a future "archive without delete" feature. For now, all pipelines c
 | `label` | Yes | No label provided at creation (defaults to `name`) |
 | `probability` | Yes | Stage is `open` and caller did not supply a probability |
 | `display_order` | Yes | Not set (the list endpoint sorts nulls last) |
+| `deal_count` | Yes | Null on mutation responses that do not recompute counts; list endpoints return zero when no non-deleted deals reference the stage |
 
 ---
 
@@ -258,6 +275,13 @@ Reserved for a future "archive without delete" feature. For now, all pipelines c
 
 ```ts
 type UUID = string;
+
+export interface CRMSettingsLastChanged {
+  changed_at: string;
+  actor_user_id: UUID | null;
+  source: string;
+  event_type: string;
+}
 
 /**
  * Stage definition returned by list endpoints and nested inside PipelineItem.
@@ -273,6 +297,8 @@ export interface PipelineStageItem {
   probability: number | null;         // Win probability 0-100
   is_closed: boolean;                 // Derived: true iff stage_state is 'won' or 'lost'
   display_order: number | null;       // Sort order inside the pipeline (ascending, nulls last)
+  deal_count: number | null;          // Filled by list reads; null on write responses
+  last_changed: CRMSettingsLastChanged | null;  // Latest stage settings audit event
 }
 
 /**
@@ -286,8 +312,11 @@ export interface PipelineItem {
   name: string;                       // Display name (e.g., "Default Pipeline")
   label: string | null;               // Human-friendly label (defaults to name if not set)
   is_default: boolean;                // Exactly one pipeline per org has this true
-  is_active: boolean;                 // Reserved for future archive feature
+  is_active: boolean;                 // True only when the pipeline can accept internal deals
   display_order: number | null;       // Sort order of the pipeline itself
+  updated_at: string;                 // ISO timestamp used as if_updated_at for reorder/concurrency
+  deal_count: number | null;          // Filled by list reads; null on write responses
+  last_changed: CRMSettingsLastChanged | null;  // Latest pipeline settings audit event
   stages: PipelineStageItem[];        // Empty [] if not requested or not relevant to the response
 }
 
@@ -314,7 +343,16 @@ export interface CreatePipelineRequest {
 }
 
 /**
- * Request to update a pipeline. All fields optional — omitted fields are untouched.
+ * Request to clone an existing pipeline's stage shape into a new pipeline.
+ */
+export interface ClonePipelineRequest {
+  name: string;                       // Required. 1-255 chars, unique per org (case-insensitive)
+  label?: string | null;              // Optional. Defaults to name
+  set_as_default?: boolean;           // Default: false. Requires the copied stages to be usable
+}
+
+/**
+ * Request to update a pipeline. if_updated_at is required; other omitted fields are untouched.
  *
  * Setting is_default=true atomically demotes the current default to false.
  * Setting is_default=false is rejected (use promote-another-pipeline pattern instead).
@@ -325,6 +363,7 @@ export interface UpdatePipelineRequest {
   label?: string | null;
   is_default?: boolean;               // Only true is accepted; false is rejected
   display_order?: number | null;
+  if_updated_at: string;              // Required optimistic-concurrency guard
 }
 
 /**
@@ -336,13 +375,28 @@ export type CreateStageRequest = StageInput;
  * Request to update a stage. stage_state and is_closed are IMMUTABLE and not present here.
  *
  * Renaming (name change) propagates to stage_name/stage_label on all non-deleted deals
- * in this stage. stage_key is also regenerated from the new name (slugified).
+ * in this stage. stage_key is stable after create and is not regenerated on rename.
  */
 export interface UpdateStageRequest {
   name?: string;                      // 1-255 chars
   label?: string | null;
   probability?: number | null;        // 0-100
   display_order?: number | null;
+  if_updated_at: string;              // Required optimistic-concurrency guard
+}
+
+/**
+ * Request to save the full stage order in one atomic operation.
+ *
+ * if_updated_at must be the PipelineItem.updated_at value the client loaded before editing.
+ */
+export interface ReorderStagesRequest {
+  stage_ids: UUID[];                  // Complete ordered list for this pipeline
+  if_updated_at: string;              // ISO timestamp from PipelineItem.updated_at
+}
+
+export interface MoveStageDealsRequest {
+  destination_stage_id: UUID;         // Another non-deleted stage in the same pipeline
 }
 
 /**
@@ -370,6 +424,18 @@ export interface StageResponse {
   status: 'SUCCESS' | 'ERROR';
   message: string;
   data: PipelineStageItem;
+}
+
+export interface ReorderStagesResponse {
+  status: 'SUCCESS' | 'ERROR';
+  message: string;
+  data: PipelineStageItem[];
+}
+
+export interface MoveStageDealsResponse {
+  status: 'SUCCESS' | 'ERROR';
+  message: string;
+  data: { moved_deal_count: number };
 }
 ```
 
@@ -412,18 +478,25 @@ function sortStages(stages: PipelineStageItem[]): PipelineStageItem[] {
 GET /users/crm/pipelines
 ```
 
-Returns all internal CRM pipelines for the authenticated user's organisation. Results are sorted by `display_order` ascending (nulls last), then by `name`.
+Returns all internal CRM pipelines for the authenticated user's organisation. Results are sorted by `display_order` ascending (nulls last), then by `name`. `deal_count` is populated for each returned pipeline; when `include_stages=true`, each returned stage also includes its `deal_count`.
 
 #### Query Parameters
 
 | Parameter | Type | Default | Validation | Description |
 |-----------|------|---------|------------|-------------|
 | `include_stages` | boolean | `false` | — | If `true`, each pipeline's `stages` array is populated. |
+| `active_only` | boolean | `false` | — | If `true`, only pipelines usable for internal deal writes are returned. Use this for deal creation pickers. |
 
 #### Example Request
 
 ```http
 GET /users/crm/pipelines?include_stages=true
+```
+
+For deal creation dropdowns:
+
+```http
+GET /users/crm/pipelines?include_stages=true&active_only=true
 ```
 
 #### Success Response (200)
@@ -440,6 +513,14 @@ GET /users/crm/pipelines?include_stages=true
       "is_default": true,
       "is_active": true,
       "display_order": 0,
+      "updated_at": "2026-07-05T10:00:00Z",
+      "deal_count": 12,
+      "last_changed": {
+        "changed_at": "2026-07-05T10:00:00Z",
+        "actor_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "source": "api",
+        "event_type": "crm.settings.pipeline.updated"
+      },
       "stages": [
         {
           "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
@@ -448,7 +529,14 @@ GET /users/crm/pipelines?include_stages=true
           "stage_state": "open",
           "probability": 10,
           "is_closed": false,
-          "display_order": 1
+          "display_order": 1,
+          "deal_count": 4,
+          "last_changed": {
+            "changed_at": "2026-07-05T09:45:00Z",
+            "actor_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+            "source": "api",
+            "event_type": "crm.settings.stage.updated"
+          }
         },
         {
           "stage_id": "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
@@ -457,7 +545,9 @@ GET /users/crm/pipelines?include_stages=true
           "stage_state": "won",
           "probability": 100,
           "is_closed": true,
-          "display_order": 5
+          "display_order": 5,
+          "deal_count": 2,
+          "last_changed": null
         }
       ]
     }
@@ -485,7 +575,7 @@ GET /users/crm/pipelines?include_stages=true
 GET /users/crm/pipelines/{pipeline_id}/stages
 ```
 
-Returns all non-deleted stages for a single pipeline, ordered by `display_order` ascending (nulls last), then by `name`.
+Returns all non-deleted stages for a single pipeline, ordered by `display_order` ascending (nulls last), then by `name`. Each returned stage includes `deal_count`.
 
 Use this endpoint when you already have a `pipeline_id` and need only its stages (e.g., populating a stage dropdown on the deal edit form). Prefer `GET /pipelines?include_stages=true` when listing multiple pipelines.
 
@@ -515,7 +605,14 @@ GET /users/crm/pipelines/550e8400-e29b-41d4-a716-446655440000/stages
       "stage_state": "open",
       "probability": 10,
       "is_closed": false,
-      "display_order": 1
+      "display_order": 1,
+      "deal_count": 4,
+      "last_changed": {
+        "changed_at": "2026-07-05T09:45:00Z",
+        "actor_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "source": "api",
+        "event_type": "crm.settings.stage.updated"
+      }
     }
   ]
 }
@@ -569,7 +666,7 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
 
 #### Auto-resolution behaviours
 
-- **`stage_key`** (not in the request body) is derived from `name` via lowercase-and-slugify: `re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")`. For `"Closed Won"` the key becomes `"closed_won"`.
+- **`stage_key`** (not in the request body) is derived from `name` via lowercase-and-slugify at creation time: `re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")`. For `"Closed Won"` the key becomes `"closed_won"`. Renaming a stage later does not rewrite this key.
 - Pipeline and stage responses use local `pipeline_id` and `stage_id`. Provider IDs are stored only in `crm_source_object_mappings`.
 - **`is_closed`** is derived: `stage_state in ("won", "lost")` → `true`.
 
@@ -612,6 +709,9 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
     "is_default": true,
     "is_active": true,
     "display_order": 1,
+    "updated_at": "2026-07-05T10:00:00Z",
+    "deal_count": null,
+    "last_changed": null,
     "stages": [
       {
         "stage_id": "d2e3f4a5-b6c7-8901-defa-234567890abc",
@@ -620,7 +720,9 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
         "stage_state": "open",
         "probability": null,
         "is_closed": false,
-        "display_order": 1
+        "display_order": 1,
+        "deal_count": null,
+        "last_changed": null
       }
     ]
   }
@@ -638,13 +740,92 @@ Creates a new pipeline under the internal CRM integration, optionally with an in
 |-------------|-----------|------|
 | `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has not been provisioned with an internal CRM integration |
 | `409` | `"A pipeline named 'Enterprise Pipeline' already exists"` | Non-deleted pipeline with the same name (case-insensitive) in this org |
+| `409` | `"A stage named 'Closed Won' already exists in this pipeline"` | Initial stages include a duplicate display name or generated `stage_key` |
 | `422` | Pydantic validation error | Missing `name`, invalid `stage_state`, `probability` out of range, etc. |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 4. Update Pipeline
+### 4. Clone Pipeline
+
+```http
+POST /users/crm/pipelines/{pipeline_id}/clone
+```
+
+Creates a new internal CRM pipeline by copying the source pipeline's stage names, labels, lifecycle states, probabilities, and display order. The new pipeline gets fresh `pipeline_id` and `stage_id` values and starts with zero deals.
+
+This is the fastest admin setup path when the default pipeline is close to the desired shape.
+
+#### Request Body
+
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| `name` | string | **Yes** | 1-255 chars, trimmed, unique per org (case-insensitive) | Display name for the new pipeline |
+| `label` | string | No | 1-255 chars, trimmed | Human-friendly label. Defaults to `name` if omitted. |
+| `set_as_default` | boolean | No | - | If `true`, atomically demotes the current default and promotes the clone. |
+
+#### Example Request
+
+```http
+POST /users/crm/pipelines/550e8400-e29b-41d4-a716-446655440000/clone
+```
+
+```json
+{
+  "name": "Enterprise Sales",
+  "set_as_default": true
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Pipeline cloned",
+  "data": {
+    "pipeline_id": "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
+    "name": "Enterprise Sales",
+    "label": "Enterprise Sales",
+    "is_default": true,
+    "is_active": true,
+    "display_order": 1,
+    "updated_at": "2026-07-05T10:00:00Z",
+    "deal_count": null,
+    "last_changed": null,
+    "stages": [
+      {
+        "stage_id": "d2e3f4a5-b6c7-8901-defa-234567890abc",
+        "name": "Qualification",
+        "label": "Qualification",
+        "stage_state": "open",
+        "probability": 10,
+        "is_closed": false,
+        "display_order": 1,
+        "deal_count": null,
+        "last_changed": null
+      }
+    ]
+  }
+}
+```
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"A usable internal CRM pipeline must have at least one open, won, and lost stage."` | `set_as_default=true` but the copied stages are incomplete |
+| `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has no internal CRM integration |
+| `404` | `"Pipeline not found"` | Source pipeline does not exist or is soft-deleted |
+| `409` | `"A pipeline named 'Enterprise Sales' already exists"` | New name collides with another active internal pipeline |
+| `422` | Pydantic validation error | Missing/invalid request fields |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 5. Update Pipeline
 
 ```http
 PATCH /users/crm/pipelines/{pipeline_id}
@@ -662,7 +843,7 @@ Renaming a pipeline propagates the new name/label to `pipeline_name` and `pipeli
 
 #### Request Body
 
-All fields optional. Only include fields to update.
+Only include fields to update, plus the required `if_updated_at` precondition.
 
 | Field | Type | Validation | Description |
 |-------|------|------------|-------------|
@@ -670,6 +851,7 @@ All fields optional. Only include fields to update.
 | `label` | string | 1–255 chars | New label. Also triggers snapshot propagation (for `pipeline_label`). |
 | `is_default` | boolean | See rules below | Only `true` is accepted. `false` is rejected. |
 | `display_order` | integer | — | Sort order for the pipeline itself |
+| `if_updated_at` | ISO datetime string | Required | `PipelineItem.updated_at` from the loaded row; stale values return `409` |
 
 #### `is_default` rules
 
@@ -697,7 +879,8 @@ This design guarantees the organisation always has exactly one default pipeline.
 ```json
 {
   "name": "Sales Funnel",
-  "label": "Sales Funnel"
+  "label": "Sales Funnel",
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -705,7 +888,8 @@ This design guarantees the organisation always has exactly one default pipeline.
 
 ```json
 {
-  "is_default": true
+  "is_default": true,
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -724,6 +908,9 @@ Returns the updated `PipelineItem`. The `stages` array is empty `[]` in this res
     "is_default": true,
     "is_active": true,
     "display_order": 0,
+    "updated_at": "2026-07-05T04:30:00Z",
+    "deal_count": null,
+    "last_changed": null,
     "stages": []
   }
 }
@@ -739,13 +926,14 @@ Returns the updated `PipelineItem`. The `stages` array is empty `[]` in this res
 | `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has no internal CRM integration |
 | `404` | `"Pipeline not found"` | No non-deleted pipeline with this ID under the internal integration in this organisation |
 | `409` | `"A pipeline named '...' already exists"` | New name collides with another pipeline (case-insensitive) |
-| `422` | Pydantic validation error | Invalid field types or empty `name` string |
+| `409` | `"Pipeline changed since it was loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `422` | Pydantic validation error | Missing `if_updated_at`, invalid field types, or empty `name` string |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 5. Delete Pipeline
+### 6. Delete Pipeline
 
 ```http
 DELETE /users/crm/pipelines/{pipeline_id}
@@ -800,7 +988,7 @@ DELETE /users/crm/pipelines/c1d2e3f4-a5b6-7890-cdef-1234567890ab
 
 ---
 
-### 6. Create Stage
+### 7. Create Stage
 
 ```http
 POST /users/crm/pipelines/{pipeline_id}/stages
@@ -851,7 +1039,9 @@ Same shape as `StageInput` (see Request Models).
     "stage_state": "open",
     "probability": 85,
     "is_closed": false,
-    "display_order": 7
+    "display_order": 7,
+    "deal_count": null,
+    "last_changed": null
   }
 }
 ```
@@ -862,21 +1052,22 @@ Same shape as `StageInput` (see Request Models).
 |-------------|-----------|------|
 | `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has no internal CRM integration |
 | `404` | `"Pipeline not found"` | Target pipeline does not exist or is soft-deleted |
+| `409` | `"A stage named 'Contract Review' already exists in this pipeline"` | Active non-deleted stage with the same display name or generated `stage_key` already exists |
 | `422` | Pydantic validation error | Missing `name`, invalid `stage_state`, `probability` out of range |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 7. Update Stage
+### 8. Update Stage
 
 ```http
 PATCH /users/crm/pipelines/{pipeline_id}/stages/{stage_id}
 ```
 
-Partial update for an existing stage. Only `name`, `label`, `probability`, and `display_order` are mutable. **`stage_state` and `is_closed` are immutable** — attempting to change them has no effect because they are not in the request schema.
+Partial update for an existing stage. Only `name`, `label`, `probability`, and `display_order` are mutable. **`stage_state`, `is_closed`, and `stage_key` are immutable** — attempting to change them has no effect because they are not in the request schema.
 
-Renaming a stage propagates the new name/label to `stage_name` and `stage_label` on every non-deleted deal in this stage inside the same transaction. The `stage_key` (derived from the name) is also regenerated.
+Renaming a stage propagates the new name/label to `stage_name` and `stage_label` on every non-deleted deal in this stage inside the same transaction. The creation-time `stage_key` is not regenerated.
 
 #### Path Parameters
 
@@ -889,7 +1080,7 @@ The parent pipeline is loaded and validated before the stage — both must exist
 
 #### Request Body
 
-All fields optional.
+Only include fields to update, plus the required `if_updated_at` precondition.
 
 | Field | Type | Validation | Description |
 |-------|------|------------|-------------|
@@ -897,14 +1088,16 @@ All fields optional.
 | `label` | string | 1–255 chars | New label. Also triggers snapshot propagation (for `stage_label`). |
 | `probability` | number | 0–100 | Win probability for this stage |
 | `display_order` | integer | — | New sort position |
+| `if_updated_at` | ISO datetime string | Required | Stage `updated_at` value from the loaded settings row; stale values return `409` |
 
 #### Rename rules
 
 | Action | Result |
 |--------|--------|
 | Send `name` identical to the current name | No-op |
-| Send `name` without `label` | Both `name` and `label` are updated to the new value, `stage_key` regenerated |
-| Send `name` with `label` | Both updated to their respective values, `stage_key` regenerated |
+| Send `name` that matches another active stage name/key in the same pipeline | `409` — "A stage named '...' already exists in this pipeline" |
+| Send `name` without `label` | Both `name` and `label` are updated to the new value, `stage_key` unchanged |
+| Send `name` with `label` | Both updated to their respective values, `stage_key` unchanged |
 | Send `label` without `name` | Only `label` is updated, snapshot propagation runs for `stage_label` only |
 
 #### Example Request
@@ -912,7 +1105,8 @@ All fields optional.
 ```json
 {
   "name": "Lead Qualification",
-  "probability": 15
+  "probability": 15,
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -929,12 +1123,16 @@ All fields optional.
     "stage_state": "open",
     "probability": 15,
     "is_closed": false,
-    "display_order": 1
+    "display_order": 1,
+    "deal_count": null,
+    "last_changed": null
   }
 }
 ```
 
 **Frontend note:** As with the pipeline rename case, invalidate the deals query cache after a successful stage rename so deal rows pick up the updated `stage_name` / `stage_label`.
+
+If you are only changing stage order, prefer `PATCH /pipelines/{pipeline_id}/stages/reorder` instead of issuing one PATCH per stage.
 
 #### Error Responses
 
@@ -943,19 +1141,166 @@ All fields optional.
 | `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has no internal CRM integration |
 | `404` | `"Pipeline not found"` | Parent pipeline does not exist or is soft-deleted |
 | `404` | `"Stage not found"` | Stage does not exist, is soft-deleted, or does not belong to the given pipeline |
-| `422` | Pydantic validation error | Invalid field types, `probability` out of range |
+| `409` | `"Stage changed since it was loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `422` | Pydantic validation error | Missing `if_updated_at`, invalid field types, `probability` out of range |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 8. Delete Stage
+### 9. Reorder Stages
+
+```http
+PATCH /users/crm/pipelines/{pipeline_id}/stages/reorder
+```
+
+Saves the full stage order for one pipeline in a single transaction. This endpoint is the preferred way to persist drag-and-drop ordering from the pipeline settings UI.
+
+The request must include every non-deleted stage in the pipeline exactly once. Partial lists, duplicate stage ids, and ids from another pipeline are rejected before any `display_order` values are changed.
+
+#### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pipeline_id` | UUID | Yes | Parent pipeline identifier |
+
+#### Request Body
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| `stage_ids` | UUID[] | Required, non-empty, no duplicates | Complete ordered list of stage ids for this pipeline |
+| `if_updated_at` | ISO datetime string | Required | The `PipelineItem.updated_at` value the client loaded before editing |
+
+#### Concurrency rule
+
+The service locks the pipeline row and compares `if_updated_at` with the current `CRMPipeline.updated_at`. If another admin changed the pipeline/stage ordering after the client loaded it, the request returns `409` and no stage order is updated.
+
+Stage create/delete and single-stage `display_order` updates also bump the parent pipeline `updated_at`, so older clients cannot silently overwrite those changes through this bulk endpoint.
+
+#### Example Request
+
+```json
+{
+  "stage_ids": [
+    "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+    "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+  ],
+  "if_updated_at": "2026-07-05T04:25:00Z"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stages reordered",
+  "data": [
+    {
+      "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      "name": "Qualification",
+      "label": "Qualification",
+      "stage_state": "open",
+      "probability": 10,
+      "is_closed": false,
+      "display_order": 1,
+      "deal_count": null,
+      "last_changed": null
+    },
+    {
+      "stage_id": "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+      "name": "Discovery",
+      "label": "Discovery",
+      "stage_state": "open",
+      "probability": 25,
+      "is_closed": false,
+      "display_order": 2,
+      "deal_count": null,
+      "last_changed": null
+    }
+  ]
+}
+```
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Duplicate stage ids are not allowed"` | `stage_ids` contains the same id more than once |
+| `404` | `"Internal CRM integration is not provisioned for this organisation"` | Org has no internal CRM integration |
+| `404` | `"Pipeline not found"` | Parent pipeline does not exist or is soft-deleted |
+| `409` | `"Pipeline changed since it was loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `409` | `"Stage reorder must include every non-deleted stage in this pipeline."` | Missing stage id, foreign stage id, or deleted/nonexistent stage id in the list |
+| `422` | Pydantic validation error | Missing `stage_ids`/`if_updated_at` or invalid UUID/datetime |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 10. Move Stage Deals
+
+```http
+POST /users/crm/pipelines/{pipeline_id}/stages/{stage_id}/move-deals
+```
+
+Moves every non-deleted internal deal currently in `stage_id` to another stage in the same pipeline. Each deal is moved through the normal deal stage writer, so stage history, lifecycle changes, deal snapshots, activity projections, and mutation events follow the same path as `PATCH /users/crm/deals/{deal_id}/stage`.
+
+Use this before deleting or retiring a stage that still has deals.
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `destination_stage_id` | UUID | Yes | Target stage in the same pipeline |
+
+#### Example Request
+
+```http
+POST /users/crm/pipelines/550e8400-e29b-41d4-a716-446655440000/stages/6ba7b810-9dad-11d1-80b4-00c04fd430c8/move-deals
+```
+
+```json
+{
+  "destination_stage_id": "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stage deals moved",
+  "data": {
+    "moved_deal_count": 3
+  }
+}
+```
+
+`moved_deal_count` is zero when no non-deleted deals currently reference the source stage.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Source and destination stages must be different"` | Source and destination are the same stage |
+| `400` | `"Destination stage must belong to the same pipeline"` | Destination stage is in another pipeline |
+| `404` | `"Stage not found"` | Source or destination stage does not exist in the path pipeline |
+| `409` | `"External CRM deals are read-only"` | A matching deal is no longer internal-writable |
+| `409` | Required pipeline-shape message | Destination pipeline is unusable for internal deal writes |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 11. Delete Stage
 
 ```http
 DELETE /users/crm/pipelines/{pipeline_id}/stages/{stage_id}
 ```
 
-Soft-deletes a stage. Blocked if any non-deleted deal currently references this stage. There is **no migration path** — you cannot ask the API to move deals to another stage as part of the delete. Callers must move the deals individually via the deals API first, then retry.
+Soft-deletes a stage. Blocked if any non-deleted deal currently references this stage. If the stage has deals, call `POST /pipelines/{pipeline_id}/stages/{stage_id}/move-deals` first, then retry delete.
 
 `CRMDealStageHistory` rows are preserved (they keep their FK to the stage), so stage history continues to resolve correctly after the stage is soft-deleted.
 
@@ -973,6 +1318,7 @@ Soft-deletes a stage. Blocked if any non-deleted deal currently references this 
 | Parent pipeline exists and `is_deleted = false` | `404` |
 | Stage exists, `is_deleted = false`, and `pipeline_id` matches | `404` |
 | No non-deleted deals reference `stage_id` | `409` — "Cannot delete stage: N deal(s) are currently in this stage. Move or delete those deals first." |
+| Deleting the stage would not remove the last `open`, `won`, or `lost` stage | `409` — "Cannot delete the last won stage from a usable internal CRM pipeline." |
 
 The deal count is computed at request time; the error message includes the exact count.
 
@@ -1000,6 +1346,7 @@ DELETE /users/crm/pipelines/550e8400-e29b-41d4-a716-446655440000/stages/6ba7b810
 | `404` | `"Pipeline not found"` | Parent pipeline does not exist or is soft-deleted |
 | `404` | `"Stage not found"` | Stage does not exist, is soft-deleted, or does not belong to the given pipeline |
 | `409` | `"Cannot delete stage: 3 deal(s) are currently in this stage. Move or delete those deals first."` | At least one non-deleted deal has `stage_id = target` |
+| `409` | `"Cannot delete the last ... stage from a usable internal CRM pipeline."` | Delete would make the pipeline unusable for internal deals |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
@@ -1020,13 +1367,13 @@ The most common case: an organisation keeps the default pipeline but wants to re
 
 2. Rename it (optional)
    → PATCH /users/crm/pipelines/{default_id}
-   → body: { "name": "Sales Funnel" }
+   → body: { "name": "Sales Funnel", "if_updated_at": pipeline.updated_at }
    → backend propagates pipeline_name/pipeline_label to all deals in this pipeline
    → frontend MUST invalidate the deals query cache after success
 
 3. Rename a stage (optional)
    → PATCH /users/crm/pipelines/{default_id}/stages/{stage_id}
-   → body: { "name": "Lead Qualification", "probability": 15 }
+   → body: { "name": "Lead Qualification", "probability": 15, "if_updated_at": stage.updated_at }
    → backend propagates stage_name/stage_label to all deals in this stage
    → frontend MUST invalidate the deals query cache after success
 
@@ -1036,26 +1383,34 @@ The most common case: an organisation keeps the default pipeline but wants to re
    → auto-appended at the end of the pipeline (display_order = max + 1)
    → to insert between existing stages, supply an explicit display_order
 
-5. Delete a stage (optional)
+5. Reorder stages (optional)
+   → PATCH /users/crm/pipelines/{default_id}/stages/reorder
+   → body: { "stage_ids": [all stage ids in the new order], "if_updated_at": pipeline.updated_at }
+   → 409 if another admin changed the pipeline after this view loaded
+
+6. Delete a stage (optional)
+   → If the stage has deals, first:
+     POST /users/crm/pipelines/{default_id}/stages/{stage_id}/move-deals
+     body: { "destination_stage_id": target_stage_id }
    → DELETE /users/crm/pipelines/{default_id}/stages/{stage_id}
    → 409 if any deal is currently in this stage
      → frontend should show "N deals are in this stage. Move them to another stage first."
-     → let the user open the deals list filtered by stage_id to reassign them
-   → retry DELETE after the user has moved the deals
+   → retry DELETE after move-deals succeeds
 ```
 
 **Key rules the frontend must respect:**
 
 1. **`stage_state` is immutable** — the stage edit form must NOT expose an "open/won/lost" selector for existing stages. Only the create-stage form should show it.
 2. **Cache invalidation after rename** — the backend has already propagated the snapshot, but the frontend's cached deal list still holds stale names until the query is invalidated. Always invalidate after a successful PATCH on pipeline or stage.
-3. **Stage delete requires deals to be moved first** — surface the deal count from the error message and give the user a direct path to reassign those deals. The API will not do it for them.
+3. **Stage reorder is bulk-only for settings UI** — drag/drop should save through `/stages/reorder` using `PipelineItem.updated_at`, not one PATCH per stage.
+4. **Stage delete requires deals to be moved first** — surface the deal count and call `/stages/{stage_id}/move-deals` before retrying delete.
 
 ### Flow B — Create a new pipeline and promote it to default
 
 The "start fresh" case: the org doesn't want to keep the default pipeline and wants to replace it with a custom one.
 
 ```
-1. Open the "New Pipeline" form and collect name + stages
+1. Open the "New Pipeline" form and either collect name + stages or choose an existing pipeline to clone
 
 2. Create the pipeline with set_as_default=true
    → POST /users/crm/pipelines
@@ -1073,6 +1428,13 @@ The "start fresh" case: the org doesn't want to keep the default pipeline and wa
    → backend atomically demotes the previous default and promotes this new one
    → response includes the full stages array with generated stage_ids
 
+   The request must include at least one open, won, and lost stage. If the user is still drafting the pipeline, create it without `set_as_default`; it will remain inactive until the missing stage states are added.
+
+   If the user chose "copy existing pipeline", use:
+   → POST /users/crm/pipelines/{source_pipeline_id}/clone
+   → body: { "name": "Enterprise Sales", "set_as_default": true }
+   → backend copies the source stage shape and applies the same default-promotion guard.
+
 3. (Optional) Delete the old default pipeline
    → DELETE /users/crm/pipelines/{old_default_id}
    → 409 if the old pipeline still has deals — the user must either leave it or
@@ -1081,7 +1443,7 @@ The "start fresh" case: the org doesn't want to keep the default pipeline and wa
 
 **Key rules the frontend must respect:**
 
-1. **`set_as_default` vs. two-step promote** — the frontend can either create with `set_as_default: true` (one request) or create with `set_as_default: false` then PATCH `is_default: true` separately (two requests). Both are equivalent in the final state. Prefer the one-request form for better UX.
+1. **`set_as_default` vs. two-step promote** — the frontend can either create with `set_as_default: true` (one request) or create with `set_as_default: false` then PATCH `is_default: true` plus that pipeline's `if_updated_at` separately (two requests). Both are equivalent in the final state. Prefer the one-request form for better UX.
 2. **The old default is not deleted automatically** — promoting a new pipeline only flips the flag. If the user wants to remove the old one, they must explicitly DELETE it, and deals referencing it must be moved first.
 3. **Name uniqueness is case-insensitive** — show the 409 error inline on the name field so the user can correct it.
 
@@ -1101,20 +1463,28 @@ This is the only flow that requires zero write endpoints from this API.
 
 ## Error Catalog
 
-Consolidated reference of all error responses across all 8 endpoints.
+Consolidated reference of all error responses across all 11 endpoints.
 
 | HTTP Status | Error Message | Endpoint(s) | Cause |
 |-------------|---------------|-------------|-------|
 | `400` | `"Cannot unset the default pipeline directly. Promote another pipeline by setting is_default=true on it instead."` | Update pipeline | `is_default: false` sent |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
-| `404` | `"Internal CRM integration is not provisioned for this organisation"` | Create, Update, Delete pipeline / Create, Update, Delete stage | Org has not been provisioned with an internal CRM integration |
-| `404` | `"Pipeline not found"` | Update, Delete pipeline / Create, Update, Delete stage | Pipeline does not exist, is soft-deleted, or belongs to a different organisation |
-| `404` | `"Stage not found"` | Update, Delete stage | Stage does not exist, is soft-deleted, or does not belong to the given pipeline |
-| `409` | `"A pipeline named '...' already exists"` | Create, Update pipeline | New name collides with another pipeline in this org (case-insensitive) |
+| `404` | `"Internal CRM integration is not provisioned for this organisation"` | Create, Clone, Update, Delete pipeline / Create, Update, Delete stage | Org has not been provisioned with an internal CRM integration |
+| `404` | `"Pipeline not found"` | Clone, Update, Delete pipeline / Create, Update, Delete stage | Pipeline does not exist, is soft-deleted, or belongs to a different organisation |
+| `404` | `"Stage not found"` | Update, Move deals, Delete stage | Stage does not exist, is soft-deleted, or does not belong to the given pipeline |
+| `409` | `"A pipeline named '...' already exists"` | Create, Clone, Update pipeline | New name collides with another pipeline in this org (case-insensitive) |
+| `400` | `"A usable internal CRM pipeline must have at least one open, won, and lost stage."` | Create/clone/update pipeline default promotion | Pipeline is missing a required stage state |
+| `400` | `"Duplicate stage ids are not allowed"` | Reorder stages | `stage_ids` contains the same id more than once |
+| `400` | `"Source and destination stages must be different"` | Move deals | Source and destination stage ids are the same |
+| `400` | `"Destination stage must belong to the same pipeline"` | Move deals | Destination stage belongs to another pipeline |
+| `409` | `"Pipeline changed since it was loaded. Refresh and retry."` | Update pipeline, Reorder stages | `if_updated_at` is stale |
+| `409` | `"Stage changed since it was loaded. Refresh and retry."` | Update stage | `if_updated_at` is stale |
+| `409` | `"Stage reorder must include every non-deleted stage in this pipeline."` | Reorder stages | Reorder list is missing a stage or includes a foreign/deleted/nonexistent stage id |
 | `409` | `"Cannot delete the default pipeline. Promote another pipeline first."` | Delete pipeline | Target has `is_default = true` |
 | `409` | `"Cannot delete pipeline: N deal(s) still reference it."` | Delete pipeline | At least one non-deleted deal has `pipeline_id = target` |
 | `409` | `"Cannot delete stage: N deal(s) are currently in this stage. Move or delete those deals first."` | Delete stage | At least one non-deleted deal has `stage_id = target` |
-| `422` | Pydantic validation error | Create, Update pipeline / Create, Update stage | Missing required fields, invalid types, out-of-range values |
+| `409` | `"Cannot delete the last ... stage from a usable internal CRM pipeline."` | Delete stage | Delete would remove the last required stage state |
+| `422` | Pydantic validation error | Create, Clone, Update pipeline / Create, Update, Reorder stages / Move deals | Missing required fields, invalid types, out-of-range values |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
 | `429` | `"Too many requests (per-hour limit exceeded)"` | All | Per-hour rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | All | Unhandled exception |
@@ -1141,6 +1511,7 @@ Consolidated reference of all error responses across all 8 endpoints.
 |-------|---------|---------|
 | `ix_crm_stage_pipeline_order` | `pipeline_id, display_order` | Ordered stage listing per pipeline |
 | `ix_crm_stage_org_name` | `organisation_id, name` | Fast name lookup |
+| `ux_crm_deal_stages_internal_active_stage_key` | `organisation_id, integration_id, pipeline_id, stage_key` where active, non-deleted, and `stage_key IS NOT NULL` | Prevents concurrent duplicate active stage keys inside one pipeline |
 | `ck_crm_stage_probability` | CHECK `probability` in `[0, 100]` or NULL | Probability bounds |
 
 ### Service Layer
@@ -1163,6 +1534,7 @@ Writes are split across three service classes for separation of concerns:
 
 - Owns all invariant checks for create/update/delete of pipelines and stages.
 - Resolves the internal integration id once per request via `InternalCRMSetupService.get_internal_integration()`.
+- Saves stage reorder as a complete-list bulk write guarded by `PipelineItem.updated_at`.
 - Commits each operation in its own transaction (end of method).
 - Raises `PipelineWriteServiceError(message, status_code)` for all rule violations; the handler maps these to the response envelope.
 
@@ -1173,7 +1545,7 @@ Writes are split across three service classes for separation of concerns:
 Two FastAPI dependencies wire the services:
 
 - `get_pipeline_access_service` → yields `PipelineAccessService` for the two read endpoints.
-- `get_pipeline_write_service` → yields `PipelineWriteService` for the six write endpoints.
+- `get_pipeline_write_service` → yields `PipelineWriteService` for the eight write endpoints.
 
 Each endpoint follows the same pattern:
 

@@ -31,13 +31,27 @@ class _ScalarResult:
         return self._row
 
 
+class _RowsResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _RowsResult:
+        return self
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
 class _FakeSession:
-    def __init__(self, existing: object | None = None) -> None:
+    def __init__(self, existing: object | None = None, rows: list[object] | None = None) -> None:
         self.existing = existing
+        self.rows = rows
         self.added: list[object] = []
 
-    async def execute(self, _statement: object) -> _ScalarResult:
+    async def execute(self, _statement: object) -> _ScalarResult | _RowsResult:
         """Return a scalar result with the configured idempotency row."""
+        if self.rows is not None:
+            return _RowsResult(self.rows)
         return _ScalarResult(self.existing)
 
     def add(self, obj: object) -> None:
@@ -229,3 +243,79 @@ async def test_record_event_preserves_caller_mutation_group_id() -> None:
 
     assert session.added[0].mutation_group_id == mutation_group_id
     assert session.added[1].mutation_group_id == mutation_group_id
+
+
+@pytest.mark.asyncio
+async def test_record_event_accepts_settings_entity_types() -> None:
+    """Settings audit events must not pretend custom fields are deal rows."""
+    organisation_id = uuid4()
+    field_id = uuid4()
+    service = CRMMutationEventService(_FakeSession(), organisation_id)
+
+    await service.record_event(
+        CRMMutationRecordCommand(
+            entity_type="custom_field",
+            entity_id=field_id,
+            event_type="crm.settings.custom_field.updated",
+            operation="custom_field.update",
+            changed_fields={"label": {"old": "Priority", "new": "Deal priority"}},
+            semantic_event_types=["crm.settings.custom_field.updated"],
+            context=CRMMutationContext(source="api", actor_user_id=uuid4()),
+        )
+    )
+
+    event = service.session.added[0]
+    assert event.organisation_id == organisation_id
+    assert event.entity_type == "custom_field"
+    assert event.entity_id == field_id
+    assert event.deal_id is None
+
+
+@pytest.mark.asyncio
+async def test_latest_events_by_entity_returns_newest_event_per_settings_entity() -> None:
+    """Settings responses need tenant-scoped last-change metadata."""
+    first_id = uuid4()
+    second_id = uuid4()
+    older = CRMDealMutationEvent(
+        organisation_id=uuid4(),
+        entity_type="custom_field",
+        entity_id=first_id,
+        event_type="crm.settings.custom_field.created",
+        operation="custom_field.create",
+        changed_fields={"label": {"old": None, "new": "Priority"}},
+        semantic_event_types=["crm.settings.custom_field.created"],
+        actor_user_id=uuid4(),
+        source="api",
+        occurred_at=datetime(2026, 7, 5, 10, 0, tzinfo=UTC),
+    )
+    newest = CRMDealMutationEvent(
+        organisation_id=older.organisation_id,
+        entity_type="custom_field",
+        entity_id=first_id,
+        event_type="crm.settings.custom_field.updated",
+        operation="custom_field.update",
+        changed_fields={"label": {"old": "Priority", "new": "Deal priority"}},
+        semantic_event_types=["crm.settings.custom_field.updated"],
+        actor_user_id=uuid4(),
+        source="api",
+        occurred_at=datetime(2026, 7, 5, 10, 5, tzinfo=UTC),
+    )
+    other = CRMDealMutationEvent(
+        organisation_id=older.organisation_id,
+        entity_type="custom_field",
+        entity_id=second_id,
+        event_type="crm.settings.custom_field.created",
+        operation="custom_field.create",
+        changed_fields={"label": {"old": None, "new": "Risk"}},
+        semantic_event_types=["crm.settings.custom_field.created"],
+        actor_user_id=uuid4(),
+        source="api",
+        occurred_at=datetime(2026, 7, 5, 10, 2, tzinfo=UTC),
+    )
+    service = CRMMutationEventService(
+        _FakeSession(rows=[newest, other, older]), older.organisation_id
+    )
+
+    events = await service.latest_events_by_entity("custom_field", [first_id, second_id])
+
+    assert events == {first_id: newest, second_id: other}

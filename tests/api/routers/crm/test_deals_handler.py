@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from src.api.routers.crm import deals_handler as deals_handler_module
 from src.api.schemas.crm_deal_write_models import DealCreateRequest, DealUpdateRequest
 from src.api.schemas.crm_models import DealsListParams
+from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse, CRMFieldSchemaItem
+from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 
 from tests.api.routers.crm.conftest import (
@@ -111,6 +113,42 @@ def test_deal_write_response_includes_updated_business_fields() -> None:
     assert response["lead_source"] == "Referral"
     assert response["description"] == "Enterprise expansion"
     assert response["synced_at"] == datetime(2026, 1, 2, 1, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_get_crm_schema_returns_deal_schema_service_payload() -> None:
+    """The schema endpoint should stay a thin wrapper over DealSchemaService."""
+    payload = CRMEntitySchemaResponse(
+        entity="deal",
+        fields=[
+            CRMFieldSchemaItem(
+                entity="deal",
+                key="name",
+                label="Deal name",
+                type="string",
+                order=1,
+                source="standard",
+                ownership="system",
+                editable=True,
+                write_path="name",
+                write_policy="always",
+                internal_write=True,
+                internal_write_validation={"required": False, "option_membership": False},
+            )
+        ],
+    )
+    service = SimpleNamespace(get_schema=AsyncMock(return_value=payload))
+
+    result = await deals_handler_module.get_crm_schema(
+        response=FastAPIResponse(),
+        entity=CRMCustomFieldEntity.DEAL,
+        service=service,
+        _rl_read=None,
+    )
+
+    service.get_schema.assert_awaited_once_with()
+    assert result.status == "SUCCESS"
+    assert result.data == payload
 
 
 @pytest.mark.asyncio
@@ -1611,10 +1649,18 @@ def test_get_deal_includes_empty_custom_columns_from_definitions(
         "src.api.routers.crm.deals_handler._get_integration_types_map",
         new=AsyncMock(return_value={integration_id: True}),
     )
-    mocker.patch(
-        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_keys",
-        new=AsyncMock(return_value=["our_revenue_inr", "next_follow_up_date"]),
-    )
+
+    class FakeDealSchemaService:
+        def __init__(self, *_args):
+            pass
+
+        async def active_internal_custom_field_keys(self):
+            return ["our_revenue_inr", "next_follow_up_date"]
+
+        async def deal_detail_custom_column_definitions(self, *, deal_currency_code):
+            return []
+
+    mocker.patch("src.api.routers.crm.deals_handler.DealSchemaService", FakeDealSchemaService)
 
     resp = client.get(f"/users/crm/deals/{deal.deal_id}")
     assert resp.status_code == 200, resp.text
@@ -1648,10 +1694,19 @@ def test_get_deal_custom_columns_populated_only_mode(
         "src.api.routers.crm.deals_handler._get_integration_types_map",
         new=AsyncMock(return_value={integration_id: True}),
     )
-    custom_keys_mock = mocker.patch(
-        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_keys",
-        new=AsyncMock(return_value=["our_revenue_inr", "next_follow_up_date"]),
-    )
+    custom_keys_mock = AsyncMock(return_value=["our_revenue_inr", "next_follow_up_date"])
+
+    class FakeDealSchemaService:
+        def __init__(self, *_args):
+            pass
+
+        async def active_internal_custom_field_keys(self):
+            return await custom_keys_mock()
+
+        async def deal_detail_custom_column_definitions(self, *, deal_currency_code):
+            return []
+
+    mocker.patch("src.api.routers.crm.deals_handler.DealSchemaService", FakeDealSchemaService)
 
     resp = client.get(
         f"/users/crm/deals/{deal.deal_id}",
@@ -1683,11 +1738,18 @@ def test_get_deal_includes_custom_column_definitions_with_types(
         "src.api.routers.crm.deals_handler._get_integration_types_map",
         new=AsyncMock(return_value={integration_id: True}),
     )
-    mocker.patch(
-        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_definitions",
-        new=AsyncMock(
-            return_value=[
-                SimpleNamespace(
+
+    class FakeDealSchemaService:
+        def __init__(self, *_args):
+            pass
+
+        async def active_internal_custom_field_keys(self):
+            return ["custom_start_at", "custom_budget"]
+
+        async def deal_detail_custom_column_definitions(self, *, deal_currency_code):
+            assert deal_currency_code == "INR"
+            return [
+                deals_handler_module.DealCustomColumnDefinition(
                     key="custom_start_at",
                     label="Start At",
                     data_type="datetime",
@@ -1695,17 +1757,19 @@ def test_get_deal_includes_custom_column_definitions_with_types(
                     options={},
                     validation={},
                 ),
-                SimpleNamespace(
+                deals_handler_module.DealCustomColumnDefinition(
                     key="custom_budget",
                     label="Budget",
                     data_type="currency",
                     required=False,
                     options={},
                     validation={},
+                    currency_code="INR",
+                    currency_symbol="₹",
                 ),
             ]
-        ),
-    )
+
+    mocker.patch("src.api.routers.crm.deals_handler.DealSchemaService", FakeDealSchemaService)
 
     resp = client.get(f"/users/crm/deals/{deal.deal_id}")
     assert resp.status_code == 200, resp.text
@@ -1718,40 +1782,71 @@ def test_get_deal_includes_custom_column_definitions_with_types(
     assert definitions["custom_budget"]["currency_symbol"] == "₹"
 
 
-def test_map_custom_field_definitions_includes_edit_metadata() -> None:
-    """Custom field definitions should say how each custom value can be edited."""
-    mapped = deals_handler_module._map_custom_field_definitions(  # noqa: SLF001
-        [
-            SimpleNamespace(
-                key="custom_budget",
-                label="Budget",
-                data_type="currency",
-                required=False,
-                options={},
-                validation={},
-            ),
-            SimpleNamespace(
-                key="custom_margin",
-                label="Margin",
-                data_type="formula",
-                required=False,
-                options={},
-                validation={},
-            ),
-        ],
-        deal_currency_code="INR",
+@pytest.mark.asyncio
+async def test_get_deal_uses_schema_service_for_custom_detail_metadata(mocker) -> None:
+    """Deal detail compatibility metadata should be backed by DealSchemaService."""
+    org_id = uuid4()
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="Schema Backed Deal", currency="INR")
+    deal.integration_id = integration_id
+    deal.properties = {}
+    service = SimpleNamespace(
+        session=object(),
+        organisation_id=org_id,
+        get_deal_by_id=AsyncMock(return_value=deal),
+        get_deal_team_members_batch=AsyncMock(return_value={}),
+        get_company_by_id=AsyncMock(return_value=None),
+    )
+    job_service = SimpleNamespace(get_active_deal_jobs_status=AsyncMock(return_value=None))
+
+    class FakeDealSchemaService:
+        def __init__(self, session, organisation_id):
+            assert session is service.session
+            assert organisation_id == org_id
+
+        async def active_internal_custom_field_keys(self):
+            return ["procurement_stage"]
+
+        async def deal_detail_custom_column_definitions(self, *, deal_currency_code):
+            assert deal_currency_code == "INR"
+            return [
+                deals_handler_module.DealCustomColumnDefinition(
+                    key="procurement_stage",
+                    label="Procurement Stage",
+                    data_type="select",
+                    required=True,
+                    options={"values": [{"id": "legal", "value": "legal"}]},
+                    validation={},
+                    editable=True,
+                    patch_field="custom_columns.procurement_stage",
+                    edit_control="select",
+                    edit_policy="custom_columns",
+                )
+            ]
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler.DealSchemaService",
+        FakeDealSchemaService,
     )
 
-    definitions = {item.key: item.model_dump() for item in mapped}
-    assert definitions["custom_budget"]["editable"] is True
-    assert definitions["custom_budget"]["patch_field"] == "custom_columns.custom_budget"
-    assert definitions["custom_budget"]["edit_control"] == "currency"
-    assert definitions["custom_budget"]["edit_policy"] == "custom_columns"
-    assert definitions["custom_budget"]["locked_reason"] is None
-    assert definitions["custom_margin"]["editable"] is False
-    assert definitions["custom_margin"]["patch_field"] is None
-    assert definitions["custom_margin"]["edit_policy"] == "formula"
-    assert definitions["custom_margin"]["locked_reason"] == "Formula custom fields are read-only."
+    result = await deals_handler_module.get_deal(
+        deal_id=deal.deal_id,
+        response=FastAPIResponse(),
+        service=service,
+        deal_job_service=job_service,
+        include_empty_custom_columns=True,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    data = result.data.model_dump()  # type: ignore[union-attr]
+    assert data["custom_columns"] == {"procurement_stage": None}
+    assert data["custom_column_definitions"][0]["key"] == "procurement_stage"
+    assert data["custom_column_definitions"][0]["edit_control"] == "select"
 
 
 def test_get_deal_omits_custom_columns_for_external(

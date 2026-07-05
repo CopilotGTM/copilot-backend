@@ -64,6 +64,11 @@ def test_create_deal_voice_schema_is_available_for_direct_write() -> None:
     assert schema["parameters"]["required"] == ["name"]
     assert "amount" in schema["parameters"]["properties"]
     assert "expected_close_date" in schema["parameters"]["properties"]
+    assert schema["parameters"]["properties"]["custom_columns"] == {
+        "type": "object",
+        "description": "Custom field values keyed by deal schema field key.",
+        "additionalProperties": True,
+    }
     assert (
         "Expected close date"
         in schema["parameters"]["properties"]["expected_close_date"]["description"]

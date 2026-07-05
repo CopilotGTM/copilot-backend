@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.crm_settings_models import CRMSettingsLastChanged
 from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDataType,
     CRMCustomFieldEntity,
@@ -29,6 +30,8 @@ class CustomFieldDefinitionItem(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     validation: dict[str, Any] = Field(default_factory=dict)
     formula: dict[str, Any] | None = None
+    usage_count: int | None = None
+    last_changed: CRMSettingsLastChanged | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -57,16 +60,37 @@ class CreateCustomFieldRequest(BaseModel):
 
 
 class UpdateCustomFieldRequest(BaseModel):
-    """Request payload for updating a custom field definition."""
+    """Request payload for updating a custom field definition with concurrency."""
 
     label: str | None = Field(None, min_length=1, max_length=255)
     required: bool | None = None
     is_active: bool | None = None
     display_order: int | None = None
+    if_updated_at: datetime
     description: str | None = Field(None, max_length=500)
     options: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
     formula: dict[str, Any] | None = None
+
+
+class ReorderCustomFieldsRequest(BaseModel):
+    """Atomic custom-column reorder request for one entity."""
+
+    entity: CRMCustomFieldEntity = CRMCustomFieldEntity.DEAL
+    field_ids: list[UUID] = Field(min_length=1)
+    if_updated_at: datetime
+
+
+class RestoreCustomFieldRequest(BaseModel):
+    """Restore an archived custom column with optimistic concurrency."""
+
+    if_updated_at: datetime
+
+
+class ClearCustomFieldValuesResponse(BaseModel):
+    """Result of clearing one archived custom column from deals."""
+
+    cleared_deal_count: int
 
 
 class ValidateFormulaRequest(BaseModel):

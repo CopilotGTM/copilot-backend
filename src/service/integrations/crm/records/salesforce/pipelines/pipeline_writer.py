@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.utils.pipeline_shape import mark_pipeline_usability
 from src.service.integrations.crm.records.common.query_chunks import (
     LOCAL_ID_QUERY_CHUNK_SIZE,
     iter_chunks,
@@ -58,6 +59,12 @@ class SalesforcePipelineWriter:
         *,
         pipelines: list[NormalizedPipeline],
     ) -> PipelineWriteResult:
+        """Apply a Salesforce pipeline/stage snapshot for one org integration.
+
+        The caller owns commit/rollback. This writer scopes all rows by org and
+        integration, refreshes source mappings, and marks incomplete provider
+        pipeline shapes unavailable for internal deal writes.
+        """
         result = PipelineWriteResult()
         now = datetime.now(UTC)
 
@@ -71,6 +78,7 @@ class SalesforcePipelineWriter:
             existing = existing_pipelines.get(pipeline.external_id)
             if existing is None:
                 row = self._new_pipeline_row(pipeline, now=now)
+                mark_pipeline_usability(row, pipeline.stages)
                 self.session.add(row)
                 pipeline_mapping_rows.append(
                     self._pipeline_mapping_row(pipeline, row.pipeline_id, now=now)
@@ -93,6 +101,7 @@ class SalesforcePipelineWriter:
                 else:
                     existing.is_active = True
                     result.pipelines_reactivated += 1
+                mark_pipeline_usability(existing, pipeline.stages)
                 pipeline_map[pipeline.external_id] = existing.pipeline_id
 
         existing_stages = await self._load_existing_stages()

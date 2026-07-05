@@ -33,7 +33,9 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
 from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.custom_field_service import DealCustomFieldWriteService
 from src.service.crm.deals.write_service import DealWriteService
+from src.service.crm.schema.deal_schema_service import DealSchemaService
 from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 if TYPE_CHECKING:
@@ -103,6 +105,82 @@ def _created_deal_result(deal: Any) -> dict[str, Any]:
 
 def _public_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+def _has_custom_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def _custom_value_for_schema_key(custom_columns: dict[str, Any], key: str) -> Any:
+    if key in custom_columns:
+        return custom_columns[key]
+    for raw_key, value in custom_columns.items():
+        if DealCustomFieldWriteService.normalize_custom_key(raw_key) == key:
+            return value
+    return None
+
+
+def _missing_required_custom_fields(
+    fields: list[Any],
+    custom_columns: dict[str, Any],
+) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for field in fields:
+        validation = getattr(field, "internal_write_validation", None)
+        if not isinstance(validation, dict) or validation.get("required") is not True:
+            continue
+        if getattr(field, "internal_write", False) is not True:
+            continue
+        write_path = getattr(field, "write_path", None)
+        if not isinstance(write_path, str) or not write_path.startswith("custom_columns."):
+            continue
+        key = getattr(field, "key", "")
+        if not isinstance(key, str) or _has_custom_value(
+            _custom_value_for_schema_key(custom_columns, key)
+        ):
+            continue
+        options = getattr(field, "options", {})
+        missing.append(
+            {
+                "key": key,
+                "label": getattr(field, "label", key),
+                "type": getattr(field, "type", "text"),
+                "write_path": write_path,
+                "options": options if isinstance(options, dict) else {},
+            }
+        )
+    return missing
+
+
+async def _required_custom_field_guidance(
+    *,
+    session: Any,
+    organisation_id: UUID,
+    custom_columns: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        schema = await DealSchemaService(session, organisation_id).get_schema()
+    except Exception:
+        logger.debug("create_deal_direct: failed to load deal schema metadata", exc_info=True)
+        return None
+
+    missing = _missing_required_custom_fields(schema.fields, custom_columns)
+    if not missing:
+        return None
+
+    labels = ", ".join(field["label"] for field in missing)
+    return {
+        "status": "needs_input",
+        "message": f"Missing required custom fields: {labels}.",
+        "schema_endpoint": "/users/crm/schema?entity=deal",
+        "required_custom_fields": missing,
+    }
 
 
 def _escape_slack_mrkdwn(value: str) -> str:
@@ -617,6 +695,7 @@ async def create_deal_direct(
     priority: str | None = None,
     account_name: str | None = None,
     account_domain: str | None = None,
+    custom_columns: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a deal directly through the internal CRM write service."""
     organisation_id = context.organisation_id
@@ -638,12 +717,20 @@ async def create_deal_direct(
         await ensure_crm_write_scope(organisation_id, "deals:create")
     except OrganisationPolicyDeniedError as exc:
         return {"status": "error", "message": exc.message}
+    if custom_columns is not None and not isinstance(custom_columns, dict):
+        return {
+            "status": "error",
+            "message": "custom_columns must be an object keyed by custom field key.",
+        }
 
     payload: dict[str, Any] = {
         "name": deal_name,
         "owner_user_id": user_id,
         "created_via": "agent_create_deal",
     }
+    custom_payload = custom_columns if isinstance(custom_columns, dict) else {}
+    if custom_payload:
+        payload["custom_properties"] = custom_payload
 
     if amount is not None:
         payload["amount"] = amount
@@ -668,6 +755,14 @@ async def create_deal_direct(
 
     async for master_session in acquire_master_async_session():
         async with context.acquire_session() as org_session:
+            guidance = await _required_custom_field_guidance(
+                session=org_session,
+                organisation_id=organisation_id,
+                custom_columns=custom_payload,
+            )
+            if guidance is not None:
+                return guidance
+
             service = DealWriteService(
                 org_session=org_session,
                 master_session=master_session,
@@ -720,6 +815,7 @@ def create_create_deal(
         priority: str | None = None,
         account_name: str | None = None,
         account_domain: str | None = None,
+        custom_columns: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Create a new deal directly once the deal name is known.
 
@@ -727,6 +823,8 @@ def create_create_deal(
         details from the conversation and pass them as values. If only the deal
         name is known, still call this tool immediately. Do not ask follow-up
         questions for optional fields like account/company before creating it.
+        If the result status is "needs_input", ask for the returned
+        required_custom_fields and call the tool again with custom_columns.
 
         name is REQUIRED. If the user says "create a deal" without providing a
         name, ask them for the deal name first before calling this tool.
@@ -740,6 +838,7 @@ def create_create_deal(
             priority: Priority level to pre-fill ("low", "medium", "high")
             account_name: Account/company name to pre-fill
             account_domain: Account website domain to pre-fill (e.g. "acme.com")
+            custom_columns: Custom field values keyed by schema field key
 
         Returns:
             Structured status dict with created deal details or an error message.
@@ -769,6 +868,7 @@ def create_create_deal(
                 "priority": priority,
                 "account_name": account_name,
                 "account_domain": account_domain,
+                "custom_columns": custom_columns,
             },
             description="Creating deal",
             fallback_value=None,

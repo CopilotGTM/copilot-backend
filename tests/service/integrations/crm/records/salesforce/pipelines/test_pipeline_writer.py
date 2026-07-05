@@ -21,13 +21,18 @@ from src.service.integrations.crm.records.salesforce.pipelines.pipeline_writer i
 )
 
 
-def _normalized_stage(*, external_id: str, label: str) -> NormalizedStage:
+def _normalized_stage(
+    *,
+    external_id: str,
+    label: str,
+    stage_state: CRMStageState = CRMStageState.OPEN,
+) -> NormalizedStage:
     return NormalizedStage(
         external_id=external_id,
         name=label,
         label=label,
         stage_key=label,
-        stage_state=CRMStageState.OPEN,
+        stage_state=stage_state,
         probability=20.0,
         forecast_category="Pipeline",
         is_closed=False,
@@ -137,7 +142,19 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
         pipelines=[
             _normalized_pipeline(
                 external_id="012A",
-                stages=(_normalized_stage(external_id="012A:Prospecting", label="Prospecting"),),
+                stages=(
+                    _normalized_stage(external_id="012A:Prospecting", label="Prospecting"),
+                    _normalized_stage(
+                        external_id="012A:Closed Won",
+                        label="Closed Won",
+                        stage_state=CRMStageState.WON,
+                    ),
+                    _normalized_stage(
+                        external_id="012A:Closed Lost",
+                        label="Closed Lost",
+                        stage_state=CRMStageState.LOST,
+                    ),
+                ),
             )
         ]
     )
@@ -145,7 +162,7 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     assert result.pipelines_created == 0
     assert result.pipelines_reactivated == 1
     assert result.pipelines_deactivated == 1
-    assert result.stages_created == 0
+    assert result.stages_created == 2
     assert result.stages_reactivated == 1
     assert result.stages_deactivated == 1
     assert existing_pipeline.is_active is True
@@ -158,7 +175,11 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     pipeline_rows = mapping_helper.bulk_upsert_integration_mappings.await_args_list[0].args[0]
     stage_rows = mapping_helper.bulk_upsert_integration_mappings.await_args_list[1].args[0]
     assert [row.external_id for row in pipeline_rows] == ["012A"]
-    assert [row.external_id for row in stage_rows] == ["012A:Prospecting"]
+    assert [row.external_id for row in stage_rows] == [
+        "012A:Prospecting",
+        "012A:Closed Won",
+        "012A:Closed Lost",
+    ]
     assert pipeline_rows[0].external_object_type == CRMSourceObjectType.PIPELINE
     assert pipeline_rows[0].local_object_type == CRMSourceObjectType.PIPELINE
     assert stage_rows[0].external_object_type == CRMSourceObjectType.STAGE
@@ -166,3 +187,39 @@ async def test_writer_reactivates_existing_rows_and_deactivates_missing_snapshot
     assert [
         call.kwargs["object_type"] for call in mapping_helper.mark_missing_deleted.call_args_list
     ] == [CRMSourceObjectType.PIPELINE, CRMSourceObjectType.STAGE]
+
+
+@pytest.mark.asyncio
+async def test_writer_marks_incomplete_provider_pipeline_unusable_without_rejecting_sync() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+
+    writer = SalesforcePipelineWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_pipelines = AsyncMock(return_value={})  # type: ignore[method-assign]
+    writer._load_existing_stages = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        pipelines=[
+            _normalized_pipeline(
+                external_id="012A",
+                stages=(_normalized_stage(external_id="012A:Prospecting", label="Prospecting"),),
+            )
+        ]
+    )
+
+    assert result.pipelines_created == 1
+    pipeline_row = session.add.call_args_list[0].args[0]
+    assert pipeline_row.is_active is False
+    assert pipeline_row.properties["usable_for_internal_deals"] is False

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
+
+
+def _allow_required_custom_fields(service: DealWriteService) -> None:
+    service._custom_fields.validate_required_on_create = AsyncMock()
+    service._custom_fields.validate_required_not_cleared = AsyncMock()
 
 
 @pytest.mark.asyncio
@@ -147,6 +152,7 @@ async def test_update_deal_tracks_normalized_custom_property_changes() -> None:
     )
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._validate_custom_properties = AsyncMock(return_value={"our_revenue": 25000000})
+    _allow_required_custom_fields(service)
     service._record_mutation_event = AsyncMock()
 
     await service.update_deal(
@@ -192,6 +198,7 @@ async def test_update_deal_clears_custom_property_when_validated_value_is_null()
     )
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._validate_custom_properties = AsyncMock(return_value={"our_revenue": None})
+    _allow_required_custom_fields(service)
     service._record_mutation_event = AsyncMock()
 
     await service.update_deal(
@@ -205,6 +212,56 @@ async def test_update_deal_clears_custom_property_when_validated_value_is_null()
         "old": 25000000,
         "new": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_update_deal_rejects_clearing_required_custom_property() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Existing",
+        amount=1000,
+        currency="USD",
+        deal_status="open",
+        source_created_at=None,
+        close_date=None,
+        expected_close_date=None,
+        description=None,
+        deal_type=None,
+        priority=None,
+        lead_source=None,
+        probability=None,
+        forecast_category=None,
+        properties={"procurement_stage": "legal", "created_via": "api"},
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._validate_custom_properties = AsyncMock(return_value={"procurement_stage": None})
+    service._custom_fields.validate_required_not_cleared = AsyncMock(
+        side_effect=DealWriteServiceError(
+            "Required custom fields cannot be cleared: procurement_stage",
+            status_code=400,
+        )
+    )
+    service._record_mutation_event = AsyncMock()
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.update_deal(
+            deal.deal_id,
+            {"custom_properties": {"procurement_stage": None}},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Required custom fields cannot be cleared: procurement_stage"
+    assert deal.properties["procurement_stage"] == "legal"
+    service._record_mutation_event.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -362,6 +419,81 @@ async def test_create_deal_validates_custom_properties_before_setup(monkeypatch)
     assert exc_info.value.status_code == 400
     assert exc_info.value.message == "Unknown custom fields: mystery"
     service._validate_custom_properties.assert_awaited_once_with({"mystery": "value"})
+
+
+@pytest.mark.asyncio
+async def test_create_deal_enforces_required_custom_fields_before_setup(monkeypatch) -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._validate_custom_properties = AsyncMock(return_value={})
+    service._custom_fields.validate_required_on_create = AsyncMock(
+        side_effect=DealWriteServiceError(
+            "Missing required custom fields: procurement_stage",
+            status_code=400,
+        )
+    )
+
+    class UnexpectedSetupService:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("required custom fields should be validated before setup")
+
+    monkeypatch.setattr(
+        "src.service.crm.deals.write_service.InternalCRMSetupService",
+        UnexpectedSetupService,
+    )
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.create_deal({"name": "Missing custom fields"})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Missing required custom fields: procurement_stage"
+    service._custom_fields.validate_required_on_create.assert_awaited_once_with({})
+
+
+@pytest.mark.asyncio
+async def test_create_deal_rejects_unusable_internal_pipeline() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    _allow_required_custom_fields(service)
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    integration = SimpleNamespace(integration_id=uuid4())
+    pipeline = SimpleNamespace(
+        pipeline_id=pipeline_id,
+        integration_id=integration.integration_id,
+        name="Broken Pipeline",
+        is_active=True,
+    )
+    stage = SimpleNamespace(stage_id=stage_id, name="Qualification", stage_state="open")
+    service._projection = AsyncMock()
+    service._record_mutation_event = AsyncMock()
+    service._load_pipeline = AsyncMock(return_value=pipeline)
+    service._load_stage = AsyncMock(return_value=stage)
+    service._load_pipeline_stages = AsyncMock(
+        return_value=[stage, SimpleNamespace(stage_id=uuid4(), stage_state="lost")]
+    )
+
+    with (
+        patch(
+            "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
+            new=AsyncMock(return_value=integration),
+        ),
+        pytest.raises(DealWriteServiceError) as exc_info,
+    ):
+        await service.create_deal(
+            {"name": "Unsafe Deal", "pipeline_id": pipeline_id, "stage_id": stage_id}
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "open, won, and lost" in exc_info.value.message
 
 
 @pytest.mark.asyncio

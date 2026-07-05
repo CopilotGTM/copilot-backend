@@ -446,6 +446,11 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "priority": {"type": "string"},
                 "account_name": {"type": "string"},
                 "account_domain": {"type": "string"},
+                "custom_columns": {
+                    "type": "object",
+                    "description": "Custom field values keyed by deal schema field key.",
+                    "additionalProperties": True,
+                },
             },
             "required": ["name"],
             "additionalProperties": False,

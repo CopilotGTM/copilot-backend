@@ -21,13 +21,13 @@ from src.service.integrations.crm.records.hubspot.pipelines.pipeline_writer impo
 )
 
 
-def _stage(external_id: str) -> NormalizedStage:
+def _stage(external_id: str, stage_state: CRMStageState = CRMStageState.OPEN) -> NormalizedStage:
     return NormalizedStage(
         external_id=external_id,
         label="Qualified",
         name="qualified",
         stage_key="qualified",
-        stage_state=CRMStageState.OPEN,
+        stage_state=stage_state,
         probability=0.25,
         is_closed=False,
         display_order=1,
@@ -107,3 +107,31 @@ async def test_writer_upserts_pipeline_and_stage_mappings() -> None:
         object_type=CRMSourceObjectType.STAGE,
         seen_external_ids={"stage-1"},
     )
+
+
+@pytest.mark.asyncio
+async def test_writer_marks_incomplete_provider_pipeline_unusable_without_rejecting_sync() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotPipelineWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.upsert_integration_mapping = AsyncMock()
+    mapping_helper.mark_missing_deleted = AsyncMock()
+    writer.source_mappings = mapping_helper
+    writer._load_existing_pipelines = AsyncMock(return_value={})  # type: ignore[method-assign]
+    writer._load_existing_stages = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    result = await writer.apply(pipelines=[_pipeline("pipe-1", _stage("stage-1"))])
+
+    assert result.pipelines_created == 1
+    pipeline_row = session.add.call_args_list[0].args[0]
+    assert pipeline_row.is_active is False
+    assert pipeline_row.properties["usable_for_internal_deals"] is False

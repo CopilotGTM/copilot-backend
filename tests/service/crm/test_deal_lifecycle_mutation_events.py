@@ -20,6 +20,15 @@ def _stage_result(deal, changed_fields: dict | None = None) -> DealStageChangeRe
     )
 
 
+def _allow_terminal_required_custom_fields(service: DealWriteService) -> None:
+    service._custom_fields.validate_required_for_terminal_transition = AsyncMock()
+
+
+def _allow_current_pipeline(service: DealWriteService) -> None:
+    service._load_pipeline = AsyncMock(return_value=SimpleNamespace(is_active=True))
+    service._ensure_pipeline_accepts_internal_deals = AsyncMock()
+
+
 @pytest.mark.asyncio
 async def test_move_stage_rejects_invalid_stage_id_before_loading_deal() -> None:
     service = DealWriteService(
@@ -116,6 +125,7 @@ async def test_close_deal_records_closed_and_stage_semantics_when_stage_changes(
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Won", stage_state="won")
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._resolve_stage_for_state = AsyncMock(return_value=stage)
+    _allow_terminal_required_custom_fields(service)
 
     async def apply_stage(*, deal, stage, source):
         deal.stage_id = stage.stage_id
@@ -173,6 +183,7 @@ async def test_close_deal_as_won_clears_closed_reason() -> None:
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Won", stage_state="won")
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._resolve_stage_for_state = AsyncMock(return_value=stage)
+    _allow_terminal_required_custom_fields(service)
 
     async def apply_stage(*, deal, stage, source):
         deal.stage_id = stage.stage_id
@@ -232,6 +243,7 @@ async def test_close_deal_as_lost_trims_closed_reason() -> None:
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Lost", stage_state="lost")
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._resolve_stage_for_state = AsyncMock(return_value=stage)
+    _allow_terminal_required_custom_fields(service)
 
     async def apply_stage(*, deal, stage, source):
         deal.stage_id = stage.stage_id
@@ -252,6 +264,48 @@ async def test_close_deal_as_lost_trims_closed_reason() -> None:
     assert deal.closed_reason == "Budget frozen"
     changed_fields = service._record_mutation_event.await_args.kwargs["changed_fields"]
     assert changed_fields["closed_reason"] == {"old": None, "new": "Budget frozen"}
+
+
+@pytest.mark.asyncio
+async def test_close_deal_rejects_missing_required_custom_fields_before_stage_change() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        pipeline_id=uuid4(),
+        integration_id=uuid4(),
+        stage_id=uuid4(),
+        stage_name="Proposal",
+        deal_status=CRMDealStatus.OPEN,
+        close_date=None,
+        closed_won_at=None,
+        closed_lost_at=None,
+        closed_reason=None,
+        properties={},
+    )
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._resolve_stage_for_state = AsyncMock()
+    service._custom_fields.validate_required_for_terminal_transition = AsyncMock(
+        side_effect=DealWriteServiceError(
+            "Missing required custom fields: procurement_stage",
+            status_code=400,
+        )
+    )
+    service._stages.apply_stage = AsyncMock()
+    service._record_mutation_event = AsyncMock()
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.close_deal(deal.deal_id, outcome="won", closed_reason=None)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Missing required custom fields: procurement_stage"
+    service._resolve_stage_for_state.assert_not_awaited()
+    service._stages.apply_stage.assert_not_awaited()
+    service._record_mutation_event.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -280,6 +334,8 @@ async def test_move_stage_to_lost_stage_closes_deal_lifecycle() -> None:
     )
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Lost", stage_state="lost")
     service._load_internal_deal = AsyncMock(return_value=deal)
+    _allow_current_pipeline(service)
+    _allow_terminal_required_custom_fields(service)
     service._load_stage = AsyncMock(return_value=stage)
 
     async def apply_stage(*, deal, stage, source):
@@ -313,6 +369,50 @@ async def test_move_stage_to_lost_stage_closes_deal_lifecycle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_move_stage_to_terminal_stage_rejects_missing_required_custom_fields() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        pipeline_id=uuid4(),
+        integration_id=uuid4(),
+        stage_id=uuid4(),
+        stage_name="Proposal",
+        deal_status=CRMDealStatus.OPEN,
+        close_date=None,
+        closed_won_at=None,
+        closed_lost_at=None,
+        closed_reason=None,
+        properties={},
+    )
+    stage = SimpleNamespace(stage_id=uuid4(), name="Closed Won", stage_state="won")
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._load_pipeline = AsyncMock(return_value=SimpleNamespace(is_active=True))
+    service._ensure_pipeline_accepts_internal_deals = AsyncMock()
+    service._load_stage = AsyncMock(return_value=stage)
+    service._custom_fields.validate_required_for_terminal_transition = AsyncMock(
+        side_effect=DealWriteServiceError(
+            "Missing required custom fields: procurement_stage",
+            status_code=400,
+        )
+    )
+    service._stages.apply_stage = AsyncMock()
+    service._record_mutation_event = AsyncMock()
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.move_stage(deal.deal_id, stage.stage_id)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Missing required custom fields: procurement_stage"
+    service._stages.apply_stage.assert_not_awaited()
+    service._record_mutation_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_move_stage_to_won_stage_closes_deal_lifecycle() -> None:
     service = DealWriteService(
         org_session=SimpleNamespace(flush=AsyncMock()),
@@ -338,6 +438,8 @@ async def test_move_stage_to_won_stage_closes_deal_lifecycle() -> None:
     )
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Won", stage_state="won")
     service._load_internal_deal = AsyncMock(return_value=deal)
+    _allow_current_pipeline(service)
+    _allow_terminal_required_custom_fields(service)
     service._load_stage = AsyncMock(return_value=stage)
 
     async def apply_stage(*, deal, stage, source):
@@ -397,6 +499,8 @@ async def test_move_stage_from_lost_to_won_clears_lost_reason() -> None:
     )
     stage = SimpleNamespace(stage_id=new_stage_id, name="Closed Won", stage_state="won")
     service._load_internal_deal = AsyncMock(return_value=deal)
+    _allow_current_pipeline(service)
+    _allow_terminal_required_custom_fields(service)
     service._load_stage = AsyncMock(return_value=stage)
 
     async def apply_stage(*, deal, stage, source):
@@ -452,6 +556,7 @@ async def test_move_stage_to_open_stage_reopens_closed_deal_lifecycle() -> None:
     )
     stage = SimpleNamespace(stage_id=new_stage_id, name="Qualification", stage_state="open")
     service._load_internal_deal = AsyncMock(return_value=deal)
+    _allow_current_pipeline(service)
     service._load_stage = AsyncMock(return_value=stage)
 
     async def apply_stage(*, deal, stage, source):

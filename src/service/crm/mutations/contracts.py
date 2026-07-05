@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
-CRMEntityType = Literal["contact", "account", "deal"]
+CRMEntityType = Literal["contact", "account", "deal", "custom_field", "pipeline", "stage"]
 CRMMutationSource = str
 
 

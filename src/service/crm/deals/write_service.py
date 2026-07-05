@@ -39,6 +39,10 @@ from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
     ensure_app_user_crm_identity,
 )
+from src.service.crm.utils.pipeline_shape import (
+    has_required_pipeline_shape,
+    required_pipeline_shape_message,
+)
 
 logger = get_logger(__name__)
 
@@ -348,10 +352,13 @@ class DealWriteService:
             self._validate_uuid_field("owner_user_id", payload["owner_user_id"])
         self._validate_deal_create_relationship_payloads(payload)
 
+        validated_custom_properties: dict[str, Any] = {}
         if "custom_properties" in payload and payload["custom_properties"] is not None:
-            payload["custom_properties"] = await self._validate_custom_properties(
+            validated_custom_properties = await self._validate_custom_properties(
                 payload["custom_properties"]
             )
+            payload["custom_properties"] = validated_custom_properties
+        await self._custom_fields.validate_required_on_create(validated_custom_properties)
 
         # Deals created through this writer must belong to the internal CRM
         # integration; external provider deals stay read-only elsewhere.
@@ -380,6 +387,10 @@ class DealWriteService:
                 raise DealWriteServiceError("No default pipeline found", status_code=500)
             pipeline = default_pipeline
             pipeline_id = pipeline.pipeline_id
+
+        # The selected pipeline is the lifecycle boundary for this deal. Reject
+        # incomplete imported/provider shapes before choosing a stage from them.
+        await self._ensure_pipeline_accepts_internal_deals(pipeline)
 
         if stage_id:
             stage = await self._load_stage(stage_id, pipeline_id, integration_id)
@@ -638,6 +649,7 @@ class DealWriteService:
                 if skip_custom_validation
                 else await self._validate_custom_properties(custom_props)
             )
+            await self._custom_fields.validate_required_not_cleared(validated_custom_properties)
             # New dict so SQLAlchemy detects the JSONB column change.
             updated_properties = {**(deal.properties or {})}
             for key, value in validated_custom_properties.items():
@@ -749,12 +761,23 @@ class DealWriteService:
         self._validate_uuid_field("stage_id", stage_id)
         deal = await self._load_internal_deal(deal_id)
 
-        # Verify stage belongs to same integration and pipeline
+        # Verify the current pipeline is still usable before moving stages. A
+        # pipeline can become unusable after later pipeline edits/import syncs.
         if not deal.pipeline_id:
             raise DealWriteServiceError("Deal has no pipeline", status_code=500)
+        pipeline = await self._load_pipeline(deal.pipeline_id, deal.integration_id)
+        await self._ensure_pipeline_accepts_internal_deals(pipeline)
         stage = await self._load_stage(stage_id, deal.pipeline_id, deal.integration_id)
         if deal.stage_id == stage.stage_id:
             return deal
+        stage_state_raw = getattr(stage, "stage_state", None)
+        stage_state = (
+            self._normalize_stage_state(stage_state_raw) if stage_state_raw is not None else None
+        )
+        if stage_state in {CRMDealStatus.WON.value, CRMDealStatus.LOST.value}:
+            await self._custom_fields.validate_required_for_terminal_transition(
+                deal.properties or {}
+            )
 
         old_values = {
             "stage_id": deal.stage_id,
@@ -777,9 +800,7 @@ class DealWriteService:
         )
 
         lifecycle_action: str | None = None
-        stage_state_raw = getattr(stage, "stage_state", None)
-        if stage_state_raw is not None:
-            stage_state = self._normalize_stage_state(stage_state_raw)
+        if stage_state is not None:
             if stage_state in {CRMDealStatus.WON.value, CRMDealStatus.LOST.value}:
                 closed_at = getattr(deal, "stage_entered_at", None) or datetime.now(UTC)
                 if closed_at.tzinfo is None:
@@ -847,6 +868,61 @@ class DealWriteService:
         logger.info("Moved deal %s to stage %s", deal.deal_id, stage.name)
         return deal
 
+    async def move_stage_deals(
+        self,
+        source_stage_id: UUID,
+        destination_stage_id: UUID,
+        *,
+        pipeline_id: UUID | None = None,
+    ) -> int:
+        """Move every non-deleted deal from one stage to another using move_stage."""
+        self._validate_uuid_field("source_stage_id", source_stage_id)
+        self._validate_uuid_field("destination_stage_id", destination_stage_id)
+        self._validate_uuid_field("pipeline_id", pipeline_id)
+        if source_stage_id == destination_stage_id:
+            raise DealWriteServiceError(
+                "Source and destination stages must be different",
+                status_code=400,
+            )
+
+        source_stage = await self._load_batch_stage(source_stage_id, pipeline_id=pipeline_id)
+        destination_stage = await self._load_batch_stage(
+            destination_stage_id, pipeline_id=pipeline_id
+        )
+        if source_stage.pipeline_id != destination_stage.pipeline_id:
+            raise DealWriteServiceError(
+                "Destination stage must belong to the same pipeline",
+                status_code=400,
+            )
+
+        stmt = select(col(CRMDeal.deal_id)).where(
+            col(CRMDeal.organisation_id) == self.organisation_id,
+            col(CRMDeal.stage_id) == source_stage_id,
+            col(CRMDeal.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        deal_ids = list(result.scalars().all())
+        for deal_id in deal_ids:
+            await self.move_stage(deal_id, destination_stage_id)
+        return len(deal_ids)
+
+    async def _load_batch_stage(
+        self, stage_id: UUID, *, pipeline_id: UUID | None = None
+    ) -> CRMDealStage:
+        filters = [
+            col(CRMDealStage.organisation_id) == self.organisation_id,
+            col(CRMDealStage.stage_id) == stage_id,
+            col(CRMDealStage.is_deleted).is_(False),
+        ]
+        if pipeline_id is not None:
+            filters.append(col(CRMDealStage.pipeline_id) == pipeline_id)
+        stmt = select(CRMDealStage).where(*filters)
+        result = await self.session.execute(stmt)
+        stage = result.scalars().first()
+        if stage is None:
+            raise DealWriteServiceError("Stage not found", status_code=404)
+        return stage
+
     async def close_deal(
         self,
         deal_id: UUID,
@@ -876,6 +952,7 @@ class DealWriteService:
         deal = await self._load_internal_deal(deal_id)
         if not deal.pipeline_id:
             raise DealWriteServiceError("Deal has no pipeline", status_code=500)
+        await self._custom_fields.validate_required_for_terminal_transition(deal.properties or {})
         old_values = {
             "stage_id": deal.stage_id,
             "stage_name": deal.stage_name,
@@ -1913,6 +1990,14 @@ class DealWriteService:
             raise DealWriteServiceError("Pipeline not found", status_code=404)
         return pipeline
 
+    async def _ensure_pipeline_accepts_internal_deals(self, pipeline: CRMPipeline) -> None:
+        """Reject pipelines that cannot safely support internal deal writes."""
+        if getattr(pipeline, "is_active", True) is False:
+            raise DealWriteServiceError(required_pipeline_shape_message(), status_code=409)
+        stages = await self._load_pipeline_stages(pipeline.pipeline_id)
+        if not has_required_pipeline_shape(stages):
+            raise DealWriteServiceError(required_pipeline_shape_message(), status_code=409)
+
     async def _load_stage(
         self, stage_id: UUID, pipeline_id: UUID, integration_id: UUID
     ) -> CRMDealStage:
@@ -1928,6 +2013,20 @@ class DealWriteService:
         if stage.is_deleted:
             raise DealWriteServiceError("Stage not found", status_code=404)
         return stage
+
+    async def _load_pipeline_stages(self, pipeline_id: UUID) -> list[CRMDealStage]:
+        """Load non-deleted stages used to validate an internal pipeline shape."""
+        stmt = (
+            select(CRMDealStage)
+            .where(
+                col(CRMDealStage.pipeline_id) == pipeline_id,
+                col(CRMDealStage.organisation_id) == self.organisation_id,
+                col(CRMDealStage.is_deleted).is_not(True),
+            )
+            .order_by(col(CRMDealStage.display_order).asc(), col(CRMDealStage.created_at).asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def _get_default_pipeline(self, integration_id: UUID) -> CRMPipeline | None:
         """Get the default pipeline for the internal CRM integration."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from alembic.config import Config
@@ -28,10 +29,25 @@ def _org_migration_sources() -> str:
     )
 
 
+def _org_migration_paths() -> list[Path]:
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
+    return sorted((migrations_dir / "versions").glob("*.py"))
+
+
 def _crm_mutation_events_migration_source() -> str:
     migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
     migration_path = (
         migrations_dir / "versions" / "3c7f79637737_062_add_crm_mutation_events.py"
+    )
+    return migration_path.read_text(encoding="utf-8")
+
+
+def _crm_stage_key_migration_source() -> str:
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
+    migration_path = (
+        migrations_dir
+        / "versions"
+        / "3c7f79637727_072_add_internal_stage_key_uniqueness.py"
     )
     return migration_path.read_text(encoding="utf-8")
 
@@ -67,6 +83,50 @@ def test_org_migration_head_adds_crm_mutation_events_outbox() -> None:
     assert "deal_id" in head_source
     assert "occurred_at" in head_source
     assert "payload_hash" in head_source
+
+
+def test_org_migration_head_adds_internal_stage_key_uniqueness() -> None:
+    """Concurrent internal stage creates must not bypass service duplicate checks."""
+    head_source = _crm_stage_key_migration_source()
+
+    assert "ux_crm_deal_stages_internal_active_stage_key" in head_source
+    assert "crm_deal_stages" in head_source
+    assert "organisation_id" in head_source
+    assert "pipeline_id" in head_source
+    assert "stage_key" in head_source
+    assert "is_deleted = false" in head_source
+    assert "is_active = true" in head_source
+
+
+def test_org_migration_revisions_and_sequence_numbers_are_unique() -> None:
+    """Alembic revision IDs and numbered filenames must not collide after rebases."""
+    revisions: dict[str, Path] = {}
+    sequence_numbers: dict[str, Path] = {}
+
+    for path in _org_migration_paths():
+        source = path.read_text(encoding="utf-8")
+        revision_match = re.search(
+            r"""^revision(?:\s*:\s*str)?\s*=\s*["']([^"']+)["']""",
+            source,
+            re.M,
+        )
+        assert revision_match is not None, f"{path.name} is missing a revision"
+
+        revision = revision_match.group(1)
+        assert revision not in revisions, (
+            f"{path.name} duplicates revision {revision} from {revisions[revision].name}"
+        )
+        revisions[revision] = path
+
+        sequence_match = re.search(r"_(\d{3})_", path.name)
+        assert sequence_match is not None, f"{path.name} is missing a migration sequence"
+
+        sequence = sequence_match.group(1)
+        assert sequence not in sequence_numbers, (
+            f"{path.name} duplicates sequence {sequence} from "
+            f"{sequence_numbers[sequence].name}"
+        )
+        sequence_numbers[sequence] = path
 
 
 def test_crm_mutation_events_do_not_store_direct_workflow_lineage_columns() -> None:

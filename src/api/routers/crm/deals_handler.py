@@ -50,13 +50,10 @@ from src.api.schemas.crm_models import (
     DealSummaryJobsStatus,
     DealTeamMember,
 )
+from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
-from src.domain.models.organisation_tables.sync.crm.custom_fields import (
-    CRMCustomFieldDefinition,
-    CRMCustomFieldEntity,
-    CRMCustomFieldSource,
-)
+from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
@@ -76,6 +73,7 @@ from src.service.crm.jobs.stakeholder_job_visibility_service import (
     StakeholderJobVisibilityService,
 )
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
+from src.service.crm.schema.deal_schema_service import DealSchemaService
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -228,6 +226,21 @@ async def get_deal_write_service(
             logger.debug("DealWriteService close failed", exc_info=True)
 
 
+async def get_deal_schema_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields deal schema metadata for the current org."""
+    service = DealSchemaService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("DealSchemaService close failed", exc_info=True)
+
+
 async def _get_integration_types_map(
     session: AsyncSession, organisation_id: UUID, integration_ids: set[UUID]
 ) -> dict[UUID, bool]:
@@ -362,124 +375,6 @@ async def _contact_research_job_response(
         return None
 
 
-async def _get_active_deal_custom_field_keys(
-    session: AsyncSession, organisation_id: UUID
-) -> list[str]:
-    """Return active deal custom field keys for the current organisation."""
-    stmt = (
-        select(col(CRMCustomFieldDefinition.key))
-        .where(
-            col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
-            col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
-            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
-            col(CRMCustomFieldDefinition.is_deleted).is_(False),
-            col(CRMCustomFieldDefinition.is_active).is_(True),
-        )
-        .order_by(
-            col(CRMCustomFieldDefinition.display_order).asc().nulls_last(),
-            col(CRMCustomFieldDefinition.created_at).asc(),
-        )
-    )
-    result = await session.execute(stmt)
-    return [row[0] for row in result.all() if row and row[0]]
-
-
-async def _get_active_deal_custom_field_definitions(
-    session: AsyncSession, organisation_id: UUID
-) -> list[CRMCustomFieldDefinition]:
-    """Return active deal custom field definitions for the current organisation.
-
-    Ordering by display_order then created_at keeps UI control ordering stable
-    across refreshes and environments.
-    """
-    stmt = (
-        select(CRMCustomFieldDefinition)
-        .where(
-            col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
-            col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
-            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
-            col(CRMCustomFieldDefinition.is_deleted).is_(False),
-            col(CRMCustomFieldDefinition.is_active).is_(True),
-        )
-        .order_by(
-            col(CRMCustomFieldDefinition.display_order).asc().nulls_last(),
-            col(CRMCustomFieldDefinition.created_at).asc(),
-        )
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
-def _custom_field_currency_code(
-    field: CRMCustomFieldDefinition,
-    *,
-    default_currency_code: str | None,
-) -> str | None:
-    """Resolve currency code for a currency custom field.
-
-    Precedence is field-level config (`options`/`validation`) first, then
-    fallback to the parent deal currency. This keeps currency rendering stable
-    for older definitions that do not store explicit currency metadata.
-    """
-    options = field.options if isinstance(field.options, dict) else {}
-    validation = field.validation if isinstance(field.validation, dict) else {}
-
-    for source in (options, validation):
-        raw = source.get("currency_code") or source.get("currency")
-        normalized = _normalize_currency_code(raw) if isinstance(raw, str) else None
-        if normalized:
-            return normalized
-
-    return default_currency_code
-
-
-def _map_custom_field_definitions(
-    fields: list[CRMCustomFieldDefinition],
-    *,
-    deal_currency_code: str | None,
-) -> list[DealCustomColumnDefinition]:
-    """Map custom field definitions to frontend-friendly metadata.
-
-    We return this with deal detail so frontend can render typed inputs
-    (date/datetime/currency) without requiring a second API call to fetch
-    custom field schema. Currency fields inherit deal currency when field-level
-    config is not explicitly defined.
-    """
-    mapped: list[DealCustomColumnDefinition] = []
-    for field in fields:
-        data_type = (
-            field.data_type.value if hasattr(field.data_type, "value") else str(field.data_type)
-        )
-        currency_code = None
-        currency_symbol = None
-        if data_type == "currency":
-            currency_code = _custom_field_currency_code(
-                field,
-                default_currency_code=deal_currency_code,
-            )
-            currency_symbol = _currency_symbol_for(currency_code)
-        is_formula = data_type == "formula"
-
-        mapped.append(
-            DealCustomColumnDefinition(
-                key=field.key,
-                label=field.label,
-                data_type=data_type,
-                required=bool(field.required),
-                options=field.options if isinstance(field.options, dict) else {},
-                validation=field.validation if isinstance(field.validation, dict) else {},
-                currency_code=currency_code,
-                currency_symbol=currency_symbol,
-                editable=not is_formula,
-                patch_field=None if is_formula else f"custom_columns.{field.key}",
-                edit_control=None if is_formula else data_type,
-                edit_policy="formula" if is_formula else "custom_columns",
-                locked_reason="Formula custom fields are read-only." if is_formula else None,
-            )
-        )
-    return mapped
-
-
 def _extract_custom_columns(
     properties: dict[str, Any] | None,
     *,
@@ -514,6 +409,40 @@ def _extract_custom_columns(
         custom_columns = {key: value for key, value in custom_columns.items() if value is not None}
 
     return custom_columns or None
+
+
+@deals_router.get(
+    "/schema",
+    response_model=GenericResponse[CRMEntitySchemaResponse],
+    tags=["crm", "schema"],
+    summary="Get CRM schema metadata",
+)
+async def get_crm_schema(
+    response: FastAPIResponse,
+    entity: CRMCustomFieldEntity = Query(
+        CRMCustomFieldEntity.DEAL,
+        description="CRM entity to describe. Currently only deal is supported.",
+    ),
+    service: DealSchemaService = Depends(get_deal_schema_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[CRMEntitySchemaResponse]:
+    """Return the canonical backend-owned CRM schema metadata contract."""
+    if entity != CRMCustomFieldEntity.DEAL:
+        return Response.error_response(
+            message="Unsupported CRM schema entity",
+            status_code=400,
+            response=response,
+        )
+    try:
+        schema = await service.get_schema()
+        return Response.success_response(message="CRM schema retrieved", data=schema)
+    except Exception as exc:
+        logger.error("Unexpected CRM schema error: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
 
 
 @deals_router.get(
@@ -1066,15 +995,15 @@ async def get_deal(
             )
             is_internal = integration_types_map.get(deal.integration_id, False)
 
+        schema_service: DealSchemaService | None = None
+        schema_session = getattr(service, "session", None)
+        if is_internal and schema_session is not None:
+            schema_service = DealSchemaService(schema_session, service.organisation_id)
+
         custom_field_keys: list[str] | None = None
-        if is_internal and include_empty_custom_columns:
+        if schema_service is not None and include_empty_custom_columns:
             try:
-                session = getattr(service, "session", None)
-                if session is not None:
-                    custom_field_keys = await _get_active_deal_custom_field_keys(
-                        session=session,
-                        organisation_id=service.organisation_id,
-                    )
+                custom_field_keys = await schema_service.active_internal_custom_field_keys()
             except Exception as exc:
                 logger.warning(
                     "Failed to load custom field definitions for deal %s: %s",
@@ -1084,20 +1013,15 @@ async def get_deal(
                 )
 
         custom_column_definitions: list[DealCustomColumnDefinition] | None = None
-        if is_internal:
+        if schema_service is not None:
             try:
-                session = getattr(service, "session", None)
-                if session is not None:
-                    # Deal detail includes definition metadata so UI can render
-                    # typed custom controls even when the current value is null.
-                    definitions = await _get_active_deal_custom_field_definitions(
-                        session=session,
-                        organisation_id=service.organisation_id,
-                    )
-                    custom_column_definitions = _map_custom_field_definitions(
-                        definitions,
+                # Deal detail keeps this compatibility payload for existing
+                # controls, but the projection is now backed by DealSchemaService.
+                custom_column_definitions = (
+                    await schema_service.deal_detail_custom_column_definitions(
                         deal_currency_code=_normalize_currency_code(deal.currency),
                     )
+                )
             except Exception as exc:
                 # Metadata enrichment is best-effort and should not block core
                 # deal detail responses.
@@ -1212,6 +1136,8 @@ async def create_deal(
     """Create a new internal CRM deal."""
     try:
         create_payload = request.model_dump()
+        # TODO(copilotgtm): Move web create clients to GET /users/crm/schema?entity=deal
+        # before POST /deals so they can render required fields/options before submit.
         # Contact stakeholders need the route-level job/research follow-up below,
         # so keep creation in one place instead of pre-creating participants here.
         create_payload.pop("contact_participants", None)

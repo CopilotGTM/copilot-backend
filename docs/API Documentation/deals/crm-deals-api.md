@@ -2,7 +2,7 @@
 
 > Version: 1.4
 > Base URL: `/users/crm`
-> Last Updated: 2026-07-01
+> Last Updated: 2026-07-05
 
 ---
 
@@ -72,8 +72,13 @@ Use this checklist when updating the deal UI:
   stage/lifecycle, owner, account, primary-contact, and delete actions.
 - Render predefined deal detail rows from `detail_field_definitions`; do not
   hardcode the order or editability.
-- For custom fields, render controls from `custom_column_definitions` and patch
-  via `custom_columns.<key>`.
+- For create/edit custom fields, prefer `GET /users/crm/schema?entity=deal`.
+  It returns standard fields, active internal custom fields, provider fields,
+  required flags, data types, select/multiselect options, and writeability before
+  `POST /deals`.
+- `custom_column_definitions` on deal detail remains as a compatibility payload
+  for existing detail rendering. New create/edit/import/agent consumers should
+  use the schema endpoint instead.
 - Keep `associated_contact_count`, `associated_company_count`, and `note_count`
   as top-level summary values, not Get Details rows.
 - Route edits by `edit_policy`: `always` -> inline PATCH, `stage_action` ->
@@ -261,6 +266,59 @@ export interface DealDetailFieldDefinition {
     | "system"
     | "read_only";
   locked_reason: string | null;
+}
+
+export interface CRMFieldSchemaItem {
+  field_id: UUID | null;
+  entity: "deal" | string;
+  key: string;
+  label: string;
+  type: string;
+  order: number;
+  section: string | null;
+  source: "standard" | "internal" | "provider" | string;
+  ownership: "system" | "internal" | string;
+  integration_id: UUID | null;
+  provider_name: string | null;
+  provider_field_key: string | null;
+  required: boolean;
+  read_only: boolean;
+  nullable: boolean;
+  editable: boolean;
+  sortable: boolean;
+  filterable: boolean;
+  searchable: boolean;
+  input_control: string | null;
+  options: Record<string, unknown>;
+  validation: Record<string, unknown>;
+  lifecycle_state: "active" | string;
+  write_path: string | null;
+  write_policy:
+    | "always"
+    | "custom_columns"
+    | "formula"
+    | "provider_read_only"
+    | "stage_action"
+    | "owner_assignment"
+    | "participants_action"
+    | "account_action"
+    | "primary_contact_action"
+    | "lifecycle_action"
+    | "system"
+    | "read_only"
+    | string;
+  read_only_reason: string | null;
+  internal_write: boolean;
+  internal_write_validation: {
+    required: boolean;
+    option_membership: boolean;
+    [key: string]: boolean;
+  };
+}
+
+export interface CRMEntitySchemaResponse {
+  entity: "deal";
+  fields: CRMFieldSchemaItem[];
 }
 
 export interface DealAccountInput {
@@ -480,8 +538,8 @@ POST /users/crm/deals
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
 | `name` | string | **Yes** | 1-500 chars, non-empty | Deal name |
-| `pipeline_id` | UUID | No | Valid pipeline UUID | Defaults to default pipeline |
-| `stage_id` | UUID | No | Must belong to pipeline | Defaults to first stage |
+| `pipeline_id` | UUID | No | Valid usable internal pipeline UUID | Defaults to default pipeline |
+| `stage_id` | UUID | No | Must belong to the usable pipeline | Defaults to first stage |
 | `owner_user_id` | UUID | No | Valid user UUID from `/users/crm/users` | Deal owner |
 | `amount` | number | No | >= 0 | Deal value |
 | `currency` | string | No | 3-char ISO code (USD, INR) | Currency code |
@@ -492,7 +550,7 @@ POST /users/crm/deals
 | `lead_source` | string | No | Max 128 chars | "Inbound", "Outbound", "Referral", etc. |
 | `probability` | number | No | 0-100 | Win probability (%) |
 | `forecast_category` | string | No | Max 64 chars | Forecast bucket (Pipeline / Best Case / Commit / Closed) |
-| `custom_columns` | object | No | non-empty object; keys must exist in custom field definitions; omit instead of sending `null` or `{}` | Public custom field write payload keyed by custom field key. Use the exact key from `custom_column_definitions[].key` / `patch_field`; `custom_` prefix stripping is only a compatibility fallback |
+| `custom_columns` | object | Required when active internal custom fields are marked `required`; otherwise optional | non-empty object; keys must exist in active internal custom field definitions; required fields must be present; select/multiselect values must match active configured option values; omit instead of sending `null` or `{}` when no custom values are being set | Public custom field write payload keyed by custom field key. Use the exact key from custom field metadata; `custom_` prefix stripping is only a compatibility fallback |
 | `custom_properties` | object | No | same as `custom_columns`; cannot conflict when both are sent | Deprecated alias for `custom_columns` kept for older clients |
 | `description` | string | No | - | Deal notes/description |
 | `account` | object | No | - | Optional account details captured at deal creation |
@@ -587,12 +645,21 @@ POST /users/crm/deals
   `PATCH /users/crm/deals/{deal_id}/primary-contact`.
 - `custom_columns` follows the same validation as update: unknown keys and formula
   custom fields are rejected, and values are type-checked against active internal deal
-  custom field definitions before the deal is created. Omit `custom_columns` when
-  not setting custom fields; explicit `null` and `{}` are rejected. `custom_properties`
-  is still accepted as a deprecated alias, but the two fields must match if both are
-  sent. Keys must normalize to a non-empty custom field key. Keys are normalized before
-  validation, so duplicate normalized keys such as `our_revenue` and
-  `custom_our_revenue` are rejected.
+  custom field definitions before the deal is created. Active internal custom fields
+  marked `required` must be present on create. `select` values must match one active
+  configured option value; `multiselect` values must all match active configured
+  option values. Omit `custom_columns` when not setting custom fields; explicit `null`
+  and `{}` are rejected. `custom_properties` is still accepted as a deprecated alias,
+  but the two fields must match if both are sent. Keys must normalize to a non-empty
+  custom field key. Keys are normalized before validation, so duplicate normalized
+  keys such as `our_revenue` and `custom_our_revenue` are rejected.
+- Create forms and agent/tool create flows should fetch
+  `GET /users/crm/schema?entity=deal` before submit. Deal detail still returns
+  `custom_column_definitions` for an existing deal, but create flows should use
+  the schema endpoint because no deal ID exists yet.
+- The selected pipeline must be usable for internal deals: at least one `open`,
+  one `won`, and one `lost` stage. Draft/incomplete pipelines return `409`
+  instead of accepting a deal into a broken sales process.
 
 ### Success Response (201)
 
@@ -661,8 +728,11 @@ POST /users/crm/deals
 | Status | Error | Description |
 |--------|-------|-------------|
 | 400 | Validation error | Missing required field or invalid value |
+| 400 | Missing required custom fields | One or more active internal required custom columns were omitted from `custom_columns` |
+| 400 | Invalid option for custom field | A `select`/`multiselect` custom value was not in the active configured `options.values` list |
 | 404 | Pipeline/Stage not found | Invalid pipeline_id or stage_id |
 | 409 | Internal CRM not configured | Org doesn't have internal CRM setup |
+| 409 | Unusable pipeline | Pipeline is missing at least one `open`, `won`, or `lost` stage |
 | 422 | Validation error | Field validation failed or request included unsupported fields |
 | 500 | Internal server error | Unexpected error |
 
@@ -1375,6 +1445,7 @@ so a won deal does not retain stale loss-reason text.
 | 400 | Missing stage_id | Request missing required field |
 | 404 | Stage not found | Invalid stage_id or stage doesn't belong to deal's pipeline |
 | 409 | External CRM deals are read-only | Tried to move a deal synced from HubSpot/Salesforce |
+| 409 | Unusable pipeline | Deal's pipeline is missing at least one `open`, `won`, or `lost` stage |
 | 500 | Internal server error | Unexpected error |
 
 ---
@@ -1850,6 +1921,162 @@ the deletion status fields.
 
 ## Supporting APIs
 
+### Get CRM Schema Metadata
+
+```
+GET /users/crm/schema?entity=deal
+```
+
+Returns the backend-owned field schema for deal forms, import mapping, agents,
+filters, and future table column metadata. The response does not require a
+specific deal ID.
+
+Standard deal fields are listed first using the same order as
+`detail_field_definitions`. Active custom fields follow with source metadata:
+internal custom fields can be writable through `custom_columns.<key>`, while
+provider-backed fields are visible but read-only for internal CRM writes.
+
+**Query Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `entity` | enum | `deal` | Entity schema to return. Currently only `deal` is supported. |
+
+**Success Response (200)**
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "CRM schema retrieved",
+  "data": {
+    "entity": "deal",
+    "fields": [
+      {
+        "field_id": null,
+        "entity": "deal",
+        "key": "name",
+        "label": "Deal name",
+        "type": "string",
+        "order": 1,
+        "section": "core",
+        "source": "standard",
+        "ownership": "system",
+        "integration_id": null,
+        "provider_name": null,
+        "provider_field_key": null,
+        "required": false,
+        "read_only": false,
+        "nullable": true,
+        "editable": true,
+        "sortable": false,
+        "filterable": false,
+        "searchable": true,
+        "input_control": "text",
+        "options": {},
+        "validation": {},
+        "lifecycle_state": "active",
+        "write_path": "name",
+        "write_policy": "always",
+        "read_only_reason": null,
+        "internal_write": true,
+        "internal_write_validation": {
+          "required": false,
+          "option_membership": false
+        }
+      },
+      {
+        "field_id": "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
+        "entity": "deal",
+        "key": "procurement_stage",
+        "label": "Procurement Stage",
+        "type": "select",
+        "order": 1000,
+        "section": "custom",
+        "source": "internal",
+        "ownership": "internal",
+        "integration_id": null,
+        "provider_name": null,
+        "provider_field_key": null,
+        "required": true,
+        "read_only": false,
+        "nullable": false,
+        "editable": true,
+        "sortable": false,
+        "filterable": false,
+        "searchable": false,
+        "input_control": "select",
+        "options": {
+          "values": [
+            { "id": "opt_legal", "value": "legal", "label": "Legal" }
+          ]
+        },
+        "validation": {},
+        "lifecycle_state": "active",
+        "write_path": "custom_columns.procurement_stage",
+        "write_policy": "custom_columns",
+        "read_only_reason": null,
+        "internal_write": true,
+        "internal_write_validation": {
+          "required": true,
+          "option_membership": true
+        }
+      },
+      {
+        "field_id": "dfecde7a-9c2b-4e8b-9479-188ca36a51f2",
+        "entity": "deal",
+        "key": "hubspot_score",
+        "label": "Hubspot Score",
+        "type": "number",
+        "order": 1001,
+        "section": "custom",
+        "source": "provider",
+        "ownership": "hubspot",
+        "integration_id": "8d85a5d0-a75b-4741-bbde-df1f4e5a1c76",
+        "provider_name": "hubspot",
+        "provider_field_key": "hs_deal_score",
+        "required": false,
+        "read_only": true,
+        "nullable": true,
+        "editable": false,
+        "sortable": false,
+        "filterable": false,
+        "searchable": false,
+        "input_control": "number",
+        "options": {},
+        "validation": {},
+        "lifecycle_state": "active",
+        "write_path": null,
+        "write_policy": "provider_read_only",
+        "read_only_reason": "Provider-backed fields are not writable through internal CRM writes.",
+        "internal_write": false,
+        "internal_write_validation": {
+          "required": false,
+          "option_membership": false
+        }
+      }
+    ]
+  }
+}
+```
+
+**Frontend rules**
+
+- Use `source`, `ownership`, `provider_name`, and `provider_field_key` to
+  distinguish internal fields from HubSpot/Salesforce mirrored fields.
+- Only render direct create/edit inputs when `internal_write=true` and
+  `editable=true`.
+- For custom fields, submit values under `custom_columns.<key>` from
+  `write_path`.
+- Agent and voice `create_deal` callers use the same `custom_columns` key; when
+  required custom fields are missing, the tool response points clients back to
+  this schema endpoint with `required_custom_fields`.
+- `internal_write_validation.required=true` means create and terminal lifecycle
+  transitions require a non-empty value.
+- `internal_write_validation.option_membership=true` means select/multiselect
+  values must match an active configured option value.
+- `custom_column_definitions` in deal detail remains for backward-compatible
+  detail rendering. New non-detail consumers should use this schema endpoint.
+
 ### Get Currencies
 
 ```
@@ -2047,7 +2274,7 @@ GET /users/crm/pipelines?include_stages=true
     or `open`.
 11. **Deal list columns**: Use `user_preferences.crm.deals.list.columns` from login/session bootstrap for the table order. Do not hardcode the default deal list order in the frontend.
 12. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
-13. **Custom field control rendering**: Use `data.custom_column_definitions` from `GET /users/crm/deals/{deal_id}` to choose controls (`date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code). Use `editable=false` / `edit_policy=formula` to lock formula fields.
+13. **Schema-driven custom controls**: Use `GET /users/crm/schema?entity=deal` for create/edit/import/agent custom field metadata. Deal detail still returns `custom_column_definitions` as a compatibility projection for existing detail controls.
 14. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
 
 ---
@@ -2112,6 +2339,20 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 ---
 
 ## Changelog
+
+### 2026-07-05
+
+1. Added `GET /users/crm/schema?entity=deal` as the canonical deal field schema
+   endpoint for standard fields, internal custom fields, and provider mirrored
+   fields.
+2. Documented provider-backed schema fields as read-only for internal CRM writes.
+3. Clarified that deal-detail `custom_column_definitions` is a compatibility
+   projection; new create/edit/import/agent consumers should use the schema
+   endpoint.
+4. Documented that standard schema fields return null custom/provider metadata
+   fields (`field_id`, `integration_id`, `provider_name`, `provider_field_key`)
+   to keep one stable response shape across standard, internal, and provider
+   fields.
 
 ### 2026-07-01
 
