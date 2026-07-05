@@ -29,11 +29,12 @@ def load_detect_secrets_json(path: Path) -> dict[str, Any]:
 def finding_keys(scan: dict[str, Any]) -> set[str]:
     keys: set[str] = set()
     for filename, findings in scan.get("results", {}).items():
+        normalized_filename = filename.replace("\\", "/")
         for finding in findings:
             keys.add(
                 "|".join(
                     [
-                        filename,
+                        normalized_filename,
                         str(finding.get("line_number", "")),
                         str(finding.get("type", "")),
                         str(finding.get("hashed_secret", "")),

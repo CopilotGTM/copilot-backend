@@ -19,14 +19,14 @@ Use this file to track production CASA readiness evidence. Do not paste secrets,
 
 ## Current Position
 
-Last updated: 2026-07-05 09:56 UTC.
+Last updated: 2026-07-05 10:15 UTC.
 
 | Item | Current state | Next action |
 | --- | --- | --- |
 | Branch location | Active local branch is `codex/casa-production-evidence-workflow`; `main` is back at `origin/main` | Keep CASA rollout work on this branch |
-| Published release refs | `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa` currently point to fixed commit `4605551246ac3ac6fe8e97dee303de586244ca0c` | Verify fixed prod runs `1761` and `1762` |
-| Backend prod run | Current fixed run is Azure DevOps run `1761` / build `20260705.3`, source version `4605551246ac3ac6fe8e97dee303de586244ca0c`; previous run `1759` failed from old commit `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` | Recheck run `1761` |
-| Infra prod run | Current fixed run is Azure DevOps run `1762` / build `20260705.2`, source version `4605551246ac3ac6fe8e97dee303de586244ca0c`; previous run `1758` failed in Trivy IaC scan setup after Terraform init and validate passed | Recheck run `1762` |
+| Published release refs | `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa` currently point to checkpoint commit `225a59fb898ac73b4d15aea037fcf5b8d8cdad74` | Commit and push CI fixes |
+| Backend prod run | Runs `1761` and `1764` exposed detect-secrets baseline path mismatch between Windows and Linux plus missing SCA artifact directory behavior | Normalize paths in the baseline checker and prepare artifact directories before gates |
+| Infra prod run | Runs `1758` and `1762` failed in Trivy IaC scan setup after Terraform init and validate passed | Use Docker-based Trivy fallback and keep Terraform plan running while publishing scan status |
 | Evidence export | No complete prod artifact set yet | Run `export-prod-casa-evidence.ps1 -UseLatestSuccessfulRuns` after backend and infra prod runs succeed |
 | Submission preflight | Expected to fail today | Fill ignored Google/CASA values, export prod artifacts, run approved-window DAST, then rerun preflight |
 
@@ -50,6 +50,8 @@ Last updated: 2026-07-05 09:56 UTC.
 | CASA-014 | 2026-07-05 | remote release branch publication check | Informational | CASA production evidence export | CASA commit `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` was pushed to `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa`; release publication check passed against both remote refs. | TODO | Published once; superseded by Trivy install-path fix | `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` | `uv run python scripts/security/check_casa_release_publication.py --backend-ref origin/release/backend/2026-07-05-casa --infra-ref origin/release/infra/2026-07-05-casa` |
 | CASA-015 | 2026-07-05 | Azure DevOps prod infra run `1758` | Evidence gap | CASA IaC scan evidence export | Prod infra run `1758` failed after Terraform init and validate succeeded. Failure happened in the new Trivy IaC scan setup before Terraform plan/apply; the pipeline attempted to install Trivy into `/usr/local/bin`. | TODO | Fix in progress | `.azure-pipelines/templates/terraform-env-stage.yml`; `.azure-pipelines/azure-backend-pipeline-prod.yml` | Azure DevOps run `1758`, task log `7` |
 | CASA-016 | 2026-07-05 | Trivy install-path fix | Control configured | CASA IaC/SCA evidence export | Trivy installation now uses `$(Agent.TempDirectory)/trivy-bin` in prod backend and infra pipelines instead of `/usr/local/bin`; fixed commit `4605551246ac3ac6fe8e97dee303de586244ca0c` was pushed to both release branches. | TODO | Awaiting fixed prod runs `1761` and `1762` | `4605551246ac3ac6fe8e97dee303de586244ca0c` | `uv run pytest tests/scripts/test_terraform_pipeline_security.py tests/scripts/test_casa_release_publication.py tests/scripts/test_casa_publication_scope.py tests/scripts/test_casa_artifact_export.py tests/scripts/test_casa_submission_preflight.py -q` |
+| CASA-017 | 2026-07-05 | Azure DevOps prod backend runs `1761`/`1764` | Evidence gap | CASA secrets/SCA evidence export | Backend detect-secrets gate compared Windows-style baseline paths with Linux-style CI scan paths, causing existing baseline findings to look new. The SCA artifact upload also failed when an earlier gate stopped before `sca-reports` existed. | TODO | Fix in progress | `scripts/security/check_detect_secrets_baseline.py`; `.azure-pipelines/azure-backend-pipeline-prod.yml` | Azure DevOps backend run `1761`, task logs `14` and `18` |
+| CASA-018 | 2026-07-05 | Azure DevOps prod infra run `1762` | Evidence gap | CASA IaC scan evidence export | The agent still failed before `trivy --version` during installer setup. The next fix removes installer dependency from the infra stage and uses Docker-based Trivy fallback when local Trivy is unavailable. | TODO | Fix in progress | `.azure-pipelines/templates/terraform-env-stage.yml` | Azure DevOps infra run `1762`, task log `7` |
 
 ## Exceptions
 

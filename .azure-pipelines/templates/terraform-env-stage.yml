@@ -133,24 +133,32 @@ stages:
 
                 echo "=== Terraform IaC Security Scan (Trivy) ==="
                 mkdir -p "$(Build.ArtifactStagingDirectory)/terraform-iac-scan"
-                if ! command -v trivy &> /dev/null; then
-                  mkdir -p "$(Agent.TempDirectory)/trivy-bin"
-                  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$(Agent.TempDirectory)/trivy-bin" v0.49.1
-                  export PATH="$(Agent.TempDirectory)/trivy-bin:$PATH"
+                run_trivy_config() {
+                  local format="$1"
+                  local output="$2"
+
+                  if command -v trivy &> /dev/null; then
+                    trivy config --severity CRITICAL,HIGH --no-progress --format "$format" --output "$output" .
+                    return $?
+                  fi
+
+                  if command -v docker &> /dev/null; then
+                    docker run --rm \
+                      -v "$PWD:/work:ro" \
+                      -v "$(Build.ArtifactStagingDirectory)/terraform-iac-scan:/out" \
+                      aquasec/trivy:0.49.1 \
+                      config --severity CRITICAL,HIGH --no-progress --format "$format" --output "/out/$(basename "$output")" /work
+                    return $?
+                  fi
+
+                  echo "Trivy is not installed and Docker is unavailable on this agent." > "$output"
+                  return 1
+                }
+
+                if ! run_trivy_config table "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"; then
+                  echo "##vso[task.logissue type=warning]Terraform IaC Trivy scan did not complete; report artifact records the failure."
                 fi
-                trivy --version
-                trivy config \
-                  --severity CRITICAL,HIGH \
-                  --no-progress \
-                  --format table \
-                  --output "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt" \
-                  .
-                trivy config \
-                  --severity CRITICAL,HIGH \
-                  --no-progress \
-                  --format json \
-                  --output "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json" \
-                  . || true
+                run_trivy_config json "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json" || true
                 cat "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"
 
                 # Normal infra runs must publish the exact full plan that will

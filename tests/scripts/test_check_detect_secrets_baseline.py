@@ -94,6 +94,58 @@ def test_baseline_check_reads_json_from_casa_output_file(tmp_path):
     assert checker.run_baseline_check(baseline_path=baseline, current_scan_path=current) == 0
 
 
+def test_baseline_check_normalizes_windows_and_linux_paths(tmp_path):
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    report = tmp_path / "report.txt"
+    baseline.write_text(
+        json.dumps(
+            _scan(
+                {
+                    "infra\\security\\casa\\README.md": [
+                        {
+                            "type": "Secret Keyword",
+                            "filename": "infra\\security\\casa\\README.md",
+                            "hashed_secret": "abc123",
+                            "is_verified": False,
+                            "line_number": 12,
+                        }
+                    ]
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    current.write_text(
+        json.dumps(
+            _scan(
+                {
+                    "infra/security/casa/README.md": [
+                        {
+                            "type": "Secret Keyword",
+                            "filename": "infra/security/casa/README.md",
+                            "hashed_secret": "abc123",
+                            "is_verified": False,
+                            "line_number": 12,
+                        }
+                    ]
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        checker.run_baseline_check(
+            baseline_path=baseline,
+            current_scan_path=current,
+            output_path=report,
+        )
+        == 0
+    )
+    assert "New findings: 0" in report.read_text(encoding="utf-8")
+
+
 def test_baseline_check_errors_when_scan_json_is_missing(tmp_path):
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.txt"

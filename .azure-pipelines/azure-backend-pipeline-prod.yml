@@ -101,6 +101,10 @@ stages:
             displayName: 'Install Python $(PYTHON_VERSION)'
 
           - script: |
+              mkdir -p security-reports secrets-scan-reports sca-reports
+            displayName: 'Prepare CASA Security Report Directories'
+
+          - script: |
               uv sync --frozen --no-install-project --no-dev --only-group quality
               source .venv/bin/activate
             displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
@@ -141,7 +145,10 @@ stages:
               uv run python scripts/security/check_detect_secrets_baseline.py \
                 --baseline .secrets.baseline \
                 --current-json secrets-scan-reports/detect-secrets-current.json \
-                --output secrets-scan-reports/detect-secrets-baseline-check.txt
+                --output secrets-scan-reports/detect-secrets-baseline-check.txt || {
+                  cat secrets-scan-reports/detect-secrets-baseline-check.txt
+                  exit 1
+                }
 
               cat secrets-scan-reports/detect-secrets-baseline-check.txt
             displayName: '🔐 Secrets Baseline Gate (detect-secrets)'
