@@ -119,7 +119,7 @@ class AttachmentSSEService:
         if model.status == AttachmentStatus.COMPLETED.value and attachment.thumbnail_small_path:
             try:
                 data["thumbnail_small_url"] = await self.storage.generate_read_sas(
-                    attachment.thumbnail_small_path, minutes=120
+                    attachment.thumbnail_small_path, minutes=30
                 )
             except Exception:
                 logger.debug(

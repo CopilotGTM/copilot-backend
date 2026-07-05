@@ -114,6 +114,12 @@ variable "postgresql_public_network_access_enabled" {
   default     = true
 }
 
+variable "enable_redis_private_endpoint" {
+  description = "Enable Private Link for Redis and disable Redis public network access."
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------
 # Azure Kubernetes Service (AKS)
 # -----------------------------------------------------------------

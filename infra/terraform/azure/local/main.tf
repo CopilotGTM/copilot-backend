@@ -137,7 +137,7 @@ resource "azurerm_storage_account" "master_storage_account" {
     content {
       cors_rule {
         allowed_headers    = ["*"]
-        allowed_methods    = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"]
+        allowed_methods    = ["GET", "HEAD", "PUT", "OPTIONS"]
         allowed_origins    = local.allowed_blob_cors_origins
         exposed_headers    = ["*"]
         max_age_in_seconds = 3600
@@ -171,7 +171,7 @@ resource "azurerm_storage_account" "org_storage_account" {
     content {
       cors_rule {
         allowed_headers    = ["*"]
-        allowed_methods    = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"]
+        allowed_methods    = ["GET", "HEAD", "PUT", "OPTIONS"]
         allowed_origins    = local.allowed_blob_cors_origins
         exposed_headers    = ["*"]
         max_age_in_seconds = 3600

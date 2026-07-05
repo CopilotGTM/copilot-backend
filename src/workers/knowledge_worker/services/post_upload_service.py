@@ -389,7 +389,7 @@ class PostUploadService:
                     storage=self.storage,
                     small_path=small_path,
                     medium_path=medium_path,
-                    minutes=120,
+                    minutes=30,
                 )
             )
         except Exception:

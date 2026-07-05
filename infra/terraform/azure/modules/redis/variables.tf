@@ -37,3 +37,27 @@ variable "sku_name" {
   type        = string
   default     = "Standard"
 }
+
+variable "public_network_access_enabled" {
+  description = "Whether public network access is enabled for Redis."
+  type        = bool
+  default     = true
+}
+
+variable "private_endpoint_enabled" {
+  description = "Whether to create a Private Endpoint for Redis."
+  type        = bool
+  default     = false
+}
+
+variable "private_endpoint_subnet_id" {
+  description = "Subnet ID where the Redis Private Endpoint should be created."
+  type        = string
+  default     = null
+}
+
+variable "private_dns_zone_id" {
+  description = "Private DNS Zone ID for Redis Private Link."
+  type        = string
+  default     = null
+}

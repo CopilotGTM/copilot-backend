@@ -279,6 +279,6 @@ class TestGenerateDownloadUrl:
         assert url == "https://example.com/download"
         mock_blob.generate_read_sas.assert_awaited_once_with(
             asset.storage_path,
-            minutes=120,
+            minutes=30,
             download_filename=asset.filename,
         )

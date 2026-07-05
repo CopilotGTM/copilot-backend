@@ -295,7 +295,7 @@ async def generate_thumbnail_sas_urls(
     storage: AzureOrganisationBlobStorage,
     small_path: str | None,
     medium_path: str | None,
-    minutes: int = 120,
+    minutes: int = 30,
 ) -> tuple[str | None, str | None]:
     small_url = None
     medium_url = None

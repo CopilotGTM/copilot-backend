@@ -45,7 +45,7 @@ async def get_upload_service(
 async def download_attachment(
     attachment_id: UUID,
     response: FastAPIResponse,
-    expires_minutes: int = Query(30, ge=1, le=120),
+    expires_minutes: int = Query(30, ge=1, le=30),
     service: UploadService = Depends(get_upload_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):

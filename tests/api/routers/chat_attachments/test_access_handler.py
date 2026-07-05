@@ -2,7 +2,7 @@
 
 Focuses on:
 - Download URL generation endpoint
-- expires_minutes parameter validation (1-120)
+- expires_minutes parameter validation (1-30)
 - Attachment ownership validation
 - Attachment status validation (must be COMPLETED)
 """
@@ -46,12 +46,12 @@ def test_download_with_custom_expires(access_client):
 
     resp = client.get(
         f"/chats/attachment/{attachment.attachment_id}/download",
-        params={"expires_minutes": 60},
+        params={"expires_minutes": 15},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
-    assert body["data"]["expires_in_seconds"] == 60 * 60  # 60 minutes
+    assert body["data"]["expires_in_seconds"] == 15 * 60  # 15 minutes
 
 
 def test_download_not_found(access_client):
@@ -114,7 +114,7 @@ def test_download_expires_min_boundary(access_client):
 
 
 def test_download_expires_max_boundary(access_client):
-    """Test expires_minutes=120 (maximum) works correctly."""
+    """Test expires_minutes=30 (maximum) works correctly."""
     client = access_client["client"]
     service = access_client["service"]
 
@@ -122,12 +122,12 @@ def test_download_expires_max_boundary(access_client):
 
     resp = client.get(
         f"/chats/attachment/{attachment.attachment_id}/download",
-        params={"expires_minutes": 120},
+        params={"expires_minutes": 30},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
-    assert body["data"]["expires_in_seconds"] == 120 * 60  # 120 minutes
+    assert body["data"]["expires_in_seconds"] == 30 * 60  # 30 minutes
 
 
 def test_download_expires_below_min(access_client):
@@ -145,7 +145,7 @@ def test_download_expires_below_min(access_client):
 
 
 def test_download_expires_above_max(access_client):
-    """Test expires_minutes=121 (above maximum) returns 422."""
+    """Test expires_minutes=31 (above maximum) returns 422."""
     client = access_client["client"]
     service = access_client["service"]
 
@@ -153,7 +153,7 @@ def test_download_expires_above_max(access_client):
 
     resp = client.get(
         f"/chats/attachment/{attachment.attachment_id}/download",
-        params={"expires_minutes": 121},
+        params={"expires_minutes": 31},
     )
     assert resp.status_code == 422, resp.text
 

@@ -13,3 +13,13 @@ output "port" {
   description = "The SSL port for the Redis cache."
   value       = azurerm_redis_cache.this.ssl_port
 }
+
+output "private_endpoint_id" {
+  description = "The ID of the Redis private endpoint, if enabled."
+  value       = try(azurerm_private_endpoint.this[0].id, null)
+}
+
+output "private_endpoint_private_ip" {
+  description = "The private IP of the Redis private endpoint, if enabled."
+  value       = try(azurerm_private_endpoint.this[0].private_service_connection[0].private_ip_address, null)
+}

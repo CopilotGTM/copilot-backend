@@ -47,11 +47,12 @@ managed_devops_pools_subnets = [
 ]
 managed_devops_pool_sku_name = "Standard_D2ads_v5"
 
-# Private Link (disabled for initial deployment - enable later with proper VNet DNS setup)
-enable_key_vault_private_endpoints       = false
+# Private Link: Key Vault is prod private first; Redis stays public until private endpoint data-plane validation passes.
+enable_key_vault_private_endpoints       = true
 enable_storage_private_endpoints         = false
 enable_postgresql_private_endpoint       = true
 postgresql_public_network_access_enabled = false
+enable_redis_private_endpoint            = false
 
 # -----------------------------------------------------------------
 # AKS

@@ -14,7 +14,7 @@ from src.infra.utils.logger import get_logger
 logger = get_logger("deal_assets_service")
 
 _WRITE_SAS_MINUTES = 15
-_READ_SAS_MINUTES = 120
+_READ_SAS_MINUTES = 30
 
 
 class DealAssetsServiceError(Exception):

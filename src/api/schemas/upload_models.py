@@ -102,7 +102,7 @@ class AttachmentDownloadResponse(BaseModel):
 
     attachment_id: UUID
     download_url: HttpUrl
-    expires_in_seconds: int = Field(default=120 * 60, description="Seconds until the URL expires")
+    expires_in_seconds: int = Field(default=30 * 60, description="Seconds until the URL expires")
 
 
 # ---------------------------- Batch Models ---------------------------- #

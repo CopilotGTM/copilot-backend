@@ -39,7 +39,7 @@ class KnowledgeSourcesPage(BaseModel):
 class KnowledgeDownloadResponse(BaseModel):
     source_id: UUID
     download_url: HttpUrl
-    expires_in_seconds: int = Field(default=120 * 60)
+    expires_in_seconds: int = Field(default=30 * 60)
 
 
 class KnowledgeSourcesStats(BaseModel):

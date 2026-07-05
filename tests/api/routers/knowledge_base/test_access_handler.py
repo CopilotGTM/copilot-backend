@@ -160,7 +160,7 @@ def test_download_source_success(knowledge_access_client):
     assert body["status"] == "SUCCESS"
     assert body["data"]["source_id"] == str(source.source_id)
     assert "https://" in body["data"]["download_url"]
-    assert body["data"]["expires_in_seconds"] == 120 * 60  # Default 120 minutes
+    assert body["data"]["expires_in_seconds"] == 30 * 60  # Default 30 minutes
 
 
 def test_download_source_custom_expires(knowledge_access_client):
@@ -172,12 +172,12 @@ def test_download_source_custom_expires(knowledge_access_client):
 
     resp = client.get(
         f"/users/knowledge/source/{source.source_id}/download",
-        params={"expires_minutes": 60},
+        params={"expires_minutes": 15},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
-    assert body["data"]["expires_in_seconds"] == 60 * 60
+    assert body["data"]["expires_in_seconds"] == 15 * 60
 
 
 def test_download_source_not_found(knowledge_access_client):
@@ -210,7 +210,7 @@ def test_download_source_expires_min_boundary(knowledge_access_client):
 
 
 def test_download_source_expires_max_boundary(knowledge_access_client):
-    """Test download URL with expires_minutes=720 (maximum) works."""
+    """Test download URL with expires_minutes=30 (maximum) works."""
     client = knowledge_access_client["client"]
     service = knowledge_access_client["service"]
 
@@ -218,12 +218,12 @@ def test_download_source_expires_max_boundary(knowledge_access_client):
 
     resp = client.get(
         f"/users/knowledge/source/{source.source_id}/download",
-        params={"expires_minutes": 720},
+        params={"expires_minutes": 30},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
-    assert body["data"]["expires_in_seconds"] == 720 * 60
+    assert body["data"]["expires_in_seconds"] == 30 * 60
 
 
 def test_download_source_expires_below_min(knowledge_access_client):
@@ -241,7 +241,7 @@ def test_download_source_expires_below_min(knowledge_access_client):
 
 
 def test_download_source_expires_above_max(knowledge_access_client):
-    """Test download URL with expires_minutes=721 (above maximum) returns 422."""
+    """Test download URL with expires_minutes=31 (above maximum) returns 422."""
     client = knowledge_access_client["client"]
     service = knowledge_access_client["service"]
 
@@ -249,7 +249,7 @@ def test_download_source_expires_above_max(knowledge_access_client):
 
     resp = client.get(
         f"/users/knowledge/source/{source.source_id}/download",
-        params={"expires_minutes": 721},
+        params={"expires_minutes": 31},
     )
     assert resp.status_code == 422, resp.text
 
