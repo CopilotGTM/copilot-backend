@@ -15,8 +15,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.crm_models import DealCustomColumnDefinition, deal_detail_field_definitions
-from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse, CRMFieldSchemaItem
+from src.contracts.crm.deal_schema import (
+    CRMEntitySchemaResponse,
+    CRMFieldSchemaItem,
+    DealCustomColumnDefinition,
+    deal_detail_field_definitions,
+)
 from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDataType,
     CRMCustomFieldDefinition,
