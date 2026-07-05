@@ -10,16 +10,19 @@ This folder contains security validation and compliance checking tools.
 **Usage**:
 
 ```bash
-python security/validate_health_security.py
-API_BASE_URL=https://your-api.com python security/validate_health_security.py
+python scripts/security/validate_health_security.py
+python scripts/security/validate_health_security.py \
+  --base-url https://api.copilotgtm.com \
+  --text-output health-dast.txt \
+  --json-output health-dast.json
 ```
 
 **What it validates**:
 
-- ✅ Public health endpoints don't leak sensitive data
-- ✅ Internal health endpoints are properly secured
-- ✅ Authorization is required for restricted endpoints
-- ✅ No secrets/tokens exposed in responses
+- Public health endpoints do not leak sensitive data
+- Internal health endpoints reject unauthenticated requests
+- Authorization is required for restricted endpoints
+- JSON and text outputs are available for compliance evidence
 
 **Required for**:
 
@@ -27,6 +30,55 @@ API_BASE_URL=https://your-api.com python security/validate_health_security.py
 - ✅ Security audits
 - ✅ Compliance validation
 - ✅ Penetration testing
+
+### `check_detect_secrets_baseline.py`
+
+**Purpose**: Compare a detect-secrets JSON scan with the committed `.secrets.baseline`
+and fail when new candidate secrets appear.
+**Usage**:
+
+```bash
+uv run python scripts/security/check_detect_secrets_baseline.py \
+  --baseline .secrets.baseline \
+  --current-json secrets-scan-reports/detect-secrets-current.json \
+  --output secrets-scan-reports/detect-secrets-baseline-check.txt
+```
+
+**Required for**:
+
+- ✅ Production pipeline secret-leak gate
+- ✅ CASA secrets scan evidence
+- ✅ Local readiness scan consistency
+
+### `check_casa_submission_preflight.py`
+
+**Purpose**: Check whether the CASA evidence package has the required inventory,
+readiness run, prod pipeline artifacts, and approved-window DAST evidence.
+**Usage**:
+
+```bash
+uv run python scripts/security/check_casa_submission_preflight.py \
+  --output infra/security/casa/evidence/submission-preflight.txt
+```
+
+**Required for**:
+
+- ✅ CASA submission readiness review
+- ✅ Final missing-evidence report before assessor submission
+
+### `build_casa_submission_package.py`
+
+**Purpose**: Build a sanitized CASA assessor package after preflight passes.
+**Usage**:
+
+```bash
+uv run python scripts/security/build_casa_submission_package.py
+```
+
+**Required for**:
+
+- ✅ Final CASA assessor upload package
+- ✅ Keeping unrelated internal docs out of the submission bundle
 
 ### `generate_signing_secret.py`
 

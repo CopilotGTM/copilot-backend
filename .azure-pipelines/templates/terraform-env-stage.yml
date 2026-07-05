@@ -131,6 +131,25 @@ stages:
                 echo "=== Terraform Format Check ==="
                 terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
 
+                echo "=== Terraform IaC Security Scan (Trivy) ==="
+                mkdir -p "$(Build.ArtifactStagingDirectory)/terraform-iac-scan"
+                if ! command -v trivy &> /dev/null; then
+                  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.49.1
+                fi
+                trivy config \
+                  --severity CRITICAL,HIGH \
+                  --no-progress \
+                  --format table \
+                  --output "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt" \
+                  .
+                trivy config \
+                  --severity CRITICAL,HIGH \
+                  --no-progress \
+                  --format json \
+                  --output "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json" \
+                  . || true
+                cat "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"
+
                 # Normal infra runs must publish the exact full plan that will
                 # be applied after approval. Fresh-environment bootstrap remains
                 # a local targeted Terraform operation documented outside this
@@ -159,6 +178,11 @@ stages:
           - publish: $(TF_WORKING_DIR)/tfplan
             artifact: ${{ parameters.artifactName }}
             displayName: 'Publish Plan Artifact'
+
+          - publish: $(Build.ArtifactStagingDirectory)/terraform-iac-scan
+            artifact: terraform-iac-scan
+            displayName: 'Publish Terraform IaC Scan Artifact'
+            condition: succeededOrFailed()
 
       - deployment: TerraformApply
         displayName: 'Apply Infrastructure Changes'

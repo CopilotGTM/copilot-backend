@@ -6,6 +6,7 @@ PIPELINE_PATHS = [
 ]
 CHART_VALUES_PATH = Path("charts/application/values.yaml")
 STARTUP_SCRIPT_PATH = Path("scripts/startup.sh")
+PROD_PIPELINE_PATH = Path(".azure-pipelines/azure-backend-pipeline-prod.yml")
 
 
 def test_backend_pipelines_do_not_force_second_worker_rollout() -> None:
@@ -49,3 +50,20 @@ def test_startup_script_does_not_run_master_migrations_twice() -> None:
     assert "python -m scripts.run_master_migrations" in startup_text
     assert "python -m scripts.admin.init_super_admin" in startup_text
     assert "python -m scripts.admin.deploy_with_super_admin" not in startup_text
+
+
+def test_prod_pipeline_exports_detect_secrets_baseline_gate() -> None:
+    pipeline_text = PROD_PIPELINE_PATH.read_text(encoding="utf-8")
+
+    assert "check_detect_secrets_baseline.py" in pipeline_text
+    assert "artifact: 'secrets-scan-reports'" in pipeline_text
+    assert "--baseline .secrets.baseline" in pipeline_text
+
+
+def test_prod_pipeline_exports_bandit_plain_text_security_report() -> None:
+    pipeline_text = PROD_PIPELINE_PATH.read_text(encoding="utf-8")
+
+    assert "security-reports/bandit-report.json" in pipeline_text
+    assert "security-reports/bandit-report.txt" in pipeline_text
+    assert "targetPath: 'security-reports'" in pipeline_text
+    assert "artifact: 'security-report'" in pipeline_text

@@ -1,161 +1,210 @@
 #!/usr/bin/env python3
-"""
-Security validation script for health check endpoints.
-Verifies that internal endpoints are properly secured.
+"""Validate public and internal health endpoint exposure.
+
+This is a lightweight DAST smoke check for CASA evidence. It intentionally
+limits itself to GET requests against known health endpoints so it can be run
+in an approved production validation window without crawling the application.
 """
 
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import requests
 
+SENSITIVE_TERMS = (
+    "secret",
+    "password",
+    "token",
+    "key",
+    "connection",
+    "database",
+)
 
-def test_public_health_endpoint(base_url: str) -> dict[str, Any]:
-    """Test that public health endpoint works and doesn't expose sensitive data."""
-    print("🌐 Testing public health endpoint...")
+SECURITY_HEADERS = (
+    "strict-transport-security",
+    "x-content-type-options",
+    "x-frame-options",
+    "content-security-policy",
+    "referrer-policy",
+)
 
+INTERNAL_ENDPOINTS = (
+    "/internal/healthcheck",
+    "/internal/health/detailed",
+    "/internal/health/secrets",
+)
+
+
+def _headers_to_lower(response: requests.Response) -> dict[str, str]:
+    return {str(key).lower(): str(value) for key, value in response.headers.items()}
+
+
+def _find_sensitive_terms(payload: Any) -> list[str]:
+    payload_text = json.dumps(payload, default=str).lower()
+    return [term for term in SENSITIVE_TERMS if term in payload_text]
+
+
+def _missing_security_headers(response: requests.Response) -> list[str]:
+    headers = _headers_to_lower(response)
+    return [header for header in SECURITY_HEADERS if header not in headers]
+
+
+def test_public_health_endpoint(base_url: str, timeout: float) -> dict[str, Any]:
+    """Validate that the public health endpoint is reachable and low-detail."""
+    endpoint = "/health"
+    url = f"{base_url.rstrip('/')}{endpoint}"
     try:
-        response = requests.get(f"{base_url}/health", timeout=10)
-
-        if response.status_code == 200:
-            data = response.json()
-
-            # Check that it doesn't expose sensitive information
-            sensitive_keys = [
-                "secret",
-                "password",
-                "token",
-                "key",
-                "connection",
-                "database",
-            ]
-            exposed_sensitive = [
-                key
-                for key in sensitive_keys
-                if any(key in str(data).lower() for key in sensitive_keys)
-            ]
-
-            result = {
-                "status": "✅ PASS",
-                "accessible": True,
-                "response": data,
-                "sensitive_data_exposed": exposed_sensitive,
-            }
-
-            if exposed_sensitive:
-                result["status"] = "⚠️ WARNING"
-                result["warning"] = f"Potentially sensitive data exposed: {exposed_sensitive}"
-
-        else:
-            result = {
-                "status": "❌ FAIL",
-                "accessible": False,
-                "status_code": response.status_code,
-                "response": response.text,
-            }
-
-    except Exception as e:
-        result = {"status": "❌ ERROR", "accessible": False, "error": str(e)}
-
-    return result
-
-
-def test_internal_health_endpoints(base_url: str) -> dict[str, Any]:
-    """Test that internal health endpoints are properly restricted."""
-    print("🔒 Testing internal health endpoint security...")
-
-    internal_endpoints = [
-        "/internal/healthcheck",
-        "/internal/health/detailed",
-        "/internal/health/secrets",
-    ]
-
-    results = {}
-
-    for endpoint in internal_endpoints:
-        print(f"  Testing {endpoint}...")
-
+        response = requests.get(url, timeout=timeout)
         try:
-            # Test without authorization
-            response = requests.get(f"{base_url}{endpoint}", timeout=10)
+            data: Any = response.json()
+        except ValueError:
+            data = response.text
 
-            if response.status_code == 403:
-                results[endpoint] = {
-                    "status": "✅ PASS",
-                    "properly_restricted": True,
+        sensitive_terms = _find_sensitive_terms(data)
+        result: dict[str, Any] = {
+            "endpoint": endpoint,
+            "url": url,
+            "status_code": response.status_code,
+            "accessible": response.status_code == 200,
+            "sensitive_terms": sensitive_terms,
+            "missing_security_headers": _missing_security_headers(response),
+            "response_sample": data,
+        }
+        result["passed"] = response.status_code == 200 and not sensitive_terms
+        return result
+    except Exception as exc:
+        return {
+            "endpoint": endpoint,
+            "url": url,
+            "accessible": False,
+            "passed": False,
+            "error": str(exc),
+        }
+
+
+def test_internal_health_endpoints(base_url: str, timeout: float) -> list[dict[str, Any]]:
+    """Validate that internal health endpoints reject unauthenticated requests."""
+    results: list[dict[str, Any]] = []
+    for endpoint in INTERNAL_ENDPOINTS:
+        url = f"{base_url.rstrip('/')}{endpoint}"
+        try:
+            response = requests.get(url, timeout=timeout)
+            results.append(
+                {
+                    "endpoint": endpoint,
+                    "url": url,
                     "status_code": response.status_code,
+                    "properly_restricted": response.status_code in {401, 403},
+                    "passed": response.status_code in {401, 403},
                 }
-            elif response.status_code == 200:
-                results[endpoint] = {
-                    "status": "❌ FAIL",
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "endpoint": endpoint,
+                    "url": url,
                     "properly_restricted": False,
-                    "status_code": response.status_code,
-                    "error": "Internal endpoint accessible without authorization!",
+                    "passed": False,
+                    "error": str(exc),
                 }
-            else:
-                results[endpoint] = {
-                    "status": "⚠️ UNKNOWN",
-                    "properly_restricted": "unknown",
-                    "status_code": response.status_code,
-                    "note": "Unexpected response code",
-                }
-
-        except Exception as e:
-            results[endpoint] = {"status": "❌ ERROR", "error": str(e)}
-
+            )
     return results
 
 
-def main():
-    """Run security validation tests."""
-    print("🛡️ Health Check Security Validation")
-    print("=" * 50)
+def run_validation(base_url: str, timeout: float) -> dict[str, Any]:
+    public_result = test_public_health_endpoint(base_url, timeout)
+    internal_results = test_internal_health_endpoints(base_url, timeout)
+    passed = bool(public_result.get("passed")) and all(
+        bool(result.get("passed")) for result in internal_results
+    )
+    return {
+        "base_url": base_url.rstrip("/"),
+        "passed": passed,
+        "public_health": public_result,
+        "internal_health": internal_results,
+    }
 
-    # Get base URL from environment or use default
-    base_url = os.getenv("API_BASE_URL", "https://devapi.copilotgtm.com")
-    print(f"🌐 Testing against: {base_url}")
-    print()
 
-    # Test public endpoint
-    public_result = test_public_health_endpoint(base_url)
-    print(f"📊 Public Health Endpoint: {public_result['status']}")
-    if public_result.get("accessible"):
-        print(f"   Response: {public_result['response']}")
-    if public_result.get("sensitive_data_exposed"):
-        print(f"   ⚠️ Sensitive data: {public_result['sensitive_data_exposed']}")
-    if public_result.get("error"):
-        print(f"   ❌ Error: {public_result['error']}")
-    print()
+def format_text_report(report: dict[str, Any]) -> str:
+    lines = [
+        "Health endpoint DAST smoke check",
+        f"Base URL: {report['base_url']}",
+        f"Overall: {'PASS' if report['passed'] else 'FAIL'}",
+        "",
+        "Public endpoint:",
+    ]
 
-    # Test internal endpoints
-    internal_results = test_internal_health_endpoints(base_url)
-    print("🔒 Internal Health Endpoints:")
+    public = report["public_health"]
+    lines.extend(
+        [
+            f"- endpoint: {public.get('endpoint')}",
+            f"- status_code: {public.get('status_code', 'n/a')}",
+            f"- accessible: {public.get('accessible')}",
+            f"- sensitive_terms: {', '.join(public.get('sensitive_terms') or []) or 'none'}",
+            "- missing_security_headers: "
+            + (", ".join(public.get("missing_security_headers") or []) or "none"),
+        ]
+    )
+    if public.get("error"):
+        lines.append(f"- error: {public['error']}")
 
-    all_secure = True
-    for endpoint, result in internal_results.items():
-        print(f"   {endpoint}: {result['status']}")
+    lines.extend(["", "Internal endpoints:"])
+    for result in report["internal_health"]:
+        lines.append(
+            "- {endpoint}: status_code={status_code}, properly_restricted={restricted}".format(
+                endpoint=result.get("endpoint"),
+                status_code=result.get("status_code", "n/a"),
+                restricted=result.get("properly_restricted"),
+            )
+        )
         if result.get("error"):
-            print(f"     ❌ Error: {result['error']}")
-            all_secure = False
-        elif not result.get("properly_restricted"):
-            all_secure = False
+            lines.append(f"  error: {result['error']}")
 
-    print()
-    print("📋 Security Summary:")
+    lines.append("")
+    lines.append(
+        "Note: Missing browser security headers are informational for this health endpoint "
+        "smoke check unless the assessor requires them on API responses."
+    )
+    return "\n".join(lines) + "\n"
 
-    if public_result["status"].startswith("✅") and all_secure:
-        print("✅ All health check endpoints are properly secured!")
-        print("   - Public endpoint accessible but doesn't expose sensitive data")
-        print("   - Internal endpoints properly restricted")
-        return 0
-    else:
-        print("❌ Security issues detected!")
-        if not public_result["status"].startswith("✅"):
-            print("   - Public endpoint has issues")
-        if not all_secure:
-            print("   - Internal endpoints not properly secured")
-        return 1
+
+def _write_if_requested(path: str | None, content: str) -> None:
+    if not path:
+        return
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base-url",
+        default=os.getenv("API_BASE_URL", "https://devapi.copilotgtm.com"),
+        help="API base URL to validate. Defaults to API_BASE_URL or dev API.",
+    )
+    parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--json-output", help="Optional path for JSON report output.")
+    parser.add_argument("--text-output", help="Optional path for text report output.")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    report = run_validation(args.base_url, args.timeout)
+    text_report = format_text_report(report)
+
+    print(text_report, end="")
+    _write_if_requested(args.text_output, text_report)
+    _write_if_requested(args.json_output, json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":

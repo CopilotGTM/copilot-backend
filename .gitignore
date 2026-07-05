@@ -134,6 +134,7 @@ celerybeat.pid
 
 # Environments
 .env
+infra/security/casa/casa-scope-values.local.json
 .venv
 env/
 venv/
