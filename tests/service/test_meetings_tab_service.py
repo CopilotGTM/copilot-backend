@@ -308,6 +308,31 @@ def test_bot_action_flags_are_time_and_state_scoped() -> None:
     assert service._can_remove_bot(past_event, sent_recording) is False  # noqa: SLF001
 
 
+def test_failed_bot_status_projects_reason_not_already_sent() -> None:
+    """Failed provider sessions should tell the UI what failed."""
+    service = _service()
+    now = datetime.now(UTC)
+    event = SimpleNamespace(
+        start_at=now + timedelta(hours=1),
+        conference_link="https://meet.google.com/abc-defg-hij",
+    )
+    recording = SimpleNamespace(
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        provider_payload={},
+        provider_session_id="bot_123",
+        sent_to_provider_at=now,
+        status_message="meeting_not_accessible",
+    )
+
+    bot = service._bot_status(event, recording, None, True)  # noqa: SLF001
+
+    assert bot.status == "failed"
+    assert bot.reason == "meeting_not_accessible"
+    assert bot.can_invite is True
+    assert bot.can_remove is True
+
+
 @pytest.mark.asyncio
 async def test_mirror_deal_link_reactivates_without_removing_other_deal_associations(
     monkeypatch: pytest.MonkeyPatch,
@@ -624,6 +649,90 @@ async def test_recording_detail_returns_empty_transcript_segments_when_missing(m
     detail = await service.get_recording(event.event_id)
 
     assert detail.model_dump(mode="json")["transcript_segments"] == []
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_uses_persisted_video_artifact(monkeypatch) -> None:
+    """Playback should work from webhook-persisted video artifact without Recall I/O."""
+    service = _service()
+
+    async def _rollback() -> None:
+        return None
+
+    service.session.rollback = _rollback
+    event = SimpleNamespace(event_id=uuid4())
+    recording = SimpleNamespace(
+        status="COMPLETED",
+        transcript_status="READY",
+        provider_session_id=None,
+        provider_payload={
+            "video_artifact": {
+                "recording_id": "rec_1",
+                "video_id": "video_123",
+                "download_url": "https://example.com/video.mp4",
+            }
+        },
+    )
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.playback_url == "https://example.com/video.mp4"
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_uses_archived_video_sas(monkeypatch) -> None:
+    """Archived videos should use our org blob SAS instead of Recall's URL."""
+    service = _service()
+
+    async def _rollback() -> None:
+        return None
+
+    service.session.rollback = _rollback
+    event = SimpleNamespace(event_id=uuid4())
+    recording = SimpleNamespace(
+        status="COMPLETED",
+        transcript_status="READY",
+        provider_session_id=None,
+        provider_payload={
+            "video_artifact": {
+                "recording_id": "rec_1",
+                "video_id": "video_123",
+                "download_url": "https://recall.example/video.mp4",
+                "archived_blob_path": "meeting_recordings/event/rec_1/video_123.mp4",
+            }
+        },
+    )
+
+    class _FakeStorage:
+        def __init__(self, organisation_id):
+            assert organisation_id == service.organisation_id
+
+        async def generate_read_sas(self, blob_path, *, minutes, download_filename):
+            assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+            assert minutes == 120
+            assert download_filename == "meeting-recording.mp4"
+            return "https://blob.example/recording.mp4?sas=1"
+
+        async def close(self):
+            return None
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.AzureOrganisationBlobStorage",
+        _FakeStorage,
+    )
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.playback_url == "https://blob.example/recording.mp4?sas=1"
 
 
 @pytest.mark.asyncio

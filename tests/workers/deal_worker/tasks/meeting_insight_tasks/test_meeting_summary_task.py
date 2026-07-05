@@ -562,47 +562,102 @@ class TestDispatchSummaryReadyNotification:
     """Tests for notification dispatch after summary completion."""
 
     @pytest.mark.asyncio
-    async def test_enqueues_summary_ready_notification(self):
-        """Summary completion should enqueue one idempotent notification task."""
+    async def test_creates_notification_job_before_enqueue(self):
+        """Notification delivery must be backed by a durable notification job."""
         org_id = uuid4()
         deal_id = uuid4()
         event_id = uuid4()
+        summary_job_id = uuid4()
+        added_jobs = []
 
-        with patch(
-            "src.workers.deal_worker.tasks.meeting_insight_tasks"
-            ".meeting_summary_task.send_meeting_summary_ready_notification_task",
-        ) as mock_task:
+        class FakeSession:
+            def add(self, row):
+                added_jobs.append(row)
+
+            async def flush(self):
+                return None
+
+            async def commit(self):
+                return None
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
+
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.send_meeting_summary_ready_notification_task",
+            ) as mock_task,
+        ):
             from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
                 _dispatch_summary_ready_notification,
             )
 
-            await _dispatch_summary_ready_notification(org_id, deal_id, event_id)
+            await _dispatch_summary_ready_notification(org_id, deal_id, event_id, summary_job_id)
 
-        mock_task.apply_async.assert_called_once_with(
-            args=[str(org_id), str(deal_id), str(event_id)],
-            queue="deal_jobs",
-        )
+        assert len(added_jobs) == 1
+        notification_job = added_jobs[0]
+        assert notification_job.job_type == DealJobType.MEETING_SUMMARY_NOTIFICATION
+        assert notification_job.deal_id == deal_id
+        assert notification_job.event_id == event_id
+        assert notification_job.job_metadata["source_summary_job_id"] == str(summary_job_id)
+        mock_task.apply_async.assert_called_once()
+        assert mock_task.apply_async.call_args.kwargs["args"] == [
+            str(org_id),
+            str(deal_id),
+            str(event_id),
+            str(notification_job.job_id),
+        ]
+        assert mock_task.apply_async.call_args.kwargs["queue"] == "deal_jobs"
 
     @pytest.mark.asyncio
     async def test_enqueues_non_deal_summary_ready_notification(self):
         """Non-deal meeting summaries should still notify internal attendees."""
         org_id = uuid4()
         event_id = uuid4()
+        summary_job_id = uuid4()
 
-        with patch(
-            "src.workers.deal_worker.tasks.meeting_insight_tasks"
-            ".meeting_summary_task.send_meeting_summary_ready_notification_task",
-        ) as mock_task:
+        class FakeSession:
+            def add(self, _row):
+                return None
+
+            async def flush(self):
+                return None
+
+            async def commit(self):
+                return None
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
+
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.send_meeting_summary_ready_notification_task",
+            ) as mock_task,
+        ):
             from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
                 _dispatch_summary_ready_notification,
             )
 
-            await _dispatch_summary_ready_notification(org_id, None, event_id)
+            await _dispatch_summary_ready_notification(org_id, None, event_id, summary_job_id)
 
-        mock_task.apply_async.assert_called_once_with(
-            args=[str(org_id), None, str(event_id)],
-            queue="deal_jobs",
-        )
+        assert mock_task.apply_async.call_args.kwargs["args"][0:3] == [
+            str(org_id),
+            None,
+            str(event_id),
+        ]
+        assert mock_task.apply_async.call_args.kwargs["args"][3]
 
     @pytest.mark.asyncio
     async def test_enqueue_failure_does_not_propagate(self):
@@ -611,16 +666,36 @@ class TestDispatchSummaryReadyNotification:
         deal_id = uuid4()
         event_id = uuid4()
 
-        with patch(
-            "src.workers.deal_worker.tasks.meeting_insight_tasks"
-            ".meeting_summary_task.send_meeting_summary_ready_notification_task",
-        ) as mock_task:
+        class FakeSession:
+            def add(self, _row):
+                return None
+
+            async def flush(self):
+                return None
+
+            async def commit(self):
+                return None
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
+
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.send_meeting_summary_ready_notification_task",
+            ) as mock_task,
+        ):
             mock_task.apply_async.side_effect = RuntimeError("broker unavailable")
             from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
                 _dispatch_summary_ready_notification,
             )
 
-            await _dispatch_summary_ready_notification(org_id, deal_id, event_id)
+            await _dispatch_summary_ready_notification(org_id, deal_id, event_id, uuid4())
 
 
 # =============================================================================
@@ -734,6 +809,49 @@ class TestIsAutomatedGate:
         assert skip_insight_pipeline is True
 
 
+class TestSummaryReadyNotificationGate:
+    """Tests for which completed meeting summaries may notify attendees."""
+
+    def test_explicit_webhook_notification_intent_dispatches_notification(self):
+        """Only jobs carrying explicit notification intent may email attendees."""
+        from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+            _should_dispatch_summary_ready_notification,
+        )
+
+        assert (
+            _should_dispatch_summary_ready_notification(
+                {"source": "recall_webhook", "send_summary_notification": True}
+            )
+            is True
+        )
+
+    def test_recall_webhook_source_without_intent_does_not_dispatch_notification(self):
+        """Source alone is not a sufficient notification authorization."""
+        from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+            _should_dispatch_summary_ready_notification,
+        )
+
+        assert _should_dispatch_summary_ready_notification({"source": "recall_webhook"}) is False
+
+    def test_automated_pipeline_summary_does_not_dispatch_notification(self):
+        """Backfilled or scheduled historical summaries must not email old attendees."""
+        from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+            _should_dispatch_summary_ready_notification,
+        )
+
+        assert (
+            _should_dispatch_summary_ready_notification({"source": "automated_pipeline"}) is False
+        )
+
+    def test_manual_summary_does_not_dispatch_notification(self):
+        """Manual/UI summary regeneration must not email attendees."""
+        from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+            _should_dispatch_summary_ready_notification,
+        )
+
+        assert _should_dispatch_summary_ready_notification({}) is False
+
+
 # =============================================================================
 # Task config tests
 # =============================================================================
@@ -815,6 +933,7 @@ class TestMeetingSummaryTaskConfig:
                 "source": "recall_webhook",
                 "summary_scope": "meeting",
                 "skip_insight_pipeline": True,
+                "send_summary_notification": True,
             },
         )
 
@@ -877,7 +996,7 @@ class TestMeetingSummaryTaskConfig:
         assert service_cls.call_args.kwargs["deal_id"] is None
         assert service_cls.call_args.kwargs["event_id"] == event_id
         service.generate_meeting_level_summary.assert_awaited_once()
-        dispatch_notification.assert_awaited_once_with(org_id, None, event_id)
+        dispatch_notification.assert_awaited_once_with(org_id, None, event_id, job_id)
         dispatch_pipeline.assert_not_awaited()
         publisher_cls.assert_not_called()
         assert job.status == JobStatus.COMPLETED

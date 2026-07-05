@@ -180,9 +180,10 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch, caplog) 
                 "transcript_id": "transcript_1",
                 "download_url": "https://download.example/transcript",
             },
+            None,
         )
     )
-    monkeypatch.setattr(service, "_fetch_transcript_artifact", fetch_mock)
+    monkeypatch.setattr(service, "_fetch_media_artifacts", fetch_mock)
     materialize_mock = AsyncMock(
         return_value={
             "transcript_materialized": True,
@@ -252,7 +253,7 @@ async def test_recording_done_updates_status_without_fetching_transcript(monkeyp
     service.session_service.apply_webhook_update.return_value = updated
 
     fetch_mock = AsyncMock()
-    monkeypatch.setattr(service, "_fetch_transcript_artifact", fetch_mock)
+    monkeypatch.setattr(service, "_fetch_media_artifacts", fetch_mock)
 
     payload = {
         "event": "recording.done",
@@ -297,8 +298,8 @@ async def test_recording_done_preserves_transcript_status(
     service.session_service.get_by_provider_session_id.return_value = existing
     service.session_service.apply_webhook_update.return_value = updated
 
-    fetch_mock = AsyncMock(return_value=({"id": "bot_123", "recordings": []}, None))
-    monkeypatch.setattr(service, "_fetch_transcript_artifact", fetch_mock)
+    fetch_mock = AsyncMock(return_value=({"id": "bot_123", "recordings": []}, None, None))
+    monkeypatch.setattr(service, "_fetch_media_artifacts", fetch_mock)
 
     payload = {
         "event": "recording.done",
@@ -317,6 +318,157 @@ async def test_recording_done_preserves_transcript_status(
     assert kwargs["transcript_status"] is None
     assert kwargs["transcript_ready_at"] is None
     assert "transcript_artifact" not in kwargs["provider_payload"]
+
+
+@pytest.mark.asyncio
+async def test_video_mixed_done_fetches_video_artifact(monkeypatch) -> None:
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.COMPLETED,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    service.session_service.apply_webhook_update.return_value = updated
+    fetch_mock = AsyncMock(
+        return_value=(
+            {"id": "bot_123", "recordings": [{"id": "rec_1"}]},
+            None,
+            {
+                "recording_id": "rec_1",
+                "video_id": "video_1",
+                "download_url": "https://download.example/video.mp4",
+            },
+        )
+    )
+    monkeypatch.setattr(service, "_fetch_media_artifacts", fetch_mock)
+    archive_mock = AsyncMock(
+        return_value={
+            "recording_id": "rec_1",
+            "video_id": "video_1",
+            "download_url": "https://download.example/video.mp4",
+            "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+        }
+    )
+    monkeypatch.setattr(service, "_archive_video_artifact", archive_mock)
+
+    result = await service.process_recall_webhook(
+        {
+            "event": "video_mixed.done",
+            "data": {
+                "data": {"code": "done", "updated_at": "2026-04-23T12:40:00Z"},
+                "bot": {"id": "bot_123"},
+                "recording": {"id": "rec_1"},
+                "video_mixed": {"id": "video_1"},
+            },
+        }
+    )
+
+    assert result["status"] == "processed"
+    fetch_mock.assert_awaited_once_with("bot_123")
+    archive_mock.assert_awaited_once_with(
+        existing.calendar_event_id,
+        {
+            "recording_id": "rec_1",
+            "video_id": "video_1",
+            "download_url": "https://download.example/video.mp4",
+        },
+    )
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] is None
+    assert kwargs["transcript_status"] is None
+    assert kwargs["provider_payload"]["video_artifact"] == {
+        "recording_id": "rec_1",
+        "video_id": "video_1",
+        "download_url": "https://download.example/video.mp4",
+        "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_archive_video_artifact_downloads_to_org_blob(monkeypatch) -> None:
+    organisation_id = uuid4()
+    event_id = uuid4()
+    uploaded = {}
+
+    class _FakeStorage:
+        def __init__(self, storage_org_id):
+            assert storage_org_id == organisation_id
+
+        async def upload_stream(self, blob_path, chunks, *, content_type):
+            uploaded["blob_path"] = blob_path
+            uploaded["content_type"] = content_type
+            uploaded["body"] = b"".join([chunk async for chunk in chunks])
+
+        async def close(self):
+            uploaded["closed"] = True
+
+    class _FakeResponse:
+        headers = {"content-type": "video/mp4", "content-length": "7"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"mp"
+            yield b"4data"
+
+    class _FakeStreamContext:
+        async def __aenter__(self):
+            return _FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, method, url):
+            assert method == "GET"
+            assert url == "https://download.example/video.mp4"
+            return _FakeStreamContext()
+
+    service = _make_service(organisation_id)
+    monkeypatch.setattr(
+        "src.service.meeting_bot.webhook_service.AzureOrganisationBlobStorage",
+        _FakeStorage,
+    )
+    monkeypatch.setattr("src.service.meeting_bot.webhook_service.httpx.AsyncClient", _FakeClient)
+
+    result = await service._archive_video_artifact(
+        event_id,
+        {
+            "recording_id": "rec_1",
+            "video_id": "video_1",
+            "download_url": "https://download.example/video.mp4",
+        },
+    )
+
+    assert uploaded == {
+        "blob_path": f"meeting_recordings/{event_id}/rec_1/video_1.mp4",
+        "content_type": "video/mp4",
+        "body": b"mp4data",
+        "closed": True,
+    }
+    assert result["archived_blob_path"] == f"meeting_recordings/{event_id}/rec_1/video_1.mp4"
+    assert result["archived_content_type"] == "video/mp4"
+    assert result["archived_size_bytes"] == 7
 
 
 @pytest.mark.asyncio
@@ -362,6 +514,177 @@ async def test_recording_failed_marks_session_and_transcript_failed(monkeypatch)
     assert kwargs["status"] == MeetingRecordingStatus.FAILED
     assert kwargs["transcript_status"] == MeetingTranscriptStatus.FAILED
     assert kwargs["status_message"] == "recording_unavailable: Recording failed"
+
+
+@pytest.mark.asyncio
+async def test_recording_permission_denied_marks_session_failed() -> None:
+    """A bot that joins but cannot record should not stay in processing state."""
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.IN_CALL,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    updated.status = MeetingRecordingStatus.FAILED
+    updated.transcript_status = MeetingTranscriptStatus.FAILED
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    service.session_service.apply_webhook_update.return_value = updated
+
+    payload = {
+        "event": "bot.recording_permission_denied",
+        "data": {
+            "data": {
+                "code": "recording_permission_denied",
+                "sub_code": "host_denied",
+                "updated_at": "2026-04-23T12:05:00Z",
+            },
+            "bot": {"id": "bot_123"},
+        },
+    }
+
+    result = await service.process_recall_webhook(payload)
+
+    assert result["normalized_status"] == "FAILED"
+    assert result["transcript_status"] == "FAILED"
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] == MeetingRecordingStatus.FAILED
+    assert kwargs["transcript_status"] == MeetingTranscriptStatus.FAILED
+    assert kwargs["status_message"] == "host_denied"
+
+
+@pytest.mark.asyncio
+async def test_bot_fatal_before_join_marks_transcript_failed() -> None:
+    """A pre-join Recall fatal should release the UI from processing."""
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.JOINING,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    updated.status = MeetingRecordingStatus.FAILED
+    updated.transcript_status = MeetingTranscriptStatus.FAILED
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    service.session_service.apply_webhook_update.return_value = updated
+
+    payload = {
+        "event": "bot.fatal",
+        "data": {
+            "data": {
+                "code": "fatal",
+                "sub_code": "meeting_not_accessible",
+                "updated_at": "2026-04-23T12:05:00Z",
+            },
+            "bot": {"id": "bot_123"},
+        },
+    }
+
+    result = await service.process_recall_webhook(payload)
+
+    assert result["normalized_status"] == "FAILED"
+    assert result["transcript_status"] == "FAILED"
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] == MeetingRecordingStatus.FAILED
+    assert kwargs["transcript_status"] == MeetingTranscriptStatus.FAILED
+    assert kwargs["status_message"] == "meeting_not_accessible"
+
+
+@pytest.mark.asyncio
+async def test_bot_done_after_prejoin_fatal_does_not_mark_completed() -> None:
+    """Recall can emit done after fatal; without recording evidence it must stay failed."""
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    service.session_service.apply_webhook_update.return_value = existing
+
+    payload = {
+        "event": "bot.done",
+        "data": {
+            "data": {"code": "done", "updated_at": "2026-04-23T12:06:00Z"},
+            "bot": {"id": "bot_123"},
+        },
+    }
+
+    result = await service.process_recall_webhook(payload)
+
+    assert result["normalized_status"] == "FAILED"
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] is None
+    assert kwargs["transcript_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_call_ended_before_recording_marks_failed() -> None:
+    """Leaving from waiting room should not look like a completed recording."""
+    organisation_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=uuid4(),
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) + timedelta(minutes=10),
+        status=MeetingRecordingStatus.JOINING,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    updated.status = MeetingRecordingStatus.FAILED
+    updated.transcript_status = MeetingTranscriptStatus.FAILED
+    service = _make_service(organisation_id)
+    service.session_service.get_by_provider_session_id.return_value = existing
+    service.session_service.apply_webhook_update.return_value = updated
+
+    payload = {
+        "event": "bot.call_ended",
+        "data": {
+            "data": {
+                "code": "call_ended",
+                "sub_code": "bot_kicked_from_waiting_room",
+                "updated_at": "2026-04-23T12:06:00Z",
+            },
+            "bot": {"id": "bot_123"},
+        },
+    }
+
+    result = await service.process_recall_webhook(payload)
+
+    assert result["normalized_status"] == "FAILED"
+    assert result["transcript_status"] == "FAILED"
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] == MeetingRecordingStatus.FAILED
+    assert kwargs["transcript_status"] == MeetingTranscriptStatus.FAILED
+    assert kwargs["status_message"] == "bot_kicked_from_waiting_room"
 
 
 @pytest.mark.asyncio
@@ -416,4 +739,5 @@ async def test_create_summary_jobs_creates_non_deal_job_when_no_active_associati
     assert job.job_type == DealJobType.MEETING_SUMMARY
     assert job.status == JobStatus.PENDING
     assert job.job_metadata["source"] == "recall_webhook"
+    assert job.job_metadata["send_summary_notification"] is True
     assert job.job_metadata["summary_scope"] == "meeting"

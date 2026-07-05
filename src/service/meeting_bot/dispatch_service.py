@@ -314,19 +314,25 @@ class MeetingRecordingDispatchService:
                 "calendar_event_id": str(calendar_event_id),
             }
 
-        if provider is None:
-            provider = await self._build_provider()
-        # Provider session creation is the only external side effect here. We keep this
-        # call behind a short-lived session row so retries can be reconciled without
-        # creating duplicate org/event state.
-        bot_payload = await self._create_or_adopt_provider_session(
-            provider=provider,
-            session_record=session_record,
-            calendar_event_id=calendar_event_id,
-            meeting_url=meeting_url,
-            join_at=join_at,
-            attempt_adopt_before_create=attempt_adopt_before_create,
-        )
+        try:
+            if provider is None:
+                provider = await self._build_provider()
+            # Provider session creation is the only external side effect here. We keep this
+            # call behind a short-lived session row so retries can be reconciled without
+            # creating duplicate org/event state.
+            bot_payload = await self._create_or_adopt_provider_session(
+                provider=provider,
+                session_record=session_record,
+                calendar_event_id=calendar_event_id,
+                meeting_url=meeting_url,
+                join_at=join_at,
+                attempt_adopt_before_create=attempt_adopt_before_create,
+            )
+        except RecallProviderError:
+            raise
+        except Exception as error:
+            await self._record_unexpected_dispatch_failure(session_record, "create", error)
+            raise
 
         provider_session_id = bot_payload.get("id")
         if not provider_session_id:
@@ -972,6 +978,23 @@ class MeetingRecordingDispatchService:
                 "code": error.code,
                 "detail": error.detail,
                 "response_body": error.response_body,
+            },
+        )
+
+    async def _record_unexpected_dispatch_failure(
+        self,
+        session_record: MeetingRecordingSession,
+        operation: str,
+        error: Exception,
+    ) -> None:
+        """Persist non-provider failures after a send has entered the queued state."""
+        await self._session_service.mark_provider_failure(
+            session_record.session_id,
+            status_message=f"Recall {operation} failed: {error}",
+            provider_payload={
+                "operation": operation,
+                "error_type": type(error).__name__,
+                "detail": str(error),
             },
         )
 

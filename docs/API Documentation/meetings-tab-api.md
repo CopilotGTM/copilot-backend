@@ -449,14 +449,16 @@ GET /users/meetings/4fd09b96-9f31-4dd4-9328-8f9b9f1bb227/recording
 
 Frontend behavior:
 
-- Use `playback_url` directly as a fresh Recall playback/download URL.
+- Use `playback_url` directly as a fresh playback/download URL. It is usually an
+  internal short-lived Azure Blob SAS after Recall `video_mixed.done` archival;
+  older rows may still fall back to Recall's signed download URL.
 - Do not treat `playback_url` as permanent; fetch this endpoint again when opening playback.
 - Use `summary` and structured `action_items` for the intelligence panel when present.
 - Use `transcript_segments` for transcript rows. The backend returns `[]` when no segment rows
   are available and does not expose the raw full transcript text.
 - Use `transcript_artifact` for transcript availability metadata.
 
-If no playable Recall video artifact is available, backend returns `409`.
+If no playable archived or Recall video artifact is available, backend returns `409`.
 
 ## Meeting Summary Notification Deep Link
 
@@ -499,7 +501,6 @@ Do not build backend-dependent workflows for these yet:
 - None-linked business workflows.
 - Per-meeting bot preference settings.
 - Lead/contact/account/internal task creation from Meetings.
-- Azure video archival for recordings.
 
 For follow-up creation in V1, use the existing deal task endpoints after confirming the meeting
 is linked to a deal.

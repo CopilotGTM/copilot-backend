@@ -177,6 +177,7 @@ class DealJobType(StrEnum):
     # Meeting-related jobs
     MEETING_BRIEFING = "meeting_briefing"  # Pre-meeting prep briefing
     MEETING_SUMMARY = "meeting_summary"  # Post-meeting summary
+    MEETING_SUMMARY_NOTIFICATION = "meeting_summary_notification"  # Summary-ready notification
     MEETING_FOLLOWUP = "meeting_followup"  # Follow-up action items
 
     # Stakeholder-related jobs

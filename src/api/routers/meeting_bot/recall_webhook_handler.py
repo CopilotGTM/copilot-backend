@@ -99,13 +99,16 @@ async def handle_recall_webhook(request: Request) -> Response:
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
     webhook_id = request.headers.get("webhook-id") or request.headers.get("svix-id")
+    dedupe_key: str | None = None
+    dedupe_claimed = False
     if webhook_id:
         try:
             redis = get_redis_client()
             # The queue worker also takes a lock, but rejecting obvious retries
             # here avoids duplicate Celery load during provider re-deliveries.
+            dedupe_key = f"webhook:recall:{webhook_id}"
             deduped = redis.set(
-                f"webhook:recall:{webhook_id}",
+                dedupe_key,
                 "1",
                 nx=True,
                 ex=RECALL_WEBHOOK_DEDUPE_TTL_SECONDS,
@@ -113,6 +116,7 @@ async def handle_recall_webhook(request: Request) -> Response:
             if not deduped:
                 logger.info("Duplicate Recall webhook ignored: webhook_id=%s", webhook_id)
                 return Response(status_code=status.HTTP_200_OK)
+            dedupe_claimed = True
         except Exception:
             logger.debug("Recall webhook dedupe check failed", exc_info=True)
 
@@ -151,6 +155,11 @@ async def handle_recall_webhook(request: Request) -> Response:
             },
             exc_info=True,
         )
+        if dedupe_claimed and dedupe_key:
+            try:
+                get_redis_client().delete(dedupe_key)
+            except Exception:
+                logger.debug("Recall webhook dedupe release failed", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to queue webhook processing task",
