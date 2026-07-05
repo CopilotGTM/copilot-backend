@@ -8,5 +8,6 @@ def test_terraform_pipeline_publishes_trivy_iac_scan_artifact() -> None:
 
     assert "terraform-iac-scan" in template_text
     assert "trivy config" in template_text
+    assert "$(Agent.TempDirectory)/trivy-bin" in template_text
     assert "terraform-iac-trivy-report.txt" in template_text
     assert "Publish Terraform IaC Scan Artifact" in template_text

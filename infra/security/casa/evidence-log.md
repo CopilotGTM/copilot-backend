@@ -17,6 +17,19 @@ Use this file to track production CASA readiness evidence. Do not paste secrets,
 | 2026-07-05 | prod readiness | `4656696e` | `infra/security/casa/evidence/runs/20260705-133010` | Ruff, Bandit, detect-secrets snapshot, detect-secrets baseline check, sanitized baseline summary, Terraform validate, Terraform fmt check, locked dependency inventory, config evidence export | Passed after DAST smoke-check workflow update; baseline 120, current 120, new findings 0 | TODO |
 | 2026-07-05 | prod readiness | `4656696e` | `infra/security/casa/evidence/runs/20260705-134328` | Ruff, Bandit, detect-secrets snapshot, shared detect-secrets baseline check, sanitized baseline summary, Terraform validate, Terraform fmt check, locked dependency inventory, config evidence export | Passed after prod secrets pipeline gate update; baseline 120, current 120, new findings 0 | TODO |
 
+## Current Position
+
+Last updated: 2026-07-05 09:54 UTC.
+
+| Item | Current state | Next action |
+| --- | --- | --- |
+| Branch location | Active local branch is `codex/casa-production-evidence-workflow`; `main` is back at `origin/main` | Keep CASA rollout work on this branch |
+| Published release refs | `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa` currently point to CASA commit `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` | Republish both after the Trivy install-path fix is committed |
+| Backend prod run | Azure DevOps run `1760` / build `20260705.2` was `notStarted` at last check | Recheck after release refs are updated |
+| Infra prod run | Azure DevOps run `1758` / build `20260705.1` failed in `Terraform Init, Validate & Plan`; Terraform init and validate passed, then Trivy IaC scan setup exited 1 | Use agent temp directory for Trivy, rerun infra pipeline |
+| Evidence export | No complete prod artifact set yet | Run `export-prod-casa-evidence.ps1 -UseLatestSuccessfulRuns` after backend and infra prod runs succeed |
+| Submission preflight | Expected to fail today | Fill ignored Google/CASA values, export prod artifacts, run approved-window DAST, then rerun preflight |
+
 ## Findings Register
 
 | ID | Date found | Scanner/source | Severity | CASA/CWE mapping | Finding summary | Owner | Status | Fix PR/commit | Retest evidence |
@@ -34,6 +47,8 @@ Use this file to track production CASA readiness evidence. Do not paste secrets,
 | CASA-011 | 2026-07-05 | Azure DevOps artifact check | Evidence gap | CASA production evidence export | Latest successful prod backend run `1749` only published `security-report` and `trivy-reports`; latest successful prod infra run `1740` only published `tfplan-prod`. These runs predate the CASA artifact updates and cannot satisfy submission preflight. Export scripts now fail before creating partial evidence when required artifacts are missing. | TODO | Awaiting new prod backend and infra pipeline runs from updated YAML | `infra/security/casa/export-prod-pipeline-artifacts.ps1`; `infra/security/casa/export-prod-infra-pipeline-artifacts.ps1` | Azure DevOps run artifact list for backend `1749` and infra `1740`; `tests/scripts/test_casa_artifact_export.py` |
 | CASA-012 | 2026-07-05 | release branch publication check | Evidence gap | CASA production evidence export | CASA pipeline and evidence tooling changes are currently local to the working tree. Production pipelines cannot emit the new CASA artifacts until these changes are committed and pushed to the release branches used by `copilot-backend-pipeline-prod` and `copilot-infra-pipeline-prod`. | TODO | Awaiting commit/push to release branches | `.azure-pipelines/azure-backend-pipeline-prod.yml`; `.azure-pipelines/templates/terraform-env-stage.yml`; `infra/security/casa/README.md` | `git status --short`; `tests/scripts/test_casa_artifact_export.py` |
 | CASA-013 | 2026-07-05 | remote release branch publication check | Evidence gap | CASA production evidence export | Latest remote release refs `release/backend/2026-07-03` (`1ab081bb0ecf2c74a38052181d8261bf8b42f52b`) and `release/infra/2026-07-03` (`30d90ca9801db5fcdfe28ba025f2c0093bc6f0ff`) failed `check_casa_release_publication.py`. Backend is missing Bandit text, secrets scan, Python SCA, and detect-secrets baseline gate markers; infra is missing Terraform IaC scan markers. | TODO | Awaiting release branches containing CASA changes | `scripts/security/check_casa_release_publication.py` | `uv run python scripts/security/check_casa_release_publication.py --backend-ref 1ab081bb0ecf2c74a38052181d8261bf8b42f52b --infra-ref 30d90ca9801db5fcdfe28ba025f2c0093bc6f0ff` |
+| CASA-014 | 2026-07-05 | remote release branch publication check | Informational | CASA production evidence export | CASA commit `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` was pushed to `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa`; release publication check passed against both remote refs. | TODO | Published once; superseded by Trivy install-path fix | `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` | `uv run python scripts/security/check_casa_release_publication.py --backend-ref origin/release/backend/2026-07-05-casa --infra-ref origin/release/infra/2026-07-05-casa` |
+| CASA-015 | 2026-07-05 | Azure DevOps prod infra run `1758` | Evidence gap | CASA IaC scan evidence export | Prod infra run `1758` failed after Terraform init and validate succeeded. Failure happened in the new Trivy IaC scan setup before Terraform plan/apply; the pipeline attempted to install Trivy into `/usr/local/bin`. | TODO | Fix in progress | `.azure-pipelines/templates/terraform-env-stage.yml`; `.azure-pipelines/azure-backend-pipeline-prod.yml` | Azure DevOps run `1758`, task log `7` |
 
 ## Exceptions
 

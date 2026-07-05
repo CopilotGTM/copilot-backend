@@ -141,6 +141,29 @@ uv run python scripts/security/check_casa_release_publication.py `
 
 Without `--backend-ref` and `--infra-ref`, the command checks the current working tree.
 
+## Current Position
+
+Last updated: 2026-07-05 09:54 UTC.
+
+| Item | Current state |
+| --- | --- |
+| CASA commit | `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` (`Prepare CASA production evidence workflow`) |
+| Active working branch | `codex/casa-production-evidence-workflow`; `main` has been moved back to `origin/main` |
+| Backend release branch | `release/backend/2026-07-05-casa` at `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4`; release publication check passed |
+| Infra release branch | `release/infra/2026-07-05-casa` at `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4`; release publication check passed |
+| Backend prod pipeline | Queued manually as Azure DevOps run `1760` / build `20260705.2`; status was `notStarted` at last check |
+| Infra prod pipeline | Azure DevOps run `1758` / build `20260705.1` failed in `Terraform Init, Validate & Plan` during the new Trivy IaC scan setup; Terraform init and validate passed |
+| Current fix in progress | Install Trivy into `$(Agent.TempDirectory)/trivy-bin` instead of `/usr/local/bin`, then republish the release branches and rerun prod pipelines |
+| Artifact export | Not ready until backend and infra prod runs complete successfully |
+| Submission preflight | Fails until Google/CASA local values, prod backend artifacts, prod infra IaC artifact, and DAST evidence exist |
+
+Resume from here by committing the Trivy install-path fix on this branch, pushing it to the backend and infra release branches, and rerunning or letting the prod pipelines rerun. After both prod runs succeed, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File infra/security/casa/export-prod-casa-evidence.ps1 `
+  -UseLatestSuccessfulRuns
+```
+
 After the prod backend pipeline finishes for the release branch, export the CASA evidence artifacts by `Build.BuildId`:
 
 ```powershell

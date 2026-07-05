@@ -395,7 +395,9 @@ stages:
 
               # Install Trivy if not present
               if ! command -v trivy &> /dev/null; then
-                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.49.1
+                mkdir -p "$(Agent.TempDirectory)/trivy-bin"
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$(Agent.TempDirectory)/trivy-bin" v0.49.1
+                export PATH="$(Agent.TempDirectory)/trivy-bin:$PATH"
               fi
 
               trivy --version
