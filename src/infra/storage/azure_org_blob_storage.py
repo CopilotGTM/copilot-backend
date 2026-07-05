@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import re
+from collections.abc import AsyncIterable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -276,6 +277,25 @@ class AzureOrganisationBlobStorage:
         Centralizing storage writes here keeps service code from depending on
         Azure object-shape details or retry strategy.
         """
+
+        await self._ensure_container()
+        blob_service = await self._get_blob_service_client()
+        container = self.container
+        blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
+        await blob_client.upload_blob(
+            data,
+            overwrite=True,
+            content_settings=ContentSettings(content_type=content_type),
+        )
+
+    async def upload_stream(
+        self,
+        blob_path: str,
+        data: AsyncIterable[bytes],
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """Upload a byte stream without buffering the full payload in memory."""
 
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()

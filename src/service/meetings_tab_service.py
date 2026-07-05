@@ -54,6 +54,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingTranscriptStatus,
 )
 from src.infra.config.configs import recall_config
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.service.calendar_invites.models import CalendarInviteAttendee, CalendarInviteCreateRequest
 from src.service.calendar_invites.service import CalendarInviteService
@@ -407,25 +408,41 @@ class MeetingsTabService:
             else:
                 logger.warning("Recall API key missing while resolving playback URL")
 
-        playback_artifact = (
+        playback_artifact = provider_payload.get("video_artifact") or (
             RecallMeetingRecordingProvider.extract_video_mixed_download(bot_snapshot)
             if isinstance(bot_snapshot, dict)
             else None
         )
         if not playback_artifact:
             raise MeetingsTabServiceError("Recording is not ready", 409, code="recording_not_ready")
+        playback_url = await self._recording_playback_url(playback_artifact)
 
         return MeetingRecordingResponse(
             event_id=response_payload["event_id"],
             recording_status=response_payload["recording_status"],
             transcript_status=response_payload["transcript_status"],
-            playback_url=playback_artifact.get("download_url"),
+            playback_url=playback_url,
             provider_session_id=response_payload["provider_session_id"],
             transcript_artifact=response_payload["transcript_artifact"],
             summary=response_payload["summary"],
             action_items=response_payload["action_items"],
             transcript_segments=response_payload["transcript_segments"],
         )
+
+    async def _recording_playback_url(self, playback_artifact: dict[str, Any]) -> str | None:
+        archived_blob_path = playback_artifact.get("archived_blob_path")
+        if isinstance(archived_blob_path, str) and archived_blob_path:
+            storage = AzureOrganisationBlobStorage(self.organisation_id)
+            try:
+                return await storage.generate_read_sas(
+                    archived_blob_path,
+                    minutes=120,
+                    download_filename="meeting-recording.mp4",
+                )
+            finally:
+                await storage.close()
+        download_url = playback_artifact.get("download_url")
+        return download_url if isinstance(download_url, str) else None
 
     async def _load_transcript_segments(
         self, meeting: Meeting | None
@@ -750,7 +767,14 @@ class MeetingsTabService:
         is_external: bool,
     ) -> MeetingBotStatus:
         """Project provider session state into the compact UI bot status."""
-        if recording and self._enum_value(recording.status) in {"IN_CALL", "JOINING"}:
+        reason = None
+        recording_status = self._enum_value(recording.status) if recording else None
+        if recording_status == MeetingRecordingStatus.FAILED.value:
+            status = "failed"
+            reason = recording.status_message
+        elif recording_status == MeetingRecordingStatus.CANCELLED.value:
+            status = "cancelled"
+        elif recording_status in {"IN_CALL", "JOINING"}:
             status = "recording_live"
         elif recording and recording.sent_to_provider_at is not None:
             status = "already_sent"
@@ -760,6 +784,7 @@ class MeetingsTabService:
             status = "invite_available"
         return MeetingBotStatus(
             status=status,
+            reason=reason,
             is_external=is_external,
             provider_session_id=recording.provider_session_id if recording else None,
             can_invite=self._can_invite_bot(event=event, recording=recording),

@@ -8,11 +8,13 @@ timing is not guaranteed to be strictly ordered.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
+import httpx
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
@@ -28,6 +30,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 )
 from src.infra.config.configs import recall_config
 from src.infra.database.sessions import acquire_org_async_session
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
@@ -36,6 +39,7 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 from src.workers.deal_worker.client import send_deal_task_async
 
 TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done"}
+VIDEO_ARTIFACT_READY_EVENTS = {"video_mixed.done"}
 # Only active work blocks a new summary job. Completed jobs are handled by the
 # summary storage checks below so replayed webhooks remain idempotent.
 _SUMMARY_ACTIVE_STATUSES = (JobStatus.PENDING, JobStatus.IN_PROGRESS)
@@ -108,20 +112,33 @@ class RecallMeetingRecordingWebhookService:
         merged_payload = dict(existing.provider_payload or {})
         merged_payload["last_webhook_event_name"] = event_name
         merged_payload["last_webhook_event"] = payload
+        if event_name == "bot.in_call_recording":
+            merged_payload.setdefault(
+                "first_recording_started_at",
+                (updated_at or datetime.now(UTC)).isoformat(),
+            )
 
-        status = self._map_status(event_name)
-        transcript_status = self._map_transcript_status(event_name)
+        status = self._map_status(event_name, existing=existing)
+        transcript_status = self._map_transcript_status(event_name, existing=existing)
         transcript_ready_at: datetime | None = None
 
-        if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS:
-            # Only transcript completion should trigger the provider follow-up call.
-            # Recording lifecycle events update status only; transcript availability
-            # remains owned by Recall's transcript artifact lifecycle.
-            bot_snapshot, transcript_artifact = await self._fetch_transcript_artifact(bot_id)
+        if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS | VIDEO_ARTIFACT_READY_EVENTS:
+            # Only artifact completion events should trigger the provider follow-up
+            # call. Recording lifecycle events update status without extra Recall I/O.
+            bot_snapshot, transcript_artifact, video_artifact = await self._fetch_media_artifacts(
+                bot_id
+            )
             if bot_snapshot is not None:
                 merged_payload["bot_snapshot"] = bot_snapshot
+            if video_artifact is not None:
+                video_artifact = await self._archive_video_artifact(
+                    existing.calendar_event_id,
+                    video_artifact,
+                )
+                merged_payload["video_artifact"] = video_artifact
             if transcript_artifact is not None:
                 merged_payload["transcript_artifact"] = transcript_artifact
+            if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS and transcript_artifact is not None:
                 transcript_status = MeetingTranscriptStatus.READY
                 transcript_ready_at = updated_at or datetime.now(UTC)
 
@@ -305,6 +322,7 @@ class RecallMeetingRecordingWebhookService:
                     job_metadata={
                         "source": "recall_webhook",
                         "trigger": "transcript_done",
+                        "send_summary_notification": True,
                         "event_id": str(event_id),
                         "association_id": str(association.association_id),
                     },
@@ -355,6 +373,7 @@ class RecallMeetingRecordingWebhookService:
                             job_metadata={
                                 "source": "recall_webhook",
                                 "trigger": "transcript_done",
+                                "send_summary_notification": True,
                                 "summary_scope": "meeting",
                                 "event_id": str(event_id),
                                 "skip_insight_pipeline": True,
@@ -373,18 +392,18 @@ class RecallMeetingRecordingWebhookService:
             "job_ids_to_enqueue": job_ids_to_enqueue,
         }
 
-    async def _fetch_transcript_artifact(
+    async def _fetch_media_artifacts(
         self,
         provider_session_id: str,
-    ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-        """Fetch the latest bot payload only when transcript artifacts should exist.
+    ) -> tuple[dict[str, Any] | None, dict[str, str] | None, dict[str, str] | None]:
+        """Fetch the latest bot payload only when downloadable artifacts should exist.
 
-        The extra provider call is intentionally gated to transcript-ready events to
+        The extra provider call is intentionally gated to artifact-ready events to
         avoid needless API usage on every webhook delivery.
         """
         api_key = await recall_config.get_api_key()
         if not api_key:
-            return None, None
+            return None, None, None
 
         provider = RecallMeetingRecordingProvider(
             api_key=api_key,
@@ -393,10 +412,59 @@ class RecallMeetingRecordingWebhookService:
         )
         bot_snapshot = await provider.fetch_session(provider_session_id)
         transcript_artifact = provider.extract_transcript_download(bot_snapshot)
-        return bot_snapshot, transcript_artifact
+        video_artifact = provider.extract_video_mixed_download(bot_snapshot)
+        return bot_snapshot, transcript_artifact, video_artifact
+
+    async def _archive_video_artifact(
+        self,
+        event_id: UUID,
+        video_artifact: dict[str, str],
+    ) -> dict[str, Any]:
+        """Download Recall's mixed MP4 into our org-scoped blob container."""
+        download_url = video_artifact.get("download_url")
+        if not download_url:
+            return video_artifact
+
+        recording_id = self._safe_artifact_id(video_artifact.get("recording_id"), "recording")
+        video_id = self._safe_artifact_id(video_artifact.get("video_id"), "video")
+        blob_path = f"meeting_recordings/{event_id}/{recording_id}/{video_id}.mp4"
+        storage = AzureOrganisationBlobStorage(self.organisation_id)
+        try:
+            async with (
+                httpx.AsyncClient(timeout=recall_config.RECALL_TIMEOUT_SECONDS) as client,
+                client.stream("GET", download_url) as response,
+            ):
+                response.raise_for_status()
+                content_type = response.headers.get("content-type") or "video/mp4"
+                await storage.upload_stream(
+                    blob_path,
+                    response.aiter_bytes(),
+                    content_type=content_type,
+                )
+                result: dict[str, Any] = {
+                    **video_artifact,
+                    "archived_blob_path": blob_path,
+                    "archived_content_type": content_type,
+                    "archived_at": datetime.now(UTC).isoformat(),
+                }
+                content_length = response.headers.get("content-length")
+                if content_length and content_length.isdigit():
+                    result["archived_size_bytes"] = int(content_length)
+                return result
+        finally:
+            await storage.close()
 
     @staticmethod
-    def _map_status(event_name: str) -> MeetingRecordingStatus | None:
+    def _safe_artifact_id(value: Any, fallback: str) -> str:
+        text = str(value or fallback)
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-") or fallback
+
+    @staticmethod
+    def _map_status(
+        event_name: str,
+        *,
+        existing: Any | None = None,
+    ) -> MeetingRecordingStatus | None:
         """Map provider event names to our internal lifecycle state."""
         # Keep unknown events unopinionated so a webhook rename does not block other
         # state updates (status stays preserved unless we have a known mapping).
@@ -405,11 +473,30 @@ class RecallMeetingRecordingWebhookService:
         if event_name in {
             "bot.in_call_not_recording",
             "bot.recording_permission_allowed",
-            "bot.recording_permission_denied",
             "bot.in_call_recording",
         }:
             return MeetingRecordingStatus.IN_CALL
-        if event_name in {"bot.call_ended", "bot.done", "recording.done"}:
+        if event_name == "bot.recording_permission_denied":
+            return MeetingRecordingStatus.FAILED
+        if event_name == "bot.call_ended":
+            existing_status = _enum_value(existing.status) if existing is not None else None
+            if existing_status not in {
+                MeetingRecordingStatus.IN_CALL.value,
+                MeetingRecordingStatus.COMPLETED.value,
+            }:
+                return MeetingRecordingStatus.FAILED
+            return MeetingRecordingStatus.COMPLETED
+        if event_name == "bot.done":
+            provider_payload = existing.provider_payload if existing is not None else {}
+            if isinstance(provider_payload, dict) and provider_payload.get(
+                "first_recording_started_at"
+            ):
+                return MeetingRecordingStatus.COMPLETED
+            existing_status = _enum_value(existing.status) if existing is not None else None
+            if existing_status == MeetingRecordingStatus.FAILED.value:
+                return None
+            return MeetingRecordingStatus.COMPLETED
+        if event_name == "recording.done":
             return MeetingRecordingStatus.COMPLETED
         if event_name in {"bot.fatal", "recording.failed"}:
             return MeetingRecordingStatus.FAILED
@@ -418,7 +505,11 @@ class RecallMeetingRecordingWebhookService:
         return None
 
     @staticmethod
-    def _map_transcript_status(event_name: str) -> MeetingTranscriptStatus | None:
+    def _map_transcript_status(
+        event_name: str,
+        *,
+        existing: Any | None = None,
+    ) -> MeetingTranscriptStatus | None:
         """Map transcript lifecycle events from Recall to local status values."""
         if event_name == "transcript.processing":
             return MeetingTranscriptStatus.PENDING
@@ -428,6 +519,15 @@ class RecallMeetingRecordingWebhookService:
             return MeetingTranscriptStatus.FAILED
         if event_name == "transcript.deleted":
             return MeetingTranscriptStatus.NOT_AVAILABLE
+        if event_name in {"bot.fatal", "bot.recording_permission_denied"}:
+            return MeetingTranscriptStatus.FAILED
+        if event_name == "bot.call_ended":
+            existing_status = _enum_value(existing.status) if existing is not None else None
+            if existing_status not in {
+                MeetingRecordingStatus.IN_CALL.value,
+                MeetingRecordingStatus.COMPLETED.value,
+            }:
+                return MeetingTranscriptStatus.FAILED
         if event_name == "recording.failed":
             return MeetingTranscriptStatus.FAILED
         if event_name == "recording.deleted":

@@ -6,6 +6,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 
 pytestmark = pytest.mark.unit
 
@@ -41,11 +42,31 @@ def test_notification_task_retries_when_service_reports_failed_targets(monkeypat
     task.request.retries = 0
 
     with pytest.raises(_RetryRaisedError):
-        task.run(str(uuid4()), str(uuid4()), str(uuid4()))
+        task.run(str(uuid4()), str(uuid4()), str(uuid4()), str(uuid4()))
 
     assert len(retry_calls) == 1
     assert isinstance(retry_calls[0]["exc"], RuntimeError)
     assert retry_calls[0]["countdown"] == 60
+
+
+def test_notification_task_skips_without_notification_job_id(monkeypatch):
+    """Direct delivery calls without a durable notification job must not send."""
+    from src.workers.deal_worker.tasks.meeting_insight_tasks import (
+        meeting_summary_notification_task as task_module,
+    )
+
+    def _fake_run_async(coro):
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(task_module, "run_async", _fake_run_async)
+
+    result = task_module.send_meeting_summary_ready_notification_task.run(
+        str(uuid4()),
+        str(uuid4()),
+        str(uuid4()),
+    )
+
+    assert result == {"status": "skipped", "reason": "missing_notification_job_id"}
 
 
 def test_notification_task_passes_none_deal_id_to_service(monkeypatch):
@@ -55,9 +76,33 @@ def test_notification_task_passes_none_deal_id_to_service(monkeypatch):
     )
 
     captured: dict[str, object] = {}
+    org_id = uuid4()
+    event_id = uuid4()
+    notification_job_id = uuid4()
+    job = DealJobs(
+        job_id=notification_job_id,
+        organisation_id=org_id,
+        user_id=uuid4(),
+        job_type=DealJobType.MEETING_SUMMARY_NOTIFICATION,
+        deal_id=None,
+        event_id=event_id,
+        status=JobStatus.PENDING,
+    )
 
     def _fake_run_async(coro):
         return asyncio.run(coro)
+
+    class FakeSession:
+        async def get(self, model, requested_job_id):
+            assert model is DealJobs
+            assert requested_job_id == notification_job_id
+            return job
+
+        async def commit(self):
+            return None
+
+    async def fake_acquire_org_session(_organisation_id):
+        yield FakeSession()
 
     class _FakeService:
         def __init__(self, organisation_id):
@@ -74,18 +119,20 @@ def test_notification_task_passes_none_deal_id_to_service(monkeypatch):
                 "failed": 0,
             }
 
-    org_id = uuid4()
-    event_id = uuid4()
     monkeypatch.setattr(task_module, "run_async", _fake_run_async)
+    monkeypatch.setattr(task_module, "acquire_org_async_session", fake_acquire_org_session)
     monkeypatch.setattr(task_module, "MeetingSummaryNotificationService", _FakeService)
 
     result = task_module.send_meeting_summary_ready_notification_task.run(
         str(org_id),
         None,
         str(event_id),
+        str(notification_job_id),
     )
 
     assert result["status"] == "completed"
     assert captured["organisation_id"] == org_id
     assert captured["deal_id"] is None
     assert captured["event_id"] == event_id
+    assert job.status == JobStatus.COMPLETED
+    assert job.result_data == result

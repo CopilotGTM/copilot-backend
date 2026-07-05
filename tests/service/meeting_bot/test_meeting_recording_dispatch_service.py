@@ -134,6 +134,60 @@ class TestMeetingRecordingDispatchService:
         assert provider.create_session.await_args.kwargs["bot_name"] == "Acme Corp Notetaker"
 
     @pytest.mark.asyncio
+    async def test_dispatch_event_marks_session_failed_when_provider_setup_crashes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A queued send must not leave the UI processing forever after setup failure."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        session_id = uuid4()
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) + timedelta(hours=2),
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+        queued_record = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            sent_to_provider_at=None,
+            status=MeetingRecordingStatus.SEND_QUEUED,
+        )
+        queued_record.__dict__["_send_claimed"] = True
+
+        service = MeetingRecordingDispatchService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(
+                return_value=SimpleNamespace(
+                    session_id=session_id,
+                    dedupe_key="meeting-recording-key",
+                    sent_to_provider_at=None,
+                )
+            ),
+            mark_send_queued=AsyncMock(return_value=queued_record),
+            mark_sent=AsyncMock(),
+            mark_provider_failure=AsyncMock(),
+        )
+        service._build_provider = AsyncMock(side_effect=RuntimeError("Recall API key missing"))  # noqa: SLF001
+
+        with pytest.raises(RuntimeError, match="Recall API key missing"):
+            await service.dispatch_event(event_id)
+
+        service._session_service.mark_provider_failure.assert_awaited_once()  # noqa: SLF001
+        failure_kwargs = service._session_service.mark_provider_failure.await_args.kwargs  # noqa: SLF001
+        assert failure_kwargs["status_message"] == "Recall create failed: Recall API key missing"
+        assert failure_kwargs["provider_payload"] == {
+            "operation": "create",
+            "error_type": "RuntimeError",
+            "detail": "Recall API key missing",
+        }
+
+    @pytest.mark.asyncio
     async def test_resolve_bot_name_uses_organisation_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

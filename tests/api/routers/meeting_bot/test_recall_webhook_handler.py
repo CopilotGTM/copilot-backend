@@ -146,3 +146,40 @@ def test_recall_webhook_dedupes_by_webhook_id(monkeypatch) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     recall_webhook_handler.send_deal_task_async.assert_awaited_once()
+
+
+def test_recall_webhook_releases_dedupe_when_queueing_fails(monkeypatch) -> None:
+    from src.api.routers.meeting_bot import recall_webhook_handler
+
+    redis = fakeredis.FakeRedis()
+    monkeypatch.setattr(
+        recall_webhook_handler.recall_config,
+        "get_webhook_secret",
+        AsyncMock(return_value="whsec_dGVzdA=="),
+    )
+    monkeypatch.setattr(
+        recall_webhook_handler,
+        "verify_recall_webhook_signature",
+        MagicMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        recall_webhook_handler,
+        "send_deal_task_async",
+        AsyncMock(side_effect=[RuntimeError("queue unavailable"), "task-123"]),
+    )
+    monkeypatch.setattr(recall_webhook_handler, "get_redis_client", lambda: redis)
+
+    payload = {"event": "bot.done", "data": {"bot": {"id": "bot_123"}}}
+    headers = {
+        "webhook-id": "msg_123",
+        "webhook-timestamp": "1710000000",
+        "webhook-signature": "v1,test",
+    }
+
+    client = _client()
+    first = client.post("/users/meeting-bot/recall/webhook", json=payload, headers=headers)
+    second = client.post("/users/meeting-bot/recall/webhook", json=payload, headers=headers)
+
+    assert first.status_code == 502
+    assert second.status_code == 200
+    assert recall_webhook_handler.send_deal_task_async.await_count == 2

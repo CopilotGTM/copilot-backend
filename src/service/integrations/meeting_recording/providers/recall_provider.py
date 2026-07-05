@@ -72,6 +72,16 @@ class RecallMeetingRecordingProvider:
             }
         }
 
+    @staticmethod
+    def _automatic_leave_config() -> dict[str, int]:
+        """Keep failed joins from staying in processing for Recall's longer defaults."""
+        return {
+            "waiting_room_timeout": 600,
+            "noone_joined_timeout": 600,
+            "in_call_not_recording_timeout": 300,
+            "recording_permission_denied_timeout": 30,
+        }
+
     async def create_session(
         self,
         *,
@@ -92,6 +102,7 @@ class RecallMeetingRecordingProvider:
             "join_at": join_at.isoformat(),
             "metadata": metadata,
             "recording_config": recording_config or self._recording_config(),
+            "automatic_leave": self._automatic_leave_config(),
         }
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             # Use a short-lived client per call to avoid carrying shared TCP state
@@ -122,6 +133,7 @@ class RecallMeetingRecordingProvider:
             "join_at": join_at.isoformat(),
             "metadata": metadata,
             "recording_config": recording_config or self._recording_config(),
+            "automatic_leave": self._automatic_leave_config(),
         }
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             response = await client.patch(

@@ -61,6 +61,10 @@ def _should_dispatch_insight_pipeline_after_summary(
     return not is_automated or job_metadata.get("source") == "recall_webhook"
 
 
+def _should_dispatch_summary_ready_notification(job_metadata: dict) -> bool:
+    return bool(job_metadata.get("send_summary_notification"))
+
+
 async def _dispatch_insight_pipeline_for_manual_summary(
     organisation_id: UUID,
     deal_id: UUID,
@@ -114,15 +118,43 @@ async def _dispatch_summary_ready_notification(
     organisation_id: UUID,
     deal_id: UUID | None,
     event_id: UUID,
+    source_summary_job_id: UUID,
 ) -> None:
-    """Queue summary-ready notifications without coupling I/O to generation.
+    """Create a durable notification job, then queue delivery work.
 
-    Notification delivery has its own idempotency table, so enqueue failure is
-    logged but never rolls back a completed summary.
+    Delivery rows are per-target idempotency. This job row is the upstream intent:
+    only summary jobs that explicitly create it may cause user-visible sends.
     """
     try:
+        notification_job_id: UUID | None = None
+        async for session in acquire_org_async_session(organisation_id):
+            job = DealJobs(
+                organisation_id=organisation_id,
+                user_id=AUTOMATED_PIPELINE_USER_ID,
+                job_type=DealJobType.MEETING_SUMMARY_NOTIFICATION,
+                deal_id=deal_id,
+                event_id=event_id,
+                status=JobStatus.PENDING,
+                job_metadata={
+                    "source": "meeting_summary_completed",
+                    "source_summary_job_id": str(source_summary_job_id),
+                },
+            )
+            session.add(job)
+            await session.flush()
+            notification_job_id = job.job_id
+            await session.commit()
+
+        if not notification_job_id:
+            raise RuntimeError("Meeting summary notification job was not created")
+
         send_meeting_summary_ready_notification_task.apply_async(
-            args=[str(organisation_id), str(deal_id) if deal_id else None, str(event_id)],
+            args=[
+                str(organisation_id),
+                str(deal_id) if deal_id else None,
+                str(event_id),
+                str(notification_job_id),
+            ],
             queue="deal_jobs",
         )
         logger.info(
@@ -132,6 +164,8 @@ async def _dispatch_summary_ready_notification(
                 "organisation_id": str(organisation_id),
                 "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
+                "job_id": str(notification_job_id),
+                "source_summary_job_id": str(source_summary_job_id),
             },
         )
     except Exception:
@@ -142,6 +176,7 @@ async def _dispatch_summary_ready_notification(
                 "organisation_id": str(organisation_id),
                 "deal_id": str(deal_id) if deal_id else None,
                 "event_id": str(event_id),
+                "source_summary_job_id": str(source_summary_job_id),
             },
         )
 
@@ -363,7 +398,8 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             },
         )
 
-        await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id)
+        if _should_dispatch_summary_ready_notification(job_metadata):
+            await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id, job_uuid)
 
         # Recall webhook jobs bypass the old process_deal_pipeline chain, so this
         # summary task must continue the downstream insight pipeline for that source.

@@ -63,6 +63,12 @@ class TestRecallMeetingRecordingProvider:
             ]
             == "prioritize_accuracy"
         )
+        assert kwargs["json"]["automatic_leave"] == {
+            "waiting_room_timeout": 600,
+            "noone_joined_timeout": 600,
+            "in_call_not_recording_timeout": 300,
+            "recording_permission_denied_timeout": 30,
+        }
 
     async def test_get_session_retrieves_bot(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
@@ -131,6 +137,8 @@ class TestRecallMeetingRecordingProvider:
         assert kwargs["json"]["meeting_url"] == "https://teams.example/join"
         assert kwargs["json"]["join_at"] == join_at.isoformat()
         assert kwargs["json"]["metadata"]["calendar_event_id"]
+        assert kwargs["json"]["automatic_leave"]["waiting_room_timeout"] == 600
+        assert kwargs["json"]["automatic_leave"]["in_call_not_recording_timeout"] == 300
 
     async def test_leave_call_posts_to_leave_endpoint(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
