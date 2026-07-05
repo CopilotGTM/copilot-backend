@@ -120,9 +120,95 @@ class DealCustomFieldWriteService:
                     f"Formula custom field '{key}' is read-only",
                     status_code=400,
                 )
-            coerced[key] = self.coerce_custom_value(key=key, value=value, data_type=data_type)
+            coerced_value = self.coerce_custom_value(key=key, value=value, data_type=data_type)
+            if data_type in {CRMCustomFieldDataType.SELECT, CRMCustomFieldDataType.MULTISELECT}:
+                self.validate_option_membership(key=key, value=coerced_value, field=field)
+            coerced[key] = coerced_value
 
         return coerced
+
+    async def validate_required_on_create(self, custom_properties: dict[str, Any]) -> None:
+        """Reject deal creation when active internal required fields are absent."""
+        missing_keys = await self._missing_required_keys(custom_properties)
+        if missing_keys:
+            raise DealWriteServiceError(
+                f"Missing required custom fields: {', '.join(missing_keys)}",
+                status_code=400,
+            )
+
+    async def validate_required_not_cleared(self, custom_properties: dict[str, Any]) -> None:
+        """Reject updates that explicitly clear active internal required fields."""
+        required_keys = {field.key for field in await self._load_required_internal_fields()}
+        cleared_keys = sorted(
+            key
+            for key, value in custom_properties.items()
+            if key in required_keys and self._is_missing_required_value(value)
+        )
+        if cleared_keys:
+            raise DealWriteServiceError(
+                f"Required custom fields cannot be cleared: {', '.join(cleared_keys)}",
+                status_code=400,
+            )
+
+    async def validate_required_for_terminal_transition(self, properties: dict[str, Any]) -> None:
+        """Reject closing a deal until all active internal required fields have values."""
+        missing_keys = await self._missing_required_keys(properties)
+        if missing_keys:
+            raise DealWriteServiceError(
+                f"Missing required custom fields: {', '.join(missing_keys)}",
+                status_code=400,
+            )
+
+    async def _missing_required_keys(self, properties: dict[str, Any]) -> list[str]:
+        required_fields = await self._load_required_internal_fields()
+        return sorted(
+            field.key
+            for field in required_fields
+            if self._is_missing_required_value(properties.get(field.key))
+        )
+
+    async def _load_required_internal_fields(self) -> list[CRMCustomFieldDefinition]:
+        stmt = select(CRMCustomFieldDefinition).where(
+            col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
+            col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
+            col(CRMCustomFieldDefinition.required).is_(True),
+            col(CRMCustomFieldDefinition.is_deleted).is_(False),
+            col(CRMCustomFieldDefinition.is_active).is_(True),
+        )
+        result = await self.session.execute(stmt)
+        fields = list(result.scalars().all())
+        return [field for field in fields if self._enforces_required_field(field)]
+
+    @staticmethod
+    def _enforces_required_field(field: CRMCustomFieldDefinition) -> bool:
+        source = (
+            field.field_source.value
+            if isinstance(field.field_source, CRMCustomFieldSource)
+            else str(field.field_source)
+        )
+        raw_data_type = (
+            field.data_type.value
+            if isinstance(field.data_type, CRMCustomFieldDataType)
+            else str(field.data_type)
+        )
+        return (
+            bool(field.required)
+            and bool(field.is_active)
+            and not bool(field.is_deleted)
+            and source == CRMCustomFieldSource.INTERNAL.value
+            and raw_data_type != CRMCustomFieldDataType.FORMULA.value
+        )
+
+    @staticmethod
+    def _is_missing_required_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
 
     def coerce_custom_value(
         self,
@@ -166,6 +252,45 @@ class DealCustomFieldWriteService:
             ) from exc
 
         return value
+
+    def validate_option_membership(
+        self,
+        *,
+        key: str,
+        value: Any,
+        field: CRMCustomFieldDefinition,
+    ) -> None:
+        """Reject select values that are not currently configured as active options."""
+        if self._is_missing_required_value(value):
+            return
+
+        field_options = field.options if isinstance(field.options, dict) else {}
+        allowed_values = self._active_option_values(field_options)
+        submitted_values = value if isinstance(value, list) else [value]
+        if any(str(item) not in allowed_values for item in submitted_values):
+            raise DealWriteServiceError(
+                f"Invalid option for custom field '{key}'",
+                status_code=400,
+            )
+
+    @staticmethod
+    def _active_option_values(options: dict[str, Any]) -> set[str]:
+        values = options.get("values")
+        if not isinstance(values, list):
+            return set()
+
+        active_values: set[str] = set()
+        for item in values:
+            if isinstance(item, dict):
+                if item.get("active") is False or item.get("is_active") is False:
+                    continue
+                option_value = item.get("value")
+            else:
+                option_value = item
+
+            if option_value is not None:
+                active_values.add(str(option_value).strip())
+        return active_values
 
     @staticmethod
     def parse_boolean(value: Any) -> bool:

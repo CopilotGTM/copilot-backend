@@ -112,6 +112,17 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         Index("ix_crm_stage_pipeline_order", "pipeline_id", "display_order"),
         Index("ix_crm_stage_org_name", "organisation_id", "name"),
         Index("ix_crm_deal_stage_pipeline_active", "pipeline_id", "is_active"),
+        Index(
+            "ux_crm_deal_stages_internal_active_stage_key",
+            "organisation_id",
+            "integration_id",
+            "pipeline_id",
+            "stage_key",
+            unique=True,
+            postgresql_where=text(
+                "is_deleted = false AND is_active = true AND stage_key IS NOT NULL"
+            ),
+        ),
         CheckConstraint(
             "(probability IS NULL) OR (probability >= 0 AND probability <= 100)",
             name="ck_crm_stage_probability",

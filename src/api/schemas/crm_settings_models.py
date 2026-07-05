@@ -6,7 +6,19 @@ These are lightweight endpoints to support frontend dropdown population.
 
 from __future__ import annotations
 
+from datetime import datetime
+from uuid import UUID
+
 from pydantic import BaseModel, Field
+
+
+class CRMSettingsLastChanged(BaseModel):
+    """Lightweight audit metadata shown on CRM settings rows."""
+
+    changed_at: datetime
+    actor_user_id: UUID | None = None
+    source: str
+    event_type: str
 
 
 class CurrencyOption(BaseModel):

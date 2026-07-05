@@ -31,6 +31,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.utils.pipeline_shape import mark_pipeline_usability
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.pipelines.pipeline_types import (
     NormalizedPipeline,
@@ -82,6 +83,7 @@ class HubSpotPipelineWriter:
             existing = existing_pipelines.get(pipeline.external_id)
             if existing is None:
                 row = self._new_pipeline_row(pipeline, now=now)
+                mark_pipeline_usability(row, pipeline.stages)
                 self.session.add(row)
                 await self._upsert_pipeline_mapping(pipeline, row.pipeline_id, now=now)
                 pipeline_map[pipeline.external_id] = row.pipeline_id
@@ -100,6 +102,7 @@ class HubSpotPipelineWriter:
                 else:
                     existing.is_active = True
                     result.pipelines_reactivated += 1
+                mark_pipeline_usability(existing, pipeline.stages)
                 pipeline_map[pipeline.external_id] = existing.pipeline_id
 
         # ── Pass B: stages ─────────────────────────────────────────────────

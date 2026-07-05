@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
+from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.internal.deal_write_service import DealWriteService
 
 
@@ -23,6 +24,28 @@ class _FakeOrgSession:
     async def flush(self) -> None:
         """Mirror AsyncSession.flush without needing a database."""
         return None
+
+    async def execute(self, _stmt: object) -> _DealIdsResult:
+        return _DealIdsResult([])
+
+
+class _DealIdsResult:
+    def __init__(self, deal_ids: list[object]) -> None:
+        self._deal_ids = deal_ids
+
+    def scalars(self) -> _DealIdsResult:
+        return self
+
+    def all(self) -> list[object]:
+        return self._deal_ids
+
+
+def _usable_stage_shape() -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(stage_id=uuid4(), stage_state="open"),
+        SimpleNamespace(stage_id=uuid4(), stage_state="won"),
+        SimpleNamespace(stage_id=uuid4(), stage_state="lost"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -56,6 +79,10 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
     stage = SimpleNamespace(stage_id=next_stage_id, name="Proposal")
 
     service._load_internal_deal = AsyncMock(return_value=deal)
+    service._load_pipeline = AsyncMock(
+        return_value=SimpleNamespace(pipeline_id=deal.pipeline_id, is_active=True)
+    )
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
     service._load_stage = AsyncMock(return_value=stage)
 
     updated = await service.move_stage(deal.deal_id, next_stage_id)
@@ -75,6 +102,99 @@ async def test_move_stage_records_previous_stage_context_and_updates_stage_times
     assert history.from_stage_id == previous_stage_id
     assert not hasattr(history, "from_stage_external_id")
     assert history.source == "api"
+
+
+@pytest.mark.asyncio
+async def test_move_stage_rejects_unusable_internal_pipeline() -> None:
+    session = _FakeOrgSession()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    pipeline_id = uuid4()
+    integration_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        pipeline_id=pipeline_id,
+        integration_id=integration_id,
+        stage_id=uuid4(),
+        stage_name="Qualification",
+        stage_entered_at=None,
+        stage_updated_at=None,
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+    stage = SimpleNamespace(stage_id=uuid4(), name="Closed Won", stage_state="won")
+
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._load_pipeline = AsyncMock(
+        return_value=SimpleNamespace(pipeline_id=pipeline_id, is_active=False)
+    )
+    service._load_pipeline_stages = AsyncMock(return_value=[stage])
+    service._load_stage = AsyncMock(return_value=stage)
+    service._projection = AsyncMock()
+    service._record_mutation_event = AsyncMock()
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.move_stage(deal.deal_id, stage.stage_id)
+
+    assert exc_info.value.status_code == 409
+    assert "open, won, and lost" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_move_stage_deals_moves_each_deal_from_source_to_destination_stage() -> None:
+    session = _FakeOrgSession()
+    session.execute = AsyncMock(return_value=_DealIdsResult([uuid4(), uuid4()]))  # type: ignore[attr-defined]
+    service = DealWriteService(
+        org_session=session,  # type: ignore[arg-type]
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    source_stage_id = uuid4()
+    destination_stage_id = uuid4()
+    pipeline_id = uuid4()
+    service._load_batch_stage = AsyncMock(
+        side_effect=[
+            SimpleNamespace(stage_id=source_stage_id, pipeline_id=pipeline_id),
+            SimpleNamespace(stage_id=destination_stage_id, pipeline_id=pipeline_id),
+        ]
+    )  # type: ignore[method-assign]
+    service.move_stage = AsyncMock(side_effect=[SimpleNamespace(), SimpleNamespace()])  # type: ignore[method-assign]
+
+    moved_count = await service.move_stage_deals(
+        source_stage_id,
+        destination_stage_id,
+        pipeline_id=pipeline_id,
+    )
+
+    assert moved_count == 2
+    assert service.move_stage.await_count == 2
+    assert [call.args[1] for call in service.move_stage.await_args_list] == [
+        destination_stage_id,
+        destination_stage_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_move_stage_deals_rejects_same_source_and_destination_stage() -> None:
+    service = DealWriteService(
+        org_session=_FakeOrgSession(),  # type: ignore[arg-type]
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    stage_id = uuid4()
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.move_stage_deals(stage_id, stage_id)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Source and destination stages must be different"
 
 
 @pytest.mark.asyncio
@@ -98,6 +218,7 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
 
     service._get_default_pipeline = AsyncMock(return_value=pipeline)
     service._get_first_stage = AsyncMock(return_value=stage)
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
 
     with patch(
         "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
@@ -144,6 +265,7 @@ async def test_create_deal_projects_deal_created_and_initial_stage_history() -> 
 
     service._get_default_pipeline = AsyncMock(return_value=pipeline)
     service._get_first_stage = AsyncMock(return_value=stage)
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
     service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
     service._projection = projection  # type: ignore[assignment]
 
@@ -194,6 +316,10 @@ async def test_move_stage_projects_created_stage_history() -> None:
     projection = AsyncMock()
 
     service._load_internal_deal = AsyncMock(return_value=deal)
+    service._load_pipeline = AsyncMock(
+        return_value=SimpleNamespace(pipeline_id=deal.pipeline_id, is_active=True)
+    )
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
     service._load_stage = AsyncMock(return_value=stage)
     service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
     service._projection = projection  # type: ignore[assignment]
@@ -232,6 +358,7 @@ async def test_create_deal_with_owner_syncs_owner_participant_and_created_event_
 
     service._get_default_pipeline = AsyncMock(return_value=pipeline)
     service._get_first_stage = AsyncMock(return_value=stage)
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
     service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
     service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
 
@@ -280,6 +407,7 @@ async def test_create_deal_records_initial_core_fields_without_update_semantics(
 
     service._get_default_pipeline = AsyncMock(return_value=pipeline)
     service._get_first_stage = AsyncMock(return_value=stage)
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
 
     with patch(
         "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",

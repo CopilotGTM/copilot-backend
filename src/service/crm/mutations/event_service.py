@@ -120,6 +120,27 @@ class CRMMutationEventService:
         )
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def latest_events_by_entity(
+        self, entity_type: str, entity_ids: list[UUID]
+    ) -> dict[UUID, CRMDealMutationEvent]:
+        """Return the newest mutation event for each requested entity id."""
+        if not entity_ids:
+            return {}
+        stmt = (
+            select(CRMDealMutationEvent)
+            .where(
+                col(CRMDealMutationEvent.organisation_id) == self.organisation_id,
+                col(CRMDealMutationEvent.entity_type) == entity_type,
+                col(CRMDealMutationEvent.entity_id).in_(entity_ids),
+            )
+            .order_by(col(CRMDealMutationEvent.occurred_at).desc())
+        )
+        result = await self.session.execute(stmt)
+        events: dict[UUID, CRMDealMutationEvent] = {}
+        for event in result.scalars().all():
+            events.setdefault(event.entity_id, event)
+        return events
+
     @staticmethod
     def _payload_hash(
         *,

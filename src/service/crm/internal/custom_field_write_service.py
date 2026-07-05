@@ -31,16 +31,19 @@ Key design decisions:
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.api.schemas.crm_custom_field_models import (
     CreateCustomFieldRequest,
+    ReorderCustomFieldsRequest,
     UpdateCustomFieldRequest,
 )
+from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldDataType,
     CRMCustomFieldDefinition,
@@ -49,6 +52,9 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.crm.mutations.contracts import CRMMutationContext, CRMMutationRecordCommand
+from src.service.crm.mutations.event_service import CRMMutationEventService
+from src.service.crm.mutations.json_safe import changed_field
 
 logger = get_logger(__name__)
 
@@ -61,6 +67,26 @@ _KEY_NORMALIZE_RE = re.compile(r"[^a-z0-9_]+")
 # avoids surprising users who created a formula via CSV import and want to
 # edit it from the UI.
 _SUPPORTED_FORMULA_OPS = frozenset({"add", "sub", "mul", "div", "concat", "coalesce", "if"})
+_CUSTOM_FIELD_AUDIT_FIELDS = (
+    "label",
+    "required",
+    "is_active",
+    "display_order",
+    "description",
+    "options",
+    "validation",
+    "formula",
+)
+
+
+def _normalise_timestamp(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _same_timestamp(left: datetime, right: datetime) -> bool:
+    return _normalise_timestamp(left) == _normalise_timestamp(right)
 
 
 class CustomFieldWriteServiceError(Exception):
@@ -85,6 +111,7 @@ class CustomFieldWriteService:
         self.session = session
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self._mutation_events = CRMMutationEventService(session, organisation_id)
 
     async def close(self) -> None:
         try:
@@ -129,6 +156,33 @@ class CustomFieldWriteService:
     async def get_field(self, field_id: UUID) -> CRMCustomFieldDefinition:
         """Load a single non-deleted definition by id, scoped to this org."""
         return await self._load_field(field_id)
+
+    async def count_deal_usage_by_field_key(self, keys: list[str]) -> dict[str, int]:
+        if not keys:
+            return {}
+
+        stmt = (
+            select(CRMCustomFieldDefinition.key, func.count(CRMDeal.deal_id))
+            .select_from(CRMCustomFieldDefinition)
+            .outerjoin(
+                CRMDeal,
+                and_(
+                    col(CRMDeal.organisation_id) == self.organisation_id,
+                    col(CRMDeal.is_deleted).is_(False),
+                    col(CRMDeal.properties).op("?")(col(CRMCustomFieldDefinition.key)),
+                ),
+            )
+            .where(
+                col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
+                col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+                col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
+                col(CRMCustomFieldDefinition.is_deleted).is_(False),
+                col(CRMCustomFieldDefinition.key).in_(keys),
+            )
+            .group_by(CRMCustomFieldDefinition.key)
+        )
+        result = await self.session.execute(stmt)
+        return {key: int(count or 0) for key, count in result.all()}
 
     # ---------------------------------------------------------------- writes
 
@@ -181,6 +235,13 @@ class CustomFieldWriteService:
         )
         self.session.add(field)
         await self.session.flush()
+        await self._record_settings_event(
+            entity_id=field.field_id,
+            operation="custom_field.create",
+            event_type="crm.settings.custom_field.created",
+            changed_fields=self._created_field_changes(field),
+            summary=f"Created custom column {field.key}",
+        )
         await self.session.commit()
         await self.session.refresh(field)
         return field
@@ -200,10 +261,19 @@ class CustomFieldWriteService:
         of what an upstream caller might try.
         """
         field = await self._load_field(field_id)
+        if request.if_updated_at is None:
+            raise CustomFieldWriteServiceError("if_updated_at is required", status_code=400)
+        if not _same_timestamp(field.updated_at, request.if_updated_at):
+            raise CustomFieldWriteServiceError(
+                "Custom column changed since it was loaded. Refresh and retry.",
+                status_code=409,
+            )
+
+        before = self._field_snapshot(field)
 
         # Only mutate fields the caller actually sent — exclude_unset matters
         # so that None values from the schema don't blank out existing data.
-        payload = request.model_dump(exclude_unset=True)
+        payload = request.model_dump(exclude_unset=True, exclude={"if_updated_at"})
 
         if "label" in payload:
             field.label = self._normalize_label(payload["label"])
@@ -232,11 +302,65 @@ class CustomFieldWriteService:
             current_key=field.key,
         )
 
+        field.updated_at = utcnow()
         self.session.add(field)
         await self.session.flush()
+        await self._record_settings_event(
+            entity_id=field.field_id,
+            operation="custom_field.update",
+            event_type="crm.settings.custom_field.updated",
+            changed_fields=self._diff_snapshot(before, self._field_snapshot(field)),
+            summary=f"Updated custom column {field.key}",
+        )
         await self.session.commit()
         await self.session.refresh(field)
         return field
+
+    async def reorder_fields(
+        self, request: ReorderCustomFieldsRequest
+    ) -> list[CRMCustomFieldDefinition]:
+        """Save custom-column order for one entity as a complete-list write."""
+        if len(set(request.field_ids)) != len(request.field_ids):
+            raise CustomFieldWriteServiceError(
+                "Duplicate custom column ids are not allowed",
+                status_code=400,
+            )
+
+        fields = await self._load_reorderable_fields(request.entity, for_update=True)
+        fields_by_id = {field.field_id: field for field in fields}
+        if set(request.field_ids) != set(fields_by_id):
+            raise CustomFieldWriteServiceError(
+                "Custom column reorder must include every non-deleted custom column "
+                "for this entity.",
+                status_code=409,
+            )
+
+        request_version = _normalise_timestamp(request.if_updated_at)
+        if any(_normalise_timestamp(field.updated_at) > request_version for field in fields):
+            raise CustomFieldWriteServiceError(
+                "Custom columns changed since they were loaded. Refresh and retry.",
+                status_code=409,
+            )
+
+        now = utcnow()
+        for display_order, field_id in enumerate(request.field_ids, start=1):
+            field = fields_by_id[field_id]
+            before_order = field.display_order
+            field.display_order = display_order
+            field.updated_at = now
+            if change := changed_field(before_order, display_order):
+                await self._record_settings_event(
+                    entity_id=field.field_id,
+                    operation="custom_field.reorder",
+                    event_type="crm.settings.custom_field.reordered",
+                    changed_fields={"display_order": change},
+                    summary=f"Reordered custom column {getattr(field, 'key', field.field_id)}",
+                )
+
+        await self.session.flush()
+        await self.session.commit()
+        fields = await self._load_reorderable_fields(request.entity)
+        return sorted(fields, key=lambda field: field.display_order or 0)
 
     async def delete_field(self, field_id: UUID) -> None:
         """Soft-delete a custom column. Blocked if any deal currently uses it.
@@ -262,11 +386,87 @@ class CustomFieldWriteService:
                 status_code=409,
             )
 
+        before = {"is_active": field.is_active, "is_deleted": getattr(field, "is_deleted", False)}
         field.is_deleted = True
         field.is_active = False
         self.session.add(field)
         await self.session.flush()
+        await self._record_settings_event(
+            entity_id=field.field_id,
+            operation="custom_field.delete",
+            event_type="crm.settings.custom_field.deleted",
+            changed_fields=self._diff_snapshot(
+                before,
+                {"is_active": field.is_active, "is_deleted": field.is_deleted},
+            ),
+            summary=f"Deleted custom column {field.key}",
+        )
         await self.session.commit()
+
+    async def restore_field(
+        self, field_id: UUID, *, if_updated_at: datetime
+    ) -> CRMCustomFieldDefinition:
+        field = await self._load_field(field_id)
+        if not _same_timestamp(field.updated_at, if_updated_at):
+            raise CustomFieldWriteServiceError(
+                "Custom column changed since it was loaded. Refresh and retry.",
+                status_code=409,
+            )
+        if field.is_active:
+            raise CustomFieldWriteServiceError("Custom column is already active.", status_code=409)
+
+        before = {"is_active": field.is_active}
+        field.is_active = True
+        await self._validate_definition(
+            entity=CRMCustomFieldEntity(field.entity_type),
+            data_type=CRMCustomFieldDataType(field.data_type),
+            options=field.options or {},
+            formula=field.formula,
+            current_key=field.key,
+        )
+        field.updated_at = utcnow()
+        self.session.add(field)
+        await self.session.flush()
+        await self._record_settings_event(
+            entity_id=field.field_id,
+            operation="custom_field.restore",
+            event_type="crm.settings.custom_field.restored",
+            changed_fields=self._diff_snapshot(before, {"is_active": field.is_active}),
+            summary=f"Restored custom column {field.key}",
+        )
+        await self.session.commit()
+        await self.session.refresh(field)
+        return field
+
+    async def clear_field_values(self, field_id: UUID) -> int:
+        field = await self._load_field(field_id)
+        if field.is_predefined:
+            raise CustomFieldWriteServiceError(
+                "Predefined custom columns cannot be cleared.",
+                status_code=409,
+            )
+        if field.is_active:
+            raise CustomFieldWriteServiceError(
+                "Archive the custom column before clearing its values.",
+                status_code=409,
+            )
+
+        deal_count = await self._count_deals_using_field(field.key)
+        if deal_count == 0:
+            return 0
+
+        stmt = (
+            update(CRMDeal)
+            .where(
+                col(CRMDeal.organisation_id) == self.organisation_id,
+                col(CRMDeal.is_deleted).is_(False),
+                col(CRMDeal.properties).op("?")(field.key),
+            )
+            .values(properties=col(CRMDeal.properties).op("-")(field.key))
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        return deal_count
 
     async def validate_formula(
         self, *, entity: CRMCustomFieldEntity, formula: dict[str, Any]
@@ -283,6 +483,55 @@ class CustomFieldWriteService:
 
     # --------------------------------------------------------------- helpers
 
+    async def _record_settings_event(
+        self,
+        *,
+        entity_id: UUID,
+        operation: str,
+        event_type: str,
+        changed_fields: dict[str, dict[str, Any]],
+        summary: str,
+    ) -> None:
+        await self._mutation_events.record_event(
+            CRMMutationRecordCommand(
+                entity_type="custom_field",
+                entity_id=entity_id,
+                event_type=event_type,
+                operation=operation,
+                changed_fields=changed_fields,
+                semantic_event_types=[event_type],
+                context=CRMMutationContext(source="api", actor_user_id=self.user_id),
+                summary=summary,
+            )
+        )
+
+    @staticmethod
+    def _created_field_changes(field: CRMCustomFieldDefinition) -> dict[str, dict[str, Any]]:
+        return {
+            "key": {"old": None, "new": field.key},
+            "entity_type": {"old": None, "new": field.entity_type},
+            "data_type": {"old": None, "new": field.data_type},
+            **{
+                name: {"old": None, "new": getattr(field, name)}
+                for name in _CUSTOM_FIELD_AUDIT_FIELDS
+            },
+        }
+
+    @staticmethod
+    def _field_snapshot(field: CRMCustomFieldDefinition) -> dict[str, Any]:
+        return {name: getattr(field, name) for name in _CUSTOM_FIELD_AUDIT_FIELDS}
+
+    @staticmethod
+    def _diff_snapshot(
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            name: change
+            for name, old in before.items()
+            if (change := changed_field(old, after.get(name))) is not None
+        }
+
     async def _load_field(self, field_id: UUID) -> CRMCustomFieldDefinition:
         stmt = select(CRMCustomFieldDefinition).where(
             col(CRMCustomFieldDefinition.field_id) == field_id,
@@ -295,6 +544,27 @@ class CustomFieldWriteService:
         if not field:
             raise CustomFieldWriteServiceError("Custom column not found", status_code=404)
         return field
+
+    async def _load_reorderable_fields(
+        self, entity: CRMCustomFieldEntity, *, for_update: bool = False
+    ) -> list[CRMCustomFieldDefinition]:
+        stmt = (
+            select(CRMCustomFieldDefinition)
+            .where(
+                col(CRMCustomFieldDefinition.organisation_id) == self.organisation_id,
+                col(CRMCustomFieldDefinition.entity_type) == entity.value,
+                col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.INTERNAL.value,
+                col(CRMCustomFieldDefinition.is_deleted).is_(False),
+            )
+            .order_by(
+                col(CRMCustomFieldDefinition.display_order).asc().nulls_last(),
+                col(CRMCustomFieldDefinition.created_at).asc(),
+            )
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def _key_exists(self, entity: CRMCustomFieldEntity, key: str) -> bool:
         stmt = select(col(CRMCustomFieldDefinition.field_id)).where(
@@ -337,6 +607,7 @@ class CustomFieldWriteService:
                     "Select and multiselect columns require a non-empty options.values list",
                     status_code=400,
                 )
+            self._validate_option_values(values)
 
         if data_type != CRMCustomFieldDataType.FORMULA and formula is not None:
             raise CustomFieldWriteServiceError(
@@ -351,6 +622,24 @@ class CustomFieldWriteService:
                     status_code=400,
                 )
             await self._validate_formula(entity=entity, formula=formula, current_key=current_key)
+
+    def _validate_option_values(self, values: list[Any]) -> None:
+        normalized_values: list[str] = []
+        for item in values:
+            value = item.get("value") if isinstance(item, dict) else item
+            normalized = "" if value is None else str(value).strip()
+            if not normalized:
+                raise CustomFieldWriteServiceError(
+                    "Select and multiselect option values cannot be empty",
+                    status_code=400,
+                )
+            normalized_values.append(normalized)
+
+        if len(set(normalized_values)) != len(normalized_values):
+            raise CustomFieldWriteServiceError(
+                "Select and multiselect option values must be unique",
+                status_code=400,
+            )
 
     async def _validate_formula(
         self,

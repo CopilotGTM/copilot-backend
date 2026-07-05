@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.utils.pipeline_shape import mark_pipeline_usability
 
 logger = get_logger(__name__)
 
@@ -29,6 +30,8 @@ logger = get_logger(__name__)
 DEFAULT_PIPELINE_NAME = "Default Pipeline"
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
+# The built-in pipeline is intentionally complete, so a newly provisioned org
+# can create, close, and reopen deals before any custom pipeline setup exists.
 DEFAULT_STAGES: list[dict[str, Any]] = [
     {
         "name": "Qualification",
@@ -89,6 +92,8 @@ DEFAULT_STAGES: list[dict[str, Any]] = [
 
 @dataclass
 class InternalCRMSetupResult:
+    """Provisioning snapshot returned after ensuring internal CRM records exist."""
+
     integration: KnowledgeIntegration
     pipeline: CRMPipeline
     stages: list[CRMDealStage]
@@ -206,7 +211,9 @@ class InternalCRMSetupService:
                 display_order=0,
                 synced_at=now,
                 last_seen_at=now,
-                properties={"source": "internal_crm"},
+                # Default stages are created from DEFAULT_STAGES, which includes
+                # open/won/lost states; deal writes may use this pipeline immediately.
+                properties={"source": "internal_crm", "usable_for_internal_deals": True},
             )
             self.session.add(pipeline)
             await self.session.flush()
@@ -252,6 +259,11 @@ class InternalCRMSetupService:
         if stages:
             await self.session.flush()
 
+        # Existing orgs may have the default rows but not the newer usability
+        # metadata; setup/repair is the one place that should normalize them.
+        mark_pipeline_usability(pipeline, stages)
+        await self.session.flush()
+
         return pipeline, stages
 
     async def create_import_pipeline(
@@ -288,11 +300,13 @@ class InternalCRMSetupService:
             label=pipeline_name,
             object_type="deals",
             is_default=False,
-            is_active=True,
+            # Imported pipelines start locked until their stage list proves the
+            # shape can support open, won, and lost deal lifecycle actions.
+            is_active=False,
             display_order=1,
             synced_at=now,
             last_seen_at=now,
-            properties={"source": "csv_import"},
+            properties={"source": "csv_import", "usable_for_internal_deals": False},
         )
         self.session.add(pipeline)
         await self.session.flush()
@@ -333,6 +347,8 @@ class InternalCRMSetupService:
             created_stages.append(stage)
 
         if created_stages:
+            # Activate imported pipelines only when the imported stage shape is complete.
+            mark_pipeline_usability(pipeline, created_stages)
             await self.session.flush()
 
         logger.info(

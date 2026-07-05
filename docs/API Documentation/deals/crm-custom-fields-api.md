@@ -2,7 +2,7 @@
 
 > Version: 2.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-27
+> Last Updated: 2026-07-05
 
 ---
 
@@ -14,6 +14,11 @@ CRM deals have two kinds of fields:
 - **Custom columns** — defined per organisation to track domain-specific data (for example "Priority", "Implementation Effort %", "Renewal Risk Score"). Each organisation manages its own list.
 
 This API powers the **Settings → Custom Columns** page where users create, rename, and remove their organisation's custom columns. The same definitions are also consumed by the deal detail view through `custom_column_definitions`; `GET /users/crm/deals/{deal_id}` returns the per-deal `custom_columns` values. The standard deal list/search responses are intentionally lightweight and do not include custom values.
+
+For create/edit/import/agent metadata, use `GET /users/crm/schema?entity=deal`.
+That endpoint combines standard deal fields, active internal custom columns, and
+provider-mirrored fields with writeability and validation flags. This settings
+API remains the CRUD surface for internally-owned custom columns only.
 
 A custom column has two name fields you should understand before reading the rest of this doc:
 
@@ -37,8 +42,9 @@ This API is for **internally-managed** custom columns. Externally-synced fields 
 
 | API | Relationship | Documentation |
 |-----|-------------|---------------|
+| **CRM Schema** | Canonical field metadata for deal create/edit/import/agent consumers, including provider fields marked read-only | `crm-deals-api.md` |
 | **CRM Deals** | Deals carry custom column values inside `properties` JSONB; deal detail returns `custom_columns` and `custom_column_definitions` using definitions from this API | `crm-deals-api.md` |
-| **CRM Deals Import** | CSV import uses a separate (bulk-flavoured) service to auto-create custom column definitions when an import sees an unrecognised `custom_*` column | `crm-deals-import-api.md` |
+| **CRM Deals Import** | CSV import routes are currently reserved/disabled; when rebuilt, import mapping should consume `GET /users/crm/schema?entity=deal` instead of reconstructing custom-field rules | `crm-deals-import-api.md` |
 | **CRM Pipelines** | Standard pipeline/stage fields, separate from custom columns | `crm-pipelines-api.md` |
 
 ---
@@ -180,9 +186,14 @@ If the count is greater than zero, the API returns `409` with the affected deal 
 
 > `Cannot delete custom column 'priority': 7 deal(s) currently use this column. Remove the column data from those deals first.`
 
-There is **no migration path** in this version — you cannot ask the API to bulk-clear the column's value or move values to another column as part of the delete. Callers must remove the value from those deals themselves (via the deals API) and retry the delete.
+To remove a used column safely, archive it first, clear its values with
+`POST /users/crm/custom-fields/{field_id}/clear-values`, then retry delete.
+Field-to-field migration is still out of scope because it needs type
+compatibility and conflict-policy decisions.
 
-**Why this matters**: this protects users from accidentally losing sales data. A future enhancement may add an opt-in "delete and clear" parameter, but for now the strict block is intentional.
+**Why this matters**: this protects users from accidentally losing sales data.
+Clearing values is an explicit second action and is allowed only after the
+column has been archived.
 
 ### Predefined columns cannot be deleted
 
@@ -206,8 +217,8 @@ The value type a column accepts. Set at creation time, immutable afterward.
 | `boolean` | Yes/No flag | boolean | |
 | `date` | Date only | string (ISO `YYYY-MM-DD`) | |
 | `datetime` | Date + time | string (ISO 8601) | |
-| `select` | Single value from a fixed list | string | **Requires** `options.values` (non-empty list of strings) |
-| `multiselect` | Multiple values from a fixed list | array of strings | **Requires** `options.values` |
+| `select` | Single value from a fixed list | string | **Requires** `options.values` (non-empty list of strings or option objects) |
+| `multiselect` | Multiple values from a fixed list | array of strings | **Requires** `options.values` (same option shape as `select`) |
 | `formula` | Computed value derived from other columns | (computed) | **Requires** `formula` payload; cannot reference itself; all referenced keys must already exist |
 
 Deal create/update value coercion:
@@ -216,6 +227,39 @@ Deal create/update value coercion:
 - `integer` accepts whole numbers and whole-number strings only; fractional values are rejected.
 - `percentage` must resolve to a number from `0` through `100`.
 - `boolean` accepts JSON booleans, standard true/false strings (`true`, `false`, `yes`, `no`, `y`, `n`), and numeric `0` or `1`; other numeric values are rejected.
+- `select` values must match one active configured option value after trimming.
+- `multiselect` values are stored as an array of strings; every submitted value must match one active configured option value after trimming.
+
+### Select and multiselect option shape
+
+`options.values` is required for `select` and `multiselect`. The current write
+validator matches deal values against the stored option `value` exactly after
+trimming. Option values must be non-empty and unique after trimming. The simplest
+supported shape is a string array:
+
+```json
+{
+  "options": { "values": ["High", "Medium", "Low"] }
+}
+```
+
+The API also preserves option objects so frontend clients can carry labels and
+future stable option ids without another contract change:
+
+```json
+{
+  "options": {
+    "values": [
+      { "id": "opt_high", "value": "High", "label": "High", "active": true },
+      { "id": "opt_low", "value": "Low", "label": "Low", "active": true }
+    ]
+  }
+}
+```
+
+For new deal writes, an option object is considered removed when `active: false`
+or `is_active: false`; removed values are rejected even if they remain in the
+definition for display/history.
 
 ### `entity_type`
 
@@ -278,6 +322,21 @@ export type CRMCustomFieldDataType =
 
 export type CRMCustomFieldEntity = 'deal';
 
+export interface CRMSettingsLastChanged {
+  changed_at: ISODate;
+  actor_user_id: UUID | null;
+  source: string;
+  event_type: string;
+}
+
+export interface CustomFieldOption {
+  value: string;                        // Stored value used by deal writes
+  label?: string;                       // Optional display label
+  id?: string;                          // Future stable option id, preserved when supplied
+  active?: boolean;                     // false means removed for new writes
+  is_active?: boolean;                  // accepted alias for active
+}
+
 /**
  * Custom column definition returned by GET / POST / PATCH endpoints.
  *
@@ -296,9 +355,11 @@ export interface CustomFieldDefinitionItem {
   is_active: boolean;                   // Hidden from active use when false
   display_order: number | null;
   description: string | null;
-  options: Record<string, unknown>;     // For select/multiselect: { values: string[] }
+  options: Record<string, unknown>;     // For select/multiselect: { values: Array<string | CustomFieldOption> }
   validation: Record<string, unknown>;  // Type-specific validation rules
   formula: Record<string, unknown> | null;  // Only set when data_type === "formula"
+  usage_count: number | null;           // Filled by list reads; null on write responses
+  last_changed: CRMSettingsLastChanged | null;  // Latest settings audit event, null if no history
   created_at: ISODate;
   updated_at: ISODate;
 }
@@ -339,10 +400,27 @@ export interface UpdateCustomFieldRequest {
   required?: boolean | null;
   is_active?: boolean | null;
   display_order?: number | null;
+  if_updated_at: string;               // Required optimistic-concurrency guard
   description?: string | null;
   options?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
   formula?: Record<string, unknown> | null;
+}
+
+/**
+ * Request to save the full custom-column order for one entity.
+ *
+ * if_updated_at is the max CustomFieldDefinitionItem.updated_at value from the
+ * list the client loaded before editing.
+ */
+export interface ReorderCustomFieldsRequest {
+  entity?: CRMCustomFieldEntity;       // Default: "deal"
+  field_ids: UUID[];                   // Complete ordered list for this entity
+  if_updated_at: string;               // ISO timestamp high-water mark from the loaded list
+}
+
+export interface RestoreCustomFieldRequest {
+  if_updated_at: string;               // CustomFieldDefinitionItem.updated_at from the archived row
 }
 
 /**
@@ -375,6 +453,18 @@ export interface CustomFieldResponse {
   status: 'SUCCESS' | 'ERROR';
   message: string;
   data: CustomFieldDefinitionItem;
+}
+
+export interface ReorderCustomFieldsResponse {
+  status: 'SUCCESS' | 'ERROR';
+  message: string;
+  data: CustomFieldDefinitionItem[];
+}
+
+export interface ClearCustomFieldValuesResponse {
+  status: 'SUCCESS' | 'ERROR';
+  message: string;
+  data: { cleared_deal_count: number };
 }
 ```
 
@@ -432,7 +522,7 @@ function parseInUseError(message: string): { count: number } | null {
 GET /users/crm/custom-fields
 ```
 
-Returns custom column definitions for the authenticated user's organisation, sorted predefined-first then by `display_order` ascending (nulls last) then by `created_at`.
+Returns custom column definitions for the authenticated user's organisation, sorted predefined-first then by `display_order` ascending (nulls last) then by `created_at`. `usage_count` is the number of non-deleted deals whose `properties` JSONB contains the column key.
 
 #### Query Parameters
 
@@ -468,8 +558,15 @@ GET /users/crm/custom-fields?entity=deal&include_inactive=false
       "options": { "values": ["High", "Medium", "Low"] },
       "validation": {},
       "formula": null,
+      "usage_count": 7,
+      "last_changed": {
+        "changed_at": "2026-07-05T10:00:00Z",
+        "actor_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "source": "api",
+        "event_type": "crm.settings.custom_field.updated"
+      },
       "created_at": "2026-04-08T10:00:00Z",
-      "updated_at": "2026-04-08T10:00:00Z"
+      "updated_at": "2026-07-05T10:00:00Z"
     },
     {
       "field_id": "d2e3f4a5-b6c7-8901-defa-234567890abc",
@@ -485,6 +582,8 @@ GET /users/crm/custom-fields?entity=deal&include_inactive=false
       "options": {},
       "validation": {},
       "formula": null,
+      "usage_count": 0,
+      "last_changed": null,
       "created_at": "2026-04-08T10:05:00Z",
       "updated_at": "2026-04-08T10:05:00Z"
     }
@@ -540,7 +639,7 @@ Creates a new custom column under the calling user's organisation. Validates tha
 | `data_type` | Required `options` | Required `formula` |
 |-------------|--------------------|---------------------|
 | `text`, `integer`, `number`, `currency`, `percentage`, `boolean`, `date`, `datetime` | None | Must be omitted or null |
-| `select`, `multiselect` | `options.values` must be a non-empty array of strings | Must be omitted or null |
+| `select`, `multiselect` | `options.values` must be a non-empty array of unique, non-empty strings or option objects with `value` | Must be omitted or null |
 | `formula` | None | Must be a JSON object using the formula DSL; all referenced keys must already exist in the org |
 
 #### Auto-resolution behaviours
@@ -549,7 +648,7 @@ Creates a new custom column under the calling user's organisation. Validates tha
 - **`label` trimming**: Leading/trailing whitespace removed; empty result is rejected with 400.
 - **`is_predefined` override**: Always set to `false` server-side. Predefined columns are seeded by admin scripts only.
 
-#### Example Request — simple text column
+#### Example Request — select column
 
 ```json
 {
@@ -600,6 +699,8 @@ Creates a new custom column under the calling user's organisation. Validates tha
     "options": { "values": ["High", "Medium", "Low"] },
     "validation": {},
     "formula": null,
+    "usage_count": null,
+    "last_changed": null,
     "created_at": "2026-04-09T08:00:00Z",
     "updated_at": "2026-04-09T08:00:00Z"
   }
@@ -614,6 +715,8 @@ Creates a new custom column under the calling user's organisation. Validates tha
 | `400` | `"Column key cannot be empty"` | Key is empty after normalisation |
 | `400` | `"Column label cannot be empty"` | Label is whitespace-only |
 | `400` | `"Select and multiselect columns require a non-empty options.values list"` | `data_type` is `select`/`multiselect` and `options.values` is missing or empty |
+| `400` | `"Select and multiselect option values cannot be empty"` | `options.values` contains an empty string or object without a value |
+| `400` | `"Select and multiselect option values must be unique"` | `options.values` contains duplicate values after trimming |
 | `400` | `"Formula payload is only allowed when data_type='formula'"` | Caller passed `formula` for a non-formula type |
 | `400` | `"Formula columns require a formula payload"` | `data_type=formula` but no `formula` body |
 | `400` | `"Formula cannot reference its own column key"` | The formula references the column being created |
@@ -626,7 +729,88 @@ Creates a new custom column under the calling user's organisation. Validates tha
 
 ---
 
-### 3. Update Custom Column
+### 3. Reorder Custom Columns
+
+```http
+PATCH /users/crm/custom-fields/reorder
+```
+
+Saves the full custom-column order for one entity in a single transaction. This is the preferred endpoint for drag-and-drop ordering in the custom columns settings UI.
+
+The request must include every non-deleted internal custom column for the entity exactly once. Partial lists, duplicate ids, deleted ids, and ids from another organisation/entity/source are rejected before any `display_order` values are changed.
+
+#### Request Body
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| `entity` | string | Optional; currently only `"deal"` | Entity whose custom columns are being reordered |
+| `field_ids` | UUID[] | Required, non-empty, no duplicates | Complete ordered list of non-deleted field ids for the entity |
+| `if_updated_at` | ISO datetime string | Required | Max `updated_at` value from the custom-field list the client loaded before editing |
+
+#### Concurrency rule
+
+The service row-locks the current non-deleted internal fields for the entity. If any current field has `updated_at` later than `if_updated_at`, the request returns `409` and no order values are updated.
+
+Because this is a complete-list operation, newly created/deleted fields are also caught: the current field-id set must exactly match the submitted `field_ids` set.
+
+#### Example Request
+
+```json
+{
+  "entity": "deal",
+  "field_ids": [
+    "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
+    "d2e3f4a5-b6c7-8901-defa-234567890abc",
+    "e3f4a5b6-c7d8-9012-efab-34567890abcd"
+  ],
+  "if_updated_at": "2026-07-05T04:25:00Z"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Custom columns reordered",
+  "data": [
+    {
+      "field_id": "c1d2e3f4-a5b6-7890-cdef-1234567890ab",
+      "entity": "deal",
+      "key": "priority",
+      "label": "Priority",
+      "data_type": "select",
+      "required": false,
+      "is_predefined": false,
+      "is_active": true,
+      "display_order": 1,
+      "description": null,
+      "options": { "values": ["High", "Medium", "Low"] },
+      "validation": {},
+      "formula": null,
+      "usage_count": null,
+      "last_changed": null,
+      "created_at": "2026-04-09T08:00:00Z",
+      "updated_at": "2026-07-05T04:30:00Z"
+    }
+  ]
+}
+```
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | `"Duplicate custom column ids are not allowed"` | `field_ids` contains the same id more than once |
+| `409` | `"Custom columns changed since they were loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `409` | `"Custom column reorder must include every non-deleted custom column for this entity."` | Missing field id, foreign/provider/deleted field id, or newly-created field not in the list |
+| `422` | Pydantic validation error | Missing `field_ids`/`if_updated_at` or invalid UUID/datetime |
+| `429` | `"Too many requests ..."` | Rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+### 4. Update Custom Column
 
 ```http
 PATCH /users/crm/custom-fields/{field_id}
@@ -642,7 +826,7 @@ Partial update — only send fields you want to change. Omitted fields are untou
 
 #### Request Body
 
-All fields optional. Only send what you want to change. The schema does **not** expose `key`, `data_type`, `entity`, or `is_predefined` — those are immutable.
+Only send fields you want to change, plus the required `if_updated_at` precondition. The schema does **not** expose `key`, `data_type`, `entity`, or `is_predefined` — those are immutable.
 
 | Field | Type | Validation | Description |
 |-------|------|------------|-------------|
@@ -650,8 +834,9 @@ All fields optional. Only send what you want to change. The schema does **not** 
 | `required` | boolean | — | Whether this column is required on deal create/update |
 | `is_active` | boolean | — | Hide from active use without deleting (set `false` to archive) |
 | `display_order` | integer or null | — | Sort hint for the settings UI |
+| `if_updated_at` | ISO datetime string | Required | `CustomFieldDefinitionItem.updated_at` from the loaded row; stale values return `409` |
 | `description` | string or null | Max 500 chars | Admin-facing explanation |
-| `options` | object | If column is `select`/`multiselect`, `options.values` must remain a non-empty list | Type-specific config |
+| `options` | object | If column is `select`/`multiselect`, `options.values` must remain a non-empty list of unique, non-empty values | Type-specific config |
 | `validation` | object | — | Type-specific validation rules |
 | `formula` | object | Allowed only when the column's `data_type=formula`; revalidated against current org keys | Formula DSL expression |
 
@@ -659,7 +844,8 @@ All fields optional. Only send what you want to change. The schema does **not** 
 
 ```json
 {
-  "label": "Deal Priority"
+  "label": "Deal Priority",
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -671,7 +857,23 @@ After this request, every deal detail view that uses `custom_column_definitions`
 {
   "options": {
     "values": ["Critical", "High", "Medium", "Low"]
-  }
+  },
+  "if_updated_at": "2026-07-05T04:25:00Z"
+}
+```
+
+#### Example Request — update select options with metadata
+
+```json
+{
+  "options": {
+    "values": [
+      { "id": "opt_critical", "value": "Critical", "label": "Critical" },
+      { "id": "opt_high", "value": "High", "label": "High" },
+      { "id": "opt_removed", "value": "Old Value", "label": "Old Value", "active": false }
+    ]
+  },
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -679,7 +881,8 @@ After this request, every deal detail view that uses `custom_column_definitions`
 
 ```json
 {
-  "is_active": false
+  "is_active": false,
+  "if_updated_at": "2026-07-05T04:25:00Z"
 }
 ```
 
@@ -703,6 +906,8 @@ After this request, every deal detail view that uses `custom_column_definitions`
     "options": { "values": ["High", "Medium", "Low"] },
     "validation": {},
     "formula": null,
+    "usage_count": null,
+    "last_changed": null,
     "created_at": "2026-04-09T08:00:00Z",
     "updated_at": "2026-04-09T08:30:00Z"
   }
@@ -717,17 +922,83 @@ After this request, every deal detail view that uses `custom_column_definitions`
 |-------------|-----------|------|
 | `400` | `"Column label cannot be empty"` | Label is whitespace-only |
 | `400` | `"Select and multiselect columns require a non-empty options.values list"` | Updating options for a select column to empty/missing values |
+| `400` | `"Select and multiselect option values cannot be empty"` | Updating options with an empty or missing option value |
+| `400` | `"Select and multiselect option values must be unique"` | Updating options with duplicate values |
 | `400` | `"Formula payload is only allowed when data_type='formula'"` | Sent `formula` on a non-formula column |
 | `400` | `"Formula cannot reference its own column key"` | Formula update references this same column |
 | `400` | `"Formula references unknown columns: <list>"` | Formula update references missing keys |
 | `404` | `"Custom column not found"` | No non-deleted column with this id in this org |
-| `422` | Pydantic validation error | Invalid field types in body |
+| `409` | `"Custom column changed since it was loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `422` | Pydantic validation error | Missing `if_updated_at` or invalid field types in body |
 | `429` | `"Too many requests ..."` | Rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
 
 ---
 
-### 4. Delete Custom Column
+### 5. Restore Archived Custom Column
+
+```http
+POST /users/crm/custom-fields/{field_id}/restore
+```
+
+Reactivates a non-deleted archived custom column (`is_active=false`). Restored fields reappear in active schema and deal surfaces on the next refetch. Soft-deleted fields are not restored by this endpoint.
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `if_updated_at` | ISO datetime string | Yes | `updated_at` from the archived field row loaded by the client |
+
+#### Example Request
+
+```json
+{
+  "if_updated_at": "2026-07-05T10:00:00Z"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Custom column restored",
+  "data": {
+    "field_id": "550e8400-e29b-41d4-a716-446655440000",
+    "entity": "deal",
+    "key": "priority",
+    "label": "Priority",
+    "data_type": "select",
+    "required": false,
+    "is_predefined": false,
+    "is_active": true,
+    "display_order": 1,
+    "description": null,
+    "options": {},
+    "validation": {},
+    "formula": null,
+    "usage_count": null,
+    "last_changed": null,
+    "created_at": "2026-07-05T09:00:00Z",
+    "updated_at": "2026-07-05T10:05:00Z"
+  }
+}
+```
+
+Restore records a `crm.settings.custom_field.restored` mutation event with old/new `is_active` values.
+
+#### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `404` | `"Custom column not found"` | Field does not exist, is soft-deleted, or belongs to another org |
+| `409` | `"Custom column changed since it was loaded. Refresh and retry."` | `if_updated_at` is stale |
+| `409` | `"Custom column is already active."` | Field is not archived |
+| `422` | Pydantic validation error | Missing or invalid `if_updated_at` |
+
+---
+
+### 6. Delete Custom Column
 
 ```http
 DELETE /users/crm/custom-fields/{field_id}
@@ -735,7 +1006,7 @@ DELETE /users/crm/custom-fields/{field_id}
 
 Soft-deletes a custom column (sets `is_deleted = true` and `is_active = false`). **Blocked when any non-deleted deal in the organisation still has the column's key in its `properties` JSONB.**
 
-This is the protection that prevents accidental data loss. There is no migration path — callers must clear the column's value from those deals first, then retry.
+This is the protection that prevents accidental data loss. If the column is used, archive it first, call `POST /custom-fields/{field_id}/clear-values`, then retry delete.
 
 #### Path Parameters
 
@@ -781,7 +1052,45 @@ DELETE /users/crm/custom-fields/c1d2e3f4-a5b6-7890-cdef-1234567890ab
 
 ---
 
-### 5. Validate Formula
+### 7. Clear Custom Column Values
+
+```http
+POST /users/crm/custom-fields/{field_id}/clear-values
+```
+
+Removes an archived custom column key from every non-deleted deal in the current organisation. The column definition is not deleted by this endpoint; call `DELETE /custom-fields/{field_id}` after the clear succeeds.
+
+#### Preconditions
+
+| Check | Result on failure |
+|-------|-------------------|
+| Column exists and `is_deleted = false` | `404 "Custom column not found"` |
+| `is_predefined = false` | `409 "Predefined custom columns cannot be cleared."` |
+| `is_active = false` | `409 "Archive the custom column before clearing its values."` |
+
+#### Example Request
+
+```http
+POST /users/crm/custom-fields/c1d2e3f4-a5b6-7890-cdef-1234567890ab/clear-values
+```
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Custom column values cleared",
+  "data": {
+    "cleared_deal_count": 7
+  }
+}
+```
+
+`cleared_deal_count` is zero when no non-deleted deals currently contain the key.
+
+---
+
+### 8. Validate Formula
 
 ```http
 POST /users/crm/custom-fields/validate-formula
@@ -851,7 +1160,7 @@ Standalone validation of a formula expression — useful for the settings UI to 
 
 ## Frontend: Settings Flows
 
-The four user journeys this API powers, with the specific endpoint sequences and rules the frontend must respect.
+The five user journeys this API powers, with the specific endpoint sequences and rules the frontend must respect.
 
 ### Flow A — Create a new custom column
 
@@ -862,7 +1171,7 @@ The four user journeys this API powers, with the specific endpoint sequences and
    - key       (the user types a friendly name; frontend slugifies it for preview)
    - label     (defaults to the typed name; user can edit)
    - data_type (select dropdown of the 11 types)
-   - For select/multiselect: a values editor that produces options.values
+   - For select/multiselect: a values editor that produces options.values as strings or `{ value, label, id?, active? }` objects
    - For formula: a formula builder (POST validate-formula on each edit for live feedback)
 
 3. Submit:
@@ -886,7 +1195,7 @@ The four user journeys this API powers, with the specific endpoint sequences and
 2. Form pre-fills with current label
 
 3. User changes label → submit
-   → PATCH /users/crm/custom-fields/{field_id} with { "label": "New Name" }
+   → PATCH /users/crm/custom-fields/{field_id} with { "label": "New Name", "if_updated_at": field.updated_at }
    → 200 success
    → Invalidate the custom-fields query cache (so the UI re-fetches and shows the new label)
    → DO NOT invalidate the deals query cache — deal rows are unchanged
@@ -929,11 +1238,12 @@ The frontend should:
 2. Show a modal like:
    > **Can't delete this column yet**
    >
-   > 7 deals currently have a value for "Priority". To delete the column, you need to remove its value from those deals first.
+   > 7 deals currently have a value for "Priority". Archive the column first, then clear its values before deleting it.
    >
-   > [Show the 7 deals →]   [Cancel]
-3. The "Show the 7 deals" button should use a future custom-column usage endpoint or a backend-supported custom-field filter when one exists. The current standard deal list API does not support filtering by custom-column presence.
-4. After the user clears the values through `PATCH /users/crm/deals/{deal_id}` with `custom_columns.<key>: null`, they can come back and retry the delete.
+   > [Archive column]   [Cancel]
+3. After archive succeeds, offer "Clear values and delete":
+   - `POST /users/crm/custom-fields/{field_id}/clear-values`
+   - then `DELETE /users/crm/custom-fields/{field_id}`
 
 This protects users from accidental data loss while giving them a clear path to clean up.
 
@@ -944,7 +1254,7 @@ If a user wants to "remove" a column from active use but isn't ready to delete i
 ```
 1. User clicks "Archive" instead of "Delete"
 
-2. → PATCH /users/crm/custom-fields/{field_id} with { "is_active": false }
+2. → PATCH /users/crm/custom-fields/{field_id} with { "is_active": false, "if_updated_at": field.updated_at }
    → 200 success
    → The column disappears from the active list (default GET) but stays in include_inactive=true views
 ```
@@ -952,15 +1262,61 @@ If a user wants to "remove" a column from active use but isn't ready to delete i
 Archived columns:
 - Are no longer suggested in the deal-create / deal-edit UI.
 - Are still rendered on existing deals that have a value (because the definition still exists, just inactive).
-- Can be restored at any time via `PATCH { "is_active": true }`.
+- Can be restored via `POST /users/crm/custom-fields/{field_id}/restore` with the loaded `if_updated_at` value.
 
 This is the "soft" alternative to delete — no data is lost, and the column can come back.
+
+### Flow E — Clear archived values, then delete
+
+```
+1. User opens an archived column with usage_count > 0
+
+2. User confirms "Clear values"
+
+3. → POST /users/crm/custom-fields/{field_id}/clear-values
+   → 200 success with cleared_deal_count
+   → DELETE /users/crm/custom-fields/{field_id}
+   → 200 success: column disappears from include_inactive=true views too
+```
+
+**Key frontend rules:**
+
+1. **Do not show clear on active columns** — backend rejects this, and the product flow should force archive first.
+2. **Make the data-loss copy explicit** — clearing removes the key from matching deal `properties`.
+3. **Refresh custom-fields/schema/deal-detail metadata caches** after success.
+
+### Flow F — Reorder custom columns
+
+```
+1. User opens Settings → Custom Columns
+
+2. Frontend fetches:
+   → GET /users/crm/custom-fields?entity=deal&include_inactive=true
+
+3. User drags columns into a new order
+
+4. Submit:
+   → PATCH /users/crm/custom-fields/reorder
+   → body: {
+       "entity": "deal",
+       "field_ids": [all non-deleted field ids in the new order],
+       "if_updated_at": max(updated_at from the loaded list)
+     }
+   → 200 success: refresh custom-fields/schema/deal-detail metadata caches
+   → 409 stale: show "Columns changed. Refresh and try again."
+```
+
+**Key frontend rules:**
+
+1. **Send a complete list** — do not send only moved rows. The endpoint normalizes the whole order to avoid duplicate `display_order` values.
+2. **Use the loaded version high-water mark** — compute `if_updated_at` as the max `updated_at` from the list used for drag/drop.
+3. **Refresh metadata after success** — table/detail/schema consumers read the saved `display_order` on their next fetch.
 
 ---
 
 ## Error Catalog
 
-Consolidated reference of all error responses across all 5 endpoints.
+Consolidated reference of all error responses across all 8 endpoints.
 
 | HTTP Status | Error Message | Endpoint(s) | Cause |
 |-------------|---------------|-------------|-------|
@@ -970,6 +1326,8 @@ Consolidated reference of all error responses across all 5 endpoints.
 | `400` | `"Column label cannot be empty"` | Create, Update | Label whitespace-only |
 | `400` | `"Column label must be a string"` | Create, Update | Label not a JSON string |
 | `400` | `"Select and multiselect columns require a non-empty options.values list"` | Create, Update | Missing `options.values` for select-type column |
+| `400` | `"Select and multiselect option values cannot be empty"` | Create, Update | Empty select/multiselect option value |
+| `400` | `"Select and multiselect option values must be unique"` | Create, Update | Duplicate select/multiselect option value |
 | `400` | `"Formula payload is only allowed when data_type='formula'"` | Create, Update | `formula` sent on a non-formula column |
 | `400` | `"Formula columns require a formula payload"` | Create | `data_type=formula` but no `formula` body |
 | `400` | `"Formula must be a JSON object"` | Create, Update, Validate | Formula not an object |
@@ -980,12 +1338,19 @@ Consolidated reference of all error responses across all 5 endpoints.
 | `400` | `"Formula op args must be a list"` | Create, Update, Validate | `args` not an array |
 | `400` | `"Formula 'if' expects exactly 3 args"` | Create, Update, Validate | `if` op with wrong arg count |
 | `400` | `"Formula '<op>' expects at least one arg"` | Create, Update, Validate | Empty args list on a non-`if` op |
+| `400` | `"Duplicate custom column ids are not allowed"` | Reorder | `field_ids` contains the same id more than once |
 | `401` | `"Invalid or missing user credentials."` | All | Missing/invalid JWT token |
-| `404` | `"Custom column not found"` | Update, Delete | Column doesn't exist, is soft-deleted, or belongs to a different org |
+| `404` | `"Custom column not found"` | Update, Restore, Delete, Clear values | Column doesn't exist, is soft-deleted, or belongs to a different org |
 | `409` | `"A custom column with key '<key>' already exists"` | Create | Non-deleted column with the same key in this org |
+| `409` | `"Custom column changed since it was loaded. Refresh and retry."` | Update, Restore | `if_updated_at` is stale |
+| `409` | `"Custom columns changed since they were loaded. Refresh and retry."` | Reorder | `if_updated_at` is stale |
+| `409` | `"Custom column reorder must include every non-deleted custom column for this entity."` | Reorder | Reorder list is missing a field or includes a foreign/provider/deleted field id |
 | `409` | `"Predefined custom columns cannot be deleted."` | Delete | Target has `is_predefined=true` |
+| `409` | `"Predefined custom columns cannot be cleared."` | Clear values | Target has `is_predefined=true` |
+| `409` | `"Archive the custom column before clearing its values."` | Clear values | Target is still active |
+| `409` | `"Custom column is already active."` | Restore | Target is not archived |
 | `409` | `"Cannot delete custom column '<key>': N deal(s) currently use this column. Remove the column data from those deals first."` | Delete | At least one non-deleted deal has the key in `properties` |
-| `422` | Pydantic validation error | Create, Update, Validate | Missing required fields, invalid types, out-of-range values |
+| `422` | Pydantic validation error | Create, Reorder, Update, Restore, Validate | Missing required fields, invalid types, out-of-range values |
 | `429` | `"Too many requests (per-minute limit exceeded)"` | All | Per-minute rate limit exceeded |
 | `429` | `"Too many requests (per-hour limit exceeded)"` | All | Per-hour rate limit exceeded |
 | `500` | `"An unexpected error occurred while processing your request"` | All | Unhandled exception |
@@ -1037,8 +1402,9 @@ Two services exist for custom columns.
 
 **`CustomFieldWriteService`** (`src/service/crm/internal/custom_field_write_service.py`) — **the UI-facing CRUD service** that this API uses.
 
-- **Methods**: `list_fields`, `get_field`, `create_field`, `update_field`, `delete_field`, `validate_formula`.
+- **Methods**: `list_fields`, `get_field`, `create_field`, `update_field`, `reorder_fields`, `delete_field`, `validate_formula`.
 - **Strict** at every boundary: rejects empty/invalid keys, rejects type-incompatible options/formula, refuses to delete in-use columns, refuses to delete predefined columns, silently ignores immutability-violation attempts.
+- **Reorder is complete-list and version-guarded**: custom-column drag/drop must send every non-deleted internal field id for the entity plus an `if_updated_at` high-water mark.
 - **Owns its commits** — each public write method calls `flush()` then `commit()` then `refresh()` before returning. The handler does not need to commit.
 - **Errors**: raises `CustomFieldWriteServiceError(message, status_code)` for all rule violations.
 

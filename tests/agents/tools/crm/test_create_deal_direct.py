@@ -230,6 +230,158 @@ async def test_create_deal_direct_defaults_currency_when_amount_has_no_currency(
     assert "Amount: USD 12,000.00" in result["message"]
 
 
+@pytest.mark.asyncio
+async def test_create_deal_direct_passes_custom_columns_to_writer() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Custom Field Deal",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealSchemaService") as schema_cls,
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        schema = MagicMock()
+        schema.get_schema = AsyncMock(return_value=SimpleNamespace(fields=[]))
+        schema_cls.return_value = schema
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        await create_deal_direct(
+            context=context,
+            name="Custom Field Deal",
+            custom_columns={"procurement_stage": "legal"},
+        )
+
+    payload = service.create_deal.await_args.args[0]
+    assert payload["custom_properties"] == {"procurement_stage": "legal"}
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_rejects_non_object_custom_columns() -> None:
+    result = await create_deal_direct(
+        context=_context(),
+        name="Bad Custom Columns",
+        custom_columns="procurement_stage=legal",  # type: ignore[arg-type]
+    )
+
+    assert result == {
+        "status": "error",
+        "message": "custom_columns must be an object keyed by custom field key.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_uses_schema_for_missing_required_custom_fields() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    required_field = SimpleNamespace(
+        key="procurement_stage",
+        label="Procurement Stage",
+        type="select",
+        write_path="custom_columns.procurement_stage",
+        internal_write=True,
+        internal_write_validation={"required": True, "option_membership": True},
+        options={"values": [{"id": "legal", "value": "legal", "label": "Legal"}]},
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealSchemaService") as schema_cls,
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        schema = MagicMock()
+        schema.get_schema = AsyncMock(return_value=SimpleNamespace(fields=[required_field]))
+        schema_cls.return_value = schema
+
+        result = await create_deal_direct(context=context, name="Needs Custom Fields")
+
+    service_cls.assert_not_called()
+    org_session.commit.assert_not_awaited()
+    assert result["status"] == "needs_input"
+    assert result["schema_endpoint"] == "/users/crm/schema?entity=deal"
+    assert result["required_custom_fields"] == [
+        {
+            "key": "procurement_stage",
+            "label": "Procurement Stage",
+            "type": "select",
+            "write_path": "custom_columns.procurement_stage",
+            "options": {"values": [{"id": "legal", "value": "legal", "label": "Legal"}]},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_required_schema_accepts_legacy_custom_key_prefix() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    required_field = SimpleNamespace(
+        key="procurement_stage",
+        label="Procurement Stage",
+        type="select",
+        write_path="custom_columns.procurement_stage",
+        internal_write=True,
+        internal_write_validation={"required": True},
+        options={},
+    )
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Legacy Custom Prefix",
+        amount=None,
+        currency=None,
+        pipeline_name="Sales Pipeline",
+        stage_name="Discovery",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealSchemaService") as schema_cls,
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        schema = MagicMock()
+        schema.get_schema = AsyncMock(return_value=SimpleNamespace(fields=[required_field]))
+        schema_cls.return_value = schema
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(
+            context=context,
+            name="Legacy Custom Prefix",
+            custom_columns={"custom_procurement_stage": "legal"},
+        )
+
+    assert result["status"] == "created"
+    payload = service.create_deal.await_args.args[0]
+    assert payload["custom_properties"] == {"custom_procurement_stage": "legal"}
+
+
 def test_create_deal_direct_contract_does_not_accept_actual_close_date() -> None:
     assert "close_date" not in signature(create_deal_direct).parameters
 
@@ -315,10 +467,11 @@ async def test_create_deal_tool_uses_direct_create_path() -> None:
             "_bot_channel_payload": {"type": "message", "content": {"text": "card"}},
         }
 
-        result = await tool(name="Acme")
+        result = await tool(name="Acme", custom_columns={"procurement_stage": "legal"})
 
     assert result == {"status": "created", "name": "Acme"}
     direct_create.assert_awaited_once()
+    assert direct_create.await_args.kwargs["custom_columns"] == {"procurement_stage": "legal"}
 
 
 @pytest.mark.asyncio
