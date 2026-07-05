@@ -300,7 +300,7 @@ class PostUploadService:
         if not path:
             return None
         try:
-            return run_async(self.storage.generate_read_sas(path, minutes=120))
+            return run_async(self.storage.generate_read_sas(path, minutes=30))
         except Exception:
             logger.debug("Thumbnail SAS generation failed for path=%s", path, exc_info=True)
             return None

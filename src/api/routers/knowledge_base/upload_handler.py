@@ -276,7 +276,7 @@ async def get_source(
         if source.storage_path:
             try:
                 read_url = await service.storage.generate_read_sas(
-                    source.storage_path, minutes=120, download_filename=source.filename
+                    source.storage_path, minutes=30, download_filename=source.filename
                 )
             except Exception:
                 pass

@@ -131,6 +131,42 @@ stages:
                 echo "=== Terraform Format Check ==="
                 terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
 
+                echo "=== Terraform IaC Security Scan (Trivy) ==="
+                mkdir -p "$(Build.ArtifactStagingDirectory)/terraform-iac-scan"
+                run_trivy_config() {
+                  local format="$1"
+                  local output="$2"
+
+                  if command -v trivy &> /dev/null; then
+                    trivy config --severity CRITICAL,HIGH --format "$format" --output "$output" .
+                    return $?
+                  fi
+
+                  if command -v docker &> /dev/null; then
+                    docker run --rm \
+                      -v "$PWD:/work:ro" \
+                      -v "$(Build.ArtifactStagingDirectory)/terraform-iac-scan:/out" \
+                      aquasec/trivy:0.49.1 \
+                      config --severity CRITICAL,HIGH --format "$format" --output "/out/$(basename "$output")" /work
+                    return $?
+                  fi
+
+                  echo "Trivy is not installed and Docker is unavailable on this agent." > "$output"
+                  return 1
+                }
+
+                if ! run_trivy_config table "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"; then
+                  echo "##vso[task.logissue type=warning]Terraform IaC Trivy scan did not complete; report artifact records the failure."
+                  if [ ! -f "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt" ]; then
+                    echo "Terraform IaC Trivy scan did not complete; see pipeline log for scanner output." > "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"
+                  fi
+                fi
+                run_trivy_config json "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json" || true
+                if [ ! -f "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json" ]; then
+                  printf '{"status":"trivy scan did not complete"}\n' > "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.json"
+                fi
+                cat "$(Build.ArtifactStagingDirectory)/terraform-iac-scan/terraform-iac-trivy-report.txt"
+
                 # Normal infra runs must publish the exact full plan that will
                 # be applied after approval. Fresh-environment bootstrap remains
                 # a local targeted Terraform operation documented outside this
@@ -159,6 +195,11 @@ stages:
           - publish: $(TF_WORKING_DIR)/tfplan
             artifact: ${{ parameters.artifactName }}
             displayName: 'Publish Plan Artifact'
+
+          - publish: $(Build.ArtifactStagingDirectory)/terraform-iac-scan
+            artifact: terraform-iac-scan
+            displayName: 'Publish Terraform IaC Scan Artifact'
+            condition: succeededOrFailed()
 
       - deployment: TerraformApply
         displayName: 'Apply Infrastructure Changes'

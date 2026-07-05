@@ -35,6 +35,24 @@ migrations/
 - **Scope**: Chat sessions, messages, knowledge base, etc.
 - **Usage**: `python scripts/run_org_migrations.py`
 - **Examples**: Adding chat features, embedding tables
+- **Long-term direction**: keep using this migration track for organisation-owned
+  tables, but move toward a shared organisation data schema with
+  `organisation_id` on each organisation-owned table instead of one physical
+  schema per organisation.
+
+Cross-schema foreign keys are valid as long as both schemas are in the same
+database. Organisation-owned tables may reference master tables by qualifying
+the target schema, for example:
+
+```python
+sa.ForeignKeyConstraint(
+    ["organisation_id"],
+    ["public.organisations.organisation_id"],
+)
+```
+
+Always add an explicit index on FK columns such as `organisation_id`; PostgreSQL
+does not create those indexes automatically.
 
 ## Default Configuration
 

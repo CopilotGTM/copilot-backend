@@ -37,7 +37,7 @@ resource "azurerm_storage_account" "this" {
       for_each = length(var.allowed_blob_cors_origins) > 0 ? [1] : []
       content {
         allowed_headers    = ["*"]
-        allowed_methods    = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"]
+        allowed_methods    = ["GET", "HEAD", "PUT", "OPTIONS"]
         allowed_origins    = var.allowed_blob_cors_origins
         exposed_headers    = ["*"]
         max_age_in_seconds = 3600

@@ -269,7 +269,7 @@ class ChatMessageService:
         self,
         *,
         attachments_by_msg: dict[UUID, list[Attachment]],
-        minutes: int = 120,
+        minutes: int = 30,
     ) -> dict[UUID, list[dict[str, Any]]]:
         """Build thumbnail SAS URLs for attachments per message.
 

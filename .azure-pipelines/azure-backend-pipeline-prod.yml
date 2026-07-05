@@ -101,6 +101,10 @@ stages:
             displayName: 'Install Python $(PYTHON_VERSION)'
 
           - script: |
+              mkdir -p security-reports secrets-scan-reports sca-reports
+            displayName: 'Prepare CASA Security Report Directories'
+
+          - script: |
               uv sync --frozen --no-install-project --no-dev --only-group quality
               source .venv/bin/activate
             displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
@@ -121,16 +125,70 @@ stages:
             displayName: '📝 Type Checking (MyPy) - Advisory Only'
 
           - script: |
+              set -euo pipefail
               source .venv/bin/activate
-              bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
-              bandit -c pyproject.toml -r src/
+              mkdir -p security-reports
+              bandit -c pyproject.toml -r src/ -f json -o security-reports/bandit-report.json || true
+              bandit -c pyproject.toml -r src/ -f txt -o security-reports/bandit-report.txt
+              cat security-reports/bandit-report.txt
             displayName: '🔒 Security Scan (Bandit)'
+
+          - script: |
+              set -euo pipefail
+              mkdir -p secrets-scan-reports
+
+              echo "##[section]🔐 Running detect-secrets baseline gate..."
+              uv run --with detect-secrets detect-secrets scan \
+                --exclude-files '(^|[\\/])\.secrets\.baseline$|^infra[\\/]security[\\/]casa[\\/]evidence[\\/]' \
+                > secrets-scan-reports/detect-secrets-current.json
+
+              uv run python scripts/security/check_detect_secrets_baseline.py \
+                --baseline .secrets.baseline \
+                --current-json secrets-scan-reports/detect-secrets-current.json \
+                --output secrets-scan-reports/detect-secrets-baseline-check.txt || {
+                  cat secrets-scan-reports/detect-secrets-baseline-check.txt
+                  exit 1
+                }
+
+              cat secrets-scan-reports/detect-secrets-baseline-check.txt
+            displayName: '🔐 Secrets Baseline Gate (detect-secrets)'
+
+          - script: |
+              set -euo pipefail
+              mkdir -p sca-reports
+
+              echo "##[section]🔎 Running Python dependency vulnerability scan..."
+              uv export --format requirements.txt --locked --no-dev --no-emit-project --no-header \
+                --output-file sca-reports/python-requirements.txt
+
+              uv run --with pip-audit pip-audit \
+                --requirement sca-reports/python-requirements.txt \
+                --progress-spinner off \
+                --format columns \
+                --output sca-reports/pip-audit-report.txt
+
+              cat sca-reports/pip-audit-report.txt
+            displayName: '🔎 Python Dependency SCA (pip-audit)'
 
           - task: PublishPipelineArtifact@1
             displayName: 'Upload Security Report'
             inputs:
-              targetPath: 'bandit-report.json'
+              targetPath: 'security-reports'
               artifact: 'security-report'
+            condition: succeededOrFailed()
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Secrets Scan Reports'
+            inputs:
+              targetPath: 'secrets-scan-reports'
+              artifact: 'secrets-scan-reports'
+            condition: succeededOrFailed()
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Python SCA Reports'
+            inputs:
+              targetPath: 'sca-reports'
+              artifact: 'python-sca-reports'
             condition: succeededOrFailed()
 
   # ==========================================================================
@@ -336,11 +394,17 @@ stages:
           # Scans images for CRITICAL and HIGH vulnerabilities
           # ===================================================================
           - script: |
+              mkdir -p trivy-reports
+            displayName: 'Prepare Trivy Report Directory'
+
+          - script: |
               echo "##[section]🔒 Installing Trivy vulnerability scanner..."
 
               # Install Trivy if not present
               if ! command -v trivy &> /dev/null; then
-                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.49.1
+                mkdir -p "$(Agent.TempDirectory)/trivy-bin"
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$(Agent.TempDirectory)/trivy-bin" v0.49.1
+                export PATH="$(Agent.TempDirectory)/trivy-bin:$PATH"
               fi
 
               trivy --version
@@ -355,8 +419,10 @@ stages:
                 --exit-code 1 \
                 --no-progress \
                 --format table \
+                --output trivy-reports/trivy-api-report.txt \
                 $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
 
+              cat trivy-reports/trivy-api-report.txt
               echo ""
               echo "##[section]✅ API image scan complete"
             displayName: '🔍 Trivy Scan: API Image'
@@ -372,8 +438,10 @@ stages:
                 --exit-code 1 \
                 --no-progress \
                 --format table \
+                --output trivy-reports/trivy-light-worker-report.txt \
                 $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
 
+              cat trivy-reports/trivy-light-worker-report.txt
               echo ""
               echo "##[section]✅ Light Worker image scan complete"
             displayName: '🔍 Trivy Scan: Light Worker'
@@ -389,8 +457,10 @@ stages:
                 --exit-code 1 \
                 --no-progress \
                 --format table \
+                --output trivy-reports/trivy-integrations-worker-report.txt \
                 $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
 
+              cat trivy-reports/trivy-integrations-worker-report.txt
               echo ""
               echo "##[section]✅ Integrations Worker image scan complete"
             displayName: '🔍 Trivy Scan: Integrations Worker'
@@ -407,8 +477,10 @@ stages:
                 --exit-code 1 \
                 --no-progress \
                 --format table \
+                --output trivy-reports/trivy-knowledge-worker-report.txt \
                 $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
 
+              cat trivy-reports/trivy-knowledge-worker-report.txt
               echo ""
               echo "##[section]✅ Knowledge Worker image scan complete"
             displayName: '🔍 Trivy Scan: Knowledge Worker'
@@ -425,7 +497,7 @@ stages:
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
-                --output trivy-api-report.json \
+                --output trivy-reports/trivy-api-report.json \
                 $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) || true
 
               trivy image \
@@ -433,8 +505,24 @@ stages:
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
-                --output trivy-light-worker-report.json \
+                --output trivy-reports/trivy-light-worker-report.json \
                 $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-reports/trivy-integrations-worker-report.json \
+                $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-reports/trivy-knowledge-worker-report.json \
+                $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId) || true
 
               echo "##[section]✅ Vulnerability reports generated"
             displayName: 'Generate Trivy Reports (JSON)'
@@ -442,14 +530,15 @@ stages:
               ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
             continueOnError: true
 
           - task: PublishPipelineArtifact@1
             displayName: 'Upload Trivy Vulnerability Reports'
             inputs:
-              targetPath: '.'
+              targetPath: 'trivy-reports'
               artifact: 'trivy-reports'
-              patterns: 'trivy-*.json'
             condition: succeededOrFailed()
 
           # ===================================================================

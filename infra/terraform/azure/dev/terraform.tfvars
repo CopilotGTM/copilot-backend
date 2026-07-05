@@ -43,11 +43,12 @@ managed_devops_pools_subnets = [
   { name = "mdp-dev-deploy", address_prefix = "10.0.6.32/27" },
 ]
 
-# Private Link (disabled for dev - enable for SOC2 compliance in prod)
+# Private Link: disabled in dev; prod owns the SOC2 Private Link rollout.
 enable_key_vault_private_endpoints       = false
 enable_storage_private_endpoints         = false
 enable_postgresql_private_endpoint       = false
 postgresql_public_network_access_enabled = true
+enable_redis_private_endpoint            = false
 
 # -----------------------------------------------------------------
 # AKS
@@ -75,7 +76,7 @@ acr_type = "Basic"
 # redis_name   = "copilot-gtm-redis"   # Default
 redis_sku_name = "Basic" # Override: Basic for dev (cheaper)
 # redis_family   = "C"                 # Default
-# redis_capacity = 0                   # Default
+redis_capacity = 1 # Azure does not allow scaling this cache back down to C0 after recovery.
 
 # -----------------------------------------------------------------
 # Frontend App Service

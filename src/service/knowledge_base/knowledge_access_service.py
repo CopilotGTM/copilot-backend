@@ -165,7 +165,7 @@ class KnowledgeAccessService:
     async def generate_download_url(
         self,
         source_id: UUID,
-        minutes: int = 120,
+        minutes: int = 30,
         download_filename: str | None = None,
     ) -> str:
         src: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
@@ -209,7 +209,7 @@ class KnowledgeAccessService:
 
         async def generate_url(path: str, key: str):
             try:
-                return key, await self.storage.generate_read_sas(path, minutes=120)
+                return key, await self.storage.generate_read_sas(path, minutes=30)
             except Exception:  # pragma: no cover - network variability
                 logger.debug("Failed generating %s for %s", key, src.source_id, exc_info=True)
                 return None

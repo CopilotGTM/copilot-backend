@@ -147,14 +147,14 @@ class KnowledgeSourceSSEService:
             if source.thumbnail_small_path:
                 try:
                     data["thumbnail_small_url"] = await self.storage.generate_read_sas(
-                        cast(str, source.thumbnail_small_path), minutes=120
+                        cast(str, source.thumbnail_small_path), minutes=30
                     )
                 except Exception:
                     logger.debug("Thumbnail small SAS generation failed", exc_info=True)
             if source.thumbnail_medium_path:
                 try:
                     data["thumbnail_medium_url"] = await self.storage.generate_read_sas(
-                        cast(str, source.thumbnail_medium_path), minutes=120
+                        cast(str, source.thumbnail_medium_path), minutes=30
                     )
                 except Exception:
                     logger.debug("Thumbnail medium SAS generation failed", exc_info=True)

@@ -127,7 +127,7 @@ class AzureOrganisationBlobStorage:
                 logger.debug("Container create skipped/failed: %s", e)
 
     async def generate_read_sas(
-        self, blob_path: str, minutes: int = 120, download_filename: str | None = None
+        self, blob_path: str, minutes: int = 30, download_filename: str | None = None
     ) -> str:
         """Generate a short-lived read SAS URL for one blob.
 

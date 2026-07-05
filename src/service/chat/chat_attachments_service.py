@@ -183,7 +183,7 @@ class UploadService:
     async def generate_download_url(
         self,
         attachment_id: UUID,
-        minutes: int = 120,
+        minutes: int = 30,
         download_filename: str | None = None,
     ) -> str:
         """Generate a short‑lived read SAS URL for an attachment ensuring ownership."""

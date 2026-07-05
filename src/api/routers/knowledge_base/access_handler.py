@@ -183,7 +183,7 @@ async def list_sources(
 async def download_source(
     source_id: UUID,
     response: FastAPIResponse,
-    expires_minutes: int = Query(120, ge=1, le=720),
+    expires_minutes: int = Query(30, ge=1, le=30),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[KnowledgeDownloadResponse]:

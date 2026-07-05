@@ -34,13 +34,17 @@ module "vnet" {
 # Azure Redis Cache: In-memory data store for caching and sessions
 # -----------------------------------------------------------------
 module "redis" {
-  source              = "../modules/redis"
-  redis_name          = "${var.redis_name}-${var.env}"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  capacity            = var.redis_capacity
-  family              = var.redis_family
-  sku_name            = var.redis_sku_name
+  source                        = "../modules/redis"
+  redis_name                    = "${var.redis_name}-${var.env}"
+  resource_group_name           = module.resource_group.resource_group_name
+  location                      = var.location
+  capacity                      = var.redis_capacity
+  family                        = var.redis_family
+  sku_name                      = var.redis_sku_name
+  private_endpoint_enabled      = var.enable_redis_private_endpoint
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_id           = var.enable_redis_private_endpoint ? azurerm_private_dns_zone.redis[0].id : null
+  public_network_access_enabled = var.enable_redis_private_endpoint ? false : true
   tags = {
     environment = var.env
     project     = var.project_name
@@ -119,6 +123,28 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgresql" {
   name                  = "postgres-${var.env}-vnet-link"
   resource_group_name   = module.resource_group.resource_group_name
   private_dns_zone_name = azurerm_private_dns_zone.postgresql[0].name
+  virtual_network_id    = module.vnet.vnet_id
+  registration_enabled  = false
+}
+
+# -----------------------------------------------------------------
+# Private DNS: Redis Private Link
+# -----------------------------------------------------------------
+resource "azurerm_private_dns_zone" "redis" {
+  count               = var.enable_redis_private_endpoint ? 1 : 0
+  name                = "privatelink.redis.cache.windows.net"
+  resource_group_name = module.resource_group.resource_group_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "redis" {
+  count                 = var.enable_redis_private_endpoint ? 1 : 0
+  name                  = "redis-${var.env}-vnet-link"
+  resource_group_name   = module.resource_group.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.redis[0].name
   virtual_network_id    = module.vnet.vnet_id
   registration_enabled  = false
 }

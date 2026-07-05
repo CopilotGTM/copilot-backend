@@ -151,7 +151,7 @@ class FakeKnowledgeAccessService:
             )
         return result
 
-    async def generate_download_url(self, source_id: UUID, minutes: int = 120) -> str:
+    async def generate_download_url(self, source_id: UUID, minutes: int = 30) -> str:
         """Generate download URL for a source."""
         from src.service.knowledge_base.knowledge_access_service import KnowledgeAccessServiceError
 
@@ -338,7 +338,7 @@ class FakeStorage:
         self.organisation_id = organisation_id
 
     async def generate_read_sas(
-        self, storage_path: str, minutes: int = 120, download_filename: str | None = None
+        self, storage_path: str, minutes: int = 30, download_filename: str | None = None
     ) -> str:
         return f"https://fake.blob.core.windows.net/{storage_path}?sastoken&expires={minutes}m"
 
