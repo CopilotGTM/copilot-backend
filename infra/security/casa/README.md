@@ -143,21 +143,22 @@ Without `--backend-ref` and `--infra-ref`, the command checks the current workin
 
 ## Current Position
 
-Last updated: 2026-07-05 09:54 UTC.
+Last updated: 2026-07-05 09:56 UTC.
 
 | Item | Current state |
 | --- | --- |
 | CASA commit | `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4` (`Prepare CASA production evidence workflow`) |
+| CASA follow-up commit | `4605551246ac3ac6fe8e97dee303de586244ca0c` (`Fix CASA Trivy install path`) |
 | Active working branch | `codex/casa-production-evidence-workflow`; `main` has been moved back to `origin/main` |
-| Backend release branch | `release/backend/2026-07-05-casa` at `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4`; release publication check passed |
-| Infra release branch | `release/infra/2026-07-05-casa` at `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4`; release publication check passed |
-| Backend prod pipeline | Queued manually as Azure DevOps run `1760` / build `20260705.2`; status was `notStarted` at last check |
-| Infra prod pipeline | Azure DevOps run `1758` / build `20260705.1` failed in `Terraform Init, Validate & Plan` during the new Trivy IaC scan setup; Terraform init and validate passed |
-| Current fix in progress | Install Trivy into `$(Agent.TempDirectory)/trivy-bin` instead of `/usr/local/bin`, then republish the release branches and rerun prod pipelines |
+| Backend release branch | `release/backend/2026-07-05-casa` at `4605551246ac3ac6fe8e97dee303de586244ca0c`; release publication check passed locally before push |
+| Infra release branch | `release/infra/2026-07-05-casa` at `4605551246ac3ac6fe8e97dee303de586244ca0c`; release publication check passed locally before push |
+| Backend prod pipeline | Current fixed run is Azure DevOps run `1761` / build `20260705.3`, source version `4605551246ac3ac6fe8e97dee303de586244ca0c`; status was `notStarted` at last check |
+| Infra prod pipeline | Current fixed run is Azure DevOps run `1762` / build `20260705.2`, source version `4605551246ac3ac6fe8e97dee303de586244ca0c`; status was `notStarted` at last check |
+| Previous failed runs | Infra run `1758` and backend run `1759` failed from old commit `61d696b0c9bfe3a1f2014cee46ad3195b197f8f4`; infra failure occurred during new Trivy IaC scan setup after Terraform init/validate passed |
 | Artifact export | Not ready until backend and infra prod runs complete successfully |
 | Submission preflight | Fails until Google/CASA local values, prod backend artifacts, prod infra IaC artifact, and DAST evidence exist |
 
-Resume from here by committing the Trivy install-path fix on this branch, pushing it to the backend and infra release branches, and rerunning or letting the prod pipelines rerun. After both prod runs succeed, run:
+Resume from here by checking Azure DevOps runs `1761` and `1762`. After both prod runs succeed, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File infra/security/casa/export-prod-casa-evidence.ps1 `
