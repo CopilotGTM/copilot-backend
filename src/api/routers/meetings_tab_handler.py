@@ -304,7 +304,7 @@ async def remove_bot(
 @meetings_tab_router.get(
     "/{event_id}/recording",
     response_model=GenericResponse[MeetingRecordingResponse],
-    summary="Get Recall recording playback detail",
+    summary="Get Recall recording playback and download detail",
 )
 async def get_recording(
     event_id: UUID,
@@ -312,7 +312,7 @@ async def get_recording(
     service: MeetingsTabService = Depends(get_meetings_tab_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[MeetingRecordingResponse]:
-    """Return Recall playback URL and transcript metadata for one meeting."""
+    """Return Recall playback/download URLs and transcript metadata for one meeting."""
     try:
         data = await service.get_recording(event_id)
         return Response.success_response("Recording retrieved", data)

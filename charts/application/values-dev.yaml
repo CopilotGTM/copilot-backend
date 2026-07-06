@@ -85,7 +85,7 @@ knowledge-upload-worker:
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 0
+    minReplicas: 1
     maxReplicas: 1
   resources:
     requests:
@@ -96,6 +96,7 @@ knowledge-extract-worker:
   config:
     concurrency: 1
   autoscaling:
+    minReplicas: 1
     maxReplicas: 1
 
 knowledge-beat:
@@ -116,6 +117,7 @@ chat-worker:
     maxTasksPerChild: 25
     maxMemoryPerChildKb: 700000
   autoscaling:
+    minReplicas: 1
     maxReplicas: 2
   resources:
     requests:
@@ -137,7 +139,7 @@ integrations-worker:
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 0
+    minReplicas: 1
     maxReplicas: 1
   resources:
     requests:
@@ -161,7 +163,7 @@ deal-worker:
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 0
+    minReplicas: 1
     maxReplicas: 1
   resources:
     requests:
@@ -194,6 +196,7 @@ organization-worker:
   config:
     concurrency: 1
   autoscaling:
+    minReplicas: 1
     maxReplicas: 1
 
 flower:

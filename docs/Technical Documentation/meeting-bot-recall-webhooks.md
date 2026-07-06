@@ -3,6 +3,10 @@
 This document is the backend contract for Recall webhooks handled by
 `src/service/meeting_bot/webhook_service.py`.
 
+Transcript-ready follow-up is delegated to
+`src/service/meeting_bot/summary_trigger_service.py`.
+Video archival is delegated to `src/service/meeting_bot/artifacts_service.py`.
+
 ## Webhook endpoint
 
 Configure each Recall environment to send selected events to:
@@ -106,6 +110,8 @@ Use:
 - `bot.status=recording_live` for `JOINING` or `IN_CALL`
 - `bot.status=already_sent` for provider-accepted scheduled bots
 - `bot.status=failed` plus `bot.reason` for provider failure reasons such as bot could not join, host denied recording, or bot was removed before recording
+- `bot.display_status` for user-facing copy such as `bot_did_not_join`,
+  `recording_permission_denied`, `recording_failed`, or `transcript_failed`
 - `recording_availability=Available` only when `recording_status=COMPLETED`
 
 `transcript_status=FAILED` means transcript output is not available. It does not

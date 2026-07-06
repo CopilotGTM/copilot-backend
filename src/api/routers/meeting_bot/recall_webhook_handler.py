@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from src.infra.config.configs import recall_config
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
-from src.service.integrations.meeting_recording.providers import (
+from src.service.meeting_bot.providers import (
     RecallWebhookVerificationError,
     verify_recall_webhook_signature,
 )

@@ -1,4 +1,4 @@
-"""Meeting recording dispatch orchestration.
+"""Meeting recording lifecycle orchestration.
 
 This service is called from event-driven send tasks and from the nightly fallback
 scan. It owns the "should we send this event?" checks before making the external
@@ -31,7 +31,7 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar.integration_types import (
     DISPATCH_CALENDAR_INTEGRATION_TYPES as ACTIVE_CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.integrations.meeting_recording.providers import (
+from src.service.meeting_bot.providers import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
 )
@@ -45,10 +45,25 @@ from src.service.meeting_bot.session_service import MeetingRecordingSessionServi
 logger = get_logger(__name__)
 
 DEFAULT_RECALL_BOT_NAME = "Notetaker (CopilotGTM)"
+_PROVIDER_ACTIVE_STATUSES = {
+    "joining_call",
+    "in_waiting_room",
+    "in_call_not_recording",
+    "recording_permission_allowed",
+    "in_call_recording",
+}
+_PROVIDER_TERMINAL_STATUSES = {
+    "done",
+    "fatal",
+    "call_ended",
+    "recording_done",
+    "recording_failed",
+    "recording_deleted",
+}
 
 
-class MeetingRecordingDispatchService:
-    """Send one org-scoped calendar event to the recording provider.
+class MeetingRecordingLifecycleService:
+    """Schedule, reschedule, and cancel one org-scoped recording session.
 
     The service is used by both the direct send task and the nightly fallback scan.
     It intentionally keeps decisioning separate from task orchestration so it can be
@@ -60,6 +75,55 @@ class MeetingRecordingDispatchService:
         self.organisation_id = organisation_id
         self._session_service = MeetingRecordingSessionService(organisation_id)
         self._bot_name: str | None = None
+
+    async def sync_event_lifecycle(
+        self,
+        calendar_event_id: UUID,
+        *,
+        source: str = "single_event_task",
+        allow_cancelled_reinvite: bool = False,
+    ) -> dict[str, str]:
+        """Route one calendar event to schedule or cancel based on current state."""
+        event = await self._get_calendar_event(calendar_event_id)
+        if event is None:
+            return {
+                "status": "skipped",
+                "reason": "event_not_found",
+                "calendar_event_id": str(calendar_event_id),
+            }
+        if (getattr(event, "status", None) or "").lower() == "cancelled":
+            return await self.cancel_for_event(calendar_event_id, reason="calendar_cancelled")
+        return await self.schedule_for_event(
+            calendar_event_id,
+            source=source,
+            allow_cancelled_reinvite=allow_cancelled_reinvite,
+            event=event,
+        )
+
+    async def schedule_for_event(
+        self,
+        calendar_event_id: UUID,
+        *,
+        source: str = "single_event_task",
+        allow_cancelled_reinvite: bool = False,
+        event: CalendarEvent | None = None,
+    ) -> dict[str, str]:
+        """Schedule or reconcile a provider bot for a non-cancelled event."""
+        _ = (source, event)
+        return await self.dispatch_event(
+            calendar_event_id,
+            allow_cancelled_reinvite=allow_cancelled_reinvite,
+        )
+
+    async def cancel_for_event(
+        self,
+        calendar_event_id: UUID,
+        *,
+        reason: str,
+    ) -> dict[str, str]:
+        """Cancel any existing provider bot for this calendar event."""
+        _ = reason
+        return await self._cancel_existing_recording_for_calendar_cancellation(calendar_event_id)
 
     async def dispatch_event(
         self,
@@ -411,24 +475,51 @@ class MeetingRecordingDispatchService:
                 if error.status_code == 404:
                     pass
                 elif self._is_not_deletable_error(error):
-                    try:
-                        await provider.leave_call(provider_session_id)
-                    except RecallProviderError as leave_error:
-                        if leave_error.status_code != 404:
-                            await self._session_service.mark_cancelled(
-                                session_record.session_id,
-                                status_message=f"Recall cancel failed: {leave_error}",
-                                provider_payload={
-                                    "last_cancel_error": {
-                                        "operation": "calendar_cancel_leave_call",
-                                        "status_code": leave_error.status_code,
-                                        "code": leave_error.code,
-                                        "detail": leave_error.detail,
-                                        "response_body": leave_error.response_body,
-                                    }
-                                },
-                            )
-                            raise
+                    provider_status = self._status_value(
+                        getattr(session_record, "provider_status", None)
+                    )
+                    cleanup_action = (
+                        "leave"
+                        if provider_status in _PROVIDER_ACTIVE_STATUSES
+                        else await self._provider_delete_fallback_action(
+                            provider,
+                            provider_session_id,
+                        )
+                    )
+                    if cleanup_action == "leave":
+                        try:
+                            await provider.leave_call(provider_session_id)
+                        except RecallProviderError as leave_error:
+                            if leave_error.status_code != 404:
+                                await self._session_service.mark_cancelled(
+                                    session_record.session_id,
+                                    status_message=f"Recall cancel failed: {leave_error}",
+                                    provider_payload={
+                                        "last_cancel_error": {
+                                            "operation": "calendar_cancel_leave_call",
+                                            "status_code": leave_error.status_code,
+                                            "code": leave_error.code,
+                                            "detail": leave_error.detail,
+                                            "response_body": leave_error.response_body,
+                                        }
+                                    },
+                                )
+                                raise
+                    elif cleanup_action == "retry":
+                        await self._session_service.mark_cancelled(
+                            session_record.session_id,
+                            status_message=f"Recall cancel failed: {error.detail or str(error)}",
+                            provider_payload={
+                                "last_cancel_error": {
+                                    "operation": "calendar_cancel",
+                                    "status_code": error.status_code,
+                                    "code": error.code,
+                                    "detail": error.detail,
+                                    "response_body": error.response_body,
+                                }
+                            },
+                        )
+                        raise
                 else:
                     await self._session_service.mark_cancelled(
                         session_record.session_id,
@@ -726,7 +817,6 @@ class MeetingRecordingDispatchService:
                 calendar_event_id=calendar_event_id,
                 provider_session_id=session_record.provider_session_id,
             )
-
         logger.info(
             "Meeting recording session reset and marked for resend",
             extra={
@@ -1201,6 +1291,37 @@ class MeetingRecordingDispatchService:
             },
         )
 
+    async def _provider_delete_fallback_action(
+        self,
+        provider: RecallMeetingRecordingProvider,
+        provider_session_id: str,
+    ) -> str:
+        """Classify a failed provider delete without blindly leaving the call."""
+        try:
+            bot_payload = await provider.fetch_session(provider_session_id)
+        except RecallProviderError as error:
+            if error.status_code == 404:
+                return "already_done"
+            raise
+
+        status = self._provider_bot_status_code(bot_payload)
+        if status in _PROVIDER_ACTIVE_STATUSES:
+            return "leave"
+        if status in _PROVIDER_TERMINAL_STATUSES:
+            return "already_done"
+        return "retry"
+
+    @staticmethod
+    def _provider_bot_status_code(bot_payload: dict[str, Any]) -> str | None:
+        """Extract Recall bot status from common payload shapes."""
+        status = bot_payload.get("status")
+        if isinstance(status, str):
+            return status
+        if isinstance(status, dict):
+            code = status.get("code")
+            return code if isinstance(code, str) else None
+        return None
+
     @staticmethod
     def _is_cancelled_recording_status(value: Any) -> bool:
         """Return true for enum or string-backed cancelled session values."""
@@ -1324,26 +1445,43 @@ class MeetingRecordingDispatchService:
                 )
                 return
             if self._is_not_deletable_error(error):
-                # Recall refuses deletion once a bot has joined or left the cancellable
-                # scheduled state. Ask the in-call bot to leave, then continue with the
-                # replacement send instead of leaving the updated meeting unscheduled.
-                try:
-                    await provider.leave_call(provider_session_id)
-                except RecallProviderError as leave_error:
-                    if leave_error.status_code != 404:
-                        raise
-                logger.warning(
-                    "Meeting recording prior provider session removed via leave-call",
-                    extra={
-                        "event": "meeting_recording_reschedule_cancel_not_deletable",
-                        "organisation_id": str(self.organisation_id),
-                        "calendar_event_id": str(calendar_event_id),
-                        "provider_session_id": provider_session_id,
-                        "provider_code": error.code,
-                        "provider_detail": error.detail,
-                    },
+                cleanup_action = await self._provider_delete_fallback_action(
+                    provider,
+                    provider_session_id,
                 )
-                return
+                if cleanup_action == "leave":
+                    # Recall refuses deletion once a bot has joined the call. Ask the
+                    # active bot to leave, then continue with the replacement send.
+                    try:
+                        await provider.leave_call(provider_session_id)
+                    except RecallProviderError as leave_error:
+                        if leave_error.status_code != 404:
+                            raise
+                    logger.warning(
+                        "Meeting recording prior provider session removed via leave-call",
+                        extra={
+                            "event": "meeting_recording_reschedule_cancel_not_deletable",
+                            "organisation_id": str(self.organisation_id),
+                            "calendar_event_id": str(calendar_event_id),
+                            "provider_session_id": provider_session_id,
+                            "provider_code": error.code,
+                            "provider_detail": error.detail,
+                        },
+                    )
+                    return
+                if cleanup_action == "already_done":
+                    logger.warning(
+                        "Meeting recording prior provider session is terminal; continuing",
+                        extra={
+                            "event": "meeting_recording_reschedule_cancel_terminal",
+                            "organisation_id": str(self.organisation_id),
+                            "calendar_event_id": str(calendar_event_id),
+                            "provider_session_id": provider_session_id,
+                            "provider_code": error.code,
+                            "provider_detail": error.detail,
+                        },
+                    )
+                    return
             raise
         except httpx.HTTPError:
             # Network failures are deliberately non-fatal. The provider create below is

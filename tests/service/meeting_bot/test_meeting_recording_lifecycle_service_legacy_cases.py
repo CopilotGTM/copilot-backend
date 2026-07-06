@@ -11,11 +11,11 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
-from src.service.integrations.meeting_recording.providers import RecallProviderError
-from src.service.meeting_bot.dispatch_service import (
-    ACTIVE_CALENDAR_INTEGRATION_TYPES,
-    MeetingRecordingDispatchService,
+from src.service.integrations.calendar.integration_types import (
+    DISPATCH_CALENDAR_INTEGRATION_TYPES as ACTIVE_CALENDAR_INTEGRATION_TYPES,
 )
+from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.providers import RecallProviderError
 
 
 class _FakeScalarResult:
@@ -65,7 +65,7 @@ def _yield_session(session):
     return _gen()
 
 
-class TestMeetingRecordingDispatchService:
+class TestMeetingRecordingLifecycleService:
     """Regression coverage for meeting recording dispatch decisions."""
 
     @pytest.fixture(autouse=True)
@@ -73,7 +73,7 @@ class TestMeetingRecordingDispatchService:
         """Keep dispatch unit tests isolated from the real master database."""
         master_session = _FakeLookupSession(None)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
             lambda: _yield_session(master_session),
         )
 
@@ -101,11 +101,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -149,7 +149,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
         queued_record = SimpleNamespace(
@@ -160,7 +160,7 @@ class TestMeetingRecordingDispatchService:
         )
         queued_record.__dict__["_send_claimed"] = True
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -195,11 +195,11 @@ class TestMeetingRecordingDispatchService:
         organisation_id = uuid4()
         master_session = _FakeLookupSession("Acme Corp")
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
             lambda: _yield_session(master_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         assert await service._resolve_bot_name() == "Acme Corp Notetaker (CopilotGTM)"  # noqa: SLF001
 
@@ -211,11 +211,11 @@ class TestMeetingRecordingDispatchService:
         organisation_id = uuid4()
         master_session = _FakeLookupSession("   ")
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_master_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
             lambda: _yield_session(master_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         assert await service._resolve_bot_name() == "Notetaker (CopilotGTM)"  # noqa: SLF001
 
@@ -234,11 +234,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(),
             mark_send_queued=AsyncMock(),
@@ -269,11 +269,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(),
             mark_send_queued=AsyncMock(),
@@ -307,11 +307,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._has_active_calendar_integration = AsyncMock(return_value=False)  # noqa: SLF001
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_by_event=AsyncMock(
@@ -359,11 +359,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._has_active_calendar_integration = AsyncMock(return_value=False)  # noqa: SLF001
         session_id = uuid4()
         service._session_service = SimpleNamespace(  # noqa: SLF001
@@ -406,12 +406,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._has_active_calendar_integration = AsyncMock(  # noqa: SLF001
             side_effect=[True, False]
         )
@@ -455,11 +455,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -499,7 +499,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -523,7 +523,7 @@ class TestMeetingRecordingDispatchService:
             sent_to_provider_at=None,
             _send_claimed=True,
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=cancelled),
             reset_cancelled_for_reinvite=AsyncMock(return_value=reset),
@@ -556,11 +556,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -602,12 +602,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -652,12 +652,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -697,12 +697,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -748,12 +748,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -803,12 +803,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -858,12 +858,12 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -920,11 +920,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -979,13 +979,13 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
         session_id = uuid4()
         dedupe_key = f"meeting-recording:{organisation_id}:{event_id}:recall_ai"
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(
                 return_value=SimpleNamespace(
@@ -1050,11 +1050,11 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_by_event=AsyncMock(
                 return_value=SimpleNamespace(
@@ -1107,7 +1107,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1124,7 +1124,7 @@ class TestMeetingRecordingDispatchService:
             session_id=session_id,
             dedupe_key="meeting-recording-key",
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             reset_for_resend_if_current=AsyncMock(return_value=reset_session),
@@ -1175,7 +1175,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1192,7 +1192,7 @@ class TestMeetingRecordingDispatchService:
             session_id=session_id,
             dedupe_key="meeting-recording-key",
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             reset_for_resend_if_current=AsyncMock(return_value=reset_session),
@@ -1253,7 +1253,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1271,7 +1271,7 @@ class TestMeetingRecordingDispatchService:
             provider_session_id="bot_current",
         )
         stale_current_session.__dict__["_reset_claimed"] = False
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             reset_for_resend_if_current=AsyncMock(return_value=stale_current_session),
@@ -1323,7 +1323,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1340,7 +1340,7 @@ class TestMeetingRecordingDispatchService:
             session_id=session_id,
             dedupe_key="meeting-recording-key",
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             update_provider_registration=AsyncMock(return_value=refreshed_session),
@@ -1388,7 +1388,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1405,7 +1405,7 @@ class TestMeetingRecordingDispatchService:
             session_id=session_id,
             dedupe_key="meeting-recording-key",
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             reset_for_resend=AsyncMock(return_value=refreshed_session),
@@ -1460,7 +1460,7 @@ class TestMeetingRecordingDispatchService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1477,7 +1477,7 @@ class TestMeetingRecordingDispatchService:
             session_id=session_id,
             dedupe_key="meeting-recording-key",
         )
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
         service._session_service = SimpleNamespace(  # noqa: SLF001
             get_or_create_pending_session=AsyncMock(return_value=existing_session),
             reset_for_resend=AsyncMock(return_value=refreshed_session),
@@ -1500,6 +1500,7 @@ class TestMeetingRecordingDispatchService:
                     code="cannot_delete_bot",
                 )
             ),
+            fetch_session=AsyncMock(return_value={"id": "bot_old", "status": "in_call_recording"}),
             leave_call=AsyncMock(),
             list_sessions=AsyncMock(return_value=[]),
             create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"}),
@@ -1524,13 +1525,83 @@ class TestMeetingRecordingDispatchService:
         provider.create_session.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_dispatch_event_reschedule_does_not_leave_terminal_old_bot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Terminal provider bots are treated as already cleaned up, not leave-call targets."""
+        organisation_id = uuid4()
+        event_id = uuid4()
+        new_start_at = datetime.now(UTC) + timedelta(hours=2)
+        event = SimpleNamespace(
+            event_id=event_id,
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=new_start_at,
+            status="confirmed",
+        )
+        lookup_session = _FakeLookupSession(event)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lambda _org_id: _yield_session(lookup_session),
+        )
+
+        session_id = uuid4()
+        existing_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+            sent_to_provider_at=datetime.now(UTC),
+            provider_session_id="bot_old",
+            join_at=new_start_at - timedelta(minutes=30),
+            meeting_url="https://meet.google.com/abc-defg-hij",
+        )
+        refreshed_session = SimpleNamespace(
+            session_id=session_id,
+            dedupe_key="meeting-recording-key",
+        )
+        service = MeetingRecordingLifecycleService(organisation_id)
+        service._session_service = SimpleNamespace(  # noqa: SLF001
+            get_or_create_pending_session=AsyncMock(return_value=existing_session),
+            reset_for_resend=AsyncMock(return_value=refreshed_session),
+            mark_send_queued=AsyncMock(),
+            mark_sent=AsyncMock(),
+            mark_provider_failure=AsyncMock(),
+        )
+        provider = SimpleNamespace(
+            update_session=AsyncMock(
+                side_effect=RecallProviderError(
+                    "Recall request failed: HTTP 400 update_bot_failed",
+                    status_code=400,
+                    code="update_bot_failed",
+                )
+            ),
+            cancel_session=AsyncMock(
+                side_effect=RecallProviderError(
+                    "Recall delete failed: HTTP 400 cannot_delete_bot",
+                    status_code=400,
+                    code="cannot_delete_bot",
+                )
+            ),
+            fetch_session=AsyncMock(return_value={"id": "bot_old", "status": "done"}),
+            leave_call=AsyncMock(),
+            list_sessions=AsyncMock(return_value=[]),
+            create_session=AsyncMock(return_value={"id": "bot_456", "status": "scheduled"}),
+        )
+        service._build_provider = AsyncMock(return_value=provider)  # noqa: SLF001
+
+        result = await service.dispatch_event(event_id)
+
+        assert result["status"] == "rescheduled"
+        provider.fetch_session.assert_awaited_once_with("bot_old")
+        provider.leave_call.assert_not_awaited()
+        provider.create_session.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_dispatch_unsent_upcoming_scans_and_sends_candidates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fallback scan counts normal sends, repeats, and reschedules separately."""
         organisation_id = uuid4()
         event_ids = [uuid4(), uuid4(), uuid4()]
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         async def _fake_list_event_ids():
             return event_ids
@@ -1575,7 +1646,7 @@ class TestMeetingRecordingDispatchService:
         """One provider failure is isolated so the org-level fallback can continue."""
         organisation_id = uuid4()
         event_ids = [uuid4()]
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         async def _fake_list_event_ids():
             return event_ids
@@ -1609,7 +1680,7 @@ class TestMeetingRecordingDispatchService:
     ) -> None:
         """Logs distinguish total upcoming meetings from fallback-actionable meetings."""
         organisation_id = uuid4()
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         async def _fake_list_event_ids():
             return []
@@ -1643,11 +1714,11 @@ class TestMeetingRecordingDispatchService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         result = await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
 
@@ -1664,11 +1735,11 @@ class TestMeetingRecordingDispatchService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
 
@@ -1682,11 +1753,11 @@ class TestMeetingRecordingDispatchService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.dispatch_service.acquire_org_async_session",
+            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 
-        service = MeetingRecordingDispatchService(organisation_id)
+        service = MeetingRecordingLifecycleService(organisation_id)
 
         await service._list_unsent_upcoming_event_ids()  # noqa: SLF001
 

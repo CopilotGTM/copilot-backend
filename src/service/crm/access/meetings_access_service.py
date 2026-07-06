@@ -32,8 +32,10 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.integrations.meeting_recording.providers import RecallProviderError
-from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
+from src.service.meeting_bot.display_status import meeting_recording_display_status
+from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.providers import RecallProviderError
+from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
 logger = get_logger("crm_meetings_access_service")
 
@@ -287,6 +289,12 @@ class CRMMeetingsAccessService:
             status=session.status.value
             if hasattr(session.status, "value")
             else str(session.status),
+            display_status=meeting_recording_display_status(
+                recording_status=session.status,
+                transcript_status=session.transcript_status,
+                status_message=session.status_message,
+                sent_to_provider=session.sent_to_provider_at is not None,
+            ),
             transcript_status=(
                 session.transcript_status.value
                 if hasattr(session.transcript_status, "value")
@@ -334,15 +342,19 @@ class CRMMeetingRecordingControlService:
 
     def __init__(self, organisation_id: UUID) -> None:
         self.organisation_id = organisation_id
-        self._dispatch_service = MeetingRecordingDispatchService(organisation_id)
+        self._lifecycle_service = MeetingRecordingLifecycleService(organisation_id)
+        self._session_service = MeetingRecordingSessionService(organisation_id)
 
     async def invite_bot(self, event_id: UUID) -> dict[str, str]:
         """Dispatch a recording bot for a previously authorized event id."""
-        return await self._dispatch_service.dispatch_event(event_id)
+        return await self._lifecycle_service.schedule_for_event(
+            event_id,
+            source="crm_manual_invite",
+        )
 
     async def cancel_bot(self, event_id: UUID) -> dict[str, str]:
         """Cancel a scheduled recording bot without removing in-call bots."""
-        session = await self._dispatch_service._session_service.get_by_event(event_id)  # noqa: SLF001
+        session = await self._session_service.get_by_event(event_id)
         if session is None:
             raise CRMMeetingsAccessServiceError("Recording bot not found", status_code=404)
         if _status_value(
@@ -362,48 +374,16 @@ class CRMMeetingRecordingControlService:
                 status_code=409,
             )
 
-        if session.provider_session_id:
-            provider = await self._dispatch_service._build_provider()  # noqa: SLF001
-            try:
-                await provider.cancel_session(session.provider_session_id)
-            except RecallProviderError as exc:
-                if exc.status_code != 404:
-                    await self._dispatch_service._session_service.mark_cancelled(  # noqa: SLF001
-                        session.session_id,
-                        status_message=f"Recall cancel failed: {_provider_error_detail(exc)}",
-                        provider_payload={"last_cancel_error": _provider_error_payload(exc)},
-                    )
-                    raise CRMMeetingsAccessServiceError(
-                        "Failed to cancel recording bot with provider.",
-                        status_code=502,
-                    ) from exc
-            except Exception as exc:
-                await self._dispatch_service._session_service.mark_cancelled(  # noqa: SLF001
-                    session.session_id,
-                    status_message=f"Recall cancel failed: {_provider_error_detail(exc)}",
-                    provider_payload={"last_cancel_error": _provider_error_payload(exc)},
-                )
-                raise CRMMeetingsAccessServiceError(
-                    "Failed to cancel recording bot with provider.",
-                    status_code=502,
-                ) from exc
-
-        if session.provider_session_id:
-            await self._dispatch_service._session_service.mark_cancelled(  # noqa: SLF001
-                session.session_id,
-                provider_payload={
-                    "last_cancel_error": None,
-                    "cancelled_provider_session_id": session.provider_session_id,
-                },
+        try:
+            return await self._lifecycle_service.cancel_for_event(
+                event_id,
+                reason="manual_user_cancel",
             )
-        else:
-            await self._dispatch_service._session_service.mark_cancelled(  # noqa: SLF001
-                session.session_id,
-            )
-        return {
-            "status": "cancelled",
-            "calendar_event_id": str(event_id),
-        }
+        except RecallProviderError as exc:
+            raise CRMMeetingsAccessServiceError(
+                "Failed to cancel recording bot with provider.",
+                status_code=502,
+            ) from exc
 
 
 def _status_value(value: Any) -> str | None:
@@ -413,25 +393,6 @@ def _status_value(value: Any) -> str | None:
     if hasattr(value, "value"):
         return str(value.value)
     return str(value)
-
-
-def _provider_error_detail(exc: Exception) -> str:
-    """Return the safest human-readable provider error detail."""
-    if isinstance(exc, RecallProviderError) and exc.detail:
-        return exc.detail
-    return str(exc)
-
-
-def _provider_error_payload(exc: Exception) -> dict[str, Any]:
-    """Build compact provider failure metadata without raw response payloads."""
-    payload: dict[str, Any] = {
-        "operation": "cancel",
-        "detail": _provider_error_detail(exc),
-    }
-    if isinstance(exc, RecallProviderError):
-        payload["status_code"] = exc.status_code
-        payload["code"] = exc.code
-    return payload
 
 
 def _has_retryable_cancel_error(session: MeetingRecordingSession) -> bool:

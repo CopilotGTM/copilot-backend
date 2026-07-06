@@ -50,8 +50,26 @@ type MeetingsView = "today" | "upcoming" | "past" | "recordings";
 type MeetingBotComputedStatus =
   | "recording_live"
   | "already_sent"
+  | "failed"
+  | "cancelled"
   | "auto_invite_eligible"
   | "invite_available";
+
+type MeetingBotDisplayStatus =
+  | "invite_available"
+  | "auto_invite_eligible"
+  | "not_requested"
+  | "bot_queued"
+  | "bot_invited"
+  | "recording_live"
+  | "recording_available"
+  | "bot_did_not_join"
+  | "recording_permission_denied"
+  | "recording_failed"
+  | "transcript_failed"
+  | "bot_failed"
+  | "bot_removed"
+  | "not_available";
 
 type MeetingAttendeeItem = {
   email: string;
@@ -73,6 +91,7 @@ type MeetingLinkedRecord = {
 
 type MeetingBotStatus = {
   status: MeetingBotComputedStatus | string;
+  display_status: MeetingBotDisplayStatus | string | null;
   reason: string | null;
   is_external: boolean;
   provider_session_id: string | null;
@@ -184,6 +203,7 @@ Example response:
         },
         "bot": {
           "status": "recording_live",
+          "display_status": "recording_live",
           "reason": null,
           "is_external": true,
           "provider_session_id": "bot_abc123",
@@ -211,7 +231,9 @@ Frontend rendering notes:
 - Use `linked_record` for the "Linked to" deal chip.
 - If `linked_record` is `null`, show an unlinked or "Link deal" state.
 - Use `platform_label` for the platform column; raw `platform` remains for compatibility.
-- Use `bot.status` for bot chips and `bot.can_invite` / `bot.can_remove` for action availability.
+- Use `bot.display_status` for user-facing bot and recording copy. Use `bot.status` only for
+  coarse grouping and existing filters.
+- Use `bot.can_invite` / `bot.can_remove` for action availability.
 - Use `recording_availability` for the recording column; raw recording fields remain for detail flows.
 - Use `next_action` as a backend hint; frontend can still choose tab-specific button labels.
 
@@ -392,8 +414,34 @@ Bot status mapping for the list and drawer:
 | --- | --- |
 | `recording_live` | Green "Recording live" chip; primary action can open meeting. |
 | `already_sent` | "Bot invited" or "Recording scheduled" chip. |
+| `failed` | Use `bot.display_status` for the exact failure copy. |
+| `cancelled` | Bot removed/cancelled state. |
 | `auto_invite_eligible` | "Bot auto-invite eligible" or "Invite bot" action. |
 | `invite_available` | Show "Invite bot" if meeting has a join link and is not past. |
+
+Display status mapping:
+
+| `bot.display_status` | Suggested UI copy |
+| --- | --- |
+| `invite_available` | Invite bot |
+| `auto_invite_eligible` | Bot auto-invite eligible |
+| `not_requested` | Bot not invited |
+| `bot_queued` | Bot invite queued |
+| `bot_invited` | Bot invited |
+| `recording_live` | Recording live |
+| `recording_available` | Recording available |
+| `bot_did_not_join` | Bot did not join |
+| `recording_permission_denied` | Host denied recording |
+| `recording_failed` | Recording failed |
+| `transcript_failed` | Transcript failed |
+| `bot_failed` | Bot failed |
+| `bot_removed` | Bot removed |
+| `not_available` | Not available |
+
+Do not show "Transcript failed" just because `transcript_status=FAILED` when
+`bot.display_status` is `bot_did_not_join`, `recording_permission_denied`, or
+`recording_failed`. In those cases the transcript failed because the bot or recording
+flow failed first.
 
 There is no V1 `bot-settings` endpoint because per-meeting bot preferences would require new storage.
 
@@ -428,6 +476,12 @@ type MeetingRecordingResponse = {
   recording_status: string | null;
   transcript_status: string | null;
   playback_url: string | null;
+  download_url: string | null;
+  video_blob_path: string | null;
+  video_blob_url: string | null;
+  video_content_type: string | null;
+  video_size_bytes: number | null;
+  video_filename: string | null;
   provider_session_id: string | null;
   transcript_artifact: Record<string, unknown> | null;
   summary: Record<string, unknown> | null;
@@ -449,10 +503,16 @@ GET /users/meetings/4fd09b96-9f31-4dd4-9328-8f9b9f1bb227/recording
 
 Frontend behavior:
 
-- Use `playback_url` directly as a fresh playback/download URL. It is usually an
-  internal short-lived Azure Blob SAS after Recall `video_mixed.done` archival;
-  older rows may still fall back to Recall's signed download URL.
-- Do not treat `playback_url` as permanent; fetch this endpoint again when opening playback.
+- Use `playback_url` as a fresh inline playback URL.
+- Use `download_url` for the download action. It points at the same archived video when
+  available, but includes download disposition metadata.
+- `playback_url` and `download_url` are short-lived URLs. Fetch this endpoint again when
+  opening playback or starting a download.
+- `video_blob_path` is the stable organisation-scoped blob key. `video_blob_url` is the stable
+  non-SAS blob URL for diagnostics and metadata display only; do not use it for playback.
+- `video_content_type`, `video_size_bytes`, and `video_filename` are optional display metadata.
+- Older rows may still fall back to Recall's signed URL in `playback_url`; those rows can have
+  `download_url = null` until the video is archived into organisation storage.
 - Use `summary` and structured `action_items` for the intelligence panel when present.
 - Use `transcript_segments` for transcript rows. The backend returns `[]` when no segment rows
   are available and does not expose the raw full transcript text.

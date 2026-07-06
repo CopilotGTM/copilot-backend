@@ -77,7 +77,7 @@ def test_recall_webhook_accepts_verified_request(monkeypatch, caplog) -> None:
 
 def test_recall_webhook_rejects_invalid_signature(monkeypatch) -> None:
     from src.api.routers.meeting_bot import recall_webhook_handler
-    from src.service.integrations.meeting_recording.providers import RecallWebhookVerificationError
+    from src.service.meeting_bot.providers import RecallWebhookVerificationError
 
     monkeypatch.setattr(
         recall_webhook_handler.recall_config,

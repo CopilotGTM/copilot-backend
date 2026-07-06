@@ -328,9 +328,90 @@ def test_failed_bot_status_projects_reason_not_already_sent() -> None:
     bot = service._bot_status(event, recording, None, True)  # noqa: SLF001
 
     assert bot.status == "failed"
+    assert bot.display_status == "bot_did_not_join"
     assert bot.reason == "meeting_not_accessible"
     assert bot.can_invite is True
     assert bot.can_remove is True
+
+
+def test_bot_status_projects_permission_denied_display_status() -> None:
+    """Failed bot state should expose a semantic UI code, not only transcript failure."""
+    service = _service()
+    now = datetime.now(UTC)
+    event = SimpleNamespace(
+        start_at=now + timedelta(hours=1),
+        conference_link="https://meet.google.com/abc-defg-hij",
+    )
+    recording = SimpleNamespace(
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        provider_payload={},
+        provider_session_id="bot_123",
+        sent_to_provider_at=now,
+        status_message="host_denied",
+    )
+
+    bot = service._bot_status(event, recording, None, True)  # noqa: SLF001
+
+    assert bot.status == "failed"
+    assert bot.display_status == "recording_permission_denied"
+    assert bot.reason == "host_denied"
+
+
+def test_bot_status_preserves_invite_available_display_status_without_recording() -> None:
+    """No-session rows should keep their action-oriented display status."""
+    service = _service()
+    event = SimpleNamespace(
+        start_at=datetime.now(UTC) + timedelta(hours=1),
+        conference_link="https://meet.google.com/abc-defg-hij",
+    )
+
+    bot = service._bot_status(event, None, None, False)  # noqa: SLF001
+
+    assert bot.status == "invite_available"
+    assert bot.display_status == "invite_available"
+
+
+@pytest.mark.asyncio
+async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) -> None:
+    """Meetings tab manual invite should use lifecycle after ownership and cleanup checks."""
+    service = _service()
+    event_id = uuid4()
+
+    async def _ensure_user_calendar_event(_event_id):
+        return SimpleNamespace(event_id=event_id)
+
+    async def _rollback() -> None:
+        return None
+
+    async def _retry_cancel_cleanup_if_needed(_event_id):
+        return None
+
+    schedule = AsyncMock(return_value={"status": "sent", "calendar_event_id": str(event_id)})
+
+    class _LifecycleService:
+        def __init__(self, organisation_id):
+            assert organisation_id == service.organisation_id
+
+        async def schedule_for_event(self, *args, **kwargs):
+            return await schedule(*args, **kwargs)
+
+    service.session.rollback = _rollback
+    monkeypatch.setattr(service, "_ensure_user_calendar_event", _ensure_user_calendar_event)
+    monkeypatch.setattr(service, "_retry_cancel_cleanup_if_needed", _retry_cancel_cleanup_if_needed)
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.MeetingRecordingLifecycleService",
+        _LifecycleService,
+    )
+
+    result = await service.invite_bot(event_id)
+
+    assert result == {"status": "sent", "calendar_event_id": str(event_id)}
+    schedule.assert_awaited_once_with(
+        event_id,
+        source="meetings_tab_manual_invite",
+        allow_cancelled_reinvite=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -712,10 +793,15 @@ async def test_recording_detail_uses_archived_video_sas(monkeypatch) -> None:
         def __init__(self, organisation_id):
             assert organisation_id == service.organisation_id
 
-        async def generate_read_sas(self, blob_path, *, minutes, download_filename):
+        async def generate_read_sas(
+            self, blob_path, *, minutes, download_filename=None, content_type=None
+        ):
             assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
             assert minutes == 120
-            assert download_filename == "meeting-recording.mp4"
+            assert content_type == "video/mp4"
+            if download_filename is not None:
+                assert download_filename == "meeting-recording.mp4"
+                return "https://blob.example/download.mp4?sas=1"
             return "https://blob.example/recording.mp4?sas=1"
 
         async def close(self):
@@ -733,6 +819,203 @@ async def test_recording_detail_uses_archived_video_sas(monkeypatch) -> None:
     detail = await service.get_recording(event.event_id)
 
     assert detail.playback_url == "https://blob.example/recording.mp4?sas=1"
+    assert detail.download_url == "https://blob.example/download.mp4?sas=1"
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_uses_video_columns_for_playback_and_download(monkeypatch) -> None:
+    """First-class video columns should drive playback and download URLs."""
+    service = _service()
+
+    async def _rollback() -> None:
+        return None
+
+    service.session.rollback = _rollback
+    event = SimpleNamespace(event_id=uuid4(), title="Discovery call")
+    recording = SimpleNamespace(
+        status="COMPLETED",
+        transcript_status="READY",
+        provider_session_id=None,
+        provider_payload={},
+        video_blob_path="meeting_recordings/event/rec_1/video_123.mp4",
+        video_blob_url="https://storage.example/container/meeting_recordings/event/rec_1/video_123.mp4",
+        video_content_type="video/mp4",
+        video_size_bytes=123456,
+        video_recording_id="rec_1",
+        video_artifact_id="video_123",
+        video_archived_at=datetime(2026, 7, 6, 1, 0, tzinfo=UTC),
+    )
+
+    class _FakeStorage:
+        def __init__(self, organisation_id):
+            assert organisation_id == service.organisation_id
+
+        async def generate_read_sas(
+            self, blob_path, *, minutes, download_filename=None, content_type=None
+        ):
+            assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+            assert minutes == 120
+            assert content_type == "video/mp4"
+            if download_filename:
+                assert download_filename == "Discovery_call.mp4"
+                return "https://blob.example/download.mp4?sas=1"
+            return "https://blob.example/play.mp4?sas=1"
+
+        async def close(self):
+            return None
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.AzureOrganisationBlobStorage",
+        _FakeStorage,
+    )
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.playback_url == "https://blob.example/play.mp4?sas=1"
+    assert detail.download_url == "https://blob.example/download.mp4?sas=1"
+    assert detail.video_blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+    assert (
+        detail.video_blob_url
+        == "https://storage.example/container/meeting_recordings/event/rec_1/video_123.mp4"
+    )
+    assert detail.video_content_type == "video/mp4"
+    assert detail.video_size_bytes == 123456
+    assert detail.video_filename == "Discovery_call.mp4"
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_snapshots_video_columns_before_session_release(monkeypatch) -> None:
+    """Playback should not lazy-load recording columns after rollback expires ORM state."""
+    service = _service()
+    expired = False
+
+    async def _rollback() -> None:
+        nonlocal expired
+        expired = True
+
+    service.session.rollback = _rollback
+    event = SimpleNamespace(event_id=uuid4(), title="Customer sync")
+
+    class _Recording:
+        status = "COMPLETED"
+        transcript_status = "READY"
+        provider_session_id = None
+        provider_payload = {}
+        video_blob_url = "https://storage.example/video.mp4"
+        video_content_type = "video/mp4"
+        video_size_bytes = 123456
+        video_recording_id = "rec_1"
+        video_artifact_id = "video_123"
+
+        @property
+        def video_blob_path(self):
+            if expired:
+                raise AssertionError("video_blob_path was lazy-loaded after rollback")
+            return "meeting_recordings/event/rec_1/video_123.mp4"
+
+    class _FakeStorage:
+        def __init__(self, organisation_id):
+            assert organisation_id == service.organisation_id
+
+        async def generate_read_sas(
+            self, blob_path, *, minutes, download_filename=None, content_type=None
+        ):
+            assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+            assert content_type == "video/mp4"
+            return (
+                "https://blob.example/download.mp4?sas=1"
+                if download_filename
+                else ("https://blob.example/play.mp4?sas=1")
+            )
+
+        async def close(self):
+            return None
+
+    async def _get_row(_event_id):
+        return (event, None, None, _Recording(), None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.AzureOrganisationBlobStorage",
+        _FakeStorage,
+    )
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.playback_url == "https://blob.example/play.mp4?sas=1"
+    assert detail.video_blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+
+
+@pytest.mark.asyncio
+async def test_recording_detail_snapshots_event_title_before_session_release(monkeypatch) -> None:
+    """Download filename should not lazy-load the event after rollback expires ORM state."""
+    service = _service()
+    expired = False
+
+    async def _rollback() -> None:
+        nonlocal expired
+        expired = True
+
+    service.session.rollback = _rollback
+
+    class _Event:
+        event_id = uuid4()
+
+        @property
+        def title(self):
+            if expired:
+                raise AssertionError("event.title was lazy-loaded after rollback")
+            return "Customer follow up"
+
+    recording = SimpleNamespace(
+        status="COMPLETED",
+        transcript_status="READY",
+        provider_session_id=None,
+        provider_payload={},
+        video_blob_path="meeting_recordings/event/rec_1/video_123.mp4",
+        video_blob_url="https://storage.example/container/meeting_recordings/event/rec_1/video_123.mp4",
+        video_content_type="video/mp4",
+        video_size_bytes=123456,
+        video_recording_id="rec_1",
+        video_artifact_id="video_123",
+        video_archived_at=datetime(2026, 7, 6, 1, 0, tzinfo=UTC),
+    )
+
+    class _FakeStorage:
+        def __init__(self, organisation_id):
+            assert organisation_id == service.organisation_id
+
+        async def generate_read_sas(
+            self, blob_path, *, minutes, download_filename=None, content_type=None
+        ):
+            assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
+            assert content_type == "video/mp4"
+            if download_filename:
+                assert download_filename == "Customer_follow_up.mp4"
+                return "https://blob.example/download.mp4?sas=1"
+            return "https://blob.example/play.mp4?sas=1"
+
+        async def close(self):
+            return None
+
+    event = _Event()
+
+    async def _get_row(_event_id):
+        return (event, None, None, recording, None)
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_row)
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.AzureOrganisationBlobStorage",
+        _FakeStorage,
+    )
+
+    detail = await service.get_recording(event.event_id)
+
+    assert detail.video_filename == "Customer_follow_up.mp4"
 
 
 @pytest.mark.asyncio

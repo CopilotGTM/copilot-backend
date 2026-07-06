@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
     MeetingRecordingStatus,
     MeetingTranscriptStatus,
 )
+from src.service.meeting_bot.artifacts_service import MeetingRecordingArtifactService
 from src.service.meeting_bot.webhook_service import RecallMeetingRecordingWebhookService
 
 
@@ -23,46 +24,12 @@ def _make_service(organisation_id):
     svc = RecallMeetingRecordingWebhookService.__new__(RecallMeetingRecordingWebhookService)
     svc.organisation_id = organisation_id
     svc.session_service = AsyncMock()
+    svc.session_service.mark_video_artifact_archived = AsyncMock()
+    svc.artifact_service = SimpleNamespace(
+        archive_video_artifact=AsyncMock(side_effect=lambda _event_id, artifact: artifact)
+    )
+    svc.summary_trigger_service = SimpleNamespace(handle_transcript_ready=AsyncMock())
     return svc
-
-
-class _ScalarResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
-
-    def first(self):
-        return self._rows[0] if self._rows else None
-
-
-class _ExecuteResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return _ScalarResult(self._rows)
-
-
-class _SummaryJobSession:
-    def __init__(self, execute_rows):
-        self._execute_rows = list(execute_rows)
-        self.added = []
-        self.commits = 0
-
-    async def execute(self, _stmt):
-        rows = self._execute_rows.pop(0) if self._execute_rows else []
-        return _ExecuteResult(rows)
-
-    def add(self, row):
-        self.added.append(row)
-
-    async def flush(self):
-        return None
-
-    async def commit(self):
-        self.commits += 1
 
 
 @pytest.mark.asyncio
@@ -191,7 +158,7 @@ async def test_transcript_done_fetches_transcript_artifact(monkeypatch, caplog) 
             "summary_jobs_skipped": 0,
         }
     )
-    service._materialize_recall_transcript_and_enqueue_summaries = materialize_mock
+    service.summary_trigger_service.handle_transcript_ready = materialize_mock
 
     payload = {
         "event": "transcript.done",
@@ -357,9 +324,10 @@ async def test_video_mixed_done_fetches_video_artifact(monkeypatch) -> None:
             "video_id": "video_1",
             "download_url": "https://download.example/video.mp4",
             "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+            "archived_blob_url": "https://storage.example/container/meeting_recordings/event/rec_1/video_1.mp4",
         }
     )
-    monkeypatch.setattr(service, "_archive_video_artifact", archive_mock)
+    service.artifact_service.archive_video_artifact = archive_mock
 
     result = await service.process_recall_webhook(
         {
@@ -383,6 +351,16 @@ async def test_video_mixed_done_fetches_video_artifact(monkeypatch) -> None:
             "download_url": "https://download.example/video.mp4",
         },
     )
+    service.session_service.mark_video_artifact_archived.assert_awaited_once_with(
+        existing.session_id,
+        {
+            "recording_id": "rec_1",
+            "video_id": "video_1",
+            "download_url": "https://download.example/video.mp4",
+            "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+            "archived_blob_url": "https://storage.example/container/meeting_recordings/event/rec_1/video_1.mp4",
+        },
+    )
     kwargs = service.session_service.apply_webhook_update.await_args.kwargs
     assert kwargs["status"] is None
     assert kwargs["transcript_status"] is None
@@ -391,6 +369,7 @@ async def test_video_mixed_done_fetches_video_artifact(monkeypatch) -> None:
         "video_id": "video_1",
         "download_url": "https://download.example/video.mp4",
         "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+        "archived_blob_url": "https://storage.example/container/meeting_recordings/event/rec_1/video_1.mp4",
     }
 
 
@@ -403,6 +382,8 @@ async def test_archive_video_artifact_downloads_to_org_blob(monkeypatch) -> None
     class _FakeStorage:
         def __init__(self, storage_org_id):
             assert storage_org_id == organisation_id
+            self.account_name = "storageacct"
+            self.container = "org-container"
 
         async def upload_stream(self, blob_path, chunks, *, content_type):
             uploaded["blob_path"] = blob_path
@@ -444,14 +425,14 @@ async def test_archive_video_artifact_downloads_to_org_blob(monkeypatch) -> None
             assert url == "https://download.example/video.mp4"
             return _FakeStreamContext()
 
-    service = _make_service(organisation_id)
+    service = MeetingRecordingArtifactService(organisation_id)
     monkeypatch.setattr(
-        "src.service.meeting_bot.webhook_service.AzureOrganisationBlobStorage",
+        "src.service.meeting_bot.artifacts_service.AzureOrganisationBlobStorage",
         _FakeStorage,
     )
-    monkeypatch.setattr("src.service.meeting_bot.webhook_service.httpx.AsyncClient", _FakeClient)
+    monkeypatch.setattr("src.service.meeting_bot.artifacts_service.httpx.AsyncClient", _FakeClient)
 
-    result = await service._archive_video_artifact(
+    result = await service.archive_video_artifact(
         event_id,
         {
             "recording_id": "rec_1",
@@ -467,6 +448,10 @@ async def test_archive_video_artifact_downloads_to_org_blob(monkeypatch) -> None
         "closed": True,
     }
     assert result["archived_blob_path"] == f"meeting_recordings/{event_id}/rec_1/video_1.mp4"
+    assert (
+        result["archived_blob_url"]
+        == f"https://storageacct.blob.core.windows.net/org-container/meeting_recordings/{event_id}/rec_1/video_1.mp4"
+    )
     assert result["archived_content_type"] == "video/mp4"
     assert result["archived_size_bytes"] == 7
 
@@ -702,42 +687,3 @@ async def test_extract_organisation_id_reads_bot_metadata() -> None:
     )
 
     assert result == organisation_id
-
-
-@pytest.mark.asyncio
-async def test_create_summary_jobs_creates_non_deal_job_when_no_active_association(
-    monkeypatch,
-) -> None:
-    """Recall transcripts should still generate a meeting summary when no deal is linked."""
-    organisation_id = uuid4()
-    event_id = uuid4()
-    service = _make_service(organisation_id)
-    session = _SummaryJobSession(
-        [
-            [],  # active deal associations
-            [],  # active non-deal summary jobs
-        ]
-    )
-
-    async def fake_acquire_org_session(_organisation_id):
-        yield session
-
-    monkeypatch.setattr(
-        "src.service.meeting_bot.webhook_service.acquire_org_async_session",
-        fake_acquire_org_session,
-    )
-
-    result = await service._create_meeting_summary_jobs(event_id)
-
-    assert result["created"] == 1
-    assert result["skipped"] == 0
-    assert len(result["job_ids_to_enqueue"]) == 1
-    assert len(session.added) == 1
-    job = session.added[0]
-    assert job.deal_id is None
-    assert job.event_id == event_id
-    assert job.job_type == DealJobType.MEETING_SUMMARY
-    assert job.status == JobStatus.PENDING
-    assert job.job_metadata["source"] == "recall_webhook"
-    assert job.job_metadata["send_summary_notification"] is True
-    assert job.job_metadata["summary_scope"] == "meeting"

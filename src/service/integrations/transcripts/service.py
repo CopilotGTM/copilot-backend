@@ -34,11 +34,11 @@ from src.infra.config.microsoft_integration_scopes import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.integrations.meeting_recording.providers import (
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
+from src.service.meeting_bot.providers import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
 )
-from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 
 from .google_meet_provider import GoogleMeetTranscriptProvider, TranscriptAuthError
 from .teams_provider import TeamsTranscriptProvider

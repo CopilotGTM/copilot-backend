@@ -102,17 +102,17 @@ async def test_next_meeting_requires_confirmation_before_dispatch(
     """Inferred next-meeting sends return a preview until the user confirms."""
     event = _event()
     session = _CaptureSession(event)
-    dispatch = AsyncMock()
+    schedule = AsyncMock()
     monkeypatch.setattr(
-        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingDispatchService",
-        MagicMock(return_value=SimpleNamespace(dispatch_event=dispatch)),
+        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingLifecycleService",
+        MagicMock(return_value=SimpleNamespace(schedule_for_event=schedule)),
     )
 
     result = await send_meeting_bot_invite(context=_context(session), confirmed=False)
 
     assert result["status"] == "confirmation_required"
     assert result["event"]["event_id"] == str(event.event_id)
-    dispatch.assert_not_awaited()
+    schedule.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -122,12 +122,12 @@ async def test_specific_event_is_verified_against_user_calendar_before_dispatch(
     """Explicit event sends still require the event to belong to this user's calendar."""
     event = _event()
     session = _CaptureSession(event)
-    dispatch = AsyncMock(
+    schedule = AsyncMock(
         return_value={"status": "already_sent", "calendar_event_id": str(event.event_id)}
     )
     monkeypatch.setattr(
-        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingDispatchService",
-        MagicMock(return_value=SimpleNamespace(dispatch_event=dispatch)),
+        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingLifecycleService",
+        MagicMock(return_value=SimpleNamespace(schedule_for_event=schedule)),
     )
 
     result = await send_meeting_bot_invite(
@@ -136,7 +136,10 @@ async def test_specific_event_is_verified_against_user_calendar_before_dispatch(
     )
 
     assert result["status"] == "already_sent"
-    dispatch.assert_awaited_once_with(event.event_id)
+    schedule.assert_awaited_once_with(
+        event.event_id,
+        source="agent_tool_manual_invite",
+    )
     sql = str(session.statements[0])
     assert "knowledge_integrations.created_by_user_id" in sql
     assert "calendar_event_user_states.is_deleted" in sql
@@ -148,14 +151,14 @@ async def test_missing_user_id_never_dispatches_bot(monkeypatch: pytest.MonkeyPa
     session = _CaptureSession(_event())
     context = _context(session, user_id=UUID("22222222-2222-2222-2222-222222222222"))
     context.user_id = None
-    dispatch = AsyncMock()
+    schedule = AsyncMock()
     monkeypatch.setattr(
-        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingDispatchService",
-        MagicMock(return_value=SimpleNamespace(dispatch_event=dispatch)),
+        "src.agents.tools.intelligence.send_meeting_bot_invite.MeetingRecordingLifecycleService",
+        MagicMock(return_value=SimpleNamespace(schedule_for_event=schedule)),
     )
 
     result = await send_meeting_bot_invite(context=context, confirmed=True)
 
     assert result == {"status": "error", "reason": "missing_user_context"}
     context.acquire_session.assert_not_called()
-    dispatch.assert_not_awaited()
+    schedule.assert_not_awaited()
