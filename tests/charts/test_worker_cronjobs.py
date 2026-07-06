@@ -57,6 +57,18 @@ def _render_prod_worker_cronjobs() -> list[dict]:
     return _render_worker_cronjobs("charts/application/values-prod.yaml")
 
 
+def test_prod_startup_hook_does_not_require_priority_class_before_upgrade() -> None:
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    startup_job = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Job" and doc["metadata"]["name"] == "copilot-backend-startup"
+    )
+
+    assert "pre-upgrade" in startup_job["metadata"]["annotations"]["helm.sh/hook"]
+    assert "priorityClassName" not in startup_job["spec"]["template"]["spec"]
+
+
 def test_chart_cronjob_names_match_worker_schedule_registries() -> None:
     """Every Helm CronJob name must resolve in the worker cron dispatcher."""
     values = yaml.safe_load(
