@@ -19,13 +19,13 @@ Use this file to track production CASA readiness evidence. Do not paste secrets,
 
 ## Current Position
 
-Last updated: 2026-07-05 10:15 UTC.
+Last updated: 2026-07-06 04:35 UTC.
 
 | Item | Current state | Next action |
 | --- | --- | --- |
 | Branch location | Active local branch is `codex/casa-production-evidence-workflow`; `main` is back at `origin/main` | Keep CASA rollout work on this branch |
 | Published release refs | `release/backend/2026-07-05-casa` and `release/infra/2026-07-05-casa` currently point to checkpoint commit `225a59fb898ac73b4d15aea037fcf5b8d8cdad74` | Commit and push CI fixes |
-| Backend prod run | Runs `1761` and `1764` exposed detect-secrets baseline path mismatch between Windows and Linux plus missing SCA artifact directory behavior | Normalize paths in the baseline checker and prepare artifact directories before gates |
+| Backend prod run | Latest local check reproduced the prod `Python Dependency SCA (pip-audit)` failure: 69 advisories across 13 locked packages, then 1 remaining `requests` advisory after first remediation pass | Push dependency lock refresh and rerun prod backend pipeline to verify `python-sca-reports` publishes a clean report |
 | Infra prod run | Runs `1758` and `1762` failed in Trivy IaC scan setup after Terraform init and validate passed | Use Docker-based Trivy fallback and keep Terraform plan running while publishing scan status |
 | Evidence export | No complete prod artifact set yet | Run `export-prod-casa-evidence.ps1 -UseLatestSuccessfulRuns` after backend and infra prod runs succeed |
 | Submission preflight | Expected to fail today | Fill ignored Google/CASA values, export prod artifacts, run approved-window DAST, then rerun preflight |
@@ -52,6 +52,7 @@ Last updated: 2026-07-05 10:15 UTC.
 | CASA-016 | 2026-07-05 | Trivy install-path fix | Control configured | CASA IaC/SCA evidence export | Trivy installation now uses `$(Agent.TempDirectory)/trivy-bin` in prod backend and infra pipelines instead of `/usr/local/bin`; fixed commit `4605551246ac3ac6fe8e97dee303de586244ca0c` was pushed to both release branches. | TODO | Awaiting fixed prod runs `1761` and `1762` | `4605551246ac3ac6fe8e97dee303de586244ca0c` | `uv run pytest tests/scripts/test_terraform_pipeline_security.py tests/scripts/test_casa_release_publication.py tests/scripts/test_casa_publication_scope.py tests/scripts/test_casa_artifact_export.py tests/scripts/test_casa_submission_preflight.py -q` |
 | CASA-017 | 2026-07-05 | Azure DevOps prod backend runs `1761`/`1764` | Evidence gap | CASA secrets/SCA evidence export | Backend detect-secrets gate compared Windows-style baseline paths with Linux-style CI scan paths, causing existing baseline findings to look new. The SCA artifact upload also failed when an earlier gate stopped before `sca-reports` existed. | TODO | Fix in progress | `scripts/security/check_detect_secrets_baseline.py`; `.azure-pipelines/azure-backend-pipeline-prod.yml` | Azure DevOps backend run `1761`, task logs `14` and `18` |
 | CASA-018 | 2026-07-05 | Azure DevOps prod infra run `1762` | Evidence gap | CASA IaC scan evidence export | The agent still failed before `trivy --version` during installer setup. The next fix removes installer dependency from the infra stage and uses Docker-based Trivy fallback when local Trivy is unavailable. | TODO | Fix in progress | `.azure-pipelines/templates/terraform-env-stage.yml` | Azure DevOps infra run `1762`, task log `7` |
+| CASA-019 | 2026-07-06 | Azure DevOps prod backend pipeline / local pip-audit reproduction | Control configured | CASA SCA/dependency vulnerability remediation | Prod Python SCA failed on locked dependencies with 69 advisories across 13 packages. Direct pins were moved to fixed versions, `arxiv` was upgraded to allow fixed `requests`, `cryptography` was capped below the incompatible `49.x` line, transitive packages were refreshed in `uv.lock`, `jinja2` was added to runtime deps for Sentry/Starlette startup, and the prod SCA report step now removes stale reports before scanning and writes an explicit clean report when no findings are present. | TODO | Awaiting prod backend rerun | `pyproject.toml`; `uv.lock`; `.azure-pipelines/azure-backend-pipeline-prod.yml`; `tests/api/routers/test_external_api_versioning.py` | Clean isolated `uv sync --frozen --all-extras` passed; API-only `uv sync --frozen --no-dev --extra api` passed; API-only Sentry/Starlette smoke passed; local `pip-audit` against locked no-dev export: no known vulnerabilities found; FastAPI startup/route suite 18 passed; PDF/research/health SCA surface 80 passed; bot webhook suite 14 passed; CASA script suite 15 passed; crypto smoke import passed with `cryptography==48.0.1` |
 
 ## Exceptions
 

@@ -161,11 +161,16 @@ stages:
               uv export --format requirements.txt --locked --no-dev --no-emit-project --no-header \
                 --output-file sca-reports/python-requirements.txt
 
+              rm -f sca-reports/pip-audit-report.txt
               uv run --with pip-audit pip-audit \
                 --requirement sca-reports/python-requirements.txt \
                 --progress-spinner off \
                 --format columns \
                 --output sca-reports/pip-audit-report.txt
+
+              if [ ! -s sca-reports/pip-audit-report.txt ]; then
+                echo "No known vulnerabilities found" > sca-reports/pip-audit-report.txt
+              fi
 
               cat sca-reports/pip-audit-report.txt
             displayName: '🔎 Python Dependency SCA (pip-audit)'

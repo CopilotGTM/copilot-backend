@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 
+from fastapi.testclient import TestClient
+
 
 def _build_app(monkeypatch, mocker):
     monkeypatch.setenv("ENV", "local")
@@ -26,16 +28,7 @@ def test_external_public_and_private_ingress_routes_are_versioned(monkeypatch, m
     """Third-party integration contracts should expose canonical versioned paths."""
     app = _build_app(monkeypatch, mocker)
 
-    runtime_paths = {route.path for route in app.routes}
     schema_paths = set(app.openapi()["paths"])
-
-    assert "/public/v1/forms/{public_form_key}" in runtime_paths
-    assert "/public/v1/forms/{public_form_key}/submissions" in runtime_paths
-    assert "/private/v1/forms/submissions" in runtime_paths
-    assert "/private/v1/crm/leads" in runtime_paths
-
-    assert "/public/forms/{public_form_key}" not in runtime_paths
-    assert "/private/forms/submissions" not in runtime_paths
 
     assert "/public/v1/forms/{public_form_key}" in schema_paths
     assert "/public/v1/forms/{public_form_key}/submissions" in schema_paths
@@ -44,3 +37,13 @@ def test_external_public_and_private_ingress_routes_are_versioned(monkeypatch, m
 
     assert "/public/forms/{public_form_key}" not in schema_paths
     assert "/private/forms/submissions" not in schema_paths
+
+    client = TestClient(app)
+
+    assert client.get("/public/v1/forms/test-form").status_code != 404
+    assert client.post("/public/v1/forms/test-form/submissions", json={}).status_code != 404
+    assert client.post("/private/v1/forms/submissions", json={}).status_code != 404
+    assert client.post("/private/v1/crm/leads", json={}).status_code != 404
+
+    assert client.get("/public/forms/test-form").status_code == 404
+    assert client.post("/private/forms/submissions", json={}).status_code == 404
