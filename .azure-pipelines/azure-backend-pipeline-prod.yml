@@ -403,6 +403,7 @@ stages:
             displayName: 'Prepare Trivy Report Directory'
 
           - script: |
+              set -euo pipefail
               echo "##[section]🔒 Installing Trivy vulnerability scanner..."
 
               # Install Trivy if not present
@@ -410,6 +411,7 @@ stages:
                 mkdir -p "$(Agent.TempDirectory)/trivy-bin"
                 curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$(Agent.TempDirectory)/trivy-bin" v0.49.1
                 export PATH="$(Agent.TempDirectory)/trivy-bin:$PATH"
+                echo "##vso[task.prependpath]$(Agent.TempDirectory)/trivy-bin"
               fi
 
               trivy --version
@@ -417,6 +419,7 @@ stages:
             displayName: 'Install Trivy Scanner'
 
           - script: |
+              set -euo pipefail
               echo "##[section]🔍 Scanning API image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
@@ -436,6 +439,7 @@ stages:
               API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
 
           - script: |
+              set -euo pipefail
               echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
@@ -455,6 +459,7 @@ stages:
               LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
 
           - script: |
+              set -euo pipefail
               echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
@@ -474,6 +479,7 @@ stages:
               INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
 
           - script: |
+              set -euo pipefail
               echo "##[section]🔍 Scanning Knowledge Worker image for vulnerabilities..."
               echo "Note: This image is larger and may take longer to scan"
               trivy image \
@@ -494,6 +500,7 @@ stages:
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
 
           - script: |
+              set -euo pipefail
               echo "##[section]📊 Generating vulnerability report (JSON)..."
 
               # Generate JSON reports for all images
@@ -538,6 +545,15 @@ stages:
               INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
               KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
             continueOnError: true
+
+          - script: |
+              set -euo pipefail
+              test -s trivy-reports/trivy-api-report.txt
+              test -s trivy-reports/trivy-light-worker-report.txt
+              test -s trivy-reports/trivy-integrations-worker-report.txt
+              test -s trivy-reports/trivy-knowledge-worker-report.txt
+              ls -la trivy-reports
+            displayName: 'Verify Trivy Reports Exist'
 
           - task: PublishPipelineArtifact@1
             displayName: 'Upload Trivy Vulnerability Reports'
