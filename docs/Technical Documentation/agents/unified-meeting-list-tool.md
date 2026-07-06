@@ -70,7 +70,7 @@ Behavior:
   connected calendar and return `confirmation_required` unless `confirmed=True`.
 - If `event_id` is provided, verify the event belongs to the current user's
   connected calendar before dispatching.
-- Dispatch uses `MeetingRecordingDispatchService.dispatch_event(...)`, so
+- Dispatch uses `MeetingRecordingLifecycleService.schedule_for_event(...)`, so
   existing provider/session behavior such as `already_sent`, reschedule repair,
   missing join URL, and started-meeting skips remains centralized.
 - The tool never sends a bot from org-wide calendar lookup or attendee email

@@ -27,6 +27,7 @@ class CRMMeetingRecordingState(BaseModel):
 
     session_id: UUID | None = None
     status: str = "NOT_REQUESTED"
+    display_status: str = "not_requested"
     transcript_status: str | None = None
     provider: str | None = None
     provider_status: str | None = None

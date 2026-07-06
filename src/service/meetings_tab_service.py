@@ -67,8 +67,9 @@ from src.service.crm.meetings.attendee_display import resolve_attendee_display_n
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.integrations.meeting_recording.providers import RecallMeetingRecordingProvider
-from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
+from src.service.meeting_bot.display_status import meeting_recording_display_status
+from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.providers import RecallMeetingRecordingProvider
 from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
@@ -322,8 +323,9 @@ class MeetingsTabService:
             raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
         if cleanup_result is not None and cleanup_result.get("status") != "cancelled":
             return cleanup_result
-        return await MeetingRecordingDispatchService(self.organisation_id).dispatch_event(
+        return await MeetingRecordingLifecycleService(self.organisation_id).schedule_for_event(
             event_id,
+            source="meetings_tab_manual_invite",
             allow_cancelled_reinvite=True,
         )
 
@@ -373,6 +375,8 @@ class MeetingsTabService:
         bot_snapshot = provider_payload.get("bot_snapshot")
         provider_session_id = recording.provider_session_id
         transcript_segments = await self._load_transcript_segments(meeting)
+        playback_artifact = self._video_artifact_from_recording(recording)
+        video_filename = self._recording_download_filename(event)
         response_payload = {
             "event_id": event.event_id,
             "recording_status": self._enum_value(recording.status) if recording.status else None,
@@ -408,20 +412,29 @@ class MeetingsTabService:
             else:
                 logger.warning("Recall API key missing while resolving playback URL")
 
-        playback_artifact = provider_payload.get("video_artifact") or (
+        playback_artifact = playback_artifact or (
             RecallMeetingRecordingProvider.extract_video_mixed_download(bot_snapshot)
             if isinstance(bot_snapshot, dict)
             else None
         )
         if not playback_artifact:
             raise MeetingsTabServiceError("Recording is not ready", 409, code="recording_not_ready")
-        playback_url = await self._recording_playback_url(playback_artifact)
+        playback_url, download_url = await self._recording_video_urls(
+            playback_artifact,
+            download_filename=video_filename,
+        )
 
         return MeetingRecordingResponse(
             event_id=response_payload["event_id"],
             recording_status=response_payload["recording_status"],
             transcript_status=response_payload["transcript_status"],
             playback_url=playback_url,
+            download_url=download_url,
+            video_blob_path=playback_artifact.get("archived_blob_path"),
+            video_blob_url=playback_artifact.get("archived_blob_url"),
+            video_content_type=playback_artifact.get("archived_content_type"),
+            video_size_bytes=playback_artifact.get("archived_size_bytes"),
+            video_filename=video_filename,
             provider_session_id=response_payload["provider_session_id"],
             transcript_artifact=response_payload["transcript_artifact"],
             summary=response_payload["summary"],
@@ -429,20 +442,34 @@ class MeetingsTabService:
             transcript_segments=response_payload["transcript_segments"],
         )
 
-    async def _recording_playback_url(self, playback_artifact: dict[str, Any]) -> str | None:
+    async def _recording_video_urls(
+        self,
+        playback_artifact: dict[str, Any],
+        *,
+        download_filename: str,
+    ) -> tuple[str | None, str | None]:
         archived_blob_path = playback_artifact.get("archived_blob_path")
         if isinstance(archived_blob_path, str) and archived_blob_path:
             storage = AzureOrganisationBlobStorage(self.organisation_id)
             try:
-                return await storage.generate_read_sas(
+                content_type = self._recording_playback_content_type(playback_artifact)
+                playback_url = await storage.generate_read_sas(
                     archived_blob_path,
                     minutes=120,
-                    download_filename="meeting-recording.mp4",
+                    download_filename=None,
+                    content_type=content_type,
                 )
+                download_url = await storage.generate_read_sas(
+                    archived_blob_path,
+                    minutes=120,
+                    download_filename=download_filename,
+                    content_type=content_type,
+                )
+                return playback_url, download_url
             finally:
                 await storage.close()
         download_url = playback_artifact.get("download_url")
-        return download_url if isinstance(download_url, str) else None
+        return (download_url if isinstance(download_url, str) else None, None)
 
     async def _load_transcript_segments(
         self, meeting: Meeting | None
@@ -782,8 +809,19 @@ class MeetingsTabService:
             status = "auto_invite_eligible"
         else:
             status = "invite_available"
+        display_status = (
+            status
+            if recording is None
+            else meeting_recording_display_status(
+                recording_status=recording.status,
+                transcript_status=recording.transcript_status,
+                status_message=recording.status_message,
+                sent_to_provider=recording.sent_to_provider_at is not None,
+            )
+        )
         return MeetingBotStatus(
             status=status,
+            display_status=display_status,
             reason=reason,
             is_external=is_external,
             provider_session_id=recording.provider_session_id if recording else None,
@@ -841,6 +879,37 @@ class MeetingsTabService:
         if status in PROCESSING_RECORDING_STATUSES:
             return "Processing"
         return "Not available"
+
+    @staticmethod
+    def _video_artifact_from_recording(recording: MeetingRecordingSession) -> dict[str, Any] | None:
+        if getattr(recording, "video_blob_path", None):
+            return {
+                "archived_blob_path": recording.video_blob_path,
+                "archived_blob_url": recording.video_blob_url,
+                "archived_content_type": recording.video_content_type,
+                "archived_size_bytes": recording.video_size_bytes,
+                "recording_id": recording.video_recording_id,
+                "video_id": recording.video_artifact_id,
+            }
+        provider_payload = dict(recording.provider_payload or {})
+        artifact = provider_payload.get("video_artifact")
+        return artifact if isinstance(artifact, dict) else None
+
+    @staticmethod
+    def _recording_download_filename(event: CalendarEvent) -> str:
+        title = (getattr(event, "title", None) or "meeting-recording").strip()
+        cleaned = "".join(
+            char if char.isalnum() or char in {" ", "-", "_"} else "_" for char in title
+        )
+        cleaned = "_".join(cleaned.split())
+        return f"{cleaned or 'meeting-recording'}.mp4"
+
+    @staticmethod
+    def _recording_playback_content_type(playback_artifact: dict[str, Any]) -> str:
+        content_type = playback_artifact.get("archived_content_type")
+        if isinstance(content_type, str) and content_type.lower().startswith("video/"):
+            return content_type
+        return "video/mp4"
 
     @staticmethod
     def _can_remove_bot(event: CalendarEvent, recording: MeetingRecordingSession | None) -> bool:

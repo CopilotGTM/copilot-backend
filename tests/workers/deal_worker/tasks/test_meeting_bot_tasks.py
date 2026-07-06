@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 import pytest
 
 TASKS_AVAILABLE = False
+meeting_bot_tasks_module: Any = None
 send_meeting_recording_task: Any = None
 process_meeting_recording_webhook_task: Any = None
 send_unsent_meeting_recordings_org_task: Any = None
 trigger_send_unsent_meeting_recordings_all_orgs_task: Any = None
 
 try:
+    from src.workers.deal_worker.tasks import meeting_bot_tasks as meeting_bot_tasks_module
     from src.workers.deal_worker.tasks.meeting_bot_tasks import (
         process_meeting_recording_webhook_task,
         send_meeting_recording_task,
@@ -90,6 +93,43 @@ class TestSendMeetingRecordingTaskParameters:
         sig = inspect.signature(send_meeting_recording_task)
         assert "organisation_id" in sig.parameters
         assert "calendar_event_id" in sig.parameters
+
+    def test_uses_event_lifecycle_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Single-event jobs should reconcile event lifecycle, not only dispatch sends."""
+        organisation_id = UUID("11111111-1111-1111-1111-111111111111")
+        calendar_event_id = UUID("22222222-2222-2222-2222-222222222222")
+        calls: list[tuple[UUID, UUID]] = []
+
+        class _LifecycleService:
+            def __init__(self, org_id: UUID) -> None:
+                self.org_id = org_id
+
+            async def sync_event_lifecycle(self, event_id: UUID) -> dict[str, str]:
+                calls.append((self.org_id, event_id))
+                return {"status": "scheduled"}
+
+        monkeypatch.setattr(
+            meeting_bot_tasks_module,
+            "MeetingRecordingLifecycleService",
+            _LifecycleService,
+        )
+        monkeypatch.setattr(
+            meeting_bot_tasks_module,
+            "acquire_task_lock",
+            lambda *_args, **_kwargs: True,
+        )
+        monkeypatch.setattr(
+            meeting_bot_tasks_module,
+            "release_task_lock",
+            lambda *_args, **_kwargs: None,
+        )
+
+        result = send_meeting_recording_task.run(str(organisation_id), str(calendar_event_id))
+
+        assert result["status"] == "scheduled"
+        assert result["organisation_id"] == str(organisation_id)
+        assert result["calendar_event_id"] == str(calendar_event_id)
+        assert calls == [(organisation_id, calendar_event_id)]
 
 
 class TestSendUnsentMeetingRecordingsOrgTaskConfig:

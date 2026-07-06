@@ -307,7 +307,7 @@ class TestResetForResend:
         assert result.transcript_status == MeetingTranscriptStatus.NOT_REQUESTED
 
     @pytest.mark.asyncio
-    async def test_reset_for_resend_if_current_resets_matching_provider_state(
+    async def test_reset_for_resend_if_current_preserves_provider_cleanup_state(
         self, monkeypatch
     ) -> None:
         """A resend reset claims only the provider row the caller inspected."""
@@ -360,7 +360,9 @@ class TestResetForResend:
         assert result.meeting_url == "https://new.example/join"
         assert result.join_at == new_join_at
         assert result.status == MeetingRecordingStatus.PENDING_SEND
-        assert result.provider_session_id is None
+        assert result.provider_session_id == "bot_old"
+        assert result.provider_status == "scheduled"
+        assert result.provider_payload == {"id": "bot_old"}
         assert result.sent_to_provider_at is None
         assert result.transcript_status == MeetingTranscriptStatus.NOT_REQUESTED
 
@@ -521,6 +523,59 @@ class TestStatusTransitions:
         assert result.provider_status == "done"
         assert result.provider_payload["last_webhook_event_name"] == "bot.done"
         assert result.last_webhook_at is not None
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mark_video_artifact_archived_updates_stable_columns(self, monkeypatch) -> None:
+        """Archived mixed-video metadata should be queryable without provider JSON."""
+        organisation_id = uuid4()
+        session_id = uuid4()
+        event_id = uuid4()
+        record = MeetingRecordingSession(
+            session_id=session_id,
+            organisation_id=organisation_id,
+            calendar_event_id=event_id,
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="key",
+            meeting_url="https://meet.example/join",
+            join_at=datetime.now(UTC),
+            status=MeetingRecordingStatus.COMPLETED,
+            transcript_status=MeetingTranscriptStatus.READY,
+            provider_session_id="bot_123",
+            provider_payload={"id": "bot_123"},
+        )
+
+        service = MeetingRecordingSessionService(organisation_id)
+        session, fake_gen = _fake_session_gen_with_scalar(record)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        result = await service.mark_video_artifact_archived(
+            session_id,
+            {
+                "recording_id": "rec_1",
+                "video_id": "video_1",
+                "archived_blob_path": "meeting_recordings/event/rec_1/video_1.mp4",
+                "archived_blob_url": "https://storage.example/container/meeting_recordings/event/rec_1/video_1.mp4",
+                "archived_content_type": "video/mp4",
+                "archived_size_bytes": 7,
+                "archived_at": "2026-07-06T01:00:00+00:00",
+            },
+        )
+
+        assert result is record
+        assert record.video_blob_path == "meeting_recordings/event/rec_1/video_1.mp4"
+        assert (
+            record.video_blob_url
+            == "https://storage.example/container/meeting_recordings/event/rec_1/video_1.mp4"
+        )
+        assert record.video_content_type == "video/mp4"
+        assert record.video_size_bytes == 7
+        assert record.video_recording_id == "rec_1"
+        assert record.video_artifact_id == "video_1"
+        assert record.video_archived_at == datetime(2026, 7, 6, 1, 0, tzinfo=UTC)
         session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio

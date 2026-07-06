@@ -337,9 +337,6 @@ class MeetingRecordingSessionService:
                     status=MeetingRecordingStatus.PENDING_SEND,
                     status_message="Session reset for reschedule",
                     sent_to_provider_at=None,
-                    provider_session_id=None,
-                    provider_status=None,
-                    provider_payload={},
                     last_webhook_at=None,
                     transcript_ready_at=None,
                     transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
@@ -359,9 +356,6 @@ class MeetingRecordingSessionService:
                     record.status = MeetingRecordingStatus.PENDING_SEND
                     record.status_message = "Session reset for reschedule"
                     record.sent_to_provider_at = None
-                    record.provider_session_id = None
-                    record.provider_status = None
-                    record.provider_payload = {}
                     record.last_webhook_at = None
                     record.transcript_ready_at = None
                     record.transcript_status = MeetingTranscriptStatus.NOT_REQUESTED
@@ -431,6 +425,32 @@ class MeetingRecordingSessionService:
             if transcript_ready_at is not None:
                 record.transcript_ready_at = transcript_ready_at
 
+            session.add(record)
+            await session.commit()
+            return record
+        return None
+
+    async def mark_video_artifact_archived(
+        self,
+        session_id: UUID,
+        video_artifact: dict[str, Any],
+    ) -> MeetingRecordingSession | None:
+        """Persist stable mixed-video metadata outside provider JSON."""
+        blob_path = video_artifact.get("archived_blob_path")
+        if not isinstance(blob_path, str) or not blob_path:
+            return None
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            record = await self._get_by_session_id(session, session_id)
+            if record is None:
+                return None
+            record.video_blob_path = blob_path
+            record.video_blob_url = _string_or_none(video_artifact.get("archived_blob_url"))
+            record.video_content_type = _string_or_none(video_artifact.get("archived_content_type"))
+            record.video_size_bytes = _int_or_none(video_artifact.get("archived_size_bytes"))
+            record.video_recording_id = _string_or_none(video_artifact.get("recording_id"))
+            record.video_artifact_id = _string_or_none(video_artifact.get("video_id"))
+            record.video_archived_at = _parse_iso_datetime(video_artifact.get("archived_at"))
             session.add(record)
             await session.commit()
             return record
@@ -533,3 +553,21 @@ class MeetingRecordingSessionService:
         )
         result = await session.execute(stmt)
         return cast(MeetingRecordingSession | None, result.scalar_one_or_none())
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

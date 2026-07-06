@@ -7,7 +7,7 @@ import hashlib
 import hmac
 
 import pytest
-from src.service.integrations.meeting_recording.providers.recall_webhook_verifier import (
+from src.service.meeting_bot.providers.recall_webhook_verifier import (
     RecallWebhookVerificationError,
     verify_recall_webhook_signature,
 )

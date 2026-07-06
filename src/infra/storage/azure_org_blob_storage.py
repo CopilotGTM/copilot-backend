@@ -128,13 +128,18 @@ class AzureOrganisationBlobStorage:
                 logger.debug("Container create skipped/failed: %s", e)
 
     async def generate_read_sas(
-        self, blob_path: str, minutes: int = 30, download_filename: str | None = None
+        self,
+        blob_path: str,
+        minutes: int = 30,
+        download_filename: str | None = None,
+        content_type: str | None = None,
     ) -> str:
         """Generate a short-lived read SAS URL for one blob.
 
         Read URLs expire on purpose so download links are never long-lived shared
         secrets. Optional `download_filename` sets a safe `Content-Disposition`
-        name for browser behavior.
+        name for browser behavior. Optional `content_type` overrides the response
+        content type without rewriting blob metadata.
         """
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
@@ -158,6 +163,7 @@ class AzureOrganisationBlobStorage:
             permission=BlobSasPermissions(read=True),
             expiry=expiry,
             content_disposition=content_disposition,
+            content_type=content_type,
         )
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 

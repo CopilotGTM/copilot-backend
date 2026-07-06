@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from src.service.integrations.meeting_recording.providers.recall_provider import (
+from src.service.meeting_bot.providers.recall_client import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
 )

@@ -3,7 +3,7 @@
 Called by chat and realtime agents when a user asks to add the meeting bot to a
 call. The tool never dispatches directly from a raw event id: it first proves
 the event was synced from the current user's active calendar integration, then
-delegates provider idempotency to `MeetingRecordingDispatchService`.
+delegates provider idempotency to `MeetingRecordingLifecycleService`.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from src.infra.utils.timezone import get_context_anchor_utc
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.meeting_bot.dispatch_service import MeetingRecordingDispatchService
+from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -76,8 +76,11 @@ async def send_meeting_bot_invite(
             "message": "Confirm before sending the meeting bot to this next meeting.",
         }
 
-    dispatch_service = MeetingRecordingDispatchService(context.organisation_id)
-    dispatch_result = await dispatch_service.dispatch_event(event.event_id)
+    lifecycle_service = MeetingRecordingLifecycleService(context.organisation_id)
+    dispatch_result = await lifecycle_service.schedule_for_event(
+        event.event_id,
+        source="agent_tool_manual_invite",
+    )
     return {
         **dispatch_result,
         "event": _format_confirmation_event(event),

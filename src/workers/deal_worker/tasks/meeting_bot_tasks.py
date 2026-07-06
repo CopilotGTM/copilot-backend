@@ -21,10 +21,8 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
-from src.service.meeting_bot import (
-    MeetingRecordingDispatchService,
-    RecallMeetingRecordingWebhookService,
-)
+from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.webhook_service import RecallMeetingRecordingWebhookService
 from src.workers.deal_worker.celery_app import app
 
 logger = get_logger(__name__)
@@ -147,8 +145,8 @@ def send_meeting_recording_task(
         }
 
     async def _run() -> dict[str, Any]:
-        service = MeetingRecordingDispatchService(UUID(organisation_id))
-        result = await service.dispatch_event(UUID(calendar_event_id))
+        service = MeetingRecordingLifecycleService(UUID(organisation_id))
+        result = await service.sync_event_lifecycle(UUID(calendar_event_id))
         return {
             **result,
             "organisation_id": organisation_id,
@@ -223,7 +221,7 @@ def send_unsent_meeting_recordings_org_task(
         }
 
     async def _run() -> dict[str, Any]:
-        service = MeetingRecordingDispatchService(UUID(organisation_id))
+        service = MeetingRecordingLifecycleService(UUID(organisation_id))
         result = await service.dispatch_unsent_upcoming()
         logger.info(
             "Meeting recording fallback org task completed",

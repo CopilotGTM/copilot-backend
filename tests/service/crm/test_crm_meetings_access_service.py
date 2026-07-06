@@ -25,7 +25,7 @@ from src.service.crm.access.meetings_access_service import (
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.integrations.meeting_recording.providers import RecallProviderError
+from src.service.meeting_bot.providers import RecallProviderError
 
 
 def _recording_session(
@@ -50,20 +50,26 @@ def _recording_session(
 
 
 def _control_service_with_session(session: MeetingRecordingSession | None):
-    """Create the control service with a fake dispatch/session/provider boundary."""
+    """Create the control service with fake session and lifecycle boundaries."""
     service = CRMMeetingRecordingControlService.__new__(CRMMeetingRecordingControlService)
-    provider = SimpleNamespace(cancel_session=AsyncMock())
     session_service = SimpleNamespace(
         get_by_event=AsyncMock(return_value=session),
         mark_cancelled=AsyncMock(return_value=session),
         mark_provider_failure=AsyncMock(return_value=session),
     )
-    service.organisation_id = uuid4()
-    service._dispatch_service = SimpleNamespace(  # noqa: SLF001
-        _session_service=session_service,
-        _build_provider=AsyncMock(return_value=provider),
+    lifecycle_service = SimpleNamespace(
+        schedule_for_event=AsyncMock(),
+        cancel_for_event=AsyncMock(
+            return_value={
+                "status": "cancelled",
+                "calendar_event_id": str(session.calendar_event_id) if session else "",
+            }
+        ),
     )
-    return service, session_service, provider
+    service.organisation_id = uuid4()
+    service._session_service = session_service  # noqa: SLF001
+    service._lifecycle_service = lifecycle_service  # noqa: SLF001
+    return service, session_service, lifecycle_service
 
 
 def _calendar_event(
@@ -97,56 +103,51 @@ def test_can_invite_bot_keeps_user_action_available_for_already_started_meeting(
 
 @pytest.mark.asyncio
 async def test_cancel_bot_marks_unsent_session_cancelled() -> None:
-    """Unsent sessions are cancelled locally without provider I/O."""
+    """Unsent sessions pass the CRM guard and delegate lifecycle cancellation."""
     event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.PENDING_SEND)
-    service, session_service, provider = _control_service_with_session(session)
+    service, session_service, lifecycle_service = _control_service_with_session(session)
 
     result = await service.cancel_bot(event_id)
 
-    assert result == {"status": "cancelled", "calendar_event_id": str(event_id)}
-    session_service.mark_cancelled.assert_awaited_once_with(session.session_id)
-    provider.cancel_session.assert_not_awaited()
+    assert result["status"] == "cancelled"
+    session_service.get_by_event.assert_awaited_once_with(event_id)
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
+    )
 
 
 @pytest.mark.asyncio
 async def test_cancel_bot_deletes_sent_scheduled_session_before_marking_cancelled() -> None:
-    """Sent scheduled sessions call Recall delete before durable cancellation."""
+    """Sent scheduled sessions are delegated after CRM validates removability."""
     event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.SENT, sent=True)
-    service, session_service, provider = _control_service_with_session(session)
+    service, _session_service, lifecycle_service = _control_service_with_session(session)
 
     result = await service.cancel_bot(event_id)
 
-    assert result == {"status": "cancelled", "calendar_event_id": str(event_id)}
-    provider.cancel_session.assert_awaited_once_with("bot_123")
-    session_service.mark_cancelled.assert_awaited_once_with(
-        session.session_id,
-        provider_payload={
-            "last_cancel_error": None,
-            "cancelled_provider_session_id": "bot_123",
-        },
+    assert result["status"] == "cancelled"
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
     )
 
 
 @pytest.mark.asyncio
 async def test_cancel_bot_deletes_provider_id_even_when_sent_timestamp_missing() -> None:
-    """Provider cleanup is keyed by provider id, even on manually repaired rows."""
+    """Provider-id rows are still delegated even when sent timestamp is missing."""
     event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.PENDING_SEND)
     session.provider_session_id = "bot_123"
-    service, session_service, provider = _control_service_with_session(session)
+    service, _session_service, lifecycle_service = _control_service_with_session(session)
 
     result = await service.cancel_bot(event_id)
 
-    assert result == {"status": "cancelled", "calendar_event_id": str(event_id)}
-    provider.cancel_session.assert_awaited_once_with("bot_123")
-    session_service.mark_cancelled.assert_awaited_once_with(
-        session.session_id,
-        provider_payload={
-            "last_cancel_error": None,
-            "cancelled_provider_session_id": "bot_123",
-        },
+    assert result["status"] == "cancelled"
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
     )
 
 
@@ -154,14 +155,13 @@ async def test_cancel_bot_deletes_provider_id_even_when_sent_timestamp_missing()
 async def test_cancel_bot_rejects_in_call_session_without_leave_call() -> None:
     """V1 remove semantics do not remove bots that already joined a call."""
     session = _recording_session(status=MeetingRecordingStatus.IN_CALL, sent=True)
-    service, session_service, provider = _control_service_with_session(session)
+    service, session_service, lifecycle_service = _control_service_with_session(session)
 
     with pytest.raises(CRMMeetingsAccessServiceError) as exc_info:
         await service.cancel_bot(uuid4())
 
     assert exc_info.value.status_code == 409
-    provider.cancel_session.assert_not_awaited()
-    assert not hasattr(provider, "leave_call")
+    lifecycle_service.cancel_for_event.assert_not_awaited()
     session_service.mark_cancelled.assert_not_awaited()
 
 
@@ -173,22 +173,23 @@ async def test_cancel_bot_rejects_transcript_ready_session() -> None:
         transcript_status=MeetingTranscriptStatus.READY,
         sent=True,
     )
-    service, session_service, provider = _control_service_with_session(session)
+    service, session_service, lifecycle_service = _control_service_with_session(session)
 
     with pytest.raises(CRMMeetingsAccessServiceError) as exc_info:
         await service.cancel_bot(uuid4())
 
     assert exc_info.value.status_code == 409
-    provider.cancel_session.assert_not_awaited()
+    lifecycle_service.cancel_for_event.assert_not_awaited()
     session_service.mark_cancelled.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_cancel_bot_provider_failure_preserves_user_opt_out() -> None:
-    """A failed Recall delete must not turn user cancellation into a resend candidate."""
+    """Provider delete errors are surfaced as CRM control failures."""
+    event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.SENT, sent=True)
-    service, session_service, provider = _control_service_with_session(session)
-    provider.cancel_session.side_effect = RecallProviderError(
+    service, session_service, lifecycle_service = _control_service_with_session(session)
+    lifecycle_service.cancel_for_event.side_effect = RecallProviderError(
         "Recall delete failed",
         status_code=500,
         code="provider_error",
@@ -196,22 +197,14 @@ async def test_cancel_bot_provider_failure_preserves_user_opt_out() -> None:
     )
 
     with pytest.raises(CRMMeetingsAccessServiceError) as exc_info:
-        await service.cancel_bot(uuid4())
+        await service.cancel_bot(event_id)
 
     assert exc_info.value.status_code == 502
-    provider.cancel_session.assert_awaited_once_with("bot_123")
-    session_service.mark_cancelled.assert_awaited_once_with(
-        session.session_id,
-        status_message="Recall cancel failed: temporary outage",
-        provider_payload={
-            "last_cancel_error": {
-                "operation": "cancel",
-                "status_code": 500,
-                "code": "provider_error",
-                "detail": "temporary outage",
-            },
-        },
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
     )
+    session_service.mark_cancelled.assert_not_awaited()
     session_service.mark_provider_failure.assert_not_awaited()
 
 
@@ -220,24 +213,14 @@ async def test_cancel_bot_treats_provider_404_as_cancelled() -> None:
     """A missing provider bot is already cleaned up from the user's perspective."""
     event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.SENT, sent=True)
-    service, session_service, provider = _control_service_with_session(session)
-    provider.cancel_session.side_effect = RecallProviderError(
-        "Recall delete failed",
-        status_code=404,
-        code="not_found",
-        detail="bot not found",
-    )
+    service, _session_service, lifecycle_service = _control_service_with_session(session)
 
     result = await service.cancel_bot(event_id)
 
-    assert result == {"status": "cancelled", "calendar_event_id": str(event_id)}
-    provider.cancel_session.assert_awaited_once_with("bot_123")
-    session_service.mark_cancelled.assert_awaited_once_with(
-        session.session_id,
-        provider_payload={
-            "last_cancel_error": None,
-            "cancelled_provider_session_id": "bot_123",
-        },
+    assert result["status"] == "cancelled"
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
     )
 
 
@@ -247,18 +230,14 @@ async def test_cancel_bot_retries_provider_cancel_after_previous_cancel_failure(
     event_id = uuid4()
     session = _recording_session(status=MeetingRecordingStatus.CANCELLED, sent=True)
     session.provider_payload = {"last_cancel_error": {"detail": "temporary outage"}}
-    service, session_service, provider = _control_service_with_session(session)
+    service, _session_service, lifecycle_service = _control_service_with_session(session)
 
     result = await service.cancel_bot(event_id)
 
-    assert result == {"status": "cancelled", "calendar_event_id": str(event_id)}
-    provider.cancel_session.assert_awaited_once_with("bot_123")
-    session_service.mark_cancelled.assert_awaited_once_with(
-        session.session_id,
-        provider_payload={
-            "last_cancel_error": None,
-            "cancelled_provider_session_id": "bot_123",
-        },
+    assert result["status"] == "cancelled"
+    lifecycle_service.cancel_for_event.assert_awaited_once_with(
+        event_id,
+        reason="manual_user_cancel",
     )
 
 
@@ -268,6 +247,22 @@ def test_retryable_cancel_error_keeps_remove_action_available() -> None:
     session.provider_payload = {"last_cancel_error": {"detail": "temporary outage"}}
 
     assert CRMMeetingsAccessService._can_remove_bot(session) is True
+
+
+def test_format_recording_exposes_display_status_for_failed_join() -> None:
+    """CRM meetings API should give frontend the same semantic failure code."""
+    session = _recording_session(
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        sent=True,
+    )
+    session.status_message = "bot_kicked_from_waiting_room"
+
+    recording = CRMMeetingsAccessService._format_recording(session)
+
+    assert recording.status == "FAILED"
+    assert recording.transcript_status == "FAILED"
+    assert recording.display_status == "bot_did_not_join"
 
 
 def test_visible_events_query_deduplicates_user_state_matches() -> None:

@@ -48,6 +48,7 @@ class MeetingBotStatus(BaseModel):
     """Computed bot state for one calendar event."""
 
     status: str
+    display_status: str | None = None
     reason: str | None = None
     is_external: bool = False
     provider_session_id: str | None = None
@@ -163,6 +164,12 @@ class MeetingRecordingResponse(BaseModel):
     recording_status: str | None = None
     transcript_status: str | None = None
     playback_url: str | None = None
+    download_url: str | None = None
+    video_blob_path: str | None = None
+    video_blob_url: str | None = None
+    video_content_type: str | None = None
+    video_size_bytes: int | None = None
+    video_filename: str | None = None
     provider_session_id: str | None = None
     transcript_artifact: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None

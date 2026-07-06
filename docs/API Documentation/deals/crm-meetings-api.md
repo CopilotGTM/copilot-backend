@@ -74,6 +74,7 @@ Example response:
         "recording": {
           "session_id": null,
           "status": "NOT_REQUESTED",
+          "display_status": "not_requested",
           "transcript_status": null,
           "provider": null,
           "provider_status": null,
@@ -120,6 +121,29 @@ Frontend note: render the invite action when `can_invite_bot=true`. Provider
 dispatch may still return safe non-send states such as
 `missing_meeting_url`, `cancelled`, `meeting_already_started`, or
 `recording_cancelled`.
+
+For user-facing copy, render `recording.display_status` instead of deriving text
+from `recording.status` and `recording.transcript_status`. Supported values match
+the Meetings Tab API:
+
+| `recording.display_status` | Suggested UI copy |
+| --- | --- |
+| `not_requested` | Bot not invited |
+| `bot_queued` | Bot invite queued |
+| `bot_invited` | Bot invited |
+| `recording_live` | Recording live |
+| `recording_available` | Recording available |
+| `bot_did_not_join` | Bot did not join |
+| `recording_permission_denied` | Host denied recording |
+| `recording_failed` | Recording failed |
+| `transcript_failed` | Transcript failed |
+| `bot_failed` | Bot failed |
+| `bot_removed` | Bot removed |
+| `not_available` | Not available |
+
+If `display_status` is `bot_did_not_join`, `recording_permission_denied`, or
+`recording_failed`, do not display the row as only "Transcript failed"; the
+transcript failed because the bot or recording did not complete.
 
 ## Remove Recording Bot
 

@@ -7,7 +7,17 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -128,6 +138,41 @@ class MeetingRecordingSession(TimestampMixin, SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="When the provider first reported a downloadable transcript.",
+    )
+    video_blob_path: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Stable org-blob path for the archived mixed MP4.",
+    )
+    video_blob_url: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Stable non-SAS blob URL for the archived mixed MP4.",
+    )
+    video_content_type: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+        description="Content type stored with the archived mixed MP4.",
+    )
+    video_size_bytes: int | None = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True),
+        description="Archived mixed MP4 size when known.",
+    )
+    video_recording_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider recording id for the archived mixed MP4.",
+    )
+    video_artifact_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Provider video artifact id for the archived mixed MP4.",
+    )
+    video_archived_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When the mixed MP4 was archived into org storage.",
     )
     last_webhook_at: datetime | None = Field(
         default=None,

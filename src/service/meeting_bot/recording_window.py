@@ -1,8 +1,8 @@
 """Shared recording-bot scheduling window policy.
 
-Every producer eventually reaches `MeetingRecordingDispatchService`, but producers
+Every producer eventually reaches `MeetingRecordingLifecycleService`, but producers
 also create queue noise and local session rows. Keeping the window rule here lets
-callers avoid work early while the dispatch service remains the final safety gate.
+callers avoid work early while the lifecycle service remains the final safety gate.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-"""Meeting recording provider adapters and webhook verification helpers."""
+"""Provider adapters for meeting bot backends."""
 
-from .recall_provider import RecallMeetingRecordingProvider, RecallProviderError
+from .recall_client import RecallMeetingRecordingProvider, RecallProviderError
 from .recall_webhook_verifier import (
     RecallWebhookVerificationError,
     verify_recall_webhook_signature,
