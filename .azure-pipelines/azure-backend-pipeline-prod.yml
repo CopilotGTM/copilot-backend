@@ -408,10 +408,15 @@ stages:
 
               # Install Trivy if not present
               if ! command -v trivy &> /dev/null; then
-                mkdir -p "$(Agent.TempDirectory)/trivy-bin"
-                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$(Agent.TempDirectory)/trivy-bin" v0.49.1
-                export PATH="$(Agent.TempDirectory)/trivy-bin:$PATH"
-                echo "##vso[task.prependpath]$(Agent.TempDirectory)/trivy-bin"
+                TRIVY_VERSION="0.72.0"
+                TRIVY_BIN_DIR="$(Agent.TempDirectory)/trivy-bin"
+                TRIVY_ARCHIVE="$(Agent.TempDirectory)/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+                mkdir -p "$TRIVY_BIN_DIR"
+                curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o "$TRIVY_ARCHIVE"
+                tar -xzf "$TRIVY_ARCHIVE" -C "$TRIVY_BIN_DIR" trivy
+                chmod +x "$TRIVY_BIN_DIR/trivy"
+                export PATH="$TRIVY_BIN_DIR:$PATH"
+                echo "##vso[task.prependpath]$TRIVY_BIN_DIR"
               fi
 
               trivy --version
