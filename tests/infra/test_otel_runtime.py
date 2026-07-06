@@ -12,7 +12,8 @@ import pytest
 import src.api.fastapi_app as fastapi_app
 import src.infra.observability.sentry as sentry_runtime
 import src.infra.utils.app_state as app_state
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from httpx import Client as HttpxClient
 from src.api.middleware.request_context import RequestContextMiddleware
@@ -641,6 +642,45 @@ def test_otel_log_sanitizer_drops_source_location_fields():
     assert record.funcName == ""
     assert record.lineno == 0
     assert record.color_message == ""
+
+
+def test_fastapi_instrumentation_allows_cors_preflight_for_included_router(
+    mocker,
+) -> None:
+    import src.infra.observability.otel as otel_runtime
+
+    mocker.patch.object(otel_config, "OTEL_ENABLED", True)
+    mocker.patch.object(otel_config, "OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.com/otlp")
+
+    router = APIRouter()
+
+    @router.post("/login")
+    def login():
+        return {"ok": True}
+
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://admin.copilotgtm.com"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(router, prefix="/admin/auth")
+    otel_runtime.instrument_fastapi_app(app)
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/admin/auth/login",
+            headers={
+                "Origin": "https://admin.copilotgtm.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://admin.copilotgtm.com"
 
 
 def test_init_otel_is_noop_when_disabled(mocker):
