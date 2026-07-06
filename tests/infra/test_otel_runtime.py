@@ -1105,14 +1105,16 @@ def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):
         max_retry_delay=0,
     )
 
-    assert asyncio.run(manager.get("tenant-secret")) is None
+    lookup_name = "tenant-config-key"
+
+    assert asyncio.run(manager.get(lookup_name)) is None
 
     payloads = _structured_lines(capsys.readouterr().err)
     retry_payload = next(item for item in payloads if item.get("event") == "secret_fetch_retry")
     failure_payload = next(item for item in payloads if item.get("event") == "secret_fetch_failed")
 
-    assert retry_payload["secret_name"] == "tenant-secret"
-    assert failure_payload["secret_name"] == "tenant-secret"
+    assert retry_payload["secret_name"] == lookup_name
+    assert failure_payload["secret_name"] == lookup_name
     assert failure_payload["message"] == "Secret fetch failed after retries"
 
 
