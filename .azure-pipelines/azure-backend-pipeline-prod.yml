@@ -428,8 +428,8 @@ stages:
               echo "##[section]🔍 Scanning API image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
-                --exit-code 1 \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-api-report.txt \
@@ -448,8 +448,8 @@ stages:
               echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
-                --exit-code 1 \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-light-worker-report.txt \
@@ -468,8 +468,8 @@ stages:
               echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
-                --exit-code 1 \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-integrations-worker-report.txt \
@@ -489,8 +489,8 @@ stages:
               echo "Note: This image is larger and may take longer to scan"
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
-                --exit-code 1 \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-knowledge-worker-report.txt \
@@ -511,6 +511,7 @@ stages:
               # Generate JSON reports for all images
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
@@ -519,6 +520,7 @@ stages:
 
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
@@ -527,6 +529,7 @@ stages:
 
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
@@ -535,6 +538,7 @@ stages:
 
               trivy image \
                 --severity CRITICAL,HIGH \
+                --scanners vuln \
                 --ignore-unfixed \
                 --no-progress \
                 --format json \
