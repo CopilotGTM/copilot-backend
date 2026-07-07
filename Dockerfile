@@ -144,6 +144,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && apt-get clean \
+    && python -m pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "wheel>=0.46.2" \
     # Security: Create non-root user with fixed UID/GID
     && groupadd -r -g ${APP_GID} appuser \
     && useradd -r -u ${APP_UID} -g appuser -d /home/appuser -s /sbin/nologin appuser \
