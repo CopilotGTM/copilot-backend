@@ -105,13 +105,13 @@ api = [
 # Heaviest worker: docling, transformers, torch + agno for embeddings/summaries
 knowledge = [
     # PyTorch CPU-only (required by docling/transformers)
-    "torch==2.5.1",
-    "torchvision==0.20.1",
-    "torchaudio==2.5.1",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
     
     # AI/ML for embeddings and summaries
-    "transformers~=4.55.4",
-    "huggingface-hub[hf_xet]==0.35.3",
+    "transformers==5.4.0",
+    "huggingface-hub[hf_xet]>=1.5.0,<2.0.0",
     "openai~=2.15.0",
     "agno==2.5.9",
     "GitPython>=3.1.47",
@@ -217,11 +217,11 @@ full = [
     "resend==2.11.0",
     
     # === Knowledge Worker Dependencies ===
-    "torch==2.5.1",
-    "torchvision==0.20.1",
-    "torchaudio==2.5.1",
-    "transformers~=4.55.4",
-    "huggingface-hub[hf_xet]==0.35.3",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
+    "transformers==5.4.0",
+    "huggingface-hub[hf_xet]>=1.5.0,<2.0.0",
     "openai~=2.15.0",
     "agno==2.5.9",
     "GitPython>=3.1.47",

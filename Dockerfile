@@ -47,7 +47,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_CACHE_DIR=/root/.cache/uv
 
 # Install system dependencies for building Python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libpq-dev \
@@ -139,7 +139,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Minimal runtime dependencies (no curl - workers use Python HTTP libs)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libpq5 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
@@ -160,7 +160,7 @@ WORKDIR /app
 FROM runtime-base-worker AS runtime-base-api
 
 # API needs curl for HTTP healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && apt-get clean
