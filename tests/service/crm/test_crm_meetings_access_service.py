@@ -101,6 +101,19 @@ def test_can_invite_bot_keeps_user_action_available_for_already_started_meeting(
     assert CRMMeetingsAccessService._can_invite_bot(event, None) is True
 
 
+def test_can_invite_bot_respects_policy_denial_reason() -> None:
+    event = _calendar_event(start_at=datetime.now(UTC) + timedelta(hours=1))
+
+    assert (
+        CRMMeetingsAccessService._can_invite_bot(
+            event,
+            None,
+            policy_denial_reason="meeting_recording_policy_never",
+        )
+        is False
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancel_bot_marks_unsent_session_cancelled() -> None:
     """Unsent sessions pass the CRM guard and delegate lifecycle cancellation."""

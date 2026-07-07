@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+import src.service.meeting_bot.lifecycle_service as lifecycle_module
+import src.service.meeting_bot.policy as policy_module
 from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
@@ -72,9 +74,21 @@ class TestMeetingRecordingLifecycleService:
     def _default_master_org_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Keep dispatch unit tests isolated from the real master database."""
         master_session = _FakeLookupSession(None)
+        policy_master_session = _FakeLookupSession(
+            SimpleNamespace(
+                preferences={"meeting_recording": {"bot_join_policy": "all"}},
+                domain=["example.com"],
+            )
+        )
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
+            lifecycle_module,
+            "acquire_master_async_session",
             lambda: _yield_session(master_session),
+        )
+        monkeypatch.setattr(
+            policy_module,
+            "acquire_master_async_session",
+            lambda: _yield_session(policy_master_session),
         )
 
     def test_active_calendar_integration_types_include_parent_and_capability_rows(self) -> None:
@@ -101,7 +115,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -149,7 +164,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
         queued_record = SimpleNamespace(
@@ -195,7 +211,8 @@ class TestMeetingRecordingLifecycleService:
         organisation_id = uuid4()
         master_session = _FakeLookupSession("Acme Corp")
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
+            lifecycle_module,
+            "acquire_master_async_session",
             lambda: _yield_session(master_session),
         )
 
@@ -211,7 +228,8 @@ class TestMeetingRecordingLifecycleService:
         organisation_id = uuid4()
         master_session = _FakeLookupSession("   ")
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_master_async_session",
+            lifecycle_module,
+            "acquire_master_async_session",
             lambda: _yield_session(master_session),
         )
 
@@ -234,7 +252,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -269,7 +288,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -307,7 +327,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -359,7 +380,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -406,7 +428,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -455,7 +478,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -499,7 +523,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -556,7 +581,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -602,7 +628,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -652,7 +679,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -697,7 +725,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -748,7 +777,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -803,7 +833,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -858,7 +889,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -920,7 +952,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -979,7 +1012,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1050,7 +1084,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1107,7 +1142,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1175,7 +1211,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1253,7 +1290,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1323,7 +1361,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1388,7 +1427,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1460,7 +1500,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1540,7 +1581,8 @@ class TestMeetingRecordingLifecycleService:
         )
         lookup_session = _FakeLookupSession(event)
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(lookup_session),
         )
 
@@ -1714,7 +1756,8 @@ class TestMeetingRecordingLifecycleService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 
@@ -1735,7 +1778,8 @@ class TestMeetingRecordingLifecycleService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 
@@ -1753,7 +1797,8 @@ class TestMeetingRecordingLifecycleService:
         organisation_id = uuid4()
         query_session = _CapturingQuerySession()
         monkeypatch.setattr(
-            "src.service.meeting_bot.lifecycle_service.acquire_org_async_session",
+            lifecycle_module,
+            "acquire_org_async_session",
             lambda _org_id: _yield_session(query_session),
         )
 

@@ -31,6 +31,10 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar.integration_types import (
     DISPATCH_CALENDAR_INTEGRATION_TYPES as ACTIVE_CALENDAR_INTEGRATION_TYPES,
 )
+from src.service.meeting_bot.policy import (
+    evaluate_bot_join_policy,
+    load_meeting_recording_policy_context,
+)
 from src.service.meeting_bot.providers import (
     RecallMeetingRecordingProvider,
     RecallProviderError,
@@ -208,6 +212,19 @@ class MeetingRecordingLifecycleService:
             return {
                 "status": "skipped",
                 "reason": "meeting_already_started",
+                "calendar_event_id": str(calendar_event_id),
+            }
+
+        policy_context = await load_meeting_recording_policy_context(self.organisation_id)
+        policy_result = evaluate_bot_join_policy(
+            bot_join_policy=policy_context.bot_join_policy,
+            event=event,
+            internal_domains=policy_context.internal_domains,
+        )
+        if not policy_result.allowed:
+            return {
+                "status": "skipped",
+                "reason": policy_result.reason or "meeting_recording_policy_denied",
                 "calendar_event_id": str(calendar_event_id),
             }
 

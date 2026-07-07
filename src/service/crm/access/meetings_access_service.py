@@ -34,8 +34,13 @@ from src.service.integrations.calendar.integration_types import (
 )
 from src.service.meeting_bot.display_status import meeting_recording_display_status
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.policy import (
+    evaluate_bot_join_policy,
+    load_meeting_recording_policy_context,
+)
 from src.service.meeting_bot.providers import RecallProviderError
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
+from src.service.orgnisation.organisation_preferences import BOT_JOIN_POLICY_ALL
 
 logger = get_logger("crm_meetings_access_service")
 
@@ -155,9 +160,16 @@ class CRMMeetingsAccessService:
         rows = result.all()
         event_ids = [row[0].event_id for row in rows]
         deals_by_event = await self._list_deals_by_event(event_ids)
+        policy_context = await load_meeting_recording_policy_context(self.organisation_id)
 
         items = [
-            self._format_item(event, recording_session, deals_by_event.get(event.event_id, []))
+            self._format_item(
+                event,
+                recording_session,
+                deals_by_event.get(event.event_id, []),
+                bot_join_policy=policy_context.bot_join_policy,
+                internal_domains=policy_context.internal_domains,
+            )
             for event, recording_session in rows
         ]
         total_pages = (total_count + limit - 1) // limit if total_count else 0
@@ -260,8 +272,16 @@ class CRMMeetingsAccessService:
         event: CalendarEvent,
         session: MeetingRecordingSession | None,
         deals: list[CRMMeetingDealSummary],
+        *,
+        bot_join_policy: str = BOT_JOIN_POLICY_ALL,
+        internal_domains: set[str] | None = None,
     ) -> CRMMeetingListItem:
         recording = self._format_recording(session)
+        policy_denial_reason = self._bot_policy_denial_reason(
+            event,
+            bot_join_policy,
+            internal_domains or set(),
+        )
         return CRMMeetingListItem(
             event_id=event.event_id,
             title=event.title,
@@ -276,7 +296,11 @@ class CRMMeetingsAccessService:
             attendee_count=event.attendee_count or 0,
             linked_deals=deals,
             recording=recording,
-            can_invite_bot=self._can_invite_bot(event, session),
+            can_invite_bot=self._can_invite_bot(
+                event,
+                session,
+                policy_denial_reason=policy_denial_reason,
+            ),
             can_remove_bot=self._can_remove_bot(session),
         )
 
@@ -312,7 +336,11 @@ class CRMMeetingsAccessService:
     def _can_invite_bot(
         event: CalendarEvent,
         session: MeetingRecordingSession | None,
+        *,
+        policy_denial_reason: str | None = None,
     ) -> bool:
+        if policy_denial_reason:
+            return False
         if (
             session is not None
             and _status_value(session.status) != MeetingRecordingStatus.FAILED.value
@@ -321,6 +349,19 @@ class CRMMeetingsAccessService:
         if not event.conference_link:
             return False
         return (event.status or "").lower() != "cancelled"
+
+    @staticmethod
+    def _bot_policy_denial_reason(
+        event: CalendarEvent,
+        bot_join_policy: str,
+        internal_domains: set[str],
+    ) -> str | None:
+        result = evaluate_bot_join_policy(
+            bot_join_policy=bot_join_policy,
+            event=event,
+            internal_domains=internal_domains,
+        )
+        return result.reason if not result.allowed else None
 
     @staticmethod
     def _can_remove_bot(session: MeetingRecordingSession | None) -> bool:

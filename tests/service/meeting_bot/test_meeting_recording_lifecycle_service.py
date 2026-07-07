@@ -2,14 +2,39 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+import src.service.meeting_bot.policy as policy_module
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
 from src.service.meeting_bot.providers import RecallProviderError
+
+
+class _FakeScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):  # noqa: ANN201
+        return self._value
+
+
+class _FakeMasterSession:
+    def __init__(self, organisation):
+        self.organisation = organisation
+
+    async def execute(self, _stmt):  # noqa: ANN001
+        return _FakeScalarResult(self.organisation)
+
+
+def _yield_session(session):
+    async def _gen():
+        yield session
+
+    return _gen()
 
 
 @pytest.mark.asyncio
@@ -273,6 +298,118 @@ async def test_replacement_send_does_not_clear_provider_id_when_cancel_fails():
         )
 
     service._session_service.reset_for_resend_if_current.assert_awaited_once()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_dispatch_event_skips_internal_meeting_under_external_only_policy(monkeypatch):
+    organisation_id = uuid4()
+    event_id = uuid4()
+    service = MeetingRecordingLifecycleService(organisation_id)
+    event = SimpleNamespace(
+        event_id=event_id,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=datetime.now(UTC) + timedelta(hours=2),
+        attendees=[SimpleNamespace(email="seller@acme.com")],
+    )
+    organisation = SimpleNamespace(
+        preferences={"meeting_recording": {"bot_join_policy": "external_only"}},
+        domain=["acme.com"],
+    )
+
+    async def fake_get_calendar_event(calendar_event_id):
+        assert calendar_event_id == event_id
+        return event
+
+    monkeypatch.setattr(service, "_get_calendar_event", fake_get_calendar_event)
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncGet(True))
+    monkeypatch.setattr(
+        policy_module,
+        "acquire_master_async_session",
+        lambda: _yield_session(_FakeMasterSession(organisation)),
+    )
+    monkeypatch.setattr(
+        service._session_service,
+        "get_or_create_pending_session",
+        AsyncMock(),
+    )
+
+    result = await service.dispatch_event(event_id)
+
+    assert result == {
+        "status": "skipped",
+        "reason": "meeting_recording_policy_external_only",
+        "calendar_event_id": str(event_id),
+    }
+    service._session_service.get_or_create_pending_session.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_dispatch_event_allows_external_meeting_under_external_only_policy(monkeypatch):
+    organisation_id = uuid4()
+    event_id = uuid4()
+    session_id = uuid4()
+    service = MeetingRecordingLifecycleService(organisation_id)
+    event = SimpleNamespace(
+        event_id=event_id,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=datetime.now(UTC) + timedelta(hours=2),
+        attendees=[SimpleNamespace(email="buyer@example.com")],
+    )
+    organisation = SimpleNamespace(
+        preferences={"meeting_recording": {"bot_join_policy": "external_only"}},
+        domain=["acme.com"],
+    )
+    pending_session = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        sent_to_provider_at=None,
+    )
+    queued_session = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        sent_to_provider_at=None,
+    )
+    queued_session.__dict__["_send_claimed"] = True
+
+    async def fake_get_calendar_event(calendar_event_id):
+        assert calendar_event_id == event_id
+        return event
+
+    monkeypatch.setattr(service, "_get_calendar_event", fake_get_calendar_event)
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncGet(True))
+    monkeypatch.setattr(
+        policy_module,
+        "acquire_master_async_session",
+        lambda: _yield_session(_FakeMasterSession(organisation)),
+    )
+    monkeypatch.setattr(
+        service._session_service,
+        "get_or_create_pending_session",
+        AsyncMock(return_value=pending_session),
+    )
+    monkeypatch.setattr(
+        service._session_service,
+        "mark_send_queued",
+        AsyncMock(return_value=queued_session),
+    )
+    monkeypatch.setattr(service._session_service, "mark_sent", AsyncMock())
+    monkeypatch.setattr(
+        service,
+        "_build_provider",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                create_session=AsyncMock(return_value={"id": "bot_123", "status": "scheduled"})
+            )
+        ),
+    )
+    monkeypatch.setattr(service, "_resolve_bot_name", AsyncMock(return_value="Acme Notetaker"))
+
+    result = await service.dispatch_event(event_id)
+
+    assert result["status"] == "sent"
+    service._session_service.get_or_create_pending_session.assert_awaited_once()  # noqa: SLF001
 
 
 class AsyncGet:
