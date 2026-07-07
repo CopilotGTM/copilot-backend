@@ -430,6 +430,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-api-report.txt \
@@ -450,6 +451,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-light-worker-report.txt \
@@ -470,6 +472,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-integrations-worker-report.txt \
@@ -491,6 +494,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format table \
                 --output trivy-reports/trivy-knowledge-worker-report.txt \
@@ -513,6 +517,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format json \
                 --output trivy-reports/trivy-api-report.json \
@@ -522,6 +527,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format json \
                 --output trivy-reports/trivy-light-worker-report.json \
@@ -531,6 +537,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format json \
                 --output trivy-reports/trivy-integrations-worker-report.json \
@@ -540,6 +547,7 @@ stages:
                 --severity CRITICAL,HIGH \
                 --scanners vuln \
                 --ignore-unfixed \
+                --ignorefile .trivyignore \
                 --no-progress \
                 --format json \
                 --output trivy-reports/trivy-knowledge-worker-report.json \
