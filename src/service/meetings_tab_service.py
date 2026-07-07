@@ -64,12 +64,18 @@ from src.service.crm.access.meetings_access_service import (
 )
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
+from src.service.crm.utils.internal_domains import normalize_internal_domains
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.display_status import meeting_recording_display_status
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.policy import evaluate_bot_join_policy
 from src.service.meeting_bot.providers import RecallMeetingRecordingProvider
+from src.service.orgnisation.organisation_preferences import (
+    BOT_JOIN_POLICY_ALL,
+    normalize_organisation_preferences,
+)
 from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
@@ -189,8 +195,11 @@ class MeetingsTabService:
 
         result = await self.session.execute(stmt)
         rows = list(result.all())
-        domains = await self._load_org_domains()
-        items = [self._format_row(row, domains) for row in self._dedupe_rows(rows)]
+        domains, bot_join_policy = await self._load_bot_policy_context()
+        items = [
+            self._format_row(row, domains, bot_join_policy=bot_join_policy)
+            for row in self._dedupe_rows(rows)
+        ]
         if bot_status:
             items = [item for item in items if item.bot.status == bot_status]
 
@@ -206,8 +215,13 @@ class MeetingsTabService:
     async def get_meeting_detail(self, event_id: UUID) -> MeetingDetail:
         """Return drawer-ready detail for one user-owned calendar event."""
         row = await self._get_meeting_row(event_id)
-        domains = await self._load_org_domains()
-        item = self._format_row(row, domains, include_summary_data=True)
+        domains, bot_join_policy = await self._load_bot_policy_context()
+        item = self._format_row(
+            row,
+            domains,
+            include_summary_data=True,
+            bot_join_policy=bot_join_policy,
+        )
         event, assoc, deal, _recording, _meeting = row
         return MeetingDetail(
             **item.model_dump(),
@@ -350,8 +364,8 @@ class MeetingsTabService:
     async def auto_invite_if_eligible(self, event_id: UUID) -> dict[str, Any] | None:
         """Dispatch the bot after commit when effective policy says auto-invite."""
         row = await self._get_meeting_row(event_id)
-        domains = await self._load_org_domains()
-        item = self._format_row(row, domains)
+        domains, bot_join_policy = await self._load_bot_policy_context()
+        item = self._format_row(row, domains, bot_join_policy=bot_join_policy)
         if item.bot.status != "auto_invite_eligible":
             return None
         if item.bot.status in {"sent", "already_sent", "recording_live"}:
@@ -633,11 +647,18 @@ class MeetingsTabService:
             raise MeetingsTabServiceError("At least one attendee is required", 400)
         return attendees
 
-    async def _load_org_domains(self) -> set[str]:
+    async def _load_bot_policy_context(self) -> tuple[set[str], str]:
         org_c = cast(Any, Organisation).__table__.c
-        stmt = select(org_c.domain).where(org_c.organisation_id == self.organisation_id)
-        domains = (await self.master_session.execute(stmt)).scalar_one_or_none() or []
-        return {str(domain).lower().removeprefix("www.") for domain in domains if domain}
+        stmt = select(org_c.domain, org_c.preferences).where(
+            org_c.organisation_id == self.organisation_id
+        )
+        row = (await self.master_session.execute(stmt)).first()
+        domains = row[0] if row else []
+        preferences = row[1] if row else None
+        return (
+            normalize_internal_domains(domains),
+            normalize_organisation_preferences(preferences)["meeting_recording"]["bot_join_policy"],
+        )
 
     def _resolve_window(
         self,
@@ -693,6 +714,7 @@ class MeetingsTabService:
         org_domains: set[str],
         *,
         include_summary_data: bool = False,
+        bot_join_policy: str = BOT_JOIN_POLICY_ALL,
     ) -> MeetingListItem:
         event, assoc, deal, recording, meeting = row
         attendees = [
@@ -732,7 +754,18 @@ class MeetingsTabService:
             else None
         )
         is_external = self._is_external_meeting(event, org_domains)
-        bot = self._bot_status(event, recording, linked_record, is_external)
+        policy_denial_reason = self._bot_policy_denial_reason(
+            event,
+            bot_join_policy,
+            org_domains,
+        )
+        bot = self._bot_status(
+            event,
+            recording,
+            linked_record,
+            is_external,
+            policy_denial_reason=policy_denial_reason,
+        )
         return MeetingListItem(
             event_id=event.event_id,
             title=event.title,
@@ -792,11 +825,16 @@ class MeetingsTabService:
         recording: MeetingRecordingSession | None,
         linked_record: MeetingLinkedRecord | None,
         is_external: bool,
+        *,
+        policy_denial_reason: str | None = None,
     ) -> MeetingBotStatus:
         """Project provider session state into the compact UI bot status."""
         reason = None
         recording_status = self._enum_value(recording.status) if recording else None
-        if recording_status == MeetingRecordingStatus.FAILED.value:
+        if recording is None and policy_denial_reason:
+            status = "invite_blocked"
+            reason = policy_denial_reason
+        elif recording_status == MeetingRecordingStatus.FAILED.value:
             status = "failed"
             reason = recording.status_message
         elif recording_status == MeetingRecordingStatus.CANCELLED.value:
@@ -811,6 +849,8 @@ class MeetingsTabService:
             status = "invite_available"
         display_status = (
             status
+            if recording is None and reason is None
+            else reason
             if recording is None
             else meeting_recording_display_status(
                 recording_status=recording.status,
@@ -825,7 +865,11 @@ class MeetingsTabService:
             reason=reason,
             is_external=is_external,
             provider_session_id=recording.provider_session_id if recording else None,
-            can_invite=self._can_invite_bot(event=event, recording=recording),
+            can_invite=self._can_invite_bot(
+                event=event,
+                recording=recording,
+                policy_denial_reason=policy_denial_reason,
+            ),
             can_remove=self._can_remove_bot(event, recording),
         )
 
@@ -934,7 +978,10 @@ class MeetingsTabService:
         *,
         event: CalendarEvent,
         recording: MeetingRecordingSession | None,
+        policy_denial_reason: str | None = None,
     ) -> bool:
+        if policy_denial_reason:
+            return False
         if not event.conference_link:
             return False
         start_at = event.start_at
@@ -962,6 +1009,19 @@ class MeetingsTabService:
             if domain not in org_domains:
                 return True
         return False
+
+    @staticmethod
+    def _bot_policy_denial_reason(
+        event: CalendarEvent,
+        bot_join_policy: str,
+        org_domains: set[str],
+    ) -> str | None:
+        result = evaluate_bot_join_policy(
+            bot_join_policy=bot_join_policy,
+            event=event,
+            internal_domains=org_domains,
+        )
+        return result.reason if not result.allowed else None
 
     @staticmethod
     def _next_action(

@@ -372,6 +372,28 @@ def test_bot_status_preserves_invite_available_display_status_without_recording(
     assert bot.display_status == "invite_available"
 
 
+def test_bot_status_blocks_invite_when_org_policy_denies_meeting() -> None:
+    """Policy-denied meetings should expose a concrete disabled action reason."""
+    service = _service()
+    event = SimpleNamespace(
+        start_at=datetime.now(UTC) + timedelta(hours=1),
+        conference_link="https://meet.google.com/abc-defg-hij",
+    )
+
+    bot = service._bot_status(  # noqa: SLF001
+        event,
+        None,
+        None,
+        False,
+        policy_denial_reason="meeting_recording_policy_external_only",
+    )
+
+    assert bot.status == "invite_blocked"
+    assert bot.display_status == "meeting_recording_policy_external_only"
+    assert bot.reason == "meeting_recording_policy_external_only"
+    assert bot.can_invite is False
+
+
 @pytest.mark.asyncio
 async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) -> None:
     """Meetings tab manual invite should use lifecycle after ownership and cleanup checks."""
