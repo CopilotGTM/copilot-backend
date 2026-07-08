@@ -373,7 +373,7 @@ def test_bot_status_preserves_invite_available_display_status_without_recording(
 
 
 def test_bot_status_blocks_invite_when_org_policy_denies_meeting() -> None:
-    """Policy-denied meetings should expose a concrete disabled action reason."""
+    """Policy-denied meetings are still manually inviteable from the Meetings tab."""
     service = _service()
     event = SimpleNamespace(
         start_at=datetime.now(UTC) + timedelta(hours=1),
@@ -388,10 +388,10 @@ def test_bot_status_blocks_invite_when_org_policy_denies_meeting() -> None:
         policy_denial_reason="meeting_recording_policy_external_only",
     )
 
-    assert bot.status == "invite_blocked"
-    assert bot.display_status == "meeting_recording_policy_external_only"
-    assert bot.reason == "meeting_recording_policy_external_only"
-    assert bot.can_invite is False
+    assert bot.status == "invite_available"
+    assert bot.display_status == "invite_available"
+    assert bot.reason is None
+    assert bot.can_invite is True
 
 
 @pytest.mark.asyncio
@@ -433,7 +433,34 @@ async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) 
         event_id,
         source="meetings_tab_manual_invite",
         allow_cancelled_reinvite=True,
+        enforce_policy=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_invite_keeps_policy_enforcement(monkeypatch) -> None:
+    service = _service()
+    event_id = uuid4()
+    invite = AsyncMock(return_value={"status": "sent"})
+
+    async def _get_meeting_row(_event_id):
+        return ("row",)
+
+    async def _load_bot_policy_context():
+        return set(), "external_only"
+
+    def _format_row(*_args, **_kwargs):
+        return SimpleNamespace(bot=SimpleNamespace(status="auto_invite_eligible"))
+
+    monkeypatch.setattr(service, "_get_meeting_row", _get_meeting_row)
+    monkeypatch.setattr(service, "_load_bot_policy_context", _load_bot_policy_context)
+    monkeypatch.setattr(service, "_format_row", _format_row)
+    monkeypatch.setattr(service, "invite_bot", invite)
+
+    result = await service.auto_invite_if_eligible(event_id)
+
+    assert result == {"status": "sent"}
+    invite.assert_awaited_once_with(event_id, enforce_policy=True)
 
 
 @pytest.mark.asyncio

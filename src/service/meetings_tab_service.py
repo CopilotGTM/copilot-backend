@@ -327,7 +327,7 @@ class MeetingsTabService:
         await self.session.flush()
         return await self.get_meeting_detail(event_id)
 
-    async def invite_bot(self, event_id: UUID) -> dict[str, Any]:
+    async def invite_bot(self, event_id: UUID, *, enforce_policy: bool = False) -> dict[str, Any]:
         """Manually send the Recall bot after proving current-user event ownership."""
         await self._ensure_user_calendar_event(event_id)
         await self.session.rollback()
@@ -341,6 +341,7 @@ class MeetingsTabService:
             event_id,
             source="meetings_tab_manual_invite",
             allow_cancelled_reinvite=True,
+            enforce_policy=enforce_policy,
         )
 
     async def cancel_bot(self, event_id: UUID) -> dict[str, Any]:
@@ -370,7 +371,7 @@ class MeetingsTabService:
             return None
         if item.bot.status in {"sent", "already_sent", "recording_live"}:
             return None
-        return await self.invite_bot(event_id)
+        return await self.invite_bot(event_id, enforce_policy=True)
 
     async def get_recording(self, event_id: UUID) -> MeetingRecordingResponse:
         """Return Recall-bot recording playback and transcript metadata."""
@@ -831,10 +832,7 @@ class MeetingsTabService:
         """Project provider session state into the compact UI bot status."""
         reason = None
         recording_status = self._enum_value(recording.status) if recording else None
-        if recording is None and policy_denial_reason:
-            status = "invite_blocked"
-            reason = policy_denial_reason
-        elif recording_status == MeetingRecordingStatus.FAILED.value:
+        if recording_status == MeetingRecordingStatus.FAILED.value:
             status = "failed"
             reason = recording.status_message
         elif recording_status == MeetingRecordingStatus.CANCELLED.value:
@@ -843,7 +841,7 @@ class MeetingsTabService:
             status = "recording_live"
         elif recording and recording.sent_to_provider_at is not None:
             status = "already_sent"
-        elif linked_record is not None and is_external:
+        elif linked_record is not None and is_external and policy_denial_reason is None:
             status = "auto_invite_eligible"
         else:
             status = "invite_available"
@@ -980,8 +978,7 @@ class MeetingsTabService:
         recording: MeetingRecordingSession | None,
         policy_denial_reason: str | None = None,
     ) -> bool:
-        if policy_denial_reason:
-            return False
+        _ = policy_denial_reason
         if not event.conference_link:
             return False
         start_at = event.start_at

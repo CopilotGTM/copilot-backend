@@ -111,6 +111,7 @@ class MeetingRecordingLifecycleService:
         *,
         source: str = "single_event_task",
         allow_cancelled_reinvite: bool = False,
+        enforce_policy: bool = True,
         event: CalendarEvent | None = None,
     ) -> dict[str, str]:
         """Schedule or reconcile a provider bot for a non-cancelled event."""
@@ -118,6 +119,7 @@ class MeetingRecordingLifecycleService:
         return await self.dispatch_event(
             calendar_event_id,
             allow_cancelled_reinvite=allow_cancelled_reinvite,
+            enforce_policy=enforce_policy,
         )
 
     async def cancel_for_event(
@@ -135,6 +137,7 @@ class MeetingRecordingLifecycleService:
         calendar_event_id: UUID,
         *,
         allow_cancelled_reinvite: bool = False,
+        enforce_policy: bool = True,
     ) -> dict[str, str]:
         """Resolve an event and attempt one provider create call if it is eligible.
 
@@ -216,18 +219,19 @@ class MeetingRecordingLifecycleService:
                 "calendar_event_id": str(calendar_event_id),
             }
 
-        policy_context = await load_meeting_recording_policy_context(self.organisation_id)
-        policy_result = evaluate_bot_join_policy(
-            bot_join_policy=policy_context.bot_join_policy,
-            event=event,
-            internal_domains=policy_context.internal_domains,
-        )
-        if not policy_result.allowed:
-            return {
-                "status": "skipped",
-                "reason": policy_result.reason or "meeting_recording_policy_denied",
-                "calendar_event_id": str(calendar_event_id),
-            }
+        if enforce_policy:
+            policy_context = await load_meeting_recording_policy_context(self.organisation_id)
+            policy_result = evaluate_bot_join_policy(
+                bot_join_policy=policy_context.bot_join_policy,
+                event=event,
+                internal_domains=policy_context.internal_domains,
+            )
+            if not policy_result.allowed:
+                return {
+                    "status": "skipped",
+                    "reason": policy_result.reason or "meeting_recording_policy_denied",
+                    "calendar_event_id": str(calendar_event_id),
+                }
 
         # Persist the intent first so retries/fallback scans can reason about a durable
         # state row instead of trying to recreate provider state from scratch. Sent rows

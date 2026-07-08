@@ -339,8 +339,7 @@ class CRMMeetingsAccessService:
         *,
         policy_denial_reason: str | None = None,
     ) -> bool:
-        if policy_denial_reason:
-            return False
+        _ = policy_denial_reason
         if (
             session is not None
             and _status_value(session.status) != MeetingRecordingStatus.FAILED.value
@@ -391,6 +390,7 @@ class CRMMeetingRecordingControlService:
         return await self._lifecycle_service.schedule_for_event(
             event_id,
             source="crm_manual_invite",
+            enforce_policy=False,
         )
 
     async def cancel_bot(self, event_id: UUID) -> dict[str, str]:
