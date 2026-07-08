@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.lead_form_models import (
+from src.contracts.crm.lead_form_models import (
     MAX_PUBLIC_FIELD_KEY_LENGTH,
     MAX_PUBLIC_SCALAR_STRING_LENGTH,
     CreateLeadFormRequest,
