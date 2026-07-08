@@ -13,9 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.api.dependencies.crm_write_guard import (
     is_crm_write_scope_enabled,
     require_crm_write_scope,
@@ -32,13 +30,19 @@ from src.api.dependencies.rate_limit import (
     rate_limit_user_read,
     rate_limit_user_write,
 )
+from src.api.presenters.crm.lead_form_presenter import (
+    log_public_form_failure,
+    present_lead_form_item,
+    public_form_error_code,
+    public_form_error_response,
+    public_rate_limit_error_response,
+    public_unexpected_error_response,
+)
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.lead_form_models import (
     CreateLeadFormRequest,
-    LeadFormFieldItem,
     LeadFormItem,
     PublicLeadFormDefinitionResponse,
-    PublicLeadFormError,
     PublicLeadFormErrorResponse,
     PublicLeadFormSubmitRequest,
     PublicLeadFormSubmitResponse,
@@ -46,18 +50,13 @@ from src.api.schemas.lead_form_models import (
     UpdateLeadFormStatusRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.master_tables import (
-    PublicIngressKey,
-    PublicIngressKeyStatus,
-    PublicIngressKeyType,
-    PublicIngressResourceType,
-)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.lead_forms_service import (
+from src.service.crm.leads.form_management_service import (
     LeadFormsService,
     LeadFormsServiceError,
     PublicLeadFormSubmissionService,
+    load_active_public_form_key,
 )
 
 logger = get_logger("lead_forms_handler")
@@ -66,7 +65,6 @@ lead_forms_router = APIRouter()
 public_lead_forms_router = APIRouter()
 
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
-_PUBLIC_EXTERNAL_API_VERSION = "v1"
 _PUBLIC_FORM_KEY_PATH = Path(min_length=4, max_length=128, pattern=r"^lf_[A-Za-z0-9]+$")
 
 
@@ -86,99 +84,6 @@ async def get_lead_forms_service(
         yield service
     finally:
         await service.close()
-
-
-def _field_item(field) -> LeadFormFieldItem:
-    return LeadFormFieldItem.model_validate(field)
-
-
-def _public_form_url(request: Request, public_form_key: str) -> str:
-    return (
-        f"{str(request.base_url).rstrip('/')}/public/"
-        f"{_PUBLIC_EXTERNAL_API_VERSION}/forms/{public_form_key}"
-    )
-
-
-def _form_item(
-    form,
-    fields,
-    ingress_key: PublicIngressKey | None,
-    request: Request,
-) -> LeadFormItem:
-    item = LeadFormItem.model_validate(form)
-    public_form_key = ingress_key.public_key if ingress_key and ingress_key.public_key else ""
-    item.public_form_key = public_form_key
-    item.public_form_url = _public_form_url(request, public_form_key) if public_form_key else ""
-    item.allowed_origins = ingress_key.allowed_origins if ingress_key else []
-    item.fields = [_field_item(field) for field in fields]
-    return item
-
-
-async def _load_active_public_form_key(
-    public_form_key: str,
-    master_session: AsyncSession,
-) -> PublicIngressKey | None:
-    # Public form key resolution must be org-scoped and active; the external key is
-    # not enough without checking tenant ownership in master ingress registry.
-    registry_stmt = select(PublicIngressKey).where(
-        col(PublicIngressKey.public_key) == public_form_key,
-        col(PublicIngressKey.key_type) == PublicIngressKeyType.PUBLIC_FORM.value,
-        col(PublicIngressKey.resource_type) == PublicIngressResourceType.LEAD_FORM.value,
-        col(PublicIngressKey.status) == PublicIngressKeyStatus.ACTIVE.value,
-    )
-    return (await master_session.execute(registry_stmt)).scalars().first()
-
-
-def _public_error_code(exc: LeadFormsServiceError) -> str:
-    code = exc.data.get("code") if exc.data else None
-    if isinstance(code, str):
-        return code
-    if exc.status_code == 403:
-        return "origin_not_allowed"
-    if exc.status_code == 404:
-        return "lead_form_not_found"
-    if exc.status_code == 413:
-        return "payload_too_large"
-    if exc.status_code == 422:
-        return "invalid_submission"
-    return "lead_form_error"
-
-
-def _public_error_response(exc: LeadFormsServiceError) -> JSONResponse:
-    field = exc.data.get("field") if exc.data else None
-    error = PublicLeadFormErrorResponse(
-        error=PublicLeadFormError(
-            code=_public_error_code(exc),
-            message=exc.message,
-            field=field if isinstance(field, str) else None,
-        )
-    )
-    return JSONResponse(status_code=exc.status_code, content=error.model_dump(exclude_none=True))
-
-
-def _public_rate_limit_error_response(exc: HTTPException) -> JSONResponse:
-    message = exc.detail if isinstance(exc.detail, str) else "Too many requests"
-    error = PublicLeadFormErrorResponse(
-        error=PublicLeadFormError(
-            code="rate_limited",
-            message=message,
-        )
-    )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error.model_dump(exclude_none=True),
-        headers=exc.headers,
-    )
-
-
-def _public_unexpected_error_response() -> JSONResponse:
-    error = PublicLeadFormErrorResponse(
-        error=PublicLeadFormError(
-            code="internal_error",
-            message=_UNEXPECTED_ERR_MSG,
-        )
-    )
-    return JSONResponse(status_code=500, content=error.model_dump(exclude_none=True))
 
 
 @lead_forms_router.get(
@@ -201,7 +106,10 @@ async def list_lead_forms(
         rows = await service.list_forms()
         return Response.success_response(
             message="Lead forms retrieved",
-            data=[_form_item(form, fields, key, request) for form, fields, key in rows],
+            data=[
+                present_lead_form_item(form=form, fields=fields, ingress_key=key, request=request)
+                for form, fields, key in rows
+            ],
         )
     except LeadFormsServiceError as exc:
         return Response.error_response(
@@ -237,7 +145,9 @@ async def create_lead_form(
         form, fields, ingress_key = await service.create_form(body)
         return Response.created_response(
             message="Lead form created",
-            data=_form_item(form, fields, ingress_key, request),
+            data=present_lead_form_item(
+                form=form, fields=fields, ingress_key=ingress_key, request=request
+            ),
             response=response,
         )
     except LeadFormsServiceError as exc:
@@ -280,7 +190,9 @@ async def get_lead_form(
         form, fields, ingress_key = await service.get_form(form_id)
         return Response.success_response(
             message="Lead form retrieved",
-            data=_form_item(form, fields, ingress_key, request),
+            data=present_lead_form_item(
+                form=form, fields=fields, ingress_key=ingress_key, request=request
+            ),
         )
     except LeadFormsServiceError as exc:
         return Response.error_response(
@@ -320,7 +232,9 @@ async def update_lead_form(
         form, fields, ingress_key = await service.update_form(form_id, body)
         return Response.success_response(
             message="Lead form updated",
-            data=_form_item(form, fields, ingress_key, request),
+            data=present_lead_form_item(
+                form=form, fields=fields, ingress_key=ingress_key, request=request
+            ),
         )
     except LeadFormsServiceError as exc:
         # Keep form + ingress-key updates in sync across org and master sessions.
@@ -369,7 +283,9 @@ async def update_lead_form_status(
         form, fields, ingress_key = await service.update_form_status(form_id, body.status)
         return Response.success_response(
             message="Lead form status updated",
-            data=_form_item(form, fields, ingress_key, request),
+            data=present_lead_form_item(
+                form=form, fields=fields, ingress_key=ingress_key, request=request
+            ),
         )
     except LeadFormsServiceError as exc:
         # Status changes can deactivate ingress keys, so both schemas must be
@@ -419,9 +335,9 @@ async def get_public_lead_form(
     """
     try:
         enforce_public_lead_form_read_rate_limit(request, public_form_key)
-        ingress_key = await _load_active_public_form_key(public_form_key, master_session)
+        ingress_key = await load_active_public_form_key(public_form_key, master_session)
         if not ingress_key:
-            return _public_error_response(
+            return public_form_error_response(
                 LeadFormsServiceError("Lead form not found", status_code=404)
             )
 
@@ -439,16 +355,16 @@ async def get_public_lead_form(
             definition = await service.load_definition(origin=request.headers.get("origin"))
             return definition
 
-        return _public_unexpected_error_response()
+        return public_unexpected_error_response()
     except HTTPException as exc:
         if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
-            return _public_rate_limit_error_response(exc)
+            return public_rate_limit_error_response(exc)
         raise
     except LeadFormsServiceError as exc:
-        return _public_error_response(exc)
+        return public_form_error_response(exc)
     except Exception:
         logger.error("Error getting public lead form", exc_info=True)
-        return _public_unexpected_error_response()
+        return public_unexpected_error_response()
 
 
 @public_lead_forms_router.post(
@@ -478,16 +394,30 @@ async def submit_public_lead_form(
     """
     try:
         enforce_public_lead_form_submit_rate_limit(request, public_form_key)
-        ingress_key = await _load_active_public_form_key(public_form_key, master_session)
+        ingress_key = await load_active_public_form_key(public_form_key, master_session)
         if not ingress_key:
-            return _public_error_response(
+            log_public_form_failure(
+                logger,
+                public_form_key=public_form_key,
+                stage="auth",
+                code="lead_form_not_found",
+                status_code=404,
+            )
+            return public_form_error_response(
                 LeadFormsServiceError("Lead form not found", status_code=404)
             )
         if not await is_crm_write_scope_enabled(
             ingress_key.organisation_id,
             "lead_forms:ingest",
         ):
-            return _public_error_response(
+            log_public_form_failure(
+                logger,
+                public_form_key=public_form_key,
+                stage="auth",
+                code="internal_crm_writes_disabled",
+                status_code=403,
+            )
+            return public_form_error_response(
                 LeadFormsServiceError(
                     "Internal CRM writes are disabled for this organisation",
                     status_code=403,
@@ -512,16 +442,31 @@ async def submit_public_lead_form(
                 origin=request.headers.get("origin"),
                 user_agent=request.headers.get("user-agent"),
                 submitter_ip=request.client.host if request.client else None,
+                idempotency_key=body.idempotency_key,
             )
             return PublicLeadFormSubmitResponse(submission_id=submission.submission_id)
 
-        return _public_unexpected_error_response()
+        return public_unexpected_error_response()
     except HTTPException as exc:
         if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
-            return _public_rate_limit_error_response(exc)
+            return public_rate_limit_error_response(exc)
         raise
     except LeadFormsServiceError as exc:
-        return _public_error_response(exc)
+        code = public_form_error_code(exc)
+        field = exc.data.get("field") if exc.data else None
+        log_public_form_failure(
+            logger,
+            public_form_key=public_form_key,
+            stage="validation",
+            code=code,
+            status_code=exc.status_code,
+            field=field if isinstance(field, str) else None,
+        )
+        return public_form_error_response(exc)
     except Exception:
-        logger.error("Error submitting public lead form", exc_info=True)
-        return _public_unexpected_error_response()
+        logger.error(
+            "Error submitting public lead form",
+            extra={"public_form_key": public_form_key, "stage": "persistence"},
+            exc_info=True,
+        )
+        return public_unexpected_error_response()

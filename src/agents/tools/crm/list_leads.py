@@ -10,7 +10,8 @@ from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType, CRMLeadStatus
-from src.service.crm.access.leads_access_service import LeadsAccessService, LeadsAccessServiceError
+from src.service.crm.leads.contracts import LeadServiceError
+from src.service.crm.leads.read_service import LeadReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -104,7 +105,7 @@ async def list_leads(
         return []
 
     async with context.acquire_session() as org_session:
-        service = LeadsAccessService(
+        service = LeadReadService(
             org_session,
             organisation_id,
             actor_user_id=context.user_id,
@@ -119,7 +120,7 @@ async def list_leads(
                 owner_id=filters.owner_id,
                 source_type=filters.source_type,
             )
-        except LeadsAccessServiceError as exc:
+        except LeadServiceError as exc:
             logger.warning("list_leads: service error: %s", exc.message)
             return []
         except Exception:

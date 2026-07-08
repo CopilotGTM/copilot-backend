@@ -51,6 +51,7 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldSource,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
 from src.infra.utils.logger import get_logger
 from src.service.crm.mutations.contracts import CRMMutationContext, CRMMutationRecordCommand
 from src.service.crm.mutations.event_service import CRMMutationEventService
@@ -377,14 +378,15 @@ class CustomFieldWriteService:
                 status_code=409,
             )
 
-        deal_count = await self._count_deals_using_field(field.key)
-        if deal_count > 0:
-            raise CustomFieldWriteServiceError(
-                f"Cannot delete custom column '{field.key}': "
-                f"{deal_count} deal(s) currently use this column. "
-                "Remove the column data from those deals first.",
-                status_code=409,
-            )
+        if CRMCustomFieldEntity(field.entity_type) == CRMCustomFieldEntity.DEAL:
+            deal_count = await self._count_deals_using_field(field.key)
+            if deal_count > 0:
+                raise CustomFieldWriteServiceError(
+                    f"Cannot delete custom column '{field.key}': "
+                    f"{deal_count} deal(s) currently use this column. "
+                    "Remove the column data from those deals first.",
+                    status_code=409,
+                )
 
         before = {"is_active": field.is_active, "is_deleted": getattr(field, "is_deleted", False)}
         field.is_deleted = True
@@ -451,22 +453,29 @@ class CustomFieldWriteService:
                 status_code=409,
             )
 
-        deal_count = await self._count_deals_using_field(field.key)
-        if deal_count == 0:
+        entity = CRMCustomFieldEntity(field.entity_type)
+        if entity == CRMCustomFieldEntity.LEAD:
+            usage_count = await self._count_leads_using_field(field.key)
+            model = CRMLead
+        else:
+            usage_count = await self._count_deals_using_field(field.key)
+            model = CRMDeal
+
+        if usage_count == 0:
             return 0
 
         stmt = (
-            update(CRMDeal)
+            update(model)
             .where(
-                col(CRMDeal.organisation_id) == self.organisation_id,
-                col(CRMDeal.is_deleted).is_(False),
-                col(CRMDeal.properties).op("?")(field.key),
+                col(model.organisation_id) == self.organisation_id,
+                col(model.is_deleted).is_(False),
+                col(model.properties).op("?")(field.key),
             )
-            .values(properties=col(CRMDeal.properties).op("-")(field.key))
+            .values(properties=col(model.properties).op("-")(field.key))
         )
         await self.session.execute(stmt)
         await self.session.commit()
-        return deal_count
+        return usage_count
 
     async def validate_formula(
         self, *, entity: CRMCustomFieldEntity, formula: dict[str, Any]
@@ -587,6 +596,15 @@ class CustomFieldWriteService:
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.is_deleted).is_(False),
             col(CRMDeal.properties).op("?")(key),
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar() or 0)
+
+    async def _count_leads_using_field(self, key: str) -> int:
+        stmt = select(func.count()).where(
+            col(CRMLead.organisation_id) == self.organisation_id,
+            col(CRMLead.is_deleted).is_(False),
+            col(CRMLead.properties).op("?")(key),
         )
         result = await self.session.execute(stmt)
         return int(result.scalar() or 0)

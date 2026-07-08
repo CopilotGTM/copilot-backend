@@ -127,6 +127,14 @@ class LeadFormSubmission(FlexibleSyncedRecordMixin, table=True):
             unique=True,
             postgresql_where=text("ingestion_key_id IS NOT NULL AND idempotency_key IS NOT NULL"),
         ),
+        Index(
+            "uq_lead_form_submission_public_idempotency",
+            "organisation_id",
+            "form_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("ingestion_key_id IS NULL AND idempotency_key IS NOT NULL"),
+        ),
     )
 
     submission_id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -143,7 +151,7 @@ class LeadFormSubmission(FlexibleSyncedRecordMixin, table=True):
     idempotency_key: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
-        description="Client replay token for private mapped form submissions.",
+        description="Client replay token for mapped form submissions.",
     )
     raw_payload: dict[str, Any] = Field(
         default_factory=dict,

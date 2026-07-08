@@ -116,6 +116,7 @@ class PublicLeadFormFieldItem(BaseModel):
     display_order: int | None
     default_value: Any | None = None
     validation: dict[str, Any] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
 class PublicLeadFormDefinitionResponse(BaseModel):
@@ -134,6 +135,7 @@ class PublicLeadFormSubmitRequest(BaseModel):
 
     fields: dict[str, Any] = Field(default_factory=dict, max_length=MAX_PUBLIC_SUBMISSION_FIELDS)
     context: dict[str, Any] = Field(default_factory=dict, max_length=MAX_PUBLIC_CONTEXT_KEYS)
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
 
 class PrivateLeadFormSubmitRequest(BaseModel):

@@ -96,11 +96,11 @@ def _lead(**overrides: object) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_create_lead_direct_uses_leads_access_service() -> None:
+async def test_create_lead_direct_uses_lead_write_service() -> None:
     context = _context()
     lead = _lead()
 
-    with patch("src.agents.tools.crm.create_lead.LeadsAccessService") as service_cls:
+    with patch("src.agents.tools.crm.create_lead.LeadWriteService") as service_cls:
         service = MagicMock()
         service.create_lead = AsyncMock(return_value=lead)
         service_cls.return_value = service
@@ -126,11 +126,11 @@ async def test_create_lead_direct_uses_leads_access_service() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_leads_uses_leads_access_service_filters() -> None:
+async def test_list_leads_uses_lead_read_service_filters() -> None:
     context = _context()
     lead = _lead()
 
-    with patch("src.agents.tools.crm.list_leads.LeadsAccessService") as service_cls:
+    with patch("src.agents.tools.crm.list_leads.LeadReadService") as service_cls:
         service = MagicMock()
         service.list_leads = AsyncMock(return_value=([lead], 1))
         service_cls.return_value = service
