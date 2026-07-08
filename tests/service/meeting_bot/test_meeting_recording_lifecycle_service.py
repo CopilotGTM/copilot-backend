@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+import src.service.meeting_bot.lifecycle_service as lifecycle_module
 import src.service.meeting_bot.policy as policy_module
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
@@ -30,11 +31,44 @@ class _FakeMasterSession:
         return _FakeScalarResult(self.organisation)
 
 
+class _CapturingOrgSession:
+    def __init__(self, value):
+        self.value = value
+        self.statement = None
+
+    async def execute(self, stmt):  # noqa: ANN001
+        self.statement = stmt
+        return _FakeScalarResult(self.value)
+
+
 def _yield_session(session):
     async def _gen():
         yield session
 
     return _gen()
+
+
+@pytest.mark.asyncio
+async def test_get_calendar_event_eager_loads_attendees_for_detached_policy(monkeypatch):
+    """The lifecycle service evaluates attendee policy after releasing its DB session."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    event = SimpleNamespace(event_id=event_id)
+    session = _CapturingOrgSession(event)
+
+    monkeypatch.setattr(
+        lifecycle_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _yield_session(session),
+    )
+
+    result = await MeetingRecordingLifecycleService(organisation_id)._get_calendar_event(  # noqa: SLF001
+        event_id
+    )
+
+    assert result is event
+    assert session.statement is not None
+    assert session.statement._with_options  # noqa: SLF001
 
 
 @pytest.mark.asyncio

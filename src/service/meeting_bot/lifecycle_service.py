@@ -8,11 +8,12 @@ provider call.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import selectinload
 from sqlmodel import col
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -1125,9 +1126,15 @@ class MeetingRecordingLifecycleService:
         async for session in acquire_org_async_session(self.organisation_id):
             # Filter by both tenant and event id so we never trust external IDs as
             # the only tenant boundary.
-            stmt = select(CalendarEvent).where(
-                col(CalendarEvent.organisation_id) == self.organisation_id,
-                col(CalendarEvent.event_id) == calendar_event_id,
+            stmt = (
+                select(CalendarEvent)
+                .where(
+                    col(CalendarEvent.organisation_id) == self.organisation_id,
+                    col(CalendarEvent.event_id) == calendar_event_id,
+                )
+                .options(
+                    selectinload(cast(Any, CalendarEvent).attendees),
+                )
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
