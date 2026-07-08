@@ -30,7 +30,9 @@ class GoogleGmailPubSubNotification:
         """Parse a Pub/Sub push envelope into the Gmail-specific payload."""
         message = payload.get("message")
         if not isinstance(message, dict):
-            return None
+            return cls._from_gmail_payload(
+                payload, message_id=None, publish_time=None, subscription=None
+            )
 
         message_id = message.get("messageId") or message.get("message_id")
         data = message.get("data")
@@ -41,20 +43,39 @@ class GoogleGmailPubSubNotification:
         if gmail_payload is None:
             return None
 
-        email_address = gmail_payload.get("emailAddress")
-        history_id = gmail_payload.get("historyId")
-        if not isinstance(email_address, str) or not isinstance(history_id, str):
-            return None
-
-        publish_time = message.get("publishTime")
+        publish_time = message.get("publishTime") or message.get("publish_time")
         subscription = payload.get("subscription")
-        return cls(
+        return cls._from_gmail_payload(
+            gmail_payload,
             message_id=message_id,
-            email_address=email_address,
-            history_id=history_id,
             publish_time=publish_time if isinstance(publish_time, str) else None,
             subscription=subscription if isinstance(subscription, str) else None,
             raw=payload,
+        )
+
+    @classmethod
+    def _from_gmail_payload(
+        cls,
+        payload: dict[str, Any],
+        *,
+        message_id: str | None,
+        publish_time: str | None,
+        subscription: str | None,
+        raw: dict[str, Any] | None = None,
+    ) -> GoogleGmailPubSubNotification | None:
+        """Build a notification from Gmail's decoded mailbox update payload."""
+        email_address = payload.get("emailAddress")
+        history_id = payload.get("historyId")
+        if not isinstance(email_address, str) or not isinstance(history_id, str | int):
+            return None
+
+        return cls(
+            message_id=message_id or f"gmail:{email_address}:{history_id}",
+            email_address=email_address,
+            history_id=str(history_id),
+            publish_time=publish_time,
+            subscription=subscription,
+            raw=raw or payload,
         )
 
 
