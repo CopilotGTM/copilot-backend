@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -18,6 +19,24 @@ from src.service.crm.contacts.contracts import (
 from src.service.crm.contacts.resolution_service import ContactIdentityResolutionResult
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import AUTOMATED_PIPELINE_USER_ID
+
+
+def test_contact_create_command_supports_import_location_fields() -> None:
+    assert {field.name for field in fields(ContactCreateCommand)} == {
+        "email",
+        "name",
+        "job_title",
+        "phone",
+        "mobile_phone",
+        "website",
+        "address",
+        "city",
+        "state",
+        "country",
+        "postal_code",
+        "linkedin_url",
+        "company_id",
+    }
 
 
 class _FakeResult:
@@ -69,7 +88,17 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     _disable_contact_created_projection(service)
 
     result = await service.create_contact(
-        ContactCreateCommand(email=" Jane@Example.COM ", name="Jane Doe"),
+        ContactCreateCommand(
+            email=" Jane@Example.COM ",
+            name="Jane Doe",
+            mobile_phone=" +1 555 2000 ",
+            website=" https://jane.example ",
+            address=" 2 Main St ",
+            city=" Brooklyn ",
+            state=" NY ",
+            country=" US ",
+            postal_code=" 11201 ",
+        ),
         context=ContactWriteContext(source="test"),
     )
 
@@ -77,6 +106,13 @@ async def test_create_contact_normalizes_email_splits_name_and_does_not_commit()
     assert result.contact.email == "jane@example.com"
     assert result.contact.first_name == "Jane"
     assert result.contact.last_name == "Doe"
+    assert result.contact.mobile_phone == "+1 555 2000"
+    assert result.contact.website == "https://jane.example"
+    assert result.contact.address == "2 Main St"
+    assert result.contact.city == "Brooklyn"
+    assert result.contact.state == "NY"
+    assert result.contact.country == "US"
+    assert result.contact.postal_code == "11201"
     added_rows = [call.args[0] for call in session.add.call_args_list]
     assert any(isinstance(row, CRMContact) for row in added_rows)
     assert any(isinstance(row, CRMDealMutationEvent) for row in added_rows)

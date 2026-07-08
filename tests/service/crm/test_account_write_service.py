@@ -69,6 +69,12 @@ def test_account_create_command_is_minimal_frontend_create_shape() -> None:
         "domain",
         "website",
         "industry",
+        "phone",
+        "city",
+        "state",
+        "country",
+        "address",
+        "postal_code",
         "linkedin_url",
     }
 
@@ -91,12 +97,24 @@ async def test_create_account_accepts_typed_command() -> None:
             name=" Acme ",
             domain="https://www.ACME.com/about",
             industry=" Software ",
+            phone=" +1 555 1000 ",
+            city=" New York ",
+            state=" NY ",
+            country=" US ",
+            address=" 1 Main St ",
+            postal_code=" 10001 ",
         )
     )
 
     assert result.account.name == "Acme"
     assert result.account.domain == "acme.com"
     assert result.account.industry == "Software"
+    assert result.account.phone == "+1 555 1000"
+    assert result.account.city == "New York"
+    assert result.account.state == "NY"
+    assert result.account.country == "US"
+    assert result.account.address == "1 Main St"
+    assert result.account.postal_code == "10001"
 
 
 @pytest.mark.asyncio

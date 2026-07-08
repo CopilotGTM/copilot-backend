@@ -5,6 +5,7 @@ deal-worker tasks to stable names for queue dispatch. Keep imports explicit so
 worker startup fails loudly if a task module stops importing.
 """
 
+from .crm_import_tasks import analyze_csv_import_task, process_csv_import_task
 from .dashboard_snapshot_tasks import (
     refresh_sales_snapshot_org_task,
     refresh_sales_snapshots_all_orgs_task,
@@ -94,4 +95,7 @@ __all__ = [
     "extract_email_attachments_deal_task",
     "refresh_sales_snapshots_all_orgs_task",
     "refresh_sales_snapshot_org_task",
+    # CRM CSV import tasks
+    "analyze_csv_import_task",
+    "process_csv_import_task",
 ]

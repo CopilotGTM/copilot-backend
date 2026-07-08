@@ -14,6 +14,7 @@ from .deal_memory_handler import deal_memory_router
 from .deal_notes_handler import deal_notes_router
 from .deal_participants_handler import deal_participants_router
 from .deals_handler import deals_router
+from .imports_handler import imports_router
 from .leads import (
     lead_forms_router,
     lead_ingestion_keys_router,
@@ -40,6 +41,7 @@ __all__ = [
     "deal_import_router",
     "custom_fields_router",
     "deals_router",
+    "imports_router",
     "lead_forms_router",
     "lead_ingestion_keys_router",
     "public_lead_forms_router",

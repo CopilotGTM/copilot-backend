@@ -194,6 +194,12 @@ class AzureOrganisationBlobStorage:
         safe_name = self._sanitize_filename(original_filename)
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
 
+    def plan_crm_import_path(
+        self, *, user_id: UUID, import_id: UUID, original_filename: str
+    ) -> str:
+        safe_name = self._sanitize_filename(original_filename)
+        return f"crm_imports/{user_id}/{import_id}/{safe_name}"
+
     def thumbnail_blob_path(self, original_blob_path: str, variant: str) -> str:
         """Return a deterministic thumbnail path inside a dedicated thumbnails/ folder.
 

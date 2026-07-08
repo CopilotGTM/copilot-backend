@@ -207,6 +207,12 @@ class AccountWriteService:
             "domain": command.domain,
             "website": clean_optional_string(command.website),
             "industry": clean_optional_string(command.industry),
+            "phone": clean_optional_string(command.phone),
+            "city": clean_optional_string(command.city),
+            "state": clean_optional_string(command.state),
+            "country": clean_optional_string(command.country),
+            "address": clean_optional_string(command.address),
+            "postal_code": clean_optional_string(command.postal_code),
             "linkedin_url": clean_optional_string(command.linkedin_url),
         }
         company_kwargs = {key: value for key, value in company_kwargs.items() if value is not None}

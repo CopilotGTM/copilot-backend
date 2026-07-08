@@ -210,6 +210,7 @@ class DealJobType(StrEnum):
     CALENDAR_CONTACT_ACCOUNT_DISCOVERY = (
         "calendar_contact_account_discovery"  # Internal CRM discovery after calendar sync
     )
+    CRM_CSV_IMPORT = "crm_csv_import"
 
     CONTACT_RESEARCH = "contact_research"
     ACCOUNT_RESEARCH = "account_research"

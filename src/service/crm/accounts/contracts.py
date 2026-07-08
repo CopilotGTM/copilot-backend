@@ -36,6 +36,12 @@ class AccountCreateCommand:
     domain: str | None = None
     website: str | None = None
     industry: str | None = None
+    phone: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    address: str | None = None
+    postal_code: str | None = None
     linkedin_url: str | None = None
 
 

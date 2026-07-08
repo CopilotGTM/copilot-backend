@@ -44,6 +44,7 @@ from .deals import (
     CRMPipeline,
     CRMStageState,
 )
+from .imports import CRMImportRow, CRMImportRowStatus
 from .lead_forms import (
     LeadForm,
     LeadFormField,
@@ -127,6 +128,8 @@ __all__ = [
     "LeadFormFieldTargetType",
     "LeadFormStatus",
     "LeadFormSubmission",
+    "CRMImportRow",
+    "CRMImportRowStatus",
     # Source mappings
     "CRMSourceObjectMapping",
     "CRMSourceKind",
