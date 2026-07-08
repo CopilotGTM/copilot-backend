@@ -17,6 +17,7 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.pool import NullPool
 from sqlmodel import Session, select
 
 from src.domain.models.master_tables import Organisation
@@ -68,8 +69,7 @@ class ProductionMigrationManager:
             echo=False,
             pool_pre_ping=True,
             pool_recycle=self.db_config.POOL_RECYCLE_SEC,
-            pool_size=10,
-            max_overflow=20,
+            poolclass=NullPool,
             connect_args={
                 "connect_timeout": 30,
                 "application_name": "migration_manager",

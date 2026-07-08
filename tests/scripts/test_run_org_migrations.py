@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import scripts.run_org_migrations as run_org_migrations
+from migrations.migration_manager import ProductionMigrationManager
+from sqlalchemy.pool import NullPool
 
 
 class _FakeResult:
@@ -116,3 +118,18 @@ def test_drop_crm_provider_columns_uses_existing_association_type_id_column():
 
     assert "association_type_id" in migration_text
     assert "association_type,\n            role_label" not in migration_text
+
+
+def test_migration_manager_uses_short_lived_master_connections(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        "migrations.migration_manager.create_engine",
+        lambda _url, **kwargs: captured.setdefault("kwargs", kwargs) or object(),
+    )
+
+    ProductionMigrationManager()
+
+    assert captured["kwargs"]["poolclass"] is NullPool
+    assert "pool_size" not in captured["kwargs"]
+    assert "max_overflow" not in captured["kwargs"]
