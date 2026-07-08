@@ -85,7 +85,7 @@ knowledge-upload-worker:
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 1
+    minReplicas: 0
     maxReplicas: 1
   resources:
     requests:
