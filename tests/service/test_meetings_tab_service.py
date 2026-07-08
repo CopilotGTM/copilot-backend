@@ -498,9 +498,11 @@ async def test_mirror_deal_link_reactivates_without_removing_other_deal_associat
         def __init__(self):
             self.added = []
             self.results = [existing_assoc, event]
+            self.statements = []
 
-        async def execute(self, _stmt):
+        async def execute(self, stmt):
             """Mimic the async session execute contract used by the link mirror."""
+            self.statements.append(stmt)
             return _Result(self.results.pop(0))
 
         def add(self, item):
@@ -533,6 +535,8 @@ async def test_mirror_deal_link_reactivates_without_removing_other_deal_associat
     assert existing_assoc.updated_at > datetime.now(UTC) - timedelta(seconds=5)
     assert fake_session.added == []
     assert projected == [(existing_assoc, event)]
+    assert len(fake_session.statements) == 2
+    assert fake_session.statements[1]._with_options  # noqa: SLF001
 
 
 def test_recordings_window_includes_today_by_default() -> None:

@@ -624,9 +624,13 @@ class MeetingsTabService:
             )
             self.session.add(assoc)
 
-        event_stmt = select(CalendarEvent).where(
-            col(CalendarEvent.organisation_id) == self.organisation_id,
-            col(CalendarEvent.event_id) == event_id,
+        event_stmt = (
+            select(CalendarEvent)
+            .where(
+                col(CalendarEvent.organisation_id) == self.organisation_id,
+                col(CalendarEvent.event_id) == event_id,
+            )
+            .options(selectinload(cast(Any, CalendarEvent).attendees))
         )
         event = (await self.session.execute(event_stmt)).scalar_one_or_none()
         if event is not None:
