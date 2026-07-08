@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
+from src.infra.config.configs import google_gmail_pubsub_config
 from src.service.integrations.webhooks.google.types import (
     GoogleCalendarChannelNotification,
     GoogleGmailPubSubNotification,
@@ -54,7 +55,7 @@ class GoogleWebhookRequestService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid Gmail Pub/Sub webhook payload",
             )
-        self._require_gmail_pubsub_auth(request=request, notification=notification)
+        await self._require_gmail_pubsub_auth(request=request, notification=notification)
         return await self._ingestion_service.ingest_gmail(notification=notification)
 
     async def handle_calendar_channel(
@@ -141,15 +142,18 @@ class GoogleWebhookRequestService:
             )
         return organisation_id, integration_id
 
-    def _require_gmail_pubsub_auth(
+    async def _require_gmail_pubsub_auth(
         self,
         *,
         request: Request,
         notification: GoogleGmailPubSubNotification,
     ) -> None:
         """Require the configured Pub/Sub push token and subscription name."""
-        expected_token = os.environ.get(GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_ENV)
-        expected_subscription = os.environ.get(GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION_ENV)
+        expected_token = await google_gmail_pubsub_config.get_push_token()
+        expected_subscription = (
+            os.environ.get(GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION_ENV)
+            or google_gmail_pubsub_config.SUBSCRIPTION
+        )
         if not expected_token or not expected_subscription:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

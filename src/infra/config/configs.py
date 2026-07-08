@@ -971,6 +971,79 @@ class GoogleIntegrationConfig:
             )
 
 
+class GoogleGmailPubSubConfig:
+    """Configuration for Gmail Pub/Sub webhook authentication.
+
+    The push token is a shared secret between our Pub/Sub subscription endpoint
+    and the backend route. Env still wins for local testing, while deployed
+    environments fetch the token from the master Key Vault and cache it.
+    """
+
+    SECRET_NAME_PUSH_TOKEN: str = os.getenv(
+        "GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME",
+        "google-gmail-pubsub-push-token",
+    )
+    SUBSCRIPTION: str = os.getenv("GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION", "")
+
+    _push_token: str | None = os.getenv("GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN")
+    _token_from_env: bool = bool(os.getenv("GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN"))
+    _credentials_ttl_hours: float = float(
+        os.getenv("GOOGLE_GMAIL_PUBSUB_CREDENTIALS_TTL_HOURS", "6")
+    )
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def get_push_token(self) -> str | None:
+        """Return the Gmail Pub/Sub push token, loading it from Key Vault if needed."""
+        current_env_token = os.getenv("GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN")
+        if current_env_token:
+            return current_env_token
+
+        if self._token_from_env:
+            return self._push_token
+
+        if not self._is_expired():
+            return self._push_token
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._push_token
+            await self._load_from_vault()
+
+        return self._push_token
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Gmail Pub/Sub push token from Key Vault (TTL refresh)")
+        self._push_token = await master_secrets_manager.get(self.SECRET_NAME_PUSH_TOKEN)
+        self._credentials_loaded_at = time.time()
+
+        if self._push_token:
+            logger.info(
+                "Gmail Pub/Sub push token cached (TTL=%.1fh)",
+                self._credentials_ttl_hours,
+            )
+        else:
+            logger.error(
+                "Gmail Pub/Sub push token missing from Key Vault secret '%s'",
+                self.SECRET_NAME_PUSH_TOKEN,
+            )
+
+
 class MicrosoftIntegrationConfig:
     """Configuration for custom Microsoft OAuth flows.
 
@@ -1582,6 +1655,7 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 rate_limit_config = RateLimitConfig()
 integration_sync_config = IntegrationSyncConfig()
 google_integration_config = GoogleIntegrationConfig()
+google_gmail_pubsub_config = GoogleGmailPubSubConfig()
 microsoft_integration_config = MicrosoftIntegrationConfig()
 hubspot_integration_config = HubSpotIntegrationConfig()
 salesforce_integration_config = SalesforceIntegrationConfig()
