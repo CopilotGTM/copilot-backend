@@ -31,7 +31,11 @@ from src.service.crm.mutations.contracts import (
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.policies import ContactMutationPolicy
-from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
+from src.service.crm.utils.account import (
+    PERSON_LINKEDIN_URL_ERROR,
+    clean_optional_string,
+    is_person_linkedin_url,
+)
 from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
     ensure_app_user_crm_identity,
@@ -137,6 +141,32 @@ class ContactWriteService:
                     status_code=409,
                 )
 
+        account_result = None
+        if command.company_id:
+            try:
+                account = await self._account_writer.load_org_company(command.company_id)
+            except AccountWriteServiceError as exc:
+                raise ContactWriteServiceError(
+                    exc.message, status_code=exc.status_code, data=exc.data
+                ) from exc
+        else:
+            account_result = (
+                await self._account_writer.resolve_or_create_account_for_contact_email_with_result(
+                    normalized_email,
+                    context=AccountWriteContext(
+                        source=context.source if context else "contact_create",
+                        actor_user_id=context.actor_user_id if context else None,
+                        actor_name=context.actor_name if context else None,
+                        actor_email=context.actor_email if context else None,
+                        source_label=context.source_label if context else None,
+                        created_via="contact_create",
+                    ),
+                )
+                if normalized_email
+                else None
+            )
+            account = account_result.account if account_result else None
+
         integration = await InternalCRMSetupService(
             self.org_session,
             self.organisation_id,
@@ -161,22 +191,6 @@ class ContactWriteService:
         )
         contact_name = command.name.strip() if command.name and command.name.strip() else None
         first_name, last_name = split_full_name(contact_name) if contact_name else (None, None)
-        account_result = (
-            await self._account_writer.resolve_or_create_account_for_contact_email_with_result(
-                normalized_email,
-                context=AccountWriteContext(
-                    source=context.source if context else "contact_create",
-                    actor_user_id=context.actor_user_id if context else None,
-                    actor_name=context.actor_name if context else None,
-                    actor_email=context.actor_email if context else None,
-                    source_label=context.source_label if context else None,
-                    created_via="contact_create",
-                ),
-            )
-            if normalized_email
-            else None
-        )
-        account = account_result.account if account_result else None
 
         contact = CRMContact.model_validate(
             {
@@ -189,6 +203,13 @@ class ContactWriteService:
                 "full_name": contact_name,
                 "job_title": command.job_title,
                 "phone": command.phone,
+                "mobile_phone": clean_optional_string(command.mobile_phone),
+                "website": clean_optional_string(command.website),
+                "address": clean_optional_string(command.address),
+                "city": clean_optional_string(command.city),
+                "state": clean_optional_string(command.state),
+                "country": clean_optional_string(command.country),
+                "postal_code": clean_optional_string(command.postal_code),
                 "linkedin_url": command.linkedin_url,
                 "company_id": account.company_id if account else None,
                 "company_name": account.name if account else None,

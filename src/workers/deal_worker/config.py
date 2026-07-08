@@ -88,6 +88,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_asset.extract_email_attachments_org",
             "deal_asset.extract_email_attachments_deal",
             "deal_asset.extract_email_attachments_all_orgs",
+            # CRM CSV import orchestration
+            "crm_import.analyze_csv",
+            "crm_import.process_csv",
         )
 
         deal_jobs_queue_tasks = (

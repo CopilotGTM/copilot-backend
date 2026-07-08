@@ -19,7 +19,15 @@ class ContactCreateCommand:
     name: str | None = None
     job_title: str | None = None
     phone: str | None = None
+    mobile_phone: str | None = None
+    website: str | None = None
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    postal_code: str | None = None
     linkedin_url: str | None = None
+    company_id: UUID | None = None
 
 
 @dataclass(frozen=True)
