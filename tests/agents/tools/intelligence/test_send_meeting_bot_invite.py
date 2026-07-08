@@ -139,6 +139,7 @@ async def test_specific_event_is_verified_against_user_calendar_before_dispatch(
     schedule.assert_awaited_once_with(
         event.event_id,
         source="agent_tool_manual_invite",
+        enforce_policy=False,
     )
     sql = str(session.statements[0])
     assert "knowledge_integrations.created_by_user_id" in sql

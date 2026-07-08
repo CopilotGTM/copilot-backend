@@ -101,7 +101,7 @@ def test_can_invite_bot_keeps_user_action_available_for_already_started_meeting(
     assert CRMMeetingsAccessService._can_invite_bot(event, None) is True
 
 
-def test_can_invite_bot_respects_policy_denial_reason() -> None:
+def test_policy_denial_does_not_hide_manual_crm_invite() -> None:
     event = _calendar_event(start_at=datetime.now(UTC) + timedelta(hours=1))
 
     assert (
@@ -110,7 +110,27 @@ def test_can_invite_bot_respects_policy_denial_reason() -> None:
             None,
             policy_denial_reason="meeting_recording_policy_never",
         )
-        is False
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_bot_bypasses_org_policy_for_manual_crm_action() -> None:
+    """CRM invite is already user-authorized, so org policy only applies to automation."""
+    event_id = uuid4()
+    service, _session_service, lifecycle_service = _control_service_with_session(None)
+    lifecycle_service.schedule_for_event.return_value = {
+        "status": "sent",
+        "calendar_event_id": str(event_id),
+    }
+
+    result = await service.invite_bot(event_id)
+
+    assert result["status"] == "sent"
+    lifecycle_service.schedule_for_event.assert_awaited_once_with(
+        event_id,
+        source="crm_manual_invite",
+        enforce_policy=False,
     )
 
 

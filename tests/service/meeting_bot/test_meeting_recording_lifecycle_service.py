@@ -379,6 +379,65 @@ async def test_dispatch_event_skips_internal_meeting_under_external_only_policy(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
+    organisation_id = uuid4()
+    event_id = uuid4()
+    session_id = uuid4()
+    service = MeetingRecordingLifecycleService(organisation_id)
+    event = SimpleNamespace(
+        event_id=event_id,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=datetime.now(UTC) + timedelta(hours=2),
+        attendees=[SimpleNamespace(email="seller@acme.com")],
+    )
+    pending_session = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        sent_to_provider_at=None,
+    )
+    queued_session = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        sent_to_provider_at=None,
+    )
+    queued_session.__dict__["_send_claimed"] = True
+
+    async def fake_get_calendar_event(calendar_event_id):
+        assert calendar_event_id == event_id
+        return event
+
+    monkeypatch.setattr(service, "_get_calendar_event", fake_get_calendar_event)
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncGet(True))
+    monkeypatch.setattr(
+        service._session_service,
+        "get_or_create_pending_session",
+        AsyncMock(return_value=pending_session),
+    )
+    monkeypatch.setattr(
+        service._session_service,
+        "mark_send_queued",
+        AsyncMock(return_value=queued_session),
+    )
+    monkeypatch.setattr(service._session_service, "mark_sent", AsyncMock())
+    monkeypatch.setattr(
+        service,
+        "_build_provider",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                create_session=AsyncMock(return_value={"id": "bot_123", "status": "scheduled"})
+            )
+        ),
+    )
+    monkeypatch.setattr(service, "_resolve_bot_name", AsyncMock(return_value="Acme Notetaker"))
+
+    result = await service.dispatch_event(event_id, enforce_policy=False)
+
+    assert result["status"] == "sent"
+    service._session_service.get_or_create_pending_session.assert_awaited_once()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_dispatch_event_allows_external_meeting_under_external_only_policy(monkeypatch):
     organisation_id = uuid4()
     event_id = uuid4()
