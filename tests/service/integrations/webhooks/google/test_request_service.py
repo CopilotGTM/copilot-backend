@@ -33,6 +33,29 @@ def test_gmail_pubsub_notification_decodes_message_data() -> None:
     assert notification.history_id == "987"
 
 
+def test_gmail_pubsub_notification_accepts_numeric_history_id() -> None:
+    data = base64.urlsafe_b64encode(
+        json.dumps({"emailAddress": "seller@example.com", "historyId": 987}).encode()
+    ).decode()
+
+    notification = GoogleGmailPubSubNotification.from_payload(
+        {"message": {"messageId": "pubsub-1", "data": data}}
+    )
+
+    assert notification is not None
+    assert notification.history_id == "987"
+
+
+def test_gmail_pubsub_notification_accepts_unwrapped_payload() -> None:
+    notification = GoogleGmailPubSubNotification.from_payload(
+        {"emailAddress": "seller@example.com", "historyId": "987"}
+    )
+
+    assert notification is not None
+    assert notification.email_address == "seller@example.com"
+    assert notification.history_id == "987"
+
+
 def test_calendar_channel_notification_reads_required_headers() -> None:
     """Calendar channel headers must parse regardless of caller casing."""
     notification = GoogleCalendarChannelNotification.from_headers(
@@ -94,6 +117,36 @@ async def test_gmail_request_does_not_require_route_bound_integration_ids(monkey
 
     ingestion_service.ingest_gmail.assert_awaited_once()
     notification = ingestion_service.ingest_gmail.await_args.kwargs["notification"]
+    assert notification.email_address == "seller@example.com"
+
+
+@pytest.mark.asyncio
+async def test_gmail_request_accepts_unwrapped_pubsub_payload_with_metadata_headers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN", "push-secret")
+    monkeypatch.setenv(
+        "GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION",
+        "projects/proj/subscriptions/gmail",
+    )
+    ingestion_service = AsyncMock()
+    request_service = GoogleWebhookRequestService(ingestion_service=ingestion_service)
+
+    await request_service.handle_gmail_pubsub(
+        request=_FakeRequest(
+            json.dumps({"emailAddress": "seller@example.com", "historyId": "987"}).encode(),
+            headers={
+                "x-goog-pubsub-subscription-name": "projects/proj/subscriptions/gmail",
+                "x-goog-pubsub-message-id": "pubsub-1",
+                "x-goog-pubsub-publish-time": "2026-07-08T15:00:00Z",
+            },
+            query_params={"token": "push-secret"},
+        ),
+    )
+
+    notification = ingestion_service.ingest_gmail.await_args.kwargs["notification"]
+    assert notification.message_id == "pubsub-1"
+    assert notification.subscription == "projects/proj/subscriptions/gmail"
     assert notification.email_address == "seller@example.com"
 
 

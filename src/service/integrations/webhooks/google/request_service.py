@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -55,6 +56,10 @@ class GoogleWebhookRequestService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid Gmail Pub/Sub webhook payload",
             )
+        notification = self._apply_pubsub_header_metadata(
+            request=request,
+            notification=notification,
+        )
         await self._require_gmail_pubsub_auth(request=request, notification=notification)
         return await self._ingestion_service.ingest_gmail(notification=notification)
 
@@ -127,6 +132,36 @@ class GoogleWebhookRequestService:
                 detail="Invalid Google webhook JSON payload",
             )
         return payload
+
+    def _apply_pubsub_header_metadata(
+        self,
+        *,
+        request: Request,
+        notification: GoogleGmailPubSubNotification,
+    ) -> GoogleGmailPubSubNotification:
+        """Use Pub/Sub no-wrapper metadata headers when the JSON body is raw Gmail data."""
+        subscription = notification.subscription or request.headers.get(
+            "x-goog-pubsub-subscription-name"
+        )
+        message_id = notification.message_id
+        header_message_id = request.headers.get("x-goog-pubsub-message-id")
+        if message_id.startswith("gmail:") and header_message_id:
+            message_id = header_message_id
+        publish_time = notification.publish_time or request.headers.get(
+            "x-goog-pubsub-publish-time"
+        )
+        if (
+            subscription == notification.subscription
+            and message_id == notification.message_id
+            and publish_time == notification.publish_time
+        ):
+            return notification
+        return replace(
+            notification,
+            subscription=subscription,
+            message_id=message_id,
+            publish_time=publish_time,
+        )
 
     def _require_routing_params(
         self,
